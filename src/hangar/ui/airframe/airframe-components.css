@@ -1,4 +1,4 @@
-/* Airframe theme-v8 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v12 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -12,8 +12,8 @@
 .af-type-body-l{font-family:var(--af-font-sans);font-size:16px;line-height:1.55;font-weight:400}
 .af-type-body{font-family:var(--af-font-sans);font-size:14px;line-height:1.5;font-weight:400}
 .af-type-body-s{font-family:var(--af-font-sans);font-size:13px;line-height:1.45;font-weight:400}
-.af-type-label{font-family:var(--af-font-mono);font-size:11px;line-height:1;font-weight:500;letter-spacing:0.08em;text-transform:uppercase;font-variant-numeric:tabular-nums}
-.af-type-label-s{font-family:var(--af-font-mono);font-size:10px;line-height:1;font-weight:500;letter-spacing:0.09em;text-transform:uppercase;font-variant-numeric:tabular-nums}
+.af-type-label{font-family:var(--af-font-sans);font-size:12px;line-height:1.2;font-weight:500;letter-spacing:0}
+.af-type-label-s{font-family:var(--af-font-sans);font-size:11px;line-height:1.2;font-weight:500;letter-spacing:0}
 .af-type-mono{font-family:var(--af-font-mono);font-size:13px;line-height:1.5;font-weight:400;font-variant-numeric:tabular-nums}
 .af-type-mono-s{font-family:var(--af-font-mono);font-size:12px;line-height:1.45;font-weight:400;font-variant-numeric:tabular-nums}
 .af-type-data{font-family:var(--af-font-mono);font-size:13px;line-height:1.3;font-weight:500;font-variant-numeric:tabular-nums}
@@ -36,38 +36,47 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-row{display:flex;align-items:center;gap:8px;min-width:0}
 .af-stack{display:flex;flex-direction:column;gap:12px;min-width:0}
 .af-display{font-family:var(--af-font-display);font-stretch:var(--af-display-stretch);font-weight:700;letter-spacing:-0.01em;line-height:1;text-wrap:balance;margin:0}
-:root{--af-ease:cubic-bezier(.2,0,0,1);--af-dur:160ms}
-@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+/* motion: the tokens are --af-dur-fast, --af-dur, --af-dur-open, --af-ease, --af-ease-open (airframe.css). Under reduced motion
+   every transition and animation is off and the durations read as 0ms, so a script that times an exit on them skips it too. */
+@media (prefers-reduced-motion: reduce){
+  :root{--af-dur-fast:0ms;--af-dur:0ms;--af-dur-open:0ms}
+  *,*::before,*::after{transition:none!important;animation:none!important}
+}
 
 /* ---- icon ---- */
 .af-ic{display:inline-block;flex:none;width:16px;height:16px;vertical-align:-0.18em;fill:none;stroke:currentColor;stroke-width:var(--af-icon-stroke,1.5);stroke-linecap:square;stroke-linejoin:miter}
 .af-ic--14{width:14px;height:14px}.af-ic--20{width:20px;height:20px}.af-ic--24{width:24px;height:24px}
 
-/* ---- label: mono capitals ---- */
-.af-lbl{display:inline-flex;align-items:center;gap:7px;font-family:var(--af-font-mono);font-weight:500;font-size:11px;line-height:1;letter-spacing:.08em;text-transform:uppercase;color:var(--af-fg-muted);white-space:nowrap}
-.af-lbl__sub{color:var(--af-fg-subtle)}
+/* ---- label: sentence-case sans (theme-v12). The sub is sans too; add af-mono (or af-id) to a sub that is an ID or a region. ---- */
+.af-lbl{display:inline-flex;align-items:center;gap:7px;font-family:var(--af-font-sans);font-weight:500;font-size:12px;line-height:1.2;letter-spacing:0;color:var(--af-fg-muted);white-space:nowrap}
+/* a label narrower than its place: the word stays whole; the sub (an ID, a region) ellipsizes as a last resort, after the
+   row it sits in has wrapped (see af-card__top). The full ID stays in the DOM for copy and screen readers. */
+.af-lbl__sub{font-weight:400;font-size:12px;color:var(--af-fg-subtle);min-width:0;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.af-lbl__sub.af-mono,.af-lbl__sub.af-id{font-size:11px;font-weight:500}
+.af-lbl__sub~.af-lbl__sub{flex-shrink:1e5}  /* a later sub (turn 7, editing) gives way, whole, before the ID loses a character */
 .af-lbl__sub::before{content:"\00B7";margin-right:7px;color:var(--af-fg-dim)}
 
-/* ---- button ---- */
-.af-btn{height:34px;padding:0 15px;display:inline-flex;align-items:center;gap:8px;border-radius:var(--af-radius-control);border:1px solid transparent;background:transparent;color:var(--af-fg);
-  font-family:var(--af-font-mono);font-weight:500;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;cursor:pointer;
-  transition:background var(--af-dur) var(--af-ease),border-color var(--af-dur) var(--af-ease),transform 90ms var(--af-ease)}
-.af-btn:active{transform:scale(.98)}
-.af-btn .af-ic{width:14px;height:14px;margin-left:-2px}
-.af-btn--primary{background:var(--af-brand);border-color:var(--af-brand);color:var(--af-on-brand)}
+/* ---- button: sentence-case sans, 8px radius; the primary is the one yellow fill and the one 600 weight ---- */
+.af-btn{height:34px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:var(--af-radius-control);border:1px solid transparent;background:transparent;color:var(--af-fg);
+  font-family:var(--af-font-sans);font-weight:500;font-size:13px;line-height:1;letter-spacing:0;white-space:nowrap;cursor:pointer;
+  transition:background var(--af-dur) var(--af-ease),border-color var(--af-dur) var(--af-ease),color var(--af-dur) var(--af-ease),transform var(--af-dur-fast) var(--af-ease)}
+.af-btn:active{transform:scale(.97)}
+.af-btn .af-ic{width:15px;height:15px;margin-left:-2px}
+.af-btn--primary{background:var(--af-brand);border-color:var(--af-brand);color:var(--af-on-brand);font-weight:600}
 .af-btn--primary:hover{background:var(--af-brand-hover);border-color:var(--af-brand-hover)}
 .af-btn--secondary{border-color:var(--af-line-strong)}
 .af-btn--secondary:hover{background:var(--af-selected)}
 .af-btn--ghost{color:var(--af-fg-muted)}
 .af-btn--ghost:hover{color:var(--af-fg);background:var(--af-selected)}
-.af-btn--danger{border-color:color-mix(in srgb,var(--af-status-failed) 55%,var(--af-line));color:var(--af-status-failed)}
-.af-btn--danger:hover{border-color:var(--af-status-failed)}
-.af-btn--sm{height:28px;padding:0 11px;font-size:10.5px}
-.af-btn--sm .af-ic{width:13px;height:13px}
+/* danger is red words on a quiet ground, never a red fill; the hairline is line-strong like any secondary button */
+.af-btn--danger{border-color:transparent;color:var(--af-status-failed)}
+.af-btn--danger:hover{background:var(--af-selected)}
+.af-btn--danger.af-btn--secondary{border-color:var(--af-line-strong)}
+.af-btn--sm{height:30px;padding:0 11px;font-size:12.5px}
+.af-btn--sm .af-ic{width:14px;height:14px}
 .af-btn:disabled{opacity:.45;cursor:default}
-/* text variant: sentence-case Red Hat Text where people read (Tower's desk, dialogs, questions); mono capitals stay the default where data is */
-.af-btn--text{font-family:var(--af-font-sans);font-weight:500;font-size:13.5px;letter-spacing:0;text-transform:none}
-.af-btn--text.af-btn--sm{font-size:13px}
+/* af-btn--text was the sentence-case variant before theme-v12; every button is sentence case now, so it is a no-op kept for older markup */
+.af-btn--text{font-size:13px}
 
 /* ---- status: color + shape + word ---- */
 .af-status{--c:var(--af-status-off);display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--af-fg);white-space:nowrap}
@@ -77,36 +86,53 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-status--approval{--c:var(--af-status-approval)} .af-status--approval .af-status__mark{width:7px;height:7px;transform:rotate(45deg)}
 .af-status--failed{--c:var(--af-status-failed)} .af-status--failed .af-status__mark{width:10px;height:9px;clip-path:polygon(50% 0,100% 100%,0 100%)}
 .af-status--off{--c:var(--af-status-off)} .af-status--off .af-status__mark{width:5px;height:5px;border-radius:50%}
-.af-status--denied{background:var(--af-status-denied);color:var(--af-on-status-denied);padding:3px 7px;border-radius:var(--af-radius-control);font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
+.af-status--denied{background:var(--af-status-denied);color:var(--af-on-status-denied);padding:3px 7px;border-radius:4px;font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;letter-spacing:var(--af-label-track);text-transform:uppercase}
 .af-status--denied .af-status__mark{display:none}
 .af-status--lit{color:var(--c)}
 .af-status--off.af-status--lit,.af-status--running.af-status--lit,.af-status--queued.af-status--lit{color:var(--af-fg)}
 
 /* ---- inline data: keyed (KEY value) ---- */
 .af-meta{display:inline-flex;flex-wrap:wrap;align-items:baseline;column-gap:18px;row-gap:4px;min-width:0;font-size:12px;line-height:1.5}
-.af-meta__item{display:inline-flex;align-items:baseline;gap:6px;white-space:nowrap}
-.af-meta__key{font-family:var(--af-font-mono);font-weight:500;font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
-.af-meta__val{font-family:var(--af-font-mono);color:var(--af-fg-muted);font-variant-numeric:tabular-nums}
+/* an item keeps key and value on one line; a value wider than its place (a policy name, a receipt) wraps inside the cell
+   rather than past the card's edge. At full width an item is as wide as its words, so nothing changes there. */
+.af-meta__item{display:inline-flex;align-items:baseline;gap:6px;white-space:nowrap;max-width:100%}
+.af-meta__key{font-family:var(--af-font-sans);font-weight:500;font-size:11px;letter-spacing:0;color:var(--af-fg-subtle)}
+.af-meta__val{font-family:var(--af-font-mono);color:var(--af-fg-muted);font-variant-numeric:tabular-nums;min-width:0;white-space:normal;overflow-wrap:anywhere}
 .af-meta__item--strong .af-meta__val{color:var(--af-fg)}
 .af-meta__item--approval .af-meta__val{color:var(--af-status-approval)}
 .af-meta__item--failed .af-meta__val{color:var(--af-status-failed)}
 
-/* ---- card & panel: tonal (no border, separated by tone) ---- */
+/* ---- card & panel: tonal (no border, separated by tone); 12px radius. lifted is the one step above raised (an opened row,
+   the top of a deck, a sheet): a lighter grey in Night, white with shadow-1 and a 1px top highlight in Day. ---- */
 .af-card{position:relative;background:var(--af-raised);border-radius:var(--af-radius-card);padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
-.af-card__top{display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:0}
+/* the head wraps before anything is cut: in a narrow place (a docked panel, a phone) the status drops under the label,
+   whole and visible; the label's sub ellipsizes only when the label alone is wider than the head */
+.af-card__top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;min-width:0}
+.af-card__top>.af-lbl{min-width:0;max-width:100%}
+.af-card__top>.af-status{flex:none}
 .af-card__meta{font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle);white-space:nowrap}
 .af-card__foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto;padding-top:10px;border-top:1px solid var(--af-line-subtle);font-size:12px;color:var(--af-fg-subtle);min-width:0}
 .af-card__foot b{color:var(--af-fg);font-weight:500}
 .af-panel{position:relative;background:var(--af-raised);border-radius:var(--af-radius-card);min-width:0}
-.af-card--lit{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--af-status-approval) 45%,transparent);background:color-mix(in srgb,var(--af-status-approval) 6%,var(--af-raised))}
+.af-card--lifted,.af-panel--lifted,.af-lifted{background:var(--af-lifted);box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-1)}
+.af-sheet{background:var(--af-lifted);border-radius:var(--af-radius-sheet);box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-2)}
+/* attention: edge, mark, word. A card that needs a person keeps its neutral ground and shows a 3px status edge on its leading
+   side (inset from the corners so the radius stays clean), the diamond and the word. No status color is ever mixed into a surface.
+   --lit is the approval role; --failed and --denied light the same edge in red for a stopped card. */
+.af-card--lit,.af-card--failed,.af-card--denied{--af-edge:var(--af-status-approval);padding-left:19px}
+.af-card--failed{--af-edge:var(--af-status-failed)}
+.af-card--denied{--af-edge:var(--af-status-denied)}
+.af-card--lit::before,.af-card--failed::before,.af-card--denied::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0;background:var(--af-edge);pointer-events:none}
+.af-edge{position:relative}
+.af-edge::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--af-edge,var(--af-status-approval));pointer-events:none}
 
-/* ---- small parts ---- */
+/* ---- small parts (keys in sentence-case sans; tags and kbd stay mono, since they are codes) ---- */
 .af-kv{display:grid;grid-template-columns:96px minmax(0,1fr);gap:7px 14px;margin:0;font-size:13px}
-.af-kv dt{font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle);padding-top:2px}
+.af-kv dt{font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-fg-subtle);padding-top:2px}
 .af-kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .af-kv dd.af-mono{font-size:12.5px}
-.af-tag{display:inline-flex;align-items:center;gap:5px;font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--af-fg-muted);border:1px solid var(--af-line);border-radius:var(--af-radius-control);padding:3px 6px;white-space:nowrap}
-.af-kbd{font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle);border:1px solid var(--af-line);border-radius:var(--af-radius-control);padding:1px 5px}
+.af-tag{display:inline-flex;align-items:center;gap:5px;font-family:var(--af-font-mono);font-weight:500;font-size:11px;letter-spacing:.01em;color:var(--af-fg-muted);border:1px solid var(--af-line);border-radius:calc(var(--af-radius-control) - 2px);padding:2px 6px;white-space:nowrap}
+.af-kbd{font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle);border:1px solid var(--af-line);border-radius:5px;padding:1px 5px}
 .af-id{font-family:var(--af-font-mono);font-weight:500;letter-spacing:.01em;white-space:nowrap}
 
 /* ---- readout: digits on unlit cells inside a display window ---- */
@@ -123,9 +149,11 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
   .af-status__mark{background:CanvasText}
   .af-status--queued .af-status__mark{background:transparent;border-color:CanvasText}
   .af-status--denied{background:Canvas;color:CanvasText;outline:1px solid CanvasText;outline-offset:-1px}
-  .af-card{outline:1px solid CanvasText;outline-offset:-1px}
-  .af-card--lit{outline-width:2px;outline-offset:-2px}
+  .af-card,.af-lifted,.af-sheet{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-card--lit,.af-card--failed,.af-card--denied,.af-edge{border-left:3px solid CanvasText}
+  .af-card--lit::before,.af-card--failed::before,.af-card--denied::before,.af-edge::before{background:CanvasText}
   .af-btn--primary{border:2px solid ButtonText}
+  .af-btn--secondary,.af-btn--danger{border:1px solid ButtonText}
 }
 /* ===== core.css ===== */
 /* ===== Airframe · core components. af- BEM classes on top of base.css atoms.
@@ -198,11 +226,11 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-readouts{--af-cols:3;display:grid;grid-template-columns:repeat(var(--af-cols),minmax(0,1fr));gap:2px;background:var(--af-canvas);border-radius:var(--af-radius-control);overflow:hidden;min-width:0}
 .af-window--cell,.af-readouts>.af-window{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:14px;min-width:0}
 .af-window--cell{border-radius:var(--af-radius-control)}
-.af-window__key{font-family:var(--af-font-mono);font-weight:500;font-size:10px;line-height:1.3;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-window__key{font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;line-height:1.3;letter-spacing:0;color:var(--af-fg-subtle)}
 .af-readout__minor{font-size:.55em;color:var(--af-fg-muted)}
 .af-readout__unit{font-family:var(--af-font-mono);font-size:.42em;letter-spacing:.04em;color:var(--af-fg-subtle);margin-left:.3em}
 
-/* ---- list rows: id, status, time. Attention rows are the only tinted ones. ---- */
+/* ---- list rows: id, status, time. A row that needs a person takes a 3px status edge; nothing in a list is tinted. ---- */
 .af-list{display:flex;flex-direction:column;min-width:0;margin:0;padding:0;list-style:none}
 .af-list__row{display:grid;grid-template-columns:minmax(0,1fr) var(--af-list-status,10.5em) var(--af-list-time,5.5em);align-items:center;column-gap:12px;min-height:var(--af-row-h);padding:0 10px;border-top:1px solid var(--af-line-subtle);font-size:13px;min-width:0}
 .af-list__row:first-child{border-top-color:transparent}
@@ -210,13 +238,14 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-list__id{font-family:var(--af-font-mono);font-weight:500;font-size:13px;letter-spacing:.01em;color:var(--af-fg)}
 .af-list__sub{font-size:12px;color:var(--af-fg-subtle);overflow:hidden;text-overflow:ellipsis}
 .af-list__time{font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.af-list__row.is-attention{border-top-color:transparent;background:color-mix(in srgb,var(--af-status-approval) 7%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--af-status-approval) 32%,transparent)}
-.af-list__row.is-attention+.af-list__row{border-top-color:transparent}
+.af-list__row.is-attention{box-shadow:inset 3px 0 0 var(--af-status-approval)}
+.af-list__row:is(.is-selected,[aria-selected="true"]){background:var(--af-selected);box-shadow:inset 2px 0 0 var(--af-fg)}
+.af-list__row.is-attention:is(.is-selected,[aria-selected="true"]){box-shadow:inset 3px 0 0 var(--af-status-approval)}
 @media (max-width:520px){.af-list__row{grid-template-columns:minmax(0,1fr) auto}.af-list__time{display:none}}
 
 /* ---- controls ---- */
 .af-field{display:flex;flex-direction:column;gap:6px;min-width:0}
-.af-field__label{font-family:var(--af-font-mono);font-weight:500;font-size:10px;line-height:1.2;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-field__label{font-family:var(--af-font-sans);font-weight:500;font-size:12px;line-height:1.2;letter-spacing:0;color:var(--af-fg-muted)}
 .af-field__hint{font-size:12px;line-height:1.4;color:var(--af-fg-subtle)}
 .af-input,.af-select{height:34px;display:flex;align-items:center;gap:8px;min-width:0;padding:0 10px;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);background:var(--af-surface);color:var(--af-fg);
   font-family:var(--af-font-mono);font-size:12.5px;transition:border-color var(--af-dur) var(--af-ease)}
@@ -242,7 +271,7 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-field__error .af-status{font-size:inherit;white-space:normal;align-items:flex-start}
 .af-field__error .af-status__mark{margin-top:5px}
 
-/* ---- chip: an option or a suggestion. 2px radius, hairline; pressed inverts like a segment. Never a status, never a pill. ---- */
+/* ---- chip: an option or a suggestion. Control radius, hairline; pressed inverts like a segment. Never a status, never a pill. ---- */
 .af-chip{display:inline-flex;align-items:center;gap:6px;height:28px;max-width:100%;padding:0 10px;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);background:transparent;color:var(--af-fg);
   font-family:var(--af-font-sans);font-size:13px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;
   transition:background var(--af-dur) var(--af-ease),color var(--af-dur) var(--af-ease),border-color var(--af-dur) var(--af-ease)}
@@ -256,13 +285,13 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-chip:disabled:hover,.af-chip.is-dismissed:hover{background:transparent}
 .af-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 
-.af-switch{position:relative;flex:none;width:38px;height:20px;padding:0;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);background:var(--af-surface);cursor:pointer;
+.af-switch{position:relative;flex:none;width:38px;height:22px;padding:0;border:1px solid var(--af-line-strong);border-radius:11px;background:var(--af-surface);cursor:pointer;
   transition:background var(--af-dur) var(--af-ease),border-color var(--af-dur) var(--af-ease)}
-.af-switch::after{content:"";position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:1px;background:var(--af-fg-subtle);transition:transform var(--af-dur) var(--af-ease),background var(--af-dur) var(--af-ease)}
+.af-switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:var(--af-radius-round);background:var(--af-fg-subtle);transition:transform var(--af-dur) var(--af-ease),background var(--af-dur) var(--af-ease)}
 .af-switch:hover,.af-switch.is-hover{border-color:var(--af-fg-subtle)}
 .af-switch:hover::after,.af-switch.is-hover::after{background:var(--af-fg-muted)}
 .af-switch[aria-checked="true"]{background:var(--af-brand);border-color:var(--af-brand)}
-.af-switch[aria-checked="true"]::after{transform:translateX(18px);background:var(--af-on-brand)}
+.af-switch[aria-checked="true"]::after{transform:translateX(16px);background:var(--af-on-brand)}
 .af-switch.is-focus{outline:2px solid var(--af-focus);outline-offset:2px}
 .af-switch:disabled{opacity:.45;cursor:default}
 
@@ -271,13 +300,15 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-setting__text{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:13.5px;line-height:1.35;color:var(--af-fg)}
 .af-setting__text small{font-size:12px;color:var(--af-fg-subtle)}
 
-.af-seg{display:inline-flex;align-self:flex-start;justify-self:start;max-width:100%;border:1px solid var(--af-line-strong);border-radius:var(--af-radius-control);overflow:hidden;background:var(--af-surface)}
-.af-seg__btn{height:30px;padding:0 13px;border:0;border-left:1px solid var(--af-line);background:transparent;color:var(--af-fg-muted);cursor:pointer;white-space:nowrap;
-  font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;transition:color var(--af-dur) var(--af-ease),background var(--af-dur) var(--af-ease)}
-.af-seg__btn:first-child{border-left:0}
+/* segmented control: a tonal group (surface well, 3px inset, no hairlines); the pressed segment inverts to fg on canvas */
+.af-seg{display:inline-flex;gap:2px;align-self:flex-start;justify-self:start;max-width:100%;padding:3px;border:0;border-radius:calc(var(--af-radius-control) + 3px);background:var(--af-surface)}
+.af-seg__btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border:0;border-radius:var(--af-radius-control);background:transparent;color:var(--af-fg-muted);cursor:pointer;white-space:nowrap;
+  font-family:var(--af-font-sans);font-weight:500;font-size:13px;letter-spacing:0;transition:color var(--af-dur) var(--af-ease),background var(--af-dur) var(--af-ease)}
+.af-seg__btn .af-ic{width:14px;height:14px;color:currentColor}
+.af-seg__btn b{font-family:var(--af-font-mono);font-weight:500;font-size:11.5px;opacity:.75}
 .af-seg__btn:hover,.af-seg__btn.is-hover{color:var(--af-fg);background:var(--af-selected)}
 .af-seg__btn[aria-pressed="true"],.af-seg__btn[aria-current="page"]{background:var(--af-fg);color:var(--af-canvas)}
-a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
+a.af-seg__btn{text-decoration:none}
 .af-seg__btn:focus-visible,.af-seg__btn.is-focus{outline:2px solid var(--af-focus);outline-offset:-2px;position:relative}
 .af-seg__btn[aria-pressed="true"]:focus-visible,.af-seg__btn[aria-pressed="true"].is-focus{outline-offset:-4px;outline-color:var(--af-canvas);box-shadow:inset 0 0 0 2px var(--af-focus)}
 .af-seg__btn:disabled{opacity:.45;cursor:default}
@@ -293,7 +324,7 @@ a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
 .af-menu__item>.af-ic:last-child:not(:first-child){margin-left:auto;color:var(--af-brand-text)}
 .af-menu__item>small~.af-ic:last-child{margin-left:0}
 .af-menu__sep{height:1px;margin:4px 0;background:var(--af-line)}
-.af-menu__cap{padding:6px 8px 4px;font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-menu__cap{padding:6px 8px 4px;font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-fg-subtle)}
 
 /* ---- app header ---- */
 .af-nav{display:flex;align-items:center;gap:8px;height:var(--af-header-h);padding:0 16px;border-bottom:1px solid var(--af-line);background:var(--af-canvas);min-width:0}
@@ -303,15 +334,19 @@ a.af-seg__btn{display:inline-flex;align-items:center;text-decoration:none}
 .af-nav__name{font-family:var(--af-font-display);font-stretch:var(--af-display-stretch);font-weight:700;font-size:15px;line-height:1;letter-spacing:0;white-space:nowrap}
 .af-nav__sep{flex:none;width:1px;height:20px;margin:0 8px;background:var(--af-line)}
 .af-nav__tabs{display:flex;flex:none;align-self:stretch}
-.af-nav__tab{position:relative;display:flex;align-items:center;gap:8px;padding:0 11px;color:var(--af-fg-muted);text-decoration:none;white-space:nowrap;
-  font-family:var(--af-font-mono);font-weight:500;font-size:11px;letter-spacing:.08em;text-transform:uppercase;transition:color var(--af-dur) var(--af-ease)}
+.af-nav__tab{position:relative;display:flex;align-items:center;gap:7px;padding:0 11px;color:var(--af-fg-muted);text-decoration:none;white-space:nowrap;
+  font-family:var(--af-font-sans);font-weight:500;font-size:13px;letter-spacing:0;transition:color var(--af-dur) var(--af-ease)}
 .af-nav__tab .af-ic{width:15px;height:15px;color:var(--af-fg-subtle)}
 .af-nav__tab:hover{color:var(--af-fg)}
 .af-nav__tab:focus-visible{outline-offset:-2px}
 .af-nav__tab:is([aria-current="page"],.is-active){color:var(--af-fg)}
 .af-nav__tab:is([aria-current="page"],.is-active) .af-ic{color:var(--af-fg)}
 .af-nav__tab:is([aria-current="page"],.is-active)::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;background:var(--pc,var(--af-fg))}
-.af-nav__count{font-size:10px;color:var(--af-fg-subtle);letter-spacing:.04em}
+.af-nav__count{font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);letter-spacing:0;font-variant-numeric:tabular-nums}
+/* the Needs-you count: an orange fill behind a number, the one orange fill besides the lamps and the placard (Status.md). A count
+   of zero is not a badge: render af-nav__count instead. Day keeps the Night orange so the dark legend stays 8.9:1 on it. */
+.af-nav__badge{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 6px;border-radius:9px;background:var(--af-lamp-caution);color:var(--af-on-lamp);
+  font-family:var(--af-font-mono);font-weight:600;font-size:11.5px;line-height:1;letter-spacing:0;font-variant-numeric:tabular-nums}
 .af-nav__right{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-left:auto;flex:0 1 auto;min-width:0;padding-left:12px}
 .af-search{display:flex;flex:0 1 248px;align-items:center;gap:8px;width:248px;min-width:88px;height:32px;padding:0 5px 0 10px;border:1px solid var(--af-line);border-radius:var(--af-radius-control);background:var(--af-surface);color:var(--af-fg-subtle);
   font-family:var(--af-font-sans);font-size:13px;text-align:left;cursor:pointer;transition:border-color var(--af-dur) var(--af-ease)}
@@ -404,7 +439,7 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 .af-checks .af-ic{width:14px;height:14px;color:var(--af-fg-subtle)}
 .af-receipt{display:flex;align-items:center;gap:8px;min-width:0;font-family:var(--af-font-mono);font-size:11.5px;color:var(--af-fg-subtle)}
 .af-receipt .af-ic{width:14px;height:14px}
-.af-receipt b{font-weight:500;color:var(--af-fg-muted);letter-spacing:.01em}
+.af-receipt b{font-weight:500;color:var(--af-fg-muted);letter-spacing:.01em;white-space:nowrap}  /* a receipt ID never breaks at its hyphens; the words beside it wrap */
 
 /* ---- verdict row: a decided action on one line (denied placard first) ---- */
 .af-verdict{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:4px 14px;padding:10px 14px;background:var(--af-raised);border-radius:var(--af-radius-card);font-size:13px;min-width:0}
@@ -412,6 +447,10 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 .af-verdict__body{display:flex;flex-direction:column;gap:3px;min-width:0}
 .af-verdict__cmd{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg);overflow-wrap:anywhere}
 .af-verdict__time{font-family:var(--af-font-mono);font-size:11.5px;color:var(--af-fg-subtle);white-space:nowrap;align-self:start;padding-top:1px}
+/* a verdict row narrower than 420px (a docked panel, a phone): the time drops under the words, right-aligned, so the third
+   column collapses and the body keeps its width; the row is its own query container, so a product declares nothing */
+.af-verdict{container-type:inline-size}
+@container (max-width:420px){.af-verdict__time{grid-column:1/-1;justify-self:end;padding-top:0}}
 
 /* ---- terminal: always dark, mono ---- */
 .af-term{background:var(--af-terminal-bg);color:var(--af-terminal-fg);border-radius:var(--af-radius-card);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--af-terminal-fg) 8%,transparent);overflow:hidden;min-width:0}
@@ -434,7 +473,7 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 .af-table-wrap{background:var(--af-raised);border-radius:var(--af-radius-card);overflow-x:auto;min-width:0}
 .af-table{width:100%;border-collapse:collapse;font-size:13px}
 .af-table th{height:var(--af-row-h);padding:0 12px;border-bottom:1px solid var(--af-line);background:transparent;text-align:left;white-space:nowrap;vertical-align:middle;
-  font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
+  font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-fg-subtle)}
 .af-table td{height:var(--af-row-h);padding:0 12px;border-bottom:1px solid var(--af-line-subtle);white-space:nowrap;vertical-align:middle}
 .af-table tbody tr:last-child td{border-bottom:0}
 .af-table tbody tr:hover td{background:color-mix(in srgb,var(--af-fg) 3%,transparent)}
@@ -442,9 +481,12 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 .af-table__id{font-family:var(--af-font-mono);font-weight:500;letter-spacing:.01em}
 .af-table__mono{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg-muted);font-variant-numeric:tabular-nums}
 .af-table__sub{margin-left:8px;color:var(--af-fg-subtle)}
-.af-table tr.is-attention td,.af-table tr.is-attention:hover td{background:color-mix(in srgb,var(--af-status-approval) 7%,transparent)}
+/* attention is a 3px status edge on the first cell; selection is the selected tone with a 2px fg edge. A selected lit row keeps
+   the status edge (the edge belongs to the status) and says "selected" with its fill. */
+.af-table tr.is-attention td:first-child{box-shadow:inset 3px 0 0 var(--af-status-approval)}
 .af-table tbody tr:is(.is-selected,[aria-selected="true"]) td{background:var(--af-selected)}
-.af-table tbody tr:is(.is-selected,[aria-selected="true"]) td:first-child{box-shadow:inset 2px 0 0 var(--af-brand-text)}
+.af-table tbody tr:is(.is-selected,[aria-selected="true"]) td:first-child{box-shadow:inset 2px 0 0 var(--af-fg)}
+.af-table tbody tr.is-attention:is(.is-selected,[aria-selected="true"]) td:first-child{box-shadow:inset 3px 0 0 var(--af-status-approval)}
 .af-table--compact td,.af-table--compact th{height:var(--af-row-h-compact)}
 .af-table__foot{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:var(--af-row-h);padding:4px 12px;border-top:1px solid var(--af-line);font-size:12px;color:var(--af-fg-subtle);flex-wrap:wrap}
 .af-cpu{display:inline-flex;align-items:center;justify-content:flex-end;gap:8px}
@@ -470,11 +512,14 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 }
 @media (max-width:520px){.af-hero .af-readouts{--af-cols:1}}
 
-/* Forced colors: attention rows keep an edge once their tint and inset ring are gone (see base.css) */
+/* Forced colors: the status edge becomes a 3px CanvasText border, selection a Highlight one (see base.css) */
 @media (forced-colors: active){
-  .af-list__row.is-attention{outline:2px solid CanvasText;outline-offset:-2px}
+  .af-list__row.is-attention{border-left:3px solid CanvasText}
+  .af-list__row:is(.is-selected,[aria-selected="true"]){border-left:2px solid Highlight}
   .af-table tr.is-attention td:first-child{border-left:3px solid CanvasText}
   .af-table tbody tr:is(.is-selected,[aria-selected="true"]) td:first-child{border-left:3px solid Highlight}
+  .af-nav__badge{background:Canvas;color:CanvasText;outline:1px solid CanvasText}
+  .af-seg{outline:1px solid CanvasText}
   .af-seg__btn[aria-pressed="true"],.af-seg__btn[aria-current="page"]{background:Highlight;color:HighlightText}
   .af-nav__tab:is([aria-current="page"],.is-active)::after{background:CanvasText}
   .af-chip[aria-pressed="true"]{background:Highlight;color:HighlightText;border-color:Highlight}
@@ -492,9 +537,14 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
    failed triangle); diffs are greyscale: additions in fg with a 2px fg gutter bar, deletions in fg-muted. ===== */
 
 /* ---- approval card v2: decisions ---- */
-.af-approval__btns{flex-wrap:wrap;justify-content:flex-end}
+/* decisions that fit a narrow place (a docked panel, a phone): the row wraps, and once it has wrapped the buttons share each
+   line so the primary never sits alone at the end of a ragged row; inspect (ghost) keeps its size. At full width nothing
+   stretches: the row is as wide as its buttons. No container query needed, so a product declares nothing. */
+.af-approval__btns{flex-wrap:wrap;justify-content:flex-end;max-width:100%}
+.af-approval__btns>.af-btn{flex:1 1 auto;justify-content:center}
+.af-approval__btns>.af-btn--ghost{flex:0 0 auto}
 .af-approval__reason{display:flex;flex-direction:column;gap:12px;padding-top:12px;border-top:1px solid var(--af-line-subtle)}
-.af-approval__reason .af-approval__btns{margin-left:0;justify-content:flex-start}
+.af-approval__reason .af-approval__btns{margin-left:0;align-self:flex-start;justify-content:flex-start}
 .af-approval__edit{font-family:var(--af-font-mono);font-size:12.5px;line-height:1.6}
 .af-approval__edit textarea{white-space:pre;overflow-wrap:normal;overflow-x:auto;font-variant-numeric:tabular-nums}
 .af-approval__hint{display:flex;align-items:flex-start;gap:7px;margin:0;font-size:12.5px;line-height:1.45;color:var(--af-fg-muted)}
@@ -510,20 +560,21 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 /* verdict additions: an allowed decision is a quiet check and a word (allowed is not green); a denial carries its reason */
 .af-verdict__ok{display:inline-flex;align-items:center;gap:7px;justify-self:start;font-size:13px;color:var(--af-fg);white-space:nowrap}
 .af-verdict__ok .af-ic{width:14px;height:14px;color:var(--af-fg-subtle)}
-.af-verdict__why{font-size:12.5px;line-height:1.45;color:var(--af-fg-muted)}
+.af-verdict__why{font-size:12.5px;line-height:1.45;color:var(--af-fg-muted);overflow-wrap:anywhere}
 
-/* ---- question: an agent asks a person. Same approval role (a person is needed), the word "Needs input", one primary action. ---- */
+/* ---- question: an agent asks a person. Same approval role (a person is needed), the word "Needs input", one primary action.
+   The card is af-card af-card--lit: a neutral ground with the 3px approval edge; the diamond and the word do the rest. ---- */
 .af-question{gap:14px}
 .af-question__q{margin:0;font-size:17px;font-weight:600;line-height:1.35;letter-spacing:-.005em;color:var(--af-fg);text-wrap:balance}
 .af-question__ctx{margin:0;font-size:13.5px;line-height:1.5;color:var(--af-fg-muted);text-wrap:pretty}
-.af-question__ctx code{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg)}
+.af-question__ctx code{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg);overflow-wrap:anywhere}
 .af-question__opts{display:flex;flex-wrap:wrap;gap:6px}
 .af-question__free{gap:6px}
 /* free text dismisses the options: once the person writes, the chips dim and unpress (no script needed) */
 .af-question:has(.af-question__free textarea:not(:placeholder-shown)) .af-chip{opacity:.45;background:transparent;border-color:var(--af-line-strong);color:var(--af-fg);border-style:dashed}
 .af-question__act{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .af-question__act>.af-meta{font-size:11.5px}
-.af-question__act>.af-btn{margin-left:auto}
+.af-question__act>.af-btn{margin-left:auto;max-width:100%}
 
 /* ---- composer: an input with suggestion chips and one send button; a queued row with a take-back; a disabled state that says why ---- */
 .af-composer{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -596,7 +647,7 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 .af-diff__note b{font-weight:500;color:var(--af-fg-muted)}
 
 /* ---- object chip: a business object by reference (ticket, PR, account, trade). Source glyph, mono key, title, state word.
-   A surface tile with a hairline, 2px radius: never a pill, never a status fill. Hover or focus shows the trust line. ---- */
+   A surface tile with a hairline, the control radius: never a pill, never a status fill. Hover or focus shows the trust line. ---- */
 .af-obj{position:relative;display:inline-flex;align-items:center;gap:7px;max-width:100%;height:26px;padding:0 8px 0 7px;border-radius:var(--af-radius-control);background:var(--af-surface);box-shadow:inset 0 0 0 1px var(--af-line);
   color:var(--af-fg);font-family:var(--af-font-sans);font-size:13px;line-height:1;white-space:nowrap;text-decoration:none;vertical-align:middle;cursor:default;
   transition:background var(--af-dur) var(--af-ease)}
@@ -606,7 +657,7 @@ a.af-obj:hover,button.af-obj:hover{background:color-mix(in srgb,var(--af-fg) 6%,
 .af-obj__key{flex:none;font-family:var(--af-font-mono);font-weight:500;font-size:11.5px;letter-spacing:.01em;color:var(--af-fg)}
 .af-obj__title{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--af-fg-muted)}
 a.af-obj:hover .af-obj__title{color:var(--af-fg);text-decoration:underline;text-decoration-color:var(--af-line-strong);text-underline-offset:3px}
-.af-obj__state{flex:none;display:inline-flex;align-items:center;gap:6px;padding-left:8px;border-left:1px solid var(--af-line);font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-obj__state{flex:none;display:inline-flex;align-items:center;gap:6px;padding-left:8px;border-left:1px solid var(--af-line);font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-fg-subtle)}
 .af-obj__state.af-status{color:var(--af-fg)}
 .af-obj--restricted{background:transparent;color:var(--af-fg-subtle)}
 .af-obj--restricted .af-obj__key{color:var(--af-fg-muted)}
@@ -645,6 +696,9 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
 .af-page-head__text>.af-lbl{margin-bottom:var(--af-space-4)}
 .af-page-head__title{margin:0;font-family:var(--af-font-display);font-stretch:var(--af-display-stretch);font-weight:700;font-size:36px;line-height:1.05;letter-spacing:-.005em;color:var(--af-fg);text-wrap:balance}
 .af-page-head__title .af-id{font-size:.86em;font-weight:500;letter-spacing:0;color:var(--af-fg)}
+/* the status as the subject of a headline ("Two need you"): an <em> in the title takes the approval color; the only place a
+   status colors running text (Status.md, af-status--lit) */
+.af-page-head__title em{font-style:normal;color:var(--af-status-approval)}
 .af-page-head--s .af-page-head__title{font-size:24px;line-height:1.1;letter-spacing:0}
 .af-page-head__lede{margin:0;max-width:62ch;font-size:14px;line-height:1.5;color:var(--af-fg-muted);text-wrap:pretty}
 .af-page-head--s .af-page-head__lede{font-size:13.5px}
@@ -693,16 +747,18 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
 .af-toast__msg b{font-family:var(--af-font-mono);font-weight:500;font-size:12.5px;letter-spacing:.01em}
 .af-toast__act{flex:none;margin-left:auto}
 .af-toast:not(:has(.af-toast__act)){padding-right:14px}
+.af-toast{animation:af-rise var(--af-dur-open) var(--af-ease-open)}
 .af-toast.is-leaving{opacity:0;transition:opacity var(--af-dur) var(--af-ease)}
+@keyframes af-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 /* in flow, for documentation and previews */
 .af-toasts--inline{position:static;transform:none;width:auto;max-width:none;align-items:flex-start;pointer-events:auto}
 
 /* ---- dialog: a <dialog> with title-m, body, and a footer in inspect / refuse / accept order. A confirm replaces window.confirm():
    the confirming button is primary, or danger when the action destroys something. The scrim is the ::backdrop. ---- */
-.af-dialog{width:min(480px,calc(100vw - 32px));max-width:none;max-height:calc(100vh - 64px);margin:auto;padding:0;border:0;border-radius:var(--af-radius-card);background:var(--af-raised);color:var(--af-fg);overflow:hidden}
+.af-dialog{width:min(480px,calc(100vw - 32px));max-width:none;max-height:calc(100vh - 64px);margin:auto;padding:0;border:0;border-radius:var(--af-radius-sheet);background:var(--af-lifted);color:var(--af-fg);overflow:hidden;box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-2)}
 .af-dialog--wide{width:min(640px,calc(100vw - 32px))}
 /* in flow, for documentation and previews (not modal, so it does not inhibit toasts) */
-.af-dialog--inline{position:static;margin:0;width:auto;max-width:480px}
+.af-dialog--inline{position:static;margin:0;width:auto;max-width:480px;box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-1)}
 .af-dialog::backdrop{background:color-mix(in srgb,var(--af-canvas) 72%,transparent)}
 .af-dialog__form{display:flex;flex-direction:column;max-height:calc(100vh - 64px);min-width:0}
 .af-dialog__head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--af-space-12);padding:var(--af-space-20) var(--af-space-20) 0}
@@ -721,10 +777,12 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
    Open with the is-open class (airframe.js adds Escape, focus return and an inert page). ---- */
 .af-scrim{position:fixed;inset:0;z-index:var(--af-z-scrim);background:color-mix(in srgb,var(--af-canvas) 72%,transparent)}
 .af-scrim:not(.is-open){display:none}
-.af-drawer{position:fixed;z-index:var(--af-z-drawer);display:flex;flex-direction:column;min-width:0;background:var(--af-raised);color:var(--af-fg);outline:0}
+.af-drawer{position:fixed;z-index:var(--af-z-drawer);display:flex;flex-direction:column;min-width:0;background:var(--af-lifted);color:var(--af-fg);outline:0;box-shadow:var(--af-shadow-2)}
 .af-drawer:not(.is-open){display:none}
-.af-drawer--right{top:0;right:0;bottom:0;width:min(var(--af-drawer-w),100vw);border-left:1px solid var(--af-line)}
-.af-drawer--bottom{left:0;right:0;bottom:0;height:var(--af-drawer-h);border-top:1px solid var(--af-line)}
+.af-drawer--right{top:0;right:0;bottom:0;width:min(var(--af-drawer-w),100vw);border-left:1px solid var(--af-line);animation:af-slide-right var(--af-dur-open) var(--af-ease-open)}
+.af-drawer--bottom{left:0;right:0;bottom:0;height:var(--af-drawer-h);border-top-left-radius:var(--af-radius-sheet);border-top-right-radius:var(--af-radius-sheet);animation:af-slide-up var(--af-dur-open) var(--af-ease-open)}
+@keyframes af-slide-right{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
+@keyframes af-slide-up{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
 .af-drawer__head{display:flex;align-items:center;gap:var(--af-space-12);flex:none;min-height:var(--af-header-h);padding:0 var(--af-space-12) 0 var(--af-space-20);border-bottom:1px solid var(--af-line-subtle);min-width:0}
 .af-drawer--bottom .af-drawer__head{min-height:40px;padding-left:var(--af-space-16)}
 .af-drawer__title{flex:1;min-width:0;margin:0;font-family:var(--af-font-sans);font-weight:600;font-size:16px;line-height:1.35;letter-spacing:-.005em;color:var(--af-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -734,7 +792,7 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
 .af-drawer--bottom .af-drawer__body{padding:0}
 .af-drawer__foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--af-space-8);flex:none;flex-wrap:wrap;padding:var(--af-space-12) var(--af-space-20);border-top:1px solid var(--af-line-subtle)}
 .af-drawer__foot>.af-btn--ghost:first-child{margin-right:auto}
-.af-drawer__grip{position:absolute;left:50%;top:-1px;width:40px;height:3px;margin-left:-20px;background:var(--af-line-strong);cursor:row-resize}
+.af-drawer__grip{position:absolute;left:50%;top:6px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--af-line-strong);cursor:row-resize}
 @media (max-width:760px){.af-drawer--right{width:100vw;border-left:0}}
 
 /* Forced colors: the floating surfaces keep their edges, the scrim stays a scrim */
@@ -766,7 +824,7 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
 .af-iconset__bar{display:flex;justify-content:space-between;align-items:center;gap:8px 16px;flex-wrap:wrap}
 .af-iconset__groups{display:flex;flex-direction:column;gap:18px}
 .af-iconset__group{display:flex;flex-direction:column;gap:8px}
-.af-iconset__group-name{font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-iconset__group-name{font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-fg-subtle)}
 .af-iconset__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));background:var(--af-raised);border-radius:var(--af-radius-card);overflow:hidden}
 .af-iconset__cell{display:flex;flex-direction:column;align-items:center;gap:10px;padding:20px 6px 12px;min-width:0;color:var(--af-fg);box-shadow:inset -1px -1px 0 var(--af-line-subtle)}
 .af-iconset__name{font-family:var(--af-font-mono);font-size:10.5px;line-height:1;color:var(--af-fg-subtle);white-space:nowrap}
@@ -775,7 +833,7 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
 .af-iconset__cand{position:relative;display:flex;flex-direction:column;gap:14px;padding:16px;background:var(--af-raised);border-radius:var(--af-radius-card);min-width:0}
 .af-iconset__cand--chosen{box-shadow:inset 0 0 0 1px var(--af-brand-text)}
 .af-iconset__cand-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.af-iconset__chosen{font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-brand-text)}
+.af-iconset__chosen{font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-brand-text)}
 .af-iconset__stage{display:flex;align-items:center;gap:20px}
 .af-iconset__plate{position:relative;flex:none;width:84px;height:84px;display:grid;place-items:center;background:var(--af-surface);border-radius:var(--af-radius-control);color:var(--af-fg)}
 .af-iconset__plate svg{width:60px;height:60px;overflow:visible}
@@ -813,12 +871,12 @@ html.af-drawer-open--bottom{--af-drawer-inset:var(--af-drawer-h)}
 .af-lanes__row{position:relative;height:var(--af-lane-h)}
 .af-lanes--compact .af-lanes__row{height:var(--af-row-h-compact)}
 .af-lanes__row[hidden]{display:none}
-.af-lanes__row--selected{background:var(--af-brand-wash)}
+.af-lanes__row--selected{background:var(--af-selected)}
 .af-lanes__label{display:flex;align-items:center;gap:9px;min-width:0;height:100%;padding:0 12px 0 0;white-space:nowrap;overflow:hidden;border:0;background:none;color:inherit;font:inherit;text-align:left}
 button.af-lanes__label{cursor:pointer}
 button.af-lanes__label:hover .af-lanes__tail{text-decoration:underline;text-decoration-color:var(--af-fg-dim);text-underline-offset:3px}
 button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-offset:-2px}
-.af-lanes__row--selected .af-lanes__label{padding-left:8px;box-shadow:inset 2px 0 0 var(--af-brand-text)}
+.af-lanes__row--selected .af-lanes__label{padding-left:8px;box-shadow:inset 2px 0 0 var(--af-fg)}
 .af-lanes__tail{font-family:var(--af-font-mono);font-weight:500;font-size:12px;letter-spacing:.01em;color:var(--af-fg)}
 .af-lanes__who{min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--af-font-mono);font-size:11px;color:var(--af-fg-subtle)}
 .af-lanes__track{position:relative;height:100%;border-bottom:1px solid var(--af-line-subtle);
@@ -880,32 +938,36 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-fleet--lanes .af-fleet__board,.af-fleet--lanes .af-fleet__key--board{display:none}
 .af-fleet:not(.af-fleet--lanes) .af-fleet__lanes,.af-fleet:not(.af-fleet--lanes) .af-fleet__axis,.af-fleet:not(.af-fleet--lanes) .af-fleet__key--lanes{display:none}
 
-/* stand tile: tonal, no border; attention = 1px inset status ring + faint tint; selected = 1px brand ring */
+/* stand tile: tonal, no border; attention = a 3px status edge on the leading side (edge, mark, word), the ground stays neutral;
+   selected = a 1px fg ring 2px off the tile (neutral, so yellow never sits around orange); focus keeps the 2px focus ring */
 .af-stand{--c:var(--af-status-running);position:relative;display:flex;flex-direction:column;justify-content:space-between;height:46px;min-width:0;padding:9px 9px 10px;
   border:0;border-radius:var(--af-radius-control);background:color-mix(in srgb,var(--af-fg) 5%,var(--af-raised));color:var(--af-fg);font:inherit;text-align:left;cursor:pointer;
   transition:background var(--af-dur) var(--af-ease)}
 .af-stand:hover{background:color-mix(in srgb,var(--af-fg) 9%,var(--af-raised))}
 .af-stand:focus-visible{outline:2px solid var(--af-focus);outline-offset:2px}
-.af-stand[aria-pressed="true"]{outline:1px solid var(--af-brand-text);outline-offset:2px}
-.af-stand[aria-pressed="true"]:focus-visible{outline-width:2px}
+.af-stand[aria-pressed="true"]{outline:1px solid var(--af-fg);outline-offset:2px}
+.af-stand[aria-pressed="true"]:focus-visible{outline:2px solid var(--af-focus)}
 .af-stand__tail{font-family:var(--af-font-mono);font-weight:500;font-size:11px;line-height:1;letter-spacing:.04em}
 .af-stand__mark{position:absolute;top:9px;right:9px;width:6px;height:6px;border-radius:var(--af-radius-round);background:var(--c)}
 .af-stand__pips{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px}
-.af-stand__pip{display:block;height:2px;background:var(--af-rule)}
+.af-stand__pip{display:block;height:var(--af-rail-h);border-radius:1px;background:var(--af-rail)}
 .af-stand__pip--done{background:var(--af-fg-subtle)}
-.af-stand__pip--now{background:var(--af-fg)}
+.af-stand__pip--now{background:var(--af-rail-done)}
 .af-stand--queued{--c:var(--af-status-queued)}
 .af-stand--queued .af-stand__mark{width:7px;height:7px;top:8.5px;right:8.5px;background:none;border:1.5px solid var(--c)}
 .af-stand--approval{--c:var(--af-status-approval)}
 .af-stand--failed{--c:var(--af-status-failed)}
 .af-stand--denied{--c:var(--af-status-denied)}
-.af-stand--approval,.af-stand--failed,.af-stand--denied{background:color-mix(in srgb,var(--c) 9%,var(--af-raised));box-shadow:inset 0 0 0 1px var(--c)}
-.af-stand--approval:hover,.af-stand--failed:hover,.af-stand--denied:hover{background:color-mix(in srgb,var(--c) 15%,var(--af-raised))}
+.af-stand--approval::before,.af-stand--failed::before,.af-stand--denied::before,.af-bay--approval::before,.af-bay--failed::before,.af-bay--denied::before,
+.af-mini--approval::before,.af-mini--failed::before,.af-mini--denied::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--c);pointer-events:none}
+.af-stand--approval,.af-stand--failed,.af-stand--denied{padding-left:12px}
+.af-bay--approval::before,.af-bay--failed::before,.af-bay--denied::before,.af-mini--approval::before,.af-mini--failed::before,.af-mini--denied::before{top:14px;bottom:14px}
 .af-stand--approval .af-stand__mark{width:6px;height:6px;top:9px;border-radius:0;transform:rotate(45deg)}
 .af-stand--failed .af-stand__mark{width:9px;height:8px;top:8px;right:8px;border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%)}
 .af-stand--denied .af-stand__mark{width:10px;height:7px;top:8.5px;right:8px;border-radius:0}
 .af-stand--approval .af-stand__pip--now,.af-stand--failed .af-stand__pip--now,.af-stand--denied .af-stand__pip--now{background:var(--c)}
 .af-stand--off{--c:var(--af-status-off);background:none;box-shadow:inset 0 0 0 1px var(--af-line);color:var(--af-fg-subtle)}
+.af-stand__word{font-size:10.5px;color:var(--af-fg-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .af-stand--off:hover{background:color-mix(in srgb,var(--af-fg) 4%,var(--af-raised))}
 .af-stand--off .af-stand__mark{width:4px;height:4px;top:10px;right:10px}
 .af-stand--off .af-stand__pip{background:var(--af-line)}
@@ -925,15 +987,15 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-trace__grid{--af-trace-name:232px;--af-trace-dur:76px;position:relative}
 .af-trace__axis,.af-trace__row{display:grid;grid-template-columns:var(--af-trace-name) minmax(0,1fr) var(--af-trace-dur);align-items:center}
 .af-trace__axis{height:24px}
-.af-trace__dh{align-self:end;padding:0 4px 7px 0;text-align:right;font-family:var(--af-font-mono);font-weight:500;font-size:10px;line-height:1;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle)}
+.af-trace__dh{align-self:end;padding:0 4px 7px 0;text-align:right;font-family:var(--af-font-sans);font-weight:500;font-size:11px;line-height:1;letter-spacing:0;color:var(--af-fg-subtle)}
 .af-trace__row{--d:0;position:relative;width:100%;height:var(--af-span-h);margin:0;padding:0;border:0;border-radius:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .af-trace__row:hover{background:color-mix(in srgb,var(--af-fg) 4%,transparent)}
-.af-trace__row[aria-pressed="true"]{background:var(--af-brand-wash)}
+.af-trace__row[aria-pressed="true"]{background:var(--af-selected);box-shadow:inset 2px 0 0 var(--af-fg)}
 .af-trace__row:focus-visible{outline:2px solid var(--af-focus);outline-offset:-2px}
 .af-trace__row--d1{--d:1}.af-trace__row--d2{--d:2}.af-trace__row--d3{--d:3}
 .af-trace__name{position:relative;display:flex;align-items:center;gap:8px;min-width:0;height:100%;padding-left:calc(var(--d) * 16px + 4px);white-space:nowrap;overflow:hidden;font-size:12.5px;color:var(--af-fg)}
 .af-trace__name .af-ic{width:14px;height:14px;color:var(--af-fg-subtle)}
-.af-trace__row[aria-pressed="true"] .af-trace__name .af-ic{color:var(--af-brand-text)}
+.af-trace__row[aria-pressed="true"] .af-trace__name .af-ic{color:var(--af-fg)}
 .af-trace__row--d1 .af-trace__name::before,.af-trace__row--d2 .af-trace__name::before,.af-trace__row--d3 .af-trace__name::before{content:"";position:absolute;left:calc(var(--d) * 16px - 9px);top:0;width:7px;height:50%;border-left:1px solid var(--af-rule);border-bottom:1px solid var(--af-rule)}
 .af-trace__label{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .af-trace__kind{flex:none;font-family:var(--af-font-mono);font-size:10.5px;color:var(--af-fg-subtle)}
@@ -950,7 +1012,7 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-trace__side-title .af-ic{color:var(--af-brand-text)}
 .af-trace__side-title span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .af-trace__side .af-kv{padding-top:12px;border-top:1px solid var(--af-line-subtle);grid-template-columns:88px minmax(0,1fr)}
-.af-trace__out-label{font-family:var(--af-font-mono);font-weight:500;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-subtle);margin-bottom:-6px}
+.af-trace__out-label{font-family:var(--af-font-sans);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--af-fg-subtle);margin-bottom:-6px}
 .af-trace__out{margin:0;padding:11px 12px;background:var(--af-terminal-bg);color:var(--af-terminal-fg);border-radius:var(--af-radius-control);
   font-family:var(--af-font-mono);font-size:11.5px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .af-trace__out-dim{color:var(--af-terminal-dim)}
@@ -968,7 +1030,7 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-span--wait{background:repeating-linear-gradient(135deg,var(--af-status-approval) 0 1.5px,transparent 1.5px 5px);box-shadow:inset 0 0 0 1px var(--af-status-approval)}
 .af-span--open{border-top-right-radius:0;border-bottom-right-radius:0}
 .af-span--open::after{content:"";position:absolute;right:-7px;top:50%;margin-top:-5px;border-left:6px solid var(--af-status-approval);border-top:5px solid transparent;border-bottom:5px solid transparent}
-.af-span--failed{background:color-mix(in srgb,var(--af-status-failed) 10%,transparent);box-shadow:inset 0 0 0 1.5px var(--af-status-failed)}
+.af-span--failed{box-shadow:inset 0 0 0 1.5px var(--af-status-failed)}
 .af-span--failed::after{content:"";position:absolute;right:-14px;top:0;width:10px;height:9px;background:var(--af-status-failed);clip-path:polygon(50% 0,100% 100%,0 100%)}
 .af-span--key.af-span--tool,.af-span--key.af-span--turn{margin:0}
 .af-span--key.af-span--failed{margin-right:14px}
@@ -987,26 +1049,29 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-cap--sm .af-cap__bar{width:72px}
 .af-cap--sm{font-size:11px;color:var(--af-fg-subtle)}
 
-/* ---- stage track: plan, edit, test, PR, labeled ---- */
+/* ---- stage track: plan, edit, test, PR, labeled ----
+   label-s (11px sans, sentence case) in fg-subtle for every stage word, so the ones not reached still read (AA on raised in
+   both themes; fg-dim is for separators and disabled marks, never text); the bars carry the position: rail, then rail-done */
 .af-track{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}
-.af-track__seg{display:flex;flex-direction:column;gap:5px;font-family:var(--af-font-mono);font-weight:500;font-size:9.5px;line-height:1;letter-spacing:.09em;text-transform:uppercase;color:var(--af-fg-dim)}
-.af-track__seg i{display:block;height:2px;background:var(--af-rule)}
-.af-track__seg--done{color:var(--af-fg-subtle)}
-.af-track__seg--done i{background:var(--af-fg-subtle)}
+.af-track__seg{display:flex;flex-direction:column;gap:5px;font-family:var(--af-font-sans);font-weight:500;font-size:11px;line-height:1;letter-spacing:0;color:var(--af-fg-subtle)}
+.af-track__seg i{display:block;height:var(--af-rail-h);border-radius:1px;background:var(--af-rail)}
+.af-track__seg--done{color:var(--af-fg-muted)}
+.af-track__seg--done i{background:var(--af-rail-done)}
 .af-track__seg--now{color:var(--af-fg)}
-.af-track__seg--now i{background:var(--af-fg)}
+.af-track__seg--now i{background:var(--af-rail-done)}
 
 /* ---- Bays: one box per sandbox, grouped by environment ---- */
 .af-bays{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:var(--af-space-12)}
 .af-bay{--c:var(--af-status-running);position:relative;display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 16px 12px;background:var(--af-raised);border-radius:var(--af-radius-card);
   transition:background var(--af-dur) var(--af-ease)}
 .af-bay:hover{background:color-mix(in srgb,var(--af-fg) 4%,var(--af-raised))}
-.af-bay.is-selected{outline:1px solid var(--af-brand-text);outline-offset:2px}
+.af-bay.is-selected{outline:1px solid var(--af-fg);outline-offset:2px}
+.af-bay.is-selected:focus-visible,.af-bay.is-selected:focus-within{outline:2px solid var(--af-focus)}
 .af-bay__top{display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);min-width:0}
 .af-bay__id{font-family:var(--af-font-mono);font-weight:500;font-size:13px;letter-spacing:.01em;color:var(--af-fg);white-space:nowrap}
 .af-bay__title{margin:0;min-height:2.7em;font-size:14px;line-height:1.35;color:var(--af-fg);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .af-bay__note{margin:0;font-size:12.5px;line-height:1.4;color:var(--af-fg-muted)}
-.af-bay__note b{font-family:var(--af-font-mono);font-weight:500;font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--c);margin-right:6px}
+.af-bay__note b{font-family:var(--af-font-sans);font-weight:500;font-size:12px;letter-spacing:0;color:var(--c);margin-right:6px}
 .af-bay__foot{display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);margin-top:auto;padding-top:10px;border-top:1px solid var(--af-line-subtle);
   font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums;min-width:0}
 .af-bay__foot b{font-weight:500;color:var(--af-fg)}
@@ -1017,13 +1082,12 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-bay--approval{--c:var(--af-status-approval)}
 .af-bay--failed{--c:var(--af-status-failed)}
 .af-bay--denied{--c:var(--af-status-denied)}
-.af-bay--approval,.af-bay--failed,.af-bay--denied{box-shadow:inset 0 0 0 1px var(--c);background:color-mix(in srgb,var(--c) 6%,var(--af-raised))}
-.af-bay--approval:hover,.af-bay--failed:hover,.af-bay--denied:hover{background:color-mix(in srgb,var(--c) 10%,var(--af-raised))}
+.af-bay--approval,.af-bay--failed,.af-bay--denied{padding-left:19px}
 .af-bay--approval .af-track__seg--now i,.af-bay--failed .af-track__seg--now i,.af-bay--denied .af-track__seg--now i{background:var(--c)}
 .af-bay--off{background:none;box-shadow:inset 0 0 0 1px var(--af-line)}
 .af-bay--off .af-bay__id,.af-bay--off .af-bay__title{color:var(--af-fg-muted)}
 .af-bay--new{align-items:center;justify-content:center;gap:var(--af-space-8);min-height:188px;background:none;box-shadow:none;border:1px dashed var(--af-line-strong);
-  color:var(--af-fg-subtle);font-family:var(--af-font-mono);font-weight:500;font-size:11px;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;cursor:pointer}
+  color:var(--af-fg-subtle);font-family:var(--af-font-sans);font-weight:500;font-size:13px;letter-spacing:0;text-decoration:none;cursor:pointer}
 .af-bay--new:hover{background:none;color:var(--af-fg);border-color:var(--af-fg-subtle)}
 
 /* ---- Columns: one column per state, attention first; Running spans two ---- */
@@ -1036,10 +1100,16 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-statecol__list{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--af-space-8)}
 .af-statecol--wide .af-statecol__list{grid-template-columns:repeat(2,minmax(0,1fr))}
 .af-statecol__empty{padding:var(--af-space-16);border:1px dashed var(--af-line);border-radius:var(--af-radius-card);font-size:13px;color:var(--af-fg-subtle)}
-.af-mini{--c:var(--af-status-running);display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;background:var(--af-raised);border-radius:var(--af-radius-card);
+.af-mini{--c:var(--af-status-running);position:relative;display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;background:var(--af-raised);border-radius:var(--af-radius-card);
   transition:background var(--af-dur) var(--af-ease)}
 .af-mini:hover{background:color-mix(in srgb,var(--af-fg) 4%,var(--af-raised))}
-.af-mini.is-selected{outline:1px solid var(--af-brand-text);outline-offset:2px}
+.af-mini.is-selected{outline:1px solid var(--af-fg);outline-offset:2px}
+.af-mini.is-selected:focus-visible,.af-mini.is-selected:focus-within{outline:2px solid var(--af-focus)}
+/* a lit mini shows its mark beside the id, so failed and denied differ by shape, as the rule says; the edge alone cannot */
+.af-mini__top b{display:inline-flex;align-items:center;gap:7px}
+.af-mini__top .af-status{font-size:12px;gap:0}
+.af-mini__top .af-status--denied{padding:2px 4px;min-width:14px;min-height:10px}
+.af-mini__top .af-status:not(.af-status--denied){color:var(--c)}
 .af-mini__top{display:flex;align-items:center;justify-content:space-between;gap:var(--af-space-8);min-width:0;font-family:var(--af-font-mono);font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums}
 .af-mini__top b{font-weight:500;color:var(--af-fg);letter-spacing:.01em;white-space:nowrap}
 .af-mini__top span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1049,7 +1119,7 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-mini--approval{--c:var(--af-status-approval)}
 .af-mini--failed{--c:var(--af-status-failed)}
 .af-mini--denied{--c:var(--af-status-denied)}
-.af-mini--approval,.af-mini--failed,.af-mini--denied{box-shadow:inset 0 0 0 1px var(--c);background:color-mix(in srgb,var(--c) 6%,var(--af-raised))}
+.af-mini--approval,.af-mini--failed,.af-mini--denied{padding-left:15px}
 .af-mini--approval .af-stand__pip--now,.af-mini--failed .af-stand__pip--now,.af-mini--denied .af-stand__pip--now{background:var(--c)}
 .af-mini--off{background:none;box-shadow:inset 0 0 0 1px var(--af-line)}
 .af-mini--off .af-mini__title{color:var(--af-fg-muted)}
@@ -1075,16 +1145,19 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 @media (max-width:1100px){.af-statecols{grid-template-columns:repeat(2,minmax(0,1fr))}.af-statecol--wide{grid-column:span 2}}
 @media (max-width:640px){.af-statecols{grid-template-columns:minmax(0,1fr)}.af-statecol--wide{grid-column:auto}.af-statecol--wide .af-statecol__list{grid-template-columns:minmax(0,1fr)}}
 
-/* Forced colors: marks, pips and lane marks in CanvasText; tiles get an outline, attention tiles a 2px one; hatched
-   waits become dashed outlines because gradients and box-shadows are dropped (see base.css) */
+/* Forced colors: marks, pips and lane marks in CanvasText; tiles get an outline, lit tiles a 3px CanvasText edge (their
+   pseudo-element edge survives as a border); hatched waits become dashed outlines because gradients and box-shadows are
+   dropped (see base.css); selection is Highlight */
 @media (forced-colors: active){
   .af-stand__mark,.af-lane-mark--fail,.af-lane-mark--deny,.af-span--failed::after{background:CanvasText}
+  .af-stand--approval::before,.af-stand--failed::before,.af-stand--denied::before,.af-bay--approval::before,.af-bay--failed::before,.af-bay--denied::before,
+  .af-mini--approval::before,.af-mini--failed::before,.af-mini--denied::before{background:CanvasText}
+  .af-stand--approval,.af-stand--failed,.af-stand--denied,.af-bay--approval,.af-bay--failed,.af-bay--denied,
+  .af-mini--approval,.af-mini--failed,.af-mini--denied{border-left:3px solid CanvasText}
   .af-stand--queued .af-stand__mark{background:transparent;border-color:CanvasText}
   .af-stand__pip,.af-track__seg i{background:GrayText}
   .af-stand__pip--done,.af-stand__pip--now,.af-track__seg--done i,.af-track__seg--now i{background:CanvasText}
   .af-stand,.af-bay,.af-mini{outline:1px solid CanvasText;outline-offset:-1px}
-  .af-stand--approval,.af-stand--failed,.af-stand--denied,.af-bay--approval,.af-bay--failed,.af-bay--denied,
-  .af-mini--approval,.af-mini--failed,.af-mini--denied{outline-width:2px;outline-offset:-2px}
   .af-stand--off{outline-style:dashed}
   .af-lane-seg--plan,.af-lane-seg--edit,.af-lane-seg--test{background:GrayText}
   .af-lane-seg--pr,.af-lane-mark--merge{outline:1px solid CanvasText;outline-offset:-1px}
@@ -1098,4 +1171,294 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
   .af-lanes__row--selected .af-lanes__label{border-left:2px solid Highlight}
   .af-trace__row[aria-pressed="true"]{outline:2px solid Highlight;outline-offset:-2px}
   .af-lanes__now,.af-lanes__now::before,.af-lanes__keynow{background:Highlight}
+}
+/* ===== runway.css ===== */
+/* ===== Airframe · runway — the live fleet: Heartbeat, StageRail (rail, ring, capsule), AgentRow and AgentCard (one
+   af-agent, two layouts, opening in place into a console), ActivityTimeline, DecisionDeck. Tokens only, on top of base.css
+   and core.css. Attention is edge, mark, word on a neutral ground; selection and the open state are neutral (lifted, a
+   fg ring); the one yellow is the primary action. The rail head and the latest timeline dot carry the one glow (rail-glow):
+   it says "moving", never a status. ===== */
+
+/* ---- heartbeat: recency, not status. The dot breathes only on a live agent; a waiting agent's shows the wait in orange;
+   under reduced motion (base.css) it is static. ---- */
+.af-hb{display:inline-flex;align-items:center;gap:5px;font-family:var(--af-font-mono);font-weight:500;font-size:11px;line-height:1;color:var(--af-fg-subtle);white-space:nowrap;font-variant-numeric:tabular-nums}
+.af-hb__dot{display:inline-block;flex:none;width:6px;height:6px;border-radius:var(--af-radius-round);background:var(--af-fg-dim)}
+.af-hb--live .af-hb__dot{background:var(--af-status-running);animation:af-beat 2.4s ease-in-out infinite}
+.af-hb--wait{color:var(--af-status-approval)}
+.af-hb--wait .af-hb__dot{background:var(--af-status-approval)}
+@keyframes af-beat{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ---- stage rail: plan, edit, test, PR as four stops (<b>) on a 2px line, a head at --p (0–100%), an optional label row
+   (<span>); the track, the done part and the head are <i>. Grey while running (rail-done head with the rail-glow); a lit
+   agent's head takes its status color. --ground is the surface the rail sits on (the ring between head and line). ---- */
+.af-rail,.af-ring,.af-capsule{--c:var(--af-rail-done);--glow:var(--af-rail-glow)}
+.af-rail--approval,.af-ring--approval,.af-capsule--approval{--c:var(--af-status-approval);--glow:var(--af-status-approval)}
+.af-rail--failed,.af-ring--failed,.af-capsule--failed{--c:var(--af-status-failed);--glow:var(--af-status-failed)}
+.af-rail--denied,.af-ring--denied,.af-capsule--denied{--c:var(--af-status-denied);--glow:var(--af-status-denied)}
+.af-rail{--p:0%;--ground:var(--af-raised);position:relative;display:flex;align-items:center;height:16px;min-width:80px}
+.af-rail__track,.af-rail__done{position:absolute;left:0;top:50%;height:var(--af-rail-h);margin-top:-1px;border-radius:1px;background:var(--af-rail)}
+.af-rail__track{right:0}
+.af-rail__done{width:var(--p);background:var(--af-rail-done);transition:width 900ms var(--af-ease)}
+.af-rail__stop{position:absolute;top:50%;width:4px;height:4px;border-radius:var(--af-radius-round);background:var(--af-rail);transform:translate(-50%,-50%)}
+.af-rail__stop:nth-of-type(1){left:0}.af-rail__stop:nth-of-type(2){left:33.333%}.af-rail__stop:nth-of-type(3){left:66.667%}.af-rail__stop:nth-of-type(4){left:100%}
+.af-rail__stop.is-on{background:var(--af-rail-done)}
+.af-rail__head{position:absolute;top:50%;left:var(--p);width:8px;height:8px;border-radius:var(--af-radius-round);background:var(--c);transform:translate(-50%,-50%);
+  box-shadow:0 0 0 2px var(--ground),0 0 12px var(--glow);transition:left 900ms var(--af-ease)}
+.af-rail__lab{position:absolute;top:16px;font-size:10.5px;line-height:1.2;color:var(--af-fg-subtle);transform:translateX(-50%);white-space:nowrap}
+.af-rail__lab:nth-of-type(1){left:0;transform:none}.af-rail__lab:nth-of-type(2){left:33.333%}.af-rail__lab:nth-of-type(3){left:66.667%}.af-rail__lab:nth-of-type(4){left:100%;transform:translateX(-100%)}
+.af-rail--labeled{margin-bottom:16px}
+.af-rail--none .af-rail__track{background:repeating-linear-gradient(90deg,var(--af-rail) 0 3px,transparent 3px 7px)}
+.af-rail--none .af-rail__head,.af-rail--none .af-rail__done{display:none}
+/* estimate: the fill is solid only for what the agent reported. Inside the current stage without a reported pct, the part
+   from the stage start (--s) to the estimate (--p) is dotted and the head is hollow, with no glow: a guess never glows */
+.af-rail--est .af-rail__done{width:var(--s,0%)}
+.af-rail--est .af-rail__track::after{content:"";position:absolute;top:0;bottom:0;left:var(--s,0%);width:calc(var(--p) - var(--s,0%));
+  background:repeating-linear-gradient(90deg,var(--c) 0 2px,transparent 2px 5px)}
+.af-rail--est .af-rail__head{background:var(--ground);box-shadow:inset 0 0 0 1.5px var(--c),0 0 0 2px var(--ground)}
+/* ring: four arcs of a 30px circle (an SVG; the preview shows the markup), the stage letter inside */
+.af-ring{width:30px;height:30px;flex:none;overflow:visible}
+.af-ring circle{fill:none;stroke-width:3;stroke-linecap:round}
+.af-ring__track{stroke:var(--af-rail)}
+.af-ring__fill{stroke:var(--c)}
+.af-ring text{font-family:var(--af-font-sans);font-weight:600;font-size:8px;fill:var(--af-fg-muted);text-anchor:middle}
+.af-ring--none .af-ring__track{stroke-dasharray:2 4}
+/* capsule: four segments, 5px tall; the current one fills to --p */
+.af-capsule{display:flex;gap:3px;height:5px}
+.af-capsule__seg{position:relative;flex:1;overflow:hidden;border-radius:3px;background:var(--af-rail)}
+.af-capsule__seg::after{content:"";position:absolute;inset:0;width:var(--p,0%);border-radius:3px;background:var(--af-rail-done);transition:width 900ms var(--af-ease)}
+.af-capsule__seg.is-done::after{width:100%}
+.af-capsule__seg.is-now::after{background:var(--c)}
+.af-capsule--est .af-capsule__seg.is-now::after{background:repeating-linear-gradient(90deg,var(--c) 0 2px,transparent 2px 4px)}
+.af-ring--est .af-ring__est{stroke:var(--c);stroke-width:2}
+.af-capsule--none{visibility:hidden}
+
+/* ---- the stage times beside a rail ("Test 2 min, PR 43 min"): the last two stages, the current one brighter ---- */
+.af-stages{display:inline-flex;gap:10px;font-size:11.5px;line-height:1.2;color:var(--af-fg-subtle);white-space:nowrap}
+.af-stages span{display:inline-flex;flex-direction:column}
+.af-stages b{font-family:var(--af-font-mono);font-weight:500;font-size:11px;color:var(--af-fg-muted);font-variant-numeric:tabular-nums}
+.af-stages .is-now{color:var(--af-fg-muted)}
+.af-stages .is-now b{color:var(--af-fg)}
+.af-stages span:nth-last-child(n+3){display:none}
+.af-stages--none{color:var(--af-fg-dim)}
+/* a few facts in a row: "8 files  4 commits  202 tests  48.6k tok  $0.62" */
+.af-facts{display:inline-flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--af-fg-muted);font-variant-numeric:tabular-nums}
+/* the mini sparkline in a row ends in fg, not brand: sixty yellow points would say sixty things are yours */
+.af-spark--mini{display:inline-block;width:84px;height:20px;aspect-ratio:auto;flex:none}
+.af-spark--mini .af-spark__line{stroke:var(--af-fg-subtle);stroke-width:1.25}
+.af-spark--mini .af-spark__end{fill:var(--af-fg);stroke:var(--af-fg)}
+
+/* ---- agent: one article, two layouts (row in af-runway, card in af-board). Neutral ground, the status edge on a lit or
+   stopped one, lifted with shadow-2 when open. ---- */
+.af-runway{display:flex;flex-direction:column;gap:6px;min-width:0}
+.af-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px;min-width:0}
+.af-agent{--c:var(--af-status-running);position:relative;min-width:0;border-radius:var(--af-radius-card);background:var(--af-raised);box-shadow:inset 0 1px 0 var(--af-edge-hi);
+  transition:background var(--af-dur) var(--af-ease),box-shadow var(--af-dur) var(--af-ease),transform var(--af-dur) var(--af-ease)}
+.af-agent:hover{background:color-mix(in srgb,var(--af-fg) 4%,var(--af-raised))}
+.af-agent.is-open{background:var(--af-lifted);box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-2);z-index:2}
+.af-agent--lit{--c:var(--af-status-approval)}
+.af-agent--failed{--c:var(--af-status-failed)}
+.af-agent--denied{--c:var(--af-status-denied)}
+.af-agent--lit::before,.af-agent--failed::before,.af-agent--denied::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0;background:var(--c);pointer-events:none;z-index:1}
+.af-agent--off{background:transparent;box-shadow:inset 0 0 0 1px var(--af-line)}
+.af-agent--off:hover{background:color-mix(in srgb,var(--af-fg) 3%,transparent)}
+.af-agent--off .af-agent__work,.af-agent--off .af-agent__tail{color:var(--af-fg-subtle)}
+.af-agent .af-rail,.af-agent .af-timeline{--ground:var(--af-raised)}
+.af-agent.is-open .af-rail,.af-agent.is-open .af-timeline{--ground:var(--af-lifted)}
+/* the row's line: mark, tail, work + now, owner, harness, rail, stage times, spark, cost, chevron */
+.af-agent__line,.af-agent__face{display:grid;width:100%;min-width:0;margin:0;border:0;border-radius:var(--af-radius-card);background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.af-agent__line{grid-template-columns:18px 54px minmax(180px,1.6fr) 104px 150px 170px 150px 84px 56px 20px;align-items:center;gap:14px;min-height:58px;padding:9px 14px 9px 18px}
+.af-agent__line:focus-visible,.af-agent__face:focus-visible{outline-offset:-2px}
+.af-agent.is-open .af-agent__line:focus-visible,.af-agent.is-open .af-agent__face:focus-visible{outline-color:var(--af-fg)}
+.af-agent__line>.af-status{gap:0}
+.af-agent__tail{font-family:var(--af-font-mono);font-weight:500;font-size:12.5px;letter-spacing:.01em;color:var(--af-fg);white-space:nowrap}
+.af-agent__ttl{display:flex;flex-direction:column;gap:2px;min-width:0}
+.af-agent__work{font-size:14px;font-weight:500;line-height:1.3;color:var(--af-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.af-agent__sub{display:flex;align-items:center;gap:10px;min-width:0}
+.af-agent__now{color:var(--af-fg-muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.af-agent__who,.af-agent__rig{display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden;color:var(--af-fg-muted);font-size:13px;white-space:nowrap}
+.af-agent__rig .af-mono{font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.af-agent__cost{font-family:var(--af-font-mono);font-size:12.5px;color:var(--af-fg-muted);text-align:right;font-variant-numeric:tabular-nums}
+.af-agent__chev{color:var(--af-fg-dim);transition:transform var(--af-dur-open) var(--af-ease-open),color var(--af-dur) var(--af-ease)}
+.af-agent.is-open .af-agent__chev{transform:rotate(90deg);color:var(--af-fg-muted)}
+/* the body opens in place: a grid-rows accordion, no measured heights */
+.af-agent__body{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--af-dur-open) var(--af-ease-open)}
+.af-agent.is-open .af-agent__body{grid-template-rows:1fr}
+.af-agent__body>div{overflow:hidden;min-height:0}
+/* the card layout */
+.af-agent--card:hover{transform:translateY(-1px)}
+.af-agent--card.is-open{grid-column:1/-1;transform:none}
+.af-agent__face{grid-template-columns:minmax(0,1fr);align-content:start;gap:9px;padding:14px 14px 12px;min-height:138px}
+.af-agent--lit .af-agent__face,.af-agent--failed .af-agent__face,.af-agent--denied .af-agent__face{padding-left:17px}
+.af-agent__hd{display:flex;align-items:center;gap:8px;min-width:0}
+.af-agent__hd>.af-ring{margin-left:auto}
+.af-agent__face .af-agent__work{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.af-agent__ft{display:flex;align-items:center;gap:7px;margin-top:auto;color:var(--af-fg-muted);font-size:12.5px;min-width:0}
+.af-agent__ft>:last-child{margin-left:auto}
+.af-agent__ft .af-status{font-size:12px}
+.af-agent__ft .af-status:not(.af-status--denied){color:var(--c)}
+.af-agent--card.is-open .af-agent__face{grid-template-columns:auto minmax(200px,1fr) 160px auto;align-items:center;gap:14px;padding:14px 18px;min-height:0}
+.af-agent--card.is-open .af-agent__face .af-agent__work{-webkit-line-clamp:1}
+.af-agent--card.is-open .af-agent__face .af-agent__now{display:none}
+.af-agent--card.is-open .af-agent__ft{margin:0}
+
+/* ---- console: what opens under a row or inside a card. Decision (when one waits), now (heartbeat, now-line, labeled
+   rail, facts, actions), history (the timeline) ---- */
+.af-console{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:16px 20px;padding:4px 18px 18px;opacity:0;transform:translateY(-4px);
+  transition:opacity var(--af-dur-open) var(--af-ease-open) 80ms,transform var(--af-dur-open) var(--af-ease-open) 80ms}
+.af-agent.is-open .af-console{opacity:1;transform:none}
+.af-console::before{content:"";grid-column:1/-1;height:1px;background:var(--af-line-subtle)}
+.af-agent--card .af-console::before{display:none}
+.af-console__panel{display:flex;flex-direction:column;gap:12px;min-width:0}
+.af-console__panel--hist{grid-column:1;grid-row:2/4}
+.af-console__panel--decide{grid-column:2;grid-row:2}
+.af-console__panel--now{grid-column:2;grid-row:3}
+.af-console:not(:has(.af-console__panel--decide)) .af-console__panel--now{grid-row:2}
+.af-console__now{display:flex;align-items:center;gap:12px;min-width:0}
+.af-console__big{font-size:16px;font-weight:500;letter-spacing:-.01em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--af-fg)}
+.af-console__panel--now .af-rail{margin:4px 0 14px}
+
+/* ---- activity timeline: wall-clock time, how long ago, the event; stage boundaries in fg, the latest dot lit ---- */
+.af-timeline__head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-width:0}
+.af-timeline__head h4{margin:0;font-size:12.5px;font-weight:500;color:var(--af-fg-subtle)}
+.af-timeline__head>.af-spark--mini{width:120px;height:22px;margin-left:auto}
+.af-timeline__head>.af-note{flex:none}
+.af-timeline{--ground:var(--af-raised);position:relative;display:flex;flex-direction:column;margin:0;padding:0 6px 0 2px;list-style:none;max-height:420px;overflow:auto}
+.af-timeline::before{content:"";position:absolute;left:5px;top:10px;bottom:10px;width:1px;background:var(--af-line-subtle)}
+.af-timeline__ev{display:grid;grid-template-columns:12px 92px minmax(0,1fr);gap:10px;align-items:center;padding:5px 0;font-size:13px;color:var(--af-fg-muted)}
+.af-timeline__dot{position:relative;width:7px;height:7px;margin-left:1px;border-radius:var(--af-radius-round);background:var(--af-fg-dim);box-shadow:0 0 0 3px var(--ground)}
+.af-timeline__ev--stage .af-timeline__dot{background:var(--af-fg-muted)}
+.af-timeline__ev--hold .af-timeline__dot,.af-timeline__ev--ask .af-timeline__dot{background:var(--af-status-approval)}
+.af-timeline__ev--fail .af-timeline__dot,.af-timeline__ev--deny .af-timeline__dot{background:var(--af-status-failed)}
+.af-timeline__ev.is-last:not(.af-timeline__ev--hold,.af-timeline__ev--ask,.af-timeline__ev--fail,.af-timeline__ev--deny) .af-timeline__dot{background:var(--af-fg);box-shadow:0 0 0 3px var(--ground),0 0 10px var(--af-rail-glow)}
+/* a latest event that is a hold, a question or a stop keeps its status color and does not glow: a glow says moving */
+.af-timeline__time{display:flex;flex-direction:column;line-height:1.2;font-family:var(--af-font-mono);font-size:11.5px;color:var(--af-fg);font-variant-numeric:tabular-nums;white-space:nowrap}
+.af-timeline__time small{font-size:10.5px;color:var(--af-fg-subtle)}
+.af-timeline__text{min-width:0;overflow-wrap:anywhere}
+.af-timeline__ev--stage .af-timeline__text{color:var(--af-fg);font-weight:500}
+.af-timeline__ev--hold .af-timeline__text,.af-timeline__ev--ask .af-timeline__text{color:var(--af-fg)}
+
+/* ---- decisions: the body of a deck card and of a console's decide panel ---- */
+.af-lead{margin:0;font-size:15px;line-height:1.4;font-weight:500;color:var(--af-fg)}
+.af-lead code,.af-ctx code{font-family:var(--af-font-mono);font-size:12.5px;padding:1px 6px;border-radius:5px;background:var(--af-surface);color:var(--af-fg)}
+.af-ctx{margin:0;font-size:13px;line-height:1.5;color:var(--af-fg-muted)}
+.af-cmd{margin:0;padding:10px 12px;border-radius:var(--af-radius-control);background:var(--af-surface);color:var(--af-fg);font-family:var(--af-font-mono);font-weight:500;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.af-pairs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:0;font-size:13px;color:var(--af-fg)}
+.af-pairs--wide{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
+.af-pairs>span{display:flex;flex-direction:column;gap:1px;min-width:0;overflow-wrap:anywhere}
+.af-pairs small{font-size:11.5px;color:var(--af-fg-subtle)}
+.af-pairs .af-mono{font-size:12.5px}
+.af-acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}
+.af-acts__end{display:flex;flex-wrap:wrap;gap:4px;margin-left:auto}
+.af-note{font-size:12px;color:var(--af-fg-subtle)}
+.af-reason{display:flex;flex-direction:column;gap:6px;animation:af-fade var(--af-dur-open) var(--af-ease-open)}
+.af-reason>label{font-size:12.5px;color:var(--af-fg-muted)}
+.af-verdict-line{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13px;color:var(--af-fg-muted);animation:af-fade var(--af-dur-open) var(--af-ease-open)}
+.af-verdict-line>.af-ic{color:var(--af-fg)}
+.af-verdict-line>.af-btn{margin-left:auto}
+@keyframes af-fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ---- decision deck: one decision on top, the next two peeking behind it, "n of N", previous / next, an up-next list.
+   data-k is the card's place in the stack (0 on top); deciding adds is-leaving, then the next card rises. ---- */
+.af-deck{display:grid;grid-template-columns:minmax(0,640px) minmax(0,1fr);gap:28px;align-items:start;min-width:0}
+.af-deck__stack{position:relative;min-height:120px;padding-bottom:24px;min-width:0}
+.af-decision{--c:var(--af-status-approval);position:relative;display:flex;flex-direction:column;gap:10px;min-width:0;padding:18px 20px 18px 22px;border-radius:var(--af-radius-sheet);background:var(--af-lifted);
+  box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-2);animation:af-fade var(--af-dur-open) var(--af-ease-open) both}
+.af-decision::before{content:"";position:absolute;left:0;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;background:var(--c);pointer-events:none}
+/* outside a stack (a column inbox) a decision rests: shadow-1, not the deep shadow of the deck's top card */
+:not(.af-deck__stack)>.af-decision{box-shadow:inset 0 1px 0 var(--af-edge-hi),var(--af-shadow-1)}
+.af-decision--failed{--c:var(--af-status-failed)}
+.af-decision--denied{--c:var(--af-status-denied)}
+.af-decision--done{opacity:.75}
+.af-deck__stack>.af-decision{position:absolute;left:0;right:0;top:0;--k:0;transform:translateY(calc(var(--k) * 12px)) scale(calc(1 - var(--k) * .035));transform-origin:50% 0;opacity:calc(1 - var(--k) * .3);z-index:calc(10 - var(--k));
+  transition:transform 420ms var(--af-ease-open),opacity 420ms var(--af-ease-open);animation:none}
+.af-deck__stack>.af-decision[data-k="0"]{position:relative}
+.af-deck__stack>.af-decision[data-k="1"]{--k:1}
+.af-deck__stack>.af-decision[data-k="2"]{--k:2}
+.af-deck__stack>.af-decision:not([data-k="0"]){height:100%;overflow:hidden;pointer-events:none}
+.af-deck__stack>.af-decision:not([data-k="0"])>:not(.af-decision__hd){visibility:hidden}
+.af-deck__stack>.af-decision:not([data-k="0"]):not([data-k="1"]):not([data-k="2"]){display:none}
+.af-decision.is-leaving{transform:translateX(40px) scale(.98);opacity:0;pointer-events:none}
+.af-decision__hd{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:500;min-width:0}
+.af-decision__hd>.af-status{font-size:12.5px}
+.af-decision__hd>.af-status:not(.af-status--denied){color:var(--c)}
+.af-decision__exp{margin-left:auto;font-family:var(--af-font-mono);font-size:11.5px;color:var(--af-fg-subtle);white-space:nowrap;font-variant-numeric:tabular-nums}
+.af-decision__who{display:flex;flex-direction:column;gap:3px;min-width:0}
+.af-decision__link{margin:0;padding:0;border:0;background:none;color:var(--af-fg);font:inherit;font-size:16px;font-weight:500;line-height:1.3;text-align:left;cursor:pointer;text-wrap:balance}
+.af-decision__link .af-id{font-size:12px;color:var(--af-fg-muted);margin-right:6px}
+.af-decision__link:hover{text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--af-line-strong)}
+.af-decision__by{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--af-fg-subtle)}
+.af-decision__bd{display:flex;flex-direction:column;gap:10px;min-width:0}
+.af-deck__side{display:flex;flex-direction:column;gap:14px;padding-top:4px;min-width:0}
+.af-deck__title{display:flex;align-items:baseline;gap:8px;margin:0;font-size:15px;font-weight:600;color:var(--af-fg)}
+.af-deck__count{font-family:var(--af-font-mono);font-weight:400;font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums}
+.af-deck__side>p{margin:0;max-width:40ch;font-size:13px;line-height:1.5;color:var(--af-fg-muted)}
+.af-deck__nav{display:flex;align-items:center;gap:6px}
+.af-deck__nav>.af-note{margin-left:4px}
+.af-deck__upnext{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+.af-deck__upnext button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:var(--af-radius-control);background:none;color:var(--af-fg-muted);font:inherit;font-size:13px;text-align:left;cursor:pointer;min-width:0}
+.af-deck__upnext button:hover{background:var(--af-raised)}
+.af-deck__upnext button>.af-status{gap:0}
+.af-deck__upnext .af-id{font-size:12px;color:var(--af-fg-subtle)}
+.af-deck__upnext .af-deck__what{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-deck__upnext .af-deck__when{margin-left:auto;font-size:12px;color:var(--af-fg-muted);white-space:nowrap}
+.af-deck__empty{min-height:120px;border-radius:var(--af-radius-sheet);box-shadow:inset 0 0 0 1px var(--af-line)}
+
+/* ---- runway groups: a pool or environment header above its rows or cards ---- */
+.af-runway__group,.af-board__group{display:flex;flex-direction:column;gap:10px;min-width:0}
+.af-runway__head{display:flex;align-items:center;gap:12px;padding:0 4px;min-width:0}
+.af-runway__head h3{display:flex;align-items:center;gap:8px;margin:0;font-size:14px;font-weight:600;color:var(--af-fg)}
+.af-runway__head h3 .af-ic{color:var(--af-fg-subtle)}
+.af-runway__head>.af-cap{margin-left:auto}
+
+/* ---- the key under a runway: marks, a rail, a spark, the keys ---- */
+.af-runway__key{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;padding-top:18px;border-top:1px solid var(--af-line-subtle);font-size:12.5px;color:var(--af-fg-subtle)}
+.af-runway__key .af-status{font-size:12.5px}
+.af-runway__key .af-status:not(.af-status--denied){color:var(--af-fg-subtle)}
+.af-runway__key .af-rail{width:72px;min-width:0}
+.af-runway__key>.af-note:last-child{margin-left:auto}
+
+@media (max-width:1200px){
+  .af-agent__line{grid-template-columns:18px 54px minmax(160px,1.6fr) 104px 170px 150px 20px}
+  .af-agent__line>.af-agent__rig,.af-agent__line>.af-spark--mini,.af-agent__line>.af-agent__cost{display:none}
+}
+@media (max-width:1000px){
+  .af-deck{grid-template-columns:minmax(0,1fr)}
+  .af-deck__side{padding-top:0}
+  .af-deck__upnext{display:none}
+}
+@media (max-width:760px){
+  .af-agent__line{grid-template-columns:18px minmax(0,1fr) auto;grid-template-rows:auto auto auto auto;min-height:0;padding:12px 14px 12px 16px;gap:3px 10px}
+  .af-agent__line>.af-agent__tail{grid-column:2;font-size:11.5px;color:var(--af-fg-subtle)}
+  .af-agent__line>.af-agent__ttl{grid-column:2;grid-row:2}
+  .af-agent__line .af-agent__work{white-space:normal}
+  .af-agent__line>.af-agent__who{grid-column:2;grid-row:3;margin-top:4px}
+  .af-agent__line>.af-rail{grid-column:2;grid-row:4;margin:10px 0 4px}
+  .af-agent__line>.af-stages{grid-column:3;grid-row:4;justify-self:end}
+  .af-agent__line .af-stages span:not(.is-now){display:none}
+  .af-agent__line>.af-agent__chev{grid-column:3;grid-row:2}
+  .af-console{grid-template-columns:minmax(0,1fr);padding:4px 14px 14px}
+  .af-console__panel--hist,.af-console__panel--decide,.af-console__panel--now{grid-column:1;grid-row:auto}
+  .af-board{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .af-agent__face{padding:12px;min-height:126px}
+  .af-agent--card.is-open .af-agent__face{grid-template-columns:minmax(0,1fr)}
+  .af-timeline__ev{grid-template-columns:12px 64px minmax(0,1fr)}
+  .af-runway__key>.af-note:last-child{display:none}
+  .af-runway__head>.af-cap{display:none}
+}
+
+/* Forced colors: the status edge becomes a CanvasText border; dots, heads and fills paint in CanvasText; the glow goes */
+@media (forced-colors: active){
+  .af-agent,.af-decision{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-agent--lit,.af-agent--failed,.af-agent--denied,.af-decision{border-left:3px solid CanvasText}
+  .af-agent--lit::before,.af-agent--failed::before,.af-agent--denied::before,.af-decision::before{background:CanvasText}
+  .af-agent.is-open{outline:2px solid Highlight;outline-offset:-2px}
+  .af-hb__dot,.af-rail__head,.af-rail__done,.af-rail__stop.is-on,.af-timeline__dot,.af-capsule__seg::after{background:CanvasText;box-shadow:none}
+  .af-rail__track,.af-rail__stop,.af-capsule__seg{background:GrayText}
+  .af-rail--est .af-rail__track::after{background:none;border-top:2px dashed CanvasText}
+  .af-rail--est .af-rail__head{background:Canvas;outline:1.5px solid CanvasText}
+  .af-capsule--est .af-capsule__seg.is-now::after{background:transparent;border:1px dashed CanvasText}
+  .af-ring__track{stroke:GrayText}
+  .af-ring__fill,.af-ring__est{stroke:CanvasText}
+  .af-cmd,.af-deck__empty{outline:1px solid CanvasText;outline-offset:-1px}
+  .af-timeline::before{background:CanvasText}
 }

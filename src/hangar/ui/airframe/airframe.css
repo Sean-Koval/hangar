@@ -1,5 +1,5 @@
 /*
-  Airframe theme-v8 tokens. Generated from airframe/tokens.json by scripts/airframe.py; do not edit.
+  Airframe theme-v12 tokens. Generated from airframe/tokens.json by scripts/airframe.py; do not edit.
   Change a value in airframe/tokens.json, run `python3 scripts/airframe.py build`, and add a
   theme/CHANGELOG.md entry. Tool repos vendor this file unmodified (scripts/sync-airframe.sh).
 
@@ -16,6 +16,8 @@
   --af-surface: #0A0A0A;
   --af-raised: #141414;
   --af-overlay: #1C1C1C;
+  --af-lifted: #1C1C1C;
+  --af-edge-hi: rgba(255,255,255,0.045);
   --af-line-subtle: #1F1F1F;
   --af-line: #2A2A2A;
   --af-line-strong: #6B6B6B;
@@ -27,7 +29,7 @@
   --af-selected: #1F1F1F;
   --af-brand: #FFC400;
   --af-brand-hover: #FFD23F;
-  --af-brand-wash: rgba(255,196,0,0.12);
+  --af-brand-wash: rgba(255,196,0,0.10);
   --af-on-brand: #111213;
   --af-brand-text: #FFC400;
   --af-brand-line: #FFC400;
@@ -58,6 +60,9 @@
   --af-stage-plan: #383838;
   --af-stage-edit: #6B6B6B;
   --af-stage-test: #A3A3A3;
+  --af-rail: #2A2A2A;
+  --af-rail-done: #D6D6D6;
+  --af-rail-glow: rgba(255,255,255,0.25);
   --af-readout-cell: #161616;
   --af-display-window: #0A0A0A;
   --af-dot-field: #262626;
@@ -72,6 +77,8 @@
   --af-chart-4: #666666;
   --af-chart-5: #FF8A3D;
   --af-chart-6: #333333;
+  --af-shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --af-shadow-2: 0 20px 60px rgba(0,0,0,0.6);
   --af-shadow-overlay: 0 12px 32px rgba(0,0,0,0.6);
 }
 
@@ -82,6 +89,8 @@
     --af-surface: #EDEDEB;
     --af-raised: #FFFFFF;
     --af-overlay: #FFFFFF;
+    --af-lifted: #FFFFFF;
+    --af-edge-hi: #FFFFFF;
     --af-line-subtle: #E6E6E3;
     --af-line: #DCDCD9;
     --af-line-strong: #858583;
@@ -107,6 +116,9 @@
     --af-stage-plan: #C7C7C7;
     --af-stage-edit: #949494;
     --af-stage-test: #5C5C5C;
+    --af-rail: #E3E3E0;
+    --af-rail-done: #2A2A2A;
+    --af-rail-glow: rgba(0,0,0,0.12);
     --af-readout-cell: #EBEBEA;
     --af-display-window: #FAFAF9;
     --af-dot-field: #DCDCD9;
@@ -121,6 +133,8 @@
     --af-chart-4: #8A8A8A;
     --af-chart-5: #B04E00;
     --af-chart-6: #D6D6D3;
+    --af-shadow-1: 0 1px 2px rgba(0,0,0,0.06);
+    --af-shadow-2: 0 16px 48px rgba(0,0,0,0.14);
     --af-shadow-overlay: 0 12px 32px rgba(0,0,0,0.12);
   }
 }
@@ -132,6 +146,8 @@
   --af-surface: #EDEDEB;
   --af-raised: #FFFFFF;
   --af-overlay: #FFFFFF;
+  --af-lifted: #FFFFFF;
+  --af-edge-hi: #FFFFFF;
   --af-line-subtle: #E6E6E3;
   --af-line: #DCDCD9;
   --af-line-strong: #858583;
@@ -157,6 +173,9 @@
   --af-stage-plan: #C7C7C7;
   --af-stage-edit: #949494;
   --af-stage-test: #5C5C5C;
+  --af-rail: #E3E3E0;
+  --af-rail-done: #2A2A2A;
+  --af-rail-glow: rgba(0,0,0,0.12);
   --af-readout-cell: #EBEBEA;
   --af-display-window: #FAFAF9;
   --af-dot-field: #DCDCD9;
@@ -171,6 +190,8 @@
   --af-chart-4: #8A8A8A;
   --af-chart-5: #B04E00;
   --af-chart-6: #D6D6D3;
+  --af-shadow-1: 0 1px 2px rgba(0,0,0,0.06);
+  --af-shadow-2: 0 16px 48px rgba(0,0,0,0.14);
   --af-shadow-overlay: 0 12px 32px rgba(0,0,0,0.12);
 }
 
@@ -194,8 +215,9 @@
   --af-space-104: 104px;
   --af-space-160: 160px;
   --af-radius-none: 0px;
-  --af-radius-control: 2px;
-  --af-radius-card: 4px;
+  --af-radius-control: 8px;
+  --af-radius-card: 12px;
+  --af-radius-sheet: 18px;
   --af-radius-round: 50%;
   --af-container-max: 1280px;
   --af-header-h: 56px;
@@ -203,8 +225,14 @@
   --af-row-h-compact: 28px;
   --af-lane-h: 30px;
   --af-span-h: 28px;
+  --af-rail-h: 2px;
   --af-icon-stroke: 1.5;
   --af-icon-size: 16px;
+  --af-dur-fast: 120ms;
+  --af-dur: 200ms;
+  --af-dur-open: 300ms;
+  --af-ease: cubic-bezier(.2,0,0,1);
+  --af-ease-open: cubic-bezier(.32,.72,0,1);
   --af-font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
   --af-font-sans: "Red Hat Text", "Helvetica Neue", Arial, sans-serif;
   --af-font-mono: "DM Mono", ui-monospace, Menlo, Consolas, monospace;

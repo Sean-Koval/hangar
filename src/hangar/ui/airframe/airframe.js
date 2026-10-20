@@ -1,11 +1,13 @@
 /*! Airframe helpers. One ES module, no dependencies, no build step. Source: airframe/js/airframe.js in
     Sean-Koval/agent-factory; published as theme/airframe.js; do not edit the copy.
 
-    import { status, icon, meta, btn, avatar, obj, tag, toast, confirm, drawer } from "./airframe/airframe.js";
+    import { status, icon, meta, btn, avatar, obj, tag, toast, confirm, drawer, expand, deck, roving } from "./airframe/airframe.js";
 
     String helpers return markup that matches the component contracts in airframe/components/<Name>/README.md,
     with every value escaped. Behaviours: toast (bottom centre, held while a person is mid-decision), confirm (an
-    af-dialog that replaces window.confirm) and drawer (open/close with Escape, focus return and an inert page). */
+    af-dialog that replaces window.confirm), drawer (open/close with Escape, focus return and an inert page), expand
+    (an af-agent opening in place into its console), deck (the decision deck's previous, next and leave) and roving
+    (one tab stop, arrow keys between rows or cards). */
 
 const ROLES = { running: "Running", queued: "Queued", approval: "Needs approval", failed: "Failed", denied: "Denied", off: "Off" };
 const KINDS = new Set(["primary", "secondary", "ghost", "danger"]);
@@ -316,4 +318,202 @@ export const drawer = {
   },
 };
 
-export default { config, esc, status, icon, meta, btn, avatar, obj, tag, el, toast, confirm, drawer, inhibited, flush };
+// ---------------------------------------------------------------- motion
+
+/** The value of a duration token in milliseconds (0 under reduced motion, since base.css zeroes the tokens there). */
+export function duration(name = "dur-open") {
+  if (typeof getComputedStyle === "undefined") return 0;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(`--af-${name}`).trim();
+  const n = parseFloat(v);
+  return Number.isNaN(n) ? 0 : (v.endsWith("ms") ? n : n * 1000);
+}
+
+// ---------------------------------------------------------------- expand (AgentRow, AgentCard)
+
+function agentOf(target) {
+  const n = typeof target === "string" ? document.querySelector(target) : target;
+  const a = n && n.closest ? n.closest(".af-agent") : null;
+  if (!a) throw new TypeError("expand needs an .af-agent element, a selector, or a node inside one");
+  return a;
+}
+
+function trigger(a) {
+  return a.querySelector(".af-agent__line, .af-agent__face");
+}
+
+/** An agent row or card opening in place. `open` adds is-open and aria-expanded, closes any sibling that `exclusive`
+ *  names (default: the others in the same af-runway or af-board), scrolls the agent into view when its top or bottom is
+ *  off screen, and moves focus to its line; `close` reverses it and returns focus to the line. Escape inside an open
+ *  agent closes it. The height animates through the CSS grid-rows accordion; nothing is measured here. */
+export const expand = {
+  open(target, { exclusive = true, scroll = true } = {}) {
+    const a = agentOf(target);
+    if (exclusive) {
+      const group = a.closest(".af-runway, .af-board") || a.parentElement;
+      for (const o of group.querySelectorAll(".af-agent.is-open")) if (o !== a) expand.close(o, { focus: false });
+    }
+    a.classList.add("is-open");
+    const t = trigger(a);
+    if (t) t.setAttribute("aria-expanded", "true");
+    if (scroll) {
+      const r = a.getBoundingClientRect();
+      if (r.top < 60 || r.bottom > innerHeight) a.scrollIntoView({ block: "start", behavior: duration() ? "smooth" : "auto" });
+    }
+    if (t) t.focus({ preventScroll: true });
+    a.dispatchEvent(new CustomEvent("af:open", { bubbles: true }));
+    return a;
+  },
+  close(target, { focus = true } = {}) {
+    const a = agentOf(target);
+    if (!a.classList.contains("is-open")) return a;
+    a.classList.remove("is-open");
+    const t = trigger(a);
+    if (t) {
+      t.setAttribute("aria-expanded", "false");
+      if (focus) t.focus({ preventScroll: true });
+    }
+    a.dispatchEvent(new CustomEvent("af:close", { bubbles: true }));
+    return a;
+  },
+  toggle(target, opts) {
+    const a = agentOf(target);
+    return a.classList.contains("is-open") ? expand.close(a, opts) : expand.open(a, opts);
+  },
+  isOpen(target) {
+    return agentOf(target).classList.contains("is-open");
+  },
+  /** Wires a container once: a click on a line or face toggles its agent; Escape inside an open agent closes it. Clicks
+   *  inside the console never toggle. */
+  wire(root) {
+    root.addEventListener("click", (e) => {
+      const t = e.target.closest(".af-agent__line, .af-agent__face");
+      if (!t || e.target.closest(".af-console")) return;
+      expand.toggle(t);
+    });
+    root.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      const a = e.target.closest(".af-agent.is-open");
+      if (a) { e.preventDefault(); expand.close(a); }
+    });
+    return root;
+  },
+};
+
+// ---------------------------------------------------------------- deck (DecisionDeck)
+
+function stackOf(target) {
+  const s = typeof target === "string" ? document.querySelector(target) : target;
+  if (!s || !s.classList.contains("af-deck__stack")) throw new TypeError("deck needs an .af-deck__stack element or selector");
+  return s;
+}
+
+function cards(s) {
+  return [...s.querySelectorAll(":scope > .af-decision")];
+}
+
+/** The decision deck: the cards in an af-deck__stack carry data-k (0 on top, 1 and 2 peeking, the rest hidden). `next`
+ *  and `prev` rotate the order; `go(i)` brings the i-th card (in the stack's order) to the top; `leave(card)` plays the
+ *  exit (is-leaving, dur-open), removes the card and lets the next one rise. Every change fires af:deck on the stack
+ *  with {top, count}. The caller renders the count ("1 of 4") and the up-next list from that. */
+export const deck = {
+  layout(target) {
+    const s = stackOf(target);
+    const all = cards(s);
+    all.forEach((c, i) => { c.dataset.k = String(i); if (i === 0) c.removeAttribute("inert"); else c.setAttribute("inert", ""); });
+    s.dispatchEvent(new CustomEvent("af:deck", { bubbles: true, detail: { top: all[0] || null, count: all.length } }));
+    return all[0] || null;
+  },
+  next(target) {
+    const s = stackOf(target);
+    const all = cards(s);
+    if (all.length > 1) s.appendChild(all[0]);
+    return deck.layout(s);
+  },
+  prev(target) {
+    const s = stackOf(target);
+    const all = cards(s);
+    if (all.length > 1) s.insertBefore(all[all.length - 1], all[0]);
+    return deck.layout(s);
+  },
+  go(target, index) {
+    const s = stackOf(target);
+    const all = cards(s);
+    const n = all.length;
+    if (!n) return null;
+    const i = ((index % n) + n) % n;
+    for (const c of all.slice(0, i)) s.appendChild(c);
+    return deck.layout(s);
+  },
+  leave(card) {
+    const c = typeof card === "string" ? document.querySelector(card) : card;
+    if (!c || !c.classList.contains("af-decision")) throw new TypeError("deck.leave needs an .af-decision");
+    const s = c.parentElement;
+    const was = document.activeElement && c.contains(document.activeElement);
+    c.classList.add("is-leaving");
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        c.remove();
+        const top = s && s.classList.contains("af-deck__stack") ? deck.layout(s) : null;
+        if (was) {
+          const f = top ? top.querySelector(FOCUSABLE) : (s && s.closest(".af-deck") || document.body).querySelector(FOCUSABLE);
+          if (f) f.focus({ preventScroll: true });
+        }
+        resolve(top);
+      }, duration("dur-open"));
+    });
+  },
+  count(target) {
+    return cards(stackOf(target)).length;
+  },
+};
+
+// ---------------------------------------------------------------- roving (a list or grid of agents, tiles or cards)
+
+/** One tab stop for a set of items (`selector`, default the agent lines and faces, plus af-stand and af-bay tiles):
+ *  arrows move by visual row and column, Home and End jump, Enter and Space activate (`onActivate(item)`, or a click).
+ *  The active item is the one with tabindex 0; `setActive(item, focus)` moves it. Returns {setActive, destroy}. */
+export function roving(root, { selector = ".af-agent__line, .af-agent__face, .af-stand, .af-bay, .af-mini", onActivate } = {}) {
+  const items = () => [...root.querySelectorAll(selector)].filter((n) => n.offsetParent !== null);
+  const setActive = (item, focus = true) => {
+    for (const n of root.querySelectorAll(selector)) n.tabIndex = n === item ? 0 : -1;
+    if (item && focus) item.focus({ preventScroll: false });
+  };
+  const first = items()[0];
+  if (first && !root.querySelector(`${selector.split(",").map((x) => x.trim() + '[tabindex="0"]').join(",")}`)) setActive(first, false);
+  const onKey = (e) => {
+    const cur = e.target.closest(selector);
+    if (!cur || !root.contains(cur)) return;
+    const list = items();
+    const i = list.indexOf(cur);
+    if (i < 0) return;
+    let to = null;
+    const r = cur.getBoundingClientRect();
+    const same = (n) => Math.abs(n.getBoundingClientRect().top - r.top) < 4;
+    if (e.key === "ArrowRight") to = list[i + 1] && same(list[i + 1]) ? list[i + 1] : list[i + 1] || null;
+    else if (e.key === "ArrowLeft") to = list[i - 1] || null;
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const dir = e.key === "ArrowDown" ? 1 : -1;
+      let best = null, bestD = Infinity;
+      for (const n of list) {
+        const b = n.getBoundingClientRect();
+        if (dir > 0 ? b.top <= r.top + 4 : b.top >= r.top - 4) continue;
+        const d = Math.abs(b.top - r.top) * 1000 + Math.abs(b.left - r.left);
+        if (d < bestD) { best = n; bestD = d; }
+      }
+      to = best;
+    } else if (e.key === "Home") to = list[0];
+    else if (e.key === "End") to = list[list.length - 1];
+    else if (e.key === "Enter" || e.key === " ") {
+      if (cur.tagName === "BUTTON" && !onActivate) return; // the button's own click handles it
+      e.preventDefault();
+      if (onActivate) onActivate(cur); else cur.click();
+      return;
+    } else return;
+    if (to) { e.preventDefault(); setActive(to); }
+  };
+  root.addEventListener("keydown", onKey);
+  root.addEventListener("focusin", (e) => { const n = e.target.closest(selector); if (n && root.contains(n)) setActive(n, false); });
+  return { setActive, destroy() { root.removeEventListener("keydown", onKey); } };
+}
+
+export default { config, esc, status, icon, meta, btn, avatar, obj, tag, el, toast, confirm, drawer, inhibited, flush, duration, expand, deck, roving };
