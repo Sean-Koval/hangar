@@ -396,8 +396,8 @@ function deckHtml(where) {
   const row = (it, attrs) => { const u = unitOfItem(it); return `<li><button type="button" ${attrs(u)}>${markOnly(roleOfItem(it))}<span class="af-id">${esc(u?.tail || "")}</span><span class="af-deck__what">${esc(u?.work || it.title || it.job || it.session || "")}</span><span class="af-deck__when">${esc(when(it))}</span></button></li>`; };
   // what stopped, under the decisions: its own list, never in the stack or up next; a row opens the agent, whose console
   // holds retry, start over and acknowledge
-  const stoppedHtml = stopped.length ? `<h3 class="af-deck__title deck-stopped__title">Stopped<span class="af-deck__count">${stopped.length}</span></h3>
-      <ul class="af-deck__upnext deck-stopped">${stopped.map((it) => row(it, (u) => (u ? `data-dk="jump" data-unit="${esc(u.id)}"` : it.job ? `data-go="job:${esc(it.job)}"` : "disabled"))).join("")}</ul>` : "";
+  const stoppedHtml = stopped.length ? `<h3 class="af-deck__subtitle">Stopped</h3>
+      <ul class="af-deck__stopped">${stopped.map((it) => row(it, (u) => (u ? `data-dk="jump" data-unit="${esc(u.id)}"` : it.job ? `data-go="job:${esc(it.job)}"` : "disabled"))).join("")}</ul>` : "";
   return `<section class="af-deck" aria-label="Needs you" data-deck="${where}">
     <div class="af-deck__stack">${stack}</div>
     <aside class="af-deck__side">
