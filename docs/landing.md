@@ -226,6 +226,7 @@ One list per person, newest first, from the records hangar keeps:
 | `question` | a job in `needs_input`, or a session's open question | answer with a follow-up or `send_to_session` |
 | `approval` | a job waiting for approval (an untrusted trigger, a spend cap); a turn waiting on a tool approval; requests other modules add (egress, secrets) | approve or deny |
 | `failed` | a job that failed in the last 7 days and has no open PR | read why, then follow up or resubmit |
+| `denied` | policy denied a step of a turn that is still running (the agent carried on without it) | steer the session, or let it be |
 | `alert` | admins only: a front door saw use that a real sender wouldn't make, such as a Jira Automation token used for an issue nobody just moved ([intake.md](intake.md#fallback-an-automation-rule)); kept 7 days | check the rule, rotate the token if it doesn't explain it |
 
 It is per person, as everything is since [people](security.md#people): a member sees items for their own jobs and sessions. An admin sees their own, plus work nobody in particular owns (jobs from GitHub issues, Slack and inbound webhooks). Read it:
@@ -234,7 +235,7 @@ It is per person, as everything is since [people](security.md#people): a member 
 - CLI: `hangar inbox` (`--json` for the raw list).
 - REST: `GET /api/inbox` with an admin token or a person's `user` token: `{"person", "counts": {"review": 2, …}, "items": [{"id", "kind", "reason", "action", "since", "job", "pr", "links", …}]}`.
 
-Each item carries a stable `id` (a digest of its kind, the job, session or request, and the approval or question: reading the inbox again gives the same id) and `links` to the native object where you act on it: `{"pr", "ticket", "thread", "job"}`. `ticket` is the Jira issue (`<HANGAR_JIRA url>/browse/ABC-12`) or the GitHub issue the job came from; `thread` the Slack thread it talks in (Slack's own permalink once hangar has fetched it with `chat.getPermalink`); `job` the job on the dashboard (`<HANGAR_PUBLIC_URL>/#jobs?job=<id>`).
+Each item carries a stable `id` (a digest of its kind, the job, session or request, and the approval or question: reading the inbox again gives the same id) and `links` to the native object where you act on it: `{"pr", "ticket", "thread", "job"}`. A `failed`, `denied`, `review`, `alert` or `abandon` item can be put away: `POST /api/inbox/{id}/ack` (per person; it leaves your list for 7 days, the failed window; `DELETE` brings it back). An `approval` or a `question` can't: it waits for your decision. `ticket` is the Jira issue (`<HANGAR_JIRA url>/browse/ABC-12`) or the GitHub issue the job came from; `thread` the Slack thread it talks in (Slack's own permalink once hangar has fetched it with `chat.getPermalink`); `job` the job on the dashboard (`<HANGAR_PUBLIC_URL>/#jobs?job=<id>`).
 
 ### Delivery: it comes to you
 

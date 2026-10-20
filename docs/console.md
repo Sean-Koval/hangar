@@ -35,7 +35,9 @@ First come the cards you decide in place:
 
 **Deny** and **Reject** need a reason: the field opens in the card, and the reason goes back to the agent or the
 requester. **Open job** or **Open session** shows the work first. After the cards come the jobs that failed in the last
-week and the PRs waiting for your review on GitHub, with **Open job** and **Open PR**. With nothing waiting, the page
+week, the steps policy denied in turns still running (`denied`: the agent carried on without them), and the PRs
+waiting for your review on GitHub, with **Open job** and **Open PR**. A failed or denied item has **Acknowledge**
+(`POST /api/inbox/{id}/ack`): it leaves your list for a week; a decision never does. With nothing waiting, the page
 says so and shows how many jobs and sessions are running.
 
 The same cards appear on the job or session they belong to, and in the Fleet's detail panel.

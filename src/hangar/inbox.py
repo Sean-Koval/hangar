@@ -8,7 +8,13 @@ particular owns, such as jobs from GitHub issues and Slack):
 * `question`: an agent asked something (a job in `needs_input`, a session's open question);
 * `approval`: a job waits for approval (an untrusted trigger, a spend cap), a turn waits on a tool approval, and
   whatever other modules add through `SOURCES` (egress and secret requests);
-* `failed`: a job failed in the last week.
+* `failed`: a job failed in the last week;
+* `denied`: policy denied a step of a turn that is still running (KAN-140): the agent carries on, and the person
+  decides whether to steer it.
+
+A `failed` or `denied` item (or a `review`) can be acknowledged per person, `POST /api/inbox/{id}/ack` (`DELETE` takes
+it back): it leaves that person's list for as long as the failed window, `FAILED_DAYS`. An `approval` or a `question`
+can't be: it waits for a decision, and only the decision clears it.
 
 Each item says what to do and with which command, carries a stable `id` (the same wait is the same item however
 often the inbox is read) and `links` to the native object the action happens on: the PR, the ticket (Jira or a
@@ -38,6 +44,8 @@ if TYPE_CHECKING:
 URI = "hangar://inbox"
 FAILED_DAYS = 7
 MAX_ITEMS = 200
+ACKABLE = ("failed", "denied", "review", "alert", "abandon")  # what a person may put away; a decision is not
+ACKS_PREFIX = "inbox:acks:"  # kv, per person: {item id: until}
 
 def yours(person: str | None, p: Principal | None) -> bool:
     """A record owned by `person` needs the caller: it is theirs, or nobody's and they are an admin. In-process
@@ -225,17 +233,72 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
             out.append(_item("approval", f"the agent wants to run {a.tool}: {a.detail[:300]}",
                              f"hangar session approvals {s.name} --allow {a.id} | --deny {a.id}", a.requested_at,
                              session=s.name, job=s.job_id, expires_at=a.expires_at, approval=a.id))
+        if (d := denial_of(s)) is not None:  # KAN-140: policy stopped a step; the agent went on without it
+            out.append(_item("denied", f"policy denied {d.tool or 'a tool call'}: {d.detail[:300]}"
+                             + (f" ({d.message})" if d.message else ""),
+                             f"hangar session send {s.name} '<what to do instead>' (or hangar job follow-up "
+                             f"{s.job_id})" if s.job_id else f"hangar session send {s.name} '<what to do instead>'",
+                             d.decided_at or d.requested_at, session=s.name, job=s.job_id, approval=d.id,
+                             tool=d.tool))
         if s.needs_input and not s.job_id and s.id not in job_sessions:
             out.append(_item("question", f"the agent asks: {s.needs_input[:500]}",
                              f"hangar session send {s.name} '<your answer>'", s.last_active_at, session=s.name))
     for source in SOURCES:
         out += source(svc, p)
     out.sort(key=lambda i: i.get("since") or 0, reverse=True)
-    out = out[:MAX_ITEMS]
     for x in out:  # #157: a source's items too
         x.setdefault("id", item_id(x["kind"], x, str(x.get("reason") or "")))
+    if p is not None and (acked := acks(svc.store, person_key(p))):  # KAN-140: what this person put away
+        out = [x for x in out if x["id"] not in acked]
+    out = out[:MAX_ITEMS]
+    for x in out:
         x["links"] = links(svc, x)
     return out
+
+
+def denial_of(s: Any) -> Any:
+    """The latest policy denial in a session's running turn, or None: the agent is still going, so the person
+    may want to steer it; a finished turn's denials are history."""
+    t = s.turns[-1] if s.turns else None
+    if t is None or t.finished_at or not t.live:
+        return None
+    return next((a for a in reversed(t.approvals) if a.status == "denied" and a.by == "policy"), None)
+
+
+# ====================================================================== acknowledgements (KAN-140)
+def person_key(p: Principal) -> str:
+    """Whose acks: the person, else the token (a service token without one)."""
+    return p.person or f"token:{p.id}"
+
+
+def acks(store: Any, who: str) -> dict[str, float]:
+    """The item ids `who` put away, each with when the ack lapses (the failed window), expired ones dropped."""
+    raw = store.kv_get_json(ACKS_PREFIX + who, {}) or {}
+    t = now()
+    return {k: float(v) for k, v in raw.items() if isinstance(v, int | float) and v > t}
+
+
+def ack(svc: JobService, p: Principal, item_id_: str, on: bool = True) -> dict[str, Any]:
+    """Put an item away for this person (`on`), or bring it back. The item must be in their inbox now, and of a
+    kind that can be put away: a decision (approval, question) can't."""
+    who = person_key(p)
+    current = acks(svc.store, who)
+    if not on:
+        current.pop(item_id_, None)
+        svc.store.kv_set_json(ACKS_PREFIX + who, current)
+        return {"id": item_id_, "acked": False}
+    if item_id_ in current:
+        return {"id": item_id_, "acked": True, "until": current[item_id_]}
+    item = next((x for x in items(svc, p) if x["id"] == item_id_), None)
+    if item is None:
+        raise KeyError(f"no inbox item '{item_id_}'")
+    if item["kind"] not in ACKABLE:
+        raise ValueError(f"a {item['kind']} waits for your decision and can't be acknowledged; decide it")
+    current[item_id_] = now() + FAILED_DAYS * 86400
+    svc.store.kv_set_json(ACKS_PREFIX + who, current)
+    svc.fleet.audit(f"ui:{p.name}", "inbox.ack", item_id_, kind=item["kind"], job=item.get("job"),
+                    session=item.get("session"))
+    return {"id": item_id_, "acked": True, "until": current[item_id_]}
 
 
 def summary(xs: list[dict[str, Any]]) -> dict[str, int]:
@@ -258,6 +321,19 @@ def mount(app: Any, h: Any, person_actor: Any) -> None:
     @app.get("/api/inbox")
     async def inbox_route(_: str = person_actor):
         return view(h.jobs)
+
+    # KAN-140: put a failed or denied item away (per person, for the failed window); a decision can't be
+    @app.post("/api/inbox/{item_id}/ack")
+    async def inbox_ack(item_id: str, _: str = person_actor):
+        p = identity.principal()
+        assert p is not None
+        return ack(h.jobs, p, item_id, on=True)
+
+    @app.delete("/api/inbox/{item_id}/ack")
+    async def inbox_unack(item_id: str, _: str = person_actor):
+        p = identity.principal()
+        assert p is not None
+        return ack(h.jobs, p, item_id, on=False)
 
 
 def register(mcp: Any, jobs: JobService | None) -> None:

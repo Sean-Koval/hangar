@@ -1086,6 +1086,12 @@ hooks.post_slack_interactions:
   scope: signed
   owner: any
   enforced_by: 'slack: Slack''s v0 signature and replay guard; only a follow-up''s sender classifies it (#162)'
+inbox.delete_ack:
+  server: hangar
+  mcp: null
+  rest: DELETE /api/inbox/{item_id}/ack
+  scope: user
+  owner: guard
 inbox.get:
   server: hangar
   mcp: null
@@ -1097,6 +1103,12 @@ inbox.get:
   owner: guard
   exception: the REST route takes a person's `user` login (app.person_actor); MCP also takes their `mcp` tokens and OAuth
     grants. Both are fenced to the person's own records
+inbox.post_ack:
+  server: hangar
+  mcp: null
+  rest: POST /api/inbox/{item_id}/ack
+  scope: user
+  owner: guard
 job.admit:
   server: hangar
   mcp: null
