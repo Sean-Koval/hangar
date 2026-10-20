@@ -1,8 +1,11 @@
 # 0003: Sandbox security (git proxy, egress allowlists, token scopes)
 
+!!! note "Design record"
+    Written 2026-10-12; **partly built**. The current behaviour is on [the security model](../security/README.md); the status line below says what shipped.
+
 Status: partly built (2026-10-15): branch protection, the git credential gateway (#44), egress allowlists (#97, #107) and token scopes in another shape (#122); the model-API proxy isn't scheduled. Was: draft. · Date: 2026-10-12.
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 
@@ -28,7 +31,7 @@ What did not hold:
 | Egress to the public internet is open. | `docs/gke.md:114` (default SandboxTemplate policy allows the public internet). `providers/kubernetes.py:_pod_template` creates no policy. `providers/docker.py:_run_kwargs` only passes the global `docker_network`. `providers/e2b.py:E2BProvider.create` passes only `envs`. |
 | Every hangar API token is full admin. | `auth.py:TokenAuth.create` defaults `scopes=["admin"]`. No code reads `ApiToken.scopes`. `app.py:actor` and `app.py:MCPAuthMiddleware` authenticate but never authorize. |
 | OAuth has one scope. | `app.py:_setup_oauth` registers `valid_scopes=["hangar"]`. `hangar` grants all 31 MCP tools. |
-| `read_file` can read secrets. | `docs/security.md` says `exec`/`read_file` can read `~/.hangar/env`. |
+| `read_file` can read secrets. | `docs/security/README.md` says `exec`/`read_file` can read `~/.hangar/env`. |
 | The dashboard token sits in `localStorage` and the page loads scripts from CDNs. | `ui/app.js` (`store.token`), `ui/index.html:175-176` (jsdelivr), `:9-10` (Google Fonts). `app.py:index` sets no security headers. Only the OAuth consent page has them (`oauth.py:_HEADERS`). |
 | There is no brute-force control. | `auth.py:TokenAuth.verify` and `oauth.py:consent_post` accept unlimited guesses. |
 
@@ -177,7 +180,7 @@ fork ─► new grant per fork, new work branch; parent grant untouched
 
 - `Fleet.destroy`, `Fleet._mark_gone`, the reaper and the failure path in `create` all call `grants.revoke(sandbox_id)`. Revoke is idempotent.
 - `create` requires `work_branch` when `credential_mode=proxied`. If the caller omitted it, hangar generates `agent/<sandbox-name>`. This is a small compatibility change: today a sandbox without `work_branch` stays on the base branch.
-- Snapshots taken from a running sandbox contain the parent's `hgs_` token. It is bound to the parent's id and branch, and it dies with the parent. This is weaker leakage than a PAT in the same snapshot (`docs/security.md`, snapshot bullet).
+- Snapshots taken from a running sandbox contain the parent's `hgs_` token. It is bound to the parent's id and branch, and it dies with the parent. This is weaker leakage than a PAT in the same snapshot (`docs/security/README.md`, snapshot bullet).
 
 #### What goes into the sandbox
 
@@ -310,7 +313,7 @@ Design:
   - `HANGAR_MODEL_STOP_AT` (default 0.95): `run_agent` refuses new runs above it with a clear error. It's the hook the run-result work needs to surface the "91%" case.
 - Fallback and flag: `Credential.proxy: bool` (default `false` until proven). With `proxy=false` the credential is injected as today and `list_credentials` shows `"exposed": true`. Per credential, not global, so a misbehaving harness doesn't block the rollout.
 - Other harnesses: Codex with a ChatGPT login stores a rotating `auth.json` that the CLI refreshes itself, so it cannot be proxied the same way. Codex with an API key and Gemini with an API key probably can (base-URL environment variables). I did not verify the variable names. Mark all as open question 4. Until then these credentials stay exposed and the dashboard says so.
-- Terms of service. Routing a subscription token through a server you operate may be treated differently from the CLI talking to Anthropic directly. I could not verify the current terms. Open question 5. If the answer is no, the fallback is exposed injection plus per-sandbox API keys with spend limits, which `docs/security.md` already recommends.
+- Terms of service. Routing a subscription token through a server you operate may be treated differently from the CLI talking to Anthropic directly. I could not verify the current terms. Open question 5. If the answer is no, the fallback is exposed injection plus per-sandbox API keys with spend limits, which `docs/security/README.md` already recommends.
 
 ### 5.5 Egress allowlists
 
@@ -535,7 +538,7 @@ Migration notes:
 - OAuth approvals already granted with scope `hangar` map to `operate` and keep working until they expire (90 days).
 - MCP tools: all existing tools keep their names, parameters and return keys. Additions only: `open_pull_request`, `pull_request_status`, new keys `git`, `network`, `warnings` in sandbox output, `proxied`/`exposed` in `list_credentials`. **One behavioral change**, stated explicitly: with `credential_mode=proxied`, `create_sandbox` without `work_branch` on a repo gets a generated `agent/<name>` branch (before: stayed on the base branch). Pushing to the base branch from a sandbox stops being possible; there is no opt-out except `direct` mode.
 - `read_file` on a sandbox with exposed secrets requires `operate` (before: any token). With the default of old tokens being `admin`, nobody notices.
-- Docs: update `docs/security.md` (credential handling, boundaries), `docs/gke.md` (network section; the `Unmanaged` note), `README.md` (credentials, `hangar token create --scope`).
+- Docs: update `docs/security/README.md` (credential handling, boundaries), `docs/gke.md` (network section; the `Unmanaged` note), `README.md` (credentials, `hangar token create --scope`).
 - Deployment changes: new Service for 8788, second ingress host (IAP is optional), new RBAC verbs, egress proxy image. `deploy/k8s/*` and the Terraform module get updates in the PRs that need them.
 - Rollback: set the three settings back to `direct`/`off`/`off`. Sandboxes already running keep their grants until they are destroyed.
 
@@ -605,7 +608,7 @@ Each is one PR unless noted. Order is by risk removed per effort.
 
 | # | Task | Scope | Size |
 | --- | --- | --- | --- |
-| M0 | Branch protection runbook + `repo_guard` | Apply 5.2 settings to `hangar` repo (manual, documented). `repo_guard.py`, `HANGAR_BRANCH_PROTECTION`, `warnings` in `create_sandbox`/`fork_sandbox`, dashboard banner, `docs/security.md` section. | S |
+| M0 | Branch protection runbook + `repo_guard` | Apply 5.2 settings to `hangar` repo (manual, documented). `repo_guard.py`, `HANGAR_BRANCH_PROTECTION`, `warnings` in `create_sandbox`/`fork_sandbox`, dashboard banner, `docs/security/README.md` section. | S |
 | M1 | Scopes: model + enforcement | `Principal`, `TokenLimits`, tool→scope map, `require()` in REST, middleware 403 challenge, `hangar token create --scope/--limit`, `/api/me`, tests. Old tokens stay admin. | M |
 | M2 | Grants + gateway skeleton | `SandboxGrant`, gateway app on :8788, `hgs_` auth, revoke hooks in `Fleet`, k8s Service and docker publish, `credential_mode` flag. No forwarding yet. | M |
 | M3 | Git smart-HTTP inspector | Parser, forwarding with PAT, `insteadOf` + credential injection in `harnesses.py`/`broker.py`, reject-with-message, scrub on fork, audit. | L |

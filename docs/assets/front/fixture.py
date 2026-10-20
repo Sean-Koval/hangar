@@ -307,7 +307,7 @@ class Fixture:
         """The ROWS name a sandbox was made from."""
         return next((r[0] for r in ROWS if "sb-" + hexid(r[0]) == sandbox_id), "")
 
-    # ---- GET /api/fleet, as fleet_api.FleetRead builds it from this data (docs/console.md#the-fleet-read-get-apifleet)
+    # ---- GET /api/fleet, as fleet_api.FleetRead builds it from this data (docs/api/fleet.md)
     def fleet(self, owner: str | None = None, include_stopped: bool = False) -> dict:
         now, d = self.now, self.data
         ib = self.inbox()

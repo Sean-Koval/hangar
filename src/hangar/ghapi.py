@@ -1,4 +1,4 @@
-"""A read-only GitHub API for sandboxes in gateway mode (--- egress2; docs/security.md#git-credential-gateway).
+"""A read-only GitHub API for sandboxes in gateway mode (--- egress2; docs/security/git-gateway.md).
 
 GitHub isn't an allowed host for proxied sandboxes any more (the `packages` preset dropped it): with anyone's token it
 takes writes, so it is a way out. An agent still needs to read its PR, its review comments and its CI, and `gh` with

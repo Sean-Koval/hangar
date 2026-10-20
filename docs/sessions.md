@@ -119,7 +119,7 @@ Each fork is a new session:
   The same handoff is used when you fork into another harness (`--harness`).
 - Two sessions never continue the same conversation id. If two sessions ever hold one id, the oldest keeps it, and the other forks it on its next turn instead of resuming it.
 
-A job with `strategy: best_of_n` is built on this: it forks its prepared session into N attempts and delivers the best one. See [Jobs §6](jobs.md#6-forks-and-best-of-n).
+A job with `strategy: best_of_n` is built on this: it forks its prepared session into N attempts and delivers the best one. See [Jobs §6](jobs/working-with-the-agent.md#6-forks-and-best-of-n).
 
 **Cost:** every fork is its own sandbox while it runs: N forks cost N times one session. They suspend when idle like any session, and a suspended fork costs storage only (each has its own copy of the checkpoint).
 

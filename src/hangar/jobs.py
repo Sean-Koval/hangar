@@ -156,7 +156,7 @@ class SubmitJob(BaseModel):
     strategy: Literal["single", "best_of_n"] = "single"
     n: int | None = Field(None, ge=1, le=8)  # attempts for best_of_n (2..HANGAR_BEST_OF_N_MAX; default 3)
     judge: bool = False  # best_of_n: a judge turn orders the attempts that pass verification
-    # --- overnight/autofix: the check inside the agent's turn, and the PR auto-fix loop (docs/jobs.md §7)
+    # --- overnight/autofix: the check inside the agent's turn, and the PR auto-fix loop (docs/jobs/agent-loop.md)
     verify_in_loop: bool | None = None  # default HANGAR_VERIFY_IN_LOOP (on)
     max_verify_rounds: int | None = Field(None, ge=0, le=10)  # default HANGAR_MAX_VERIFY_ROUNDS (3)
     autofix: str | None = Field(None, max_length=40)  # "ci,reviews" (default) | "ci" | "reviews" | "off"

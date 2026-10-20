@@ -1024,7 +1024,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/retry")
     async def job_retry(job_id: str, fresh: bool = False, caller: Caller = J):
         """KAN-140 S6: the deck's Retry (the canned follow-up in the same conversation) or, with ?fresh=1, Start
-        over (a new job with the same task). docs/jobs.md#5-work-with-the-agent"""
+        over (a new job with the same task). docs/jobs/working-with-the-agent.md#5-work-with-the-agent"""
         from hangar import jobretry
 
         if fresh:

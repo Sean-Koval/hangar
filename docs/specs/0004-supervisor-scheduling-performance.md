@@ -1,8 +1,11 @@
 # 0004: Supervisor, work distribution and sandbox performance
 
+!!! note "Design record"
+    Written 2026-10-12; **deferred**. The current behaviour is on [team-scale.md](../team-scale.md) (fair-share job slots); the status line below says what shipped.
+
 Status: deferred (2026-10-15): the supervisor, planner and scheduler v2 are not scheduled; fair-share job slots shipped instead (#89). Was: draft. · Date: 2026-10-12. Author: hangar agent session, for review.
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins. Builds on [0001](0001-agent-runs.md) (runs, events, queue), [0002](0002-results-and-landing.md) (results, fan-out, landing) and [0003](0003-sandbox-security.md) (grants, scopes). Spec 0005 (traces and decisions) is being written in parallel; section 5.9 states what this spec assumes from it.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins. Builds on [0001](0001-agent-runs.md) (runs, events, queue), [0002](0002-results-and-landing.md) (results, fan-out, landing) and [0003](0003-sandbox-security.md) (grants, scopes). Spec 0005 (traces and decisions) is being written in parallel; section 5.9 states what this spec assumes from it.
 
 ## 1. Summary
 
@@ -564,7 +567,7 @@ pending_demand = ready sub-tasks of approved tasks that are not yet queued, minu
 
 #### Dependency caches: baked vs shared read-only volume
 
-0001 M9 rejects shared *writable* volumes (poisoning path, `docs/security.md`). This spec keeps that and compares the read-only options.
+0001 M9 rejects shared *writable* volumes (poisoning path, `docs/security/README.md`). This spec keeps that and compares the read-only options.
 
 | Option | Pros | Cons | Verdict |
 | --- | --- | --- | --- |
@@ -579,7 +582,7 @@ Memory pressure: because the root is memory-backed, baked dependencies help twic
 
 - On **GKE** the sandbox runtime flags are managed by the platform. I found no documented way to pass `runsc` flags there, so overlay medium and directfs are not tunable (§10 Q5). The lever is what hangar writes: memory limit that includes expected writes, scratch `emptyDir`, baked dependencies.
 - On the **Docker provider with runsc**, the knobs are daemon-level: runsc's `--overlay2=root:self` (file-backed upper layer instead of memory) and `--directfs`. Flag names and defaults are from my memory of gVisor docs and depend on the installed runsc version. Verify with `runsc --help` on the host before use. `deploy/terraform/single-vm` is where this would be set. Test with `bench_gvisor_io.py`: same script, two settings.
-- Do not turn on features that weaken isolation for speed without a recorded measurement and a note in `docs/security.md`.
+- Do not turn on features that weaken isolation for speed without a recorded measurement and a note in `docs/security/README.md`.
 
 #### CPU and memory right-sizing
 
@@ -699,7 +702,7 @@ Trust model: everything from a sandbox is untrusted (0001 §6). The supervisor a
 | Nudge storm | Max 2 nudges per node, one per 5 minutes, and a nudge is skipped when a run is not `running`. |
 | Retry storm after a Spot reclaim (many nodes at once) | Recovery uses jittered backoff (30–120 s) and goes through the same queue, so slot limits still apply. |
 | False-positive loop detection kills useful work | Nudge first (non-destructive). Restart only after a second signal. Thresholds are config. False-nudge rate is tracked (§5.8). `autonomy: observe` is the default for new repos until the rate is known. |
-| Checkpoint holds secrets or private code | It is a file bundle of the sandbox's own workspace, same sensitivity as workspace snapshots (`docs/security.md`). Stored in `data_dir`, mode 0600, pruned with the task (14 days). Redaction does not apply to code. Not sent to the model. |
+| Checkpoint holds secrets or private code | It is a file bundle of the sandbox's own workspace, same sensitivity as workspace snapshots (`docs/security/README.md`). Stored in `data_dir`, mode 0600, pruned with the task (14 days). Redaction does not apply to code. Not sent to the model. |
 | Checkpoint restore applies a malicious patch | The patch came from the same sandbox that produced it, and goes into a new sandbox with the same restrictions. Applied with `git apply --check` first, hooks off (`core.hooksPath=/dev/null`). |
 | Escalation nobody answers | `expires_at` (default 24 h). On expiry the task is `STOPPED/escalation_timeout`, runs are cancelled, and sandboxes keep their TTL. Nothing continues by default. |
 | Classify down or slow | 15 s timeout, then escalate with the default option marked. The task does not hang on it. |

@@ -144,7 +144,7 @@ because an agent turn ended.
 
 ## Further reference
 
-- [Jobs, delivery, and GitHub tickets](https://github.com/Sean-Koval/hangar/blob/main/docs/jobs.md)
+- [Jobs, delivery, and GitHub tickets](https://github.com/Sean-Koval/hangar/blob/main/docs/jobs/README.md)
 - [Sessions and forks](https://github.com/Sean-Koval/hangar/blob/main/docs/sessions.md)
 - [MCP waiting, tasks, and prompts](https://github.com/Sean-Koval/hangar/blob/main/docs/mcp.md)
 - [Live steering and approvals](https://github.com/Sean-Koval/hangar/blob/main/docs/steering.md)

@@ -18,7 +18,7 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 
 | Field | What it sets |
 | --- | --- |
-| `verify` | The repo's check (see [jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job)). `""` means no check, even if the environment has one. |
+| `verify` | The repo's check (see [jobs §7](jobs/agent-loop.md)). `""` means no check, even if the environment has one. |
 | `environment` | The environment jobs run in when they don't name one. For a repo in `HANGAR_GITHUB_REPOS`, it must be one of the environments listed there. |
 | `harness` | The default harness. It must be enabled in the environment; when a job runs in an environment without it, the job uses the environment's default and its events say why. |
 | `model` | One model id, or one per harness (`{"claude-code": "opus", "codex": "gpt-5.5"}`), as in an environment's `model:`. A single id applies only to the policy's harness, or, without one, to jobs that didn't pick a harness: a model id means nothing to another harness. A policy (`frontier`, `balanced`) applies to every harness and is resolved to a concrete id when the job starts ([harnesses.md](harnesses.md#models-the-latest-strong-model-per-provider)). |
@@ -26,15 +26,15 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `job_budget` | The default [job budget](#budgets) (`max_cost_usd`, `max_tokens`, `max_turns`). |
 | `max_usd_per_day` | The repo's [daily spend cap](#budgets). |
 | `credentials` | Whose login the repo's jobs run with: `person` (the person the job runs for; a job for no one fails), `team`, or `person_then_team` (the default: theirs when they have one, else the team's). See [team.md](team.md#whose-login-a-job-uses). |
-| `egress` | `{mode, presets, allow}` for the repo's sandboxes: adds presets and hosts to the environment's allowlist, and can tighten its mode but never widen it (`hangar repo set acme/app --egress-mode none --egress-allow docs.example.com`). See [egress allowlists](security.md#egress-allowlists). |
-| `build_secrets` | `{SECRET_ID: credential}` for the repo's [environment builds](environments.md#build-secrets), winning over the environment's (admins; `PUT /api/repos/policy`). See [build secrets](security.md#build-secrets). |
+| `egress` | `{mode, presets, allow}` for the repo's sandboxes: adds presets and hosts to the environment's allowlist, and can tighten its mode but never widen it (`hangar repo set acme/app --egress-mode none --egress-allow docs.example.com`). See [egress allowlists](security/egress.md). |
+| `build_secrets` | `{SECRET_ID: credential}` for the repo's [environment builds](environments.md#build-secrets), winning over the environment's (admins; `PUT /api/repos/policy`). See [build secrets](security/credentials.md#build-secrets). |
 | `land` | `auto_after_approval`: an approval of the PR's head by an approver or code owner, with green required checks, lands it ([landing.md](landing.md)). `manual` or unset: a person merges. |
 | `approvers` | GitHub logins whose approval lands the repo's agent PRs (`--approver`, repeated). |
 | `merge_method` | `squash` (default), `merge` or `rebase`, for PRs hangar lands. |
 | `risk_paths` | Globs (`infra/**`) that make a PR high risk in its [review packet](landing.md#6-the-review-packet), on top of `.github/**` and `.hangar/**`. |
 | `require_stale_dismissal` | `false` lets hangar arm auto-merge on a base branch that doesn't dismiss stale approvals on a push. Unset (the default) it refuses ([landing.md](landing.md#3-the-branch-protection-to-enable)). |
-| `verify_reports` | The JUnit, Cobertura or LCOV files `verify` writes, relative to the repo, `**/` for any depth (`--verify-report 'build/**/TEST-*.xml'`, repeated). The repo's `.hangar/environment.yaml` `verify_reports` comes first. Most runners need none: see [jobs §8](jobs.md#where-the-reports-come-from). |
-| `rerun_flaky` | `true`: a check whose every failure is on the repo's [flaky list](jobs.md#flaky-tests) runs once more, and the rerun decides (`--rerun-flaky`). Unset: a failure stands. |
+| `verify_reports` | The JUnit, Cobertura or LCOV files `verify` writes, relative to the repo, `**/` for any depth (`--verify-report 'build/**/TEST-*.xml'`, repeated). The repo's `.hangar/environment.yaml` `verify_reports` comes first. Most runners need none: see [jobs §8](jobs/test-results.md#where-the-reports-come-from). |
+| `rerun_flaky` | `true`: a check whose every failure is on the repo's [flaky list](jobs/test-results.md#flaky-tests) runs once more, and the rerun decides (`--rerun-flaky`). Unset: a failure stands. |
 | `heavy` | Docker on the [heavy tier](environments.md#the-heavy-tier), **deny by default**. `on`: the repo's sandboxes run on it, with Docker inside (`--heavy on`). `allow`: the repo's `.hangar/environment.yaml` may ask for it (`heavy: true` or `tier: heavy`), and the request is honored (`--heavy allow`). `deny`, or unset: a request in the repo's file isn't honored; the sandbox runs on the default tier, and the agent's instructions and `hangar-agent env doctor` say Docker isn't enabled for the repo and give this command. A heavy environment (an admin's `heavy: true`) has Docker whatever this says. `true` and `false`, sent by an older client, mean `on` and `deny`. |
 | `profile` | `standard`, `large` or `xlarge`: the size of the repo's sandboxes ([profiles](environments.md#what-decides)). Large and xlarge run on the heavy tier. |
 | `max_profile` | The largest profile a job (label `hangar.profile`, `hangar job submit --profile`) or the repo's file may ask for. Unset: no more than `profile` or the environment's own. |
@@ -110,7 +110,7 @@ prints the object `GET /api/repos/{owner}/{repo}/readiness` returns (admin token
 | `stale approvals` | the base branch dismisses stale approvals on a push | fail (hangar won't arm auto-merge); warn when the policy opts out |
 | `review rules` | it requires an approving review and approval of the most recent push | warn |
 | `auto-merge` | (shown when it fails) the repo allows auto-merge, for a policy that lands on approval | fail |
-| `intake posture` | `HANGAR_INTAKE_POSTURE=enforce` ([security.md](security.md#intake-posture)) | warn for `warn`, fail for `off` |
+| `intake posture` | `HANGAR_INTAKE_POSTURE=enforce` ([security/front-doors.md](security/front-doors.md#intake-posture)) | warn for `warn`, fail for `off` |
 | `git gateway` | the gateway serves the repo's host and answers | fail when it doesn't serve the repo; warn when the control plane can't reach it |
 | `credential mode ENV` | each environment the repo's jobs run in resolves to `credential_mode: gateway` | fail when its sandboxes would hold a GitHub token; warn for `direct` while the gateway serves the repo (jobs still fetch through it, people's sessions don't) |
 | `sudo ENV` | `sudo: false` | warn under `enforce` (Docker job sandboxes run with no-new-privileges), else fail |
@@ -146,7 +146,7 @@ Costs are what the harness reports, or the token counts priced with the price ta
 
 For each field the order is the job, then the repo's policy, then the settings.
 
-**A daily cap per person** (`HANGAR_PERSON_MAX_USD_PER_DAY`, unset by default) works the same way for the jobs a person submits. It counts what all of that person's sessions and jobs spent that day, whichever of their tokens or connectors started them (the person hangar records on each; see [security.md](security.md#people)). Jobs nobody in particular asked for, such as GitHub- and Slack-triggered ones, have no person yet and count only against their repo's cap.
+**A daily cap per person** (`HANGAR_PERSON_MAX_USD_PER_DAY`, unset by default) works the same way for the jobs a person submits. It counts what all of that person's sessions and jobs spent that day, whichever of their tokens or connectors started them (the person hangar records on each; see [security/people.md](security/people.md#people)). Jobs nobody in particular asked for, such as GitHub- and Slack-triggered ones, have no person yet and count only against their repo's cap.
 
 ### The eval budget
 
@@ -210,7 +210,7 @@ with a fresh token `CANARY-<8 hex>`, planted at one of the placements the shadow
 a comment on it, as a reply in the Slack thread, or in a `NOTES.local.md` added to the shadow's working tree (excluded
 from git, never committed). The attachment it lands in is fenced as untrusted; the real job never sees it. After the
 turn hangar records whether the agent obeyed (`canary.json` in the outbox) and flightdeck rates each harness digest's
-injection susceptibility from them. How it works and what it records: [security.md](security.md#injection-canaries).
+injection susceptibility from them. How it works and what it records: [security/taint.md](security/taint.md#injection-canaries).
 
 ## The check on the base commit
 
@@ -220,7 +220,7 @@ With a check on every front door, a red base branch would fail every job's check
 - **Only for a standing check.** A `verify` the job brought itself is its acceptance test, written for the change, and expected to fail on the base.
 - **A green base** changes nothing.
 - **A red base** is reported in the job's events ("base was red: …"), the prompt (which failures already exist, with the output in `BASELINE.txt` next to the job's context) and the PR body (**Base was red**). The in-turn gate is off for the job, because it can't tell the base's failures from new ones. hangar's check after the turn counts only the failures the change added:
-  - when the check writes test reports ([jobs §8](jobs.md#8-test-results)) and both runs left complete ones, it
+  - when the check writes test reports ([jobs §8](jobs/test-results.md)) and both runs left complete ones, it
     subtracts the base's failing test ids from the run's, exactly. That isn't possible when a run failed with no failing
     test (a build error), or when tests the base ran (more than 5, and more than 2% of them) didn't run after the turn:
     a broken build can hide failures by not running their tests;

@@ -1,4 +1,4 @@
-"""Read-only package mirrors for proxied sandboxes (--- egress2; docs/security.md#package-mirrors).
+"""Read-only package mirrors for proxied sandboxes (--- egress2; docs/security/package-mirrors.md).
 
 An allowlist that names pypi.org or registry.npmjs.org lets a sandbox publish there with an attacker's own token:
 the hosts that serve packages also take uploads (npm's registry takes `npm publish` on the same host; pypi.org's web

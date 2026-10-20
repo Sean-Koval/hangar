@@ -104,7 +104,7 @@ With `HANGAR_TRACE_LIVE_TOOLS=true`, each turn's tool calls, subagents and appro
 | `hangar_warm_pool_claims_total` | counter | `provider`, `environment`, `result` (`hit`, `miss`). Only for environments with a warm pool. |
 | `hangar_sessions` | gauge | `state` |
 | `hangar_jobs` | gauge | `state`, `reason` (the outcome: `over_budget`, `verify_failed`, `agent_failed`…) |
-| `hangar_job_retries_total` | counter | `mode`: `same` (the deck's Retry, a canned follow-up) or `fresh` (Start over, a new job) ([jobs.md](jobs.md#5-work-with-the-agent)) |
+| `hangar_job_retries_total` | counter | `mode`: `same` (the deck's Retry, a canned follow-up) or `fresh` (Start over, a new job) ([working with the agent](jobs/working-with-the-agent.md#5-work-with-the-agent)) |
 | `hangar_turn_seconds` | histogram | `harness`, `outcome`. The agent's time, start to finish. |
 | `hangar_tokens_total` | counter | `kind` (`input`, `output`, `cache_read`, `cache_write`), `model`, `harness`, `environment`, `requester` |
 | `hangar_cost_usd_total` | counter | `model`, `harness`, `environment`, `requester` |
@@ -326,7 +326,7 @@ sandbox time only: no model call leaves hangar.
   `network`; `model` means the replay stopped there because the harness or its system prompt changed), the `tool`, its
   `command` or `file`, and `evidence` (run, step, replay, and excerpts of both outputs, redacted as the tape is). Also
   `replays`, `reproduced`, `diverged`, `unreplayed` and `errors`.
-- **Flaky tests.** A test on the repo's flaky list ([jobs.md](jobs.md#flaky-tests)) whose id shows in a mismatched
+- **Flaky tests.** A test on the repo's flaky list ([jobs/test-results.md](jobs/test-results.md#flaky-tests)) whose id shows in a mismatched
   output gets the step as `evidence` on its list entry (the last 5), with a link to the report.
 
 ## Credential health

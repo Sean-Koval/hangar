@@ -52,7 +52,7 @@ days later boots a fresh sandbox from the checkpoint and the agent continues the
 A piece of work handed to hangar, which runs it to a result: an agent turn in a session, the repo's own check
 (`verify`), then a branch and a draft pull request. Jobs take follow-ups, fix their own failing CI and review comments,
 run best-of-N attempts, and carry budgets. A job's outcome class says whether the agent, a person or the
-infrastructure ended it. See [jobs](jobs.md).
+infrastructure ended it. See [jobs](jobs/README.md).
 
 ## Front doors
 
@@ -82,11 +82,11 @@ an admin or a repo approver, never your own job. See [team setup](team.md) and [
 
 ## The trust boundary
 
-hangar assumes the sandbox is hostile. Git credentials stay behind the [git gateway](security.md#git-credential-gateway):
-job sandboxes only fetch, and hangar pushes the commit it verified. [Egress allowlists](security.md#egress-allowlists)
-limit where a sandbox can connect. Intake jobs get both by default ([intake posture](security.md#intake-posture)). A turn
-that read untrusted content is [tainted](security.md#taint), and its push, PR, landing and egress then need a second
-person. See the [security model](security.md).
+hangar assumes the sandbox is hostile. Git credentials stay behind the [git gateway](security/git-gateway.md):
+job sandboxes only fetch, and hangar pushes the commit it verified. [Egress allowlists](security/egress.md)
+limit where a sandbox can connect. Intake jobs get both by default ([intake posture](security/front-doors.md#intake-posture)). A turn
+that read untrusted content is [tainted](security/taint.md), and its push, PR, landing and egress then need a second
+person. See the [security model](security/README.md).
 
 ## What hangar emits
 
@@ -94,7 +94,7 @@ hangar is the run plane of the agent factory: it runs the work and emits data ab
 Every turn records a [manifest](specs/0014-sister-tool-interfaces.md#2-the-effective-harness-manifest-hangarmanifestv1)
 of the configuration it ran with; [trace export](api/traces.md) gives each run as OTLP on the OpenTelemetry GenAI
 conventions; [run capture](api/outbox.md) writes every finished run to a bucket once; and
-[experiment jobs](jobs.md#9-experiments) run variants against graders. Flightdeck reads these to evaluate harnesses.
+[experiment jobs](jobs/experiments.md) run variants against graders. Flightdeck reads these to evaluate harnesses.
 Tower, the Govern plane, is to decide approvals once hangar asks it: its decision API is built, and hangar's wiring is
 open (#172, [spec 0015](specs/0015-governance-decision-point.md)). Live metrics, traces and cost are in
 [activity](activity.md) and [observability](observability.md).

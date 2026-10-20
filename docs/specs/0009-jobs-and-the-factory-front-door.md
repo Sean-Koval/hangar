@@ -1,8 +1,11 @@
 # 0009: Jobs, the front door of the software factory
 
+!!! note "Design record"
+    Written 2026-10-12; **built**. The current behaviour is on [jobs](../jobs/README.md); the status line below says what shipped.
+
 Status: built (2026-10-15): #30 and the waves after it. · Date: 2026-10-12 · Builds on: 0001 (runs), 0002 (results and landing), 0003 (security), 0004 (tasks), 0006 (environments), 0008 (swarms)
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 

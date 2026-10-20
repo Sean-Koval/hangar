@@ -11,7 +11,7 @@ sandbox that holds one.
 
 ## Turning it on
 
-1. The git gateway must be configured (`HANGAR_GATEWAY_URL`, [security.md](security.md#git-credential-gateway)): the
+1. The git gateway must be configured (`HANGAR_GATEWAY_URL`, [security/git-gateway.md](security/git-gateway.md)): the
    model gateway serves `/model/{provider}/...` on the same port (8788), which sandboxes may already reach.
 2. Set it on the environment:
 
@@ -95,7 +95,7 @@ genesis hash, `sha256("hangar.tape/v1\n" + run)`. An entry changed, dropped, add
 A response past 64 MB, or one the harness hung up on, is marked `truncated`.
 
 **Untrusted.** `index.json`'s `untrusted` is true, with `untrusted_reasons`, when the run's job has an untrusted
-source (`untrusted_source`) or an untrusted context item, or when its taint fired ([security.md](security.md#taint)).
+source (`untrusted_source`) or an untrusted context item, or when its taint fired ([security/taint.md](security/taint.md)).
 A tainted tape can replay an attacker's tool call: it can't serve as promotion evidence without review (flightdeck's
 rule), and replays run with egress `none`.
 

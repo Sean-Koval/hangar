@@ -23,7 +23,7 @@ refuses to update or delete a row (SQLite triggers), and there is no `PUT` or `D
 | `grader_digest` | The grader's identity: command, files, mode, network and timeout (not the per-experiment canary) |
 | `egress_digest` | The environment's egress policy |
 | `knowledge_snapshot` | Optional: a retrieval snapshot id, once a retrieval tool exists |
-| `overlay_digest` | Only on pin sets an overlay experiment records ([jobs.md](../jobs.md#9-experiments)) |
+| `overlay_digest` | Only on pin sets an overlay experiment records ([jobs/experiments.md](../jobs/experiments.md)) |
 | `created_by`, `created_at` | The first creator; not part of the id |
 
 ```bash

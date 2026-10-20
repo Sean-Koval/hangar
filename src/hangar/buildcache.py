@@ -1,4 +1,4 @@
-"""Warm dependency and compile caches for sandboxes (--- caches; docs/caches.md, docs/security.md#build-caches).
+"""Warm dependency and compile caches for sandboxes (--- caches; docs/caches.md, docs/security/build-caches.md).
 
 Every new sandbox used to install dependencies and compile from nothing. A repo build (#93) has the checkout's
 `node_modules` or `.venv`, but not what lives in $HOME (the npm, uv, Cargo, Go and Maven caches), not a branch whose

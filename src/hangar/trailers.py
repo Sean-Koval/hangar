@@ -1,6 +1,6 @@
-"""Which harness wrote a PR (#137; docs/jobs.md#the-pull-request, docs/landing.md): git trailers at the end of a
-delivered job's PR body and in the merge commit hangar lands, so a reviewer, a merged-PR metric or `git log` can join
-a change to the harness and environment it was written with.
+"""Which harness wrote a PR (#137; docs/jobs/working-with-the-agent.md#the-pull-request, docs/landing.md): git trailers
+at the end of a delivered job's PR body and in the merge commit hangar lands, so a reviewer, a merged-PR metric or
+`git log` can join a change to the harness and environment it was written with.
 
     Hangar-Job: job-1a2b3c4d
     Harness-Digest: sha256:...

@@ -1,6 +1,6 @@
 # Context exchange: getting context in and results out
 
-MCP clients (Claude Code, Codex, Cursor, other agents), services and the CLI hand work to cloud agents in [jobs](jobs.md) and [sessions](sessions.md). This page is how context moves both ways:
+MCP clients (Claude Code, Codex, Cursor, other agents), services and the CLI hand work to cloud agents in [jobs](jobs/README.md) and [sessions](sessions.md). This page is how context moves both ways:
 
 - **in:** the request, files, and your local work in progress (uncommitted changes and unpushed commits);
 - **during:** progress, and questions the agent can't answer itself;

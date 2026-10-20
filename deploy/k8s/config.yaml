@@ -23,16 +23,16 @@ data:
   # `hangar power up` runs this Cloud Run job (docs/gke.md section 6). deploy/gke/up.sh sets it from
   # `terraform output power_up_job` when the power schedule is on.
   # HANGAR_POWER_UP_JOB: "projects/PROJECT_ID/locations/REGION/jobs/hangar-power-up"
-  # Git credential gateway (docs/security.md): jobs and sessions push through hangar, no GitHub token in sandboxes.
+  # Git credential gateway (docs/security/README.md): jobs and sessions push through hangar, no GitHub token in sandboxes.
   # On by default (gateway.yaml adds the Service): intake-triggered jobs need it (HANGAR_INTAKE_POSTURE below).
   HANGAR_GATEWAY_URL: "http://hangar-gateway.hangar.svc:8788"
   # HANGAR_GATEWAY_CREDENTIAL: "github-app"  # vault credential (github_app or git_token) used upstream
-  # Egress allowlists (docs/security.md#egress-allowlists): sandboxes of an `allowlist`/`none` environment, and every
+  # Egress allowlists (docs/security/egress.md): sandboxes of an `allowlist`/`none` environment, and every
   # intake-triggered job's sandbox, reach the internet only through hangar's egress proxy on the gateway Service.
   # HANGAR_EGRESS_DEFAULT applies to environments that don't set egress.mode.
   HANGAR_EGRESS_URL: "http://hangar-gateway.hangar.svc:3128"
   # HANGAR_EGRESS_DEFAULT: "allowlist"
-  # Intake posture (docs/security.md#intake-posture): jobs from GitHub, Jira, Slack, GitHub Projects and inbound
+  # Intake posture (docs/security/front-doors.md#intake-posture): jobs from GitHub, Jira, Slack, GitHub Projects and inbound
   # webhooks need the gateway and get at least `allowlist` egress. "warn" for one release while you set the gateway
   # up (docs/upgrading.md); "off" is not recommended.
   HANGAR_INTAKE_POSTURE: "enforce"
