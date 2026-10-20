@@ -5,7 +5,7 @@ weeks 3–4 with all 6 on 3 repos. Every step names the command and the page it 
 main. It ends, for each repo, with `hangar repo check` green.
 
 Read it with [team.md](../team.md) (people and credentials), [landing.md](../landing.md) (the App and branch
-protection), [intake.md](../intake.md) (Jira and GitHub Projects) and [security.md](../security.md) (the gateway).
+protection), [intake.md](../intake.md) (Jira and GitHub Projects) and [security/README.md](../security/README.md) (the gateway).
 
 **Three hard stops.** If any of these is true, the repo isn't onboarded, whatever else is green:
 
@@ -38,11 +38,11 @@ of the per-repo checklist (#154).
 ### 1. Control-plane prerequisites
 
 The safe release (#120–#132) is deployed: secure defaults for intake jobs, API keys for automated work, one approval
-rule ([upgrading.md, the safe release](../upgrading.md#the-safe-release-120132)). It changes every environment's image,
+rule ([upgrading.md, the safe release](../releases/safe-release.md)). It changes every environment's image,
 so deploy it by hand in the power-down window, **01:00–09:50 ET**, while the sandbox pools are down and the control
 plane is up ([team-scale.md, applying it](../team-scale.md#applying-it)). Later routine deploys go through
 `deploy.yml` while the pools are on, 10:00–01:00 ET ([upgrading.md, when to deploy](../upgrading.md#when-to-deploy)).
-Then the [adopt & capture upgrade](../upgrading.md#adopt-capture-and-frontier-133189) (#133–#189), which deploys by
+Then the [adopt & capture upgrade](../releases/adopt-capture.md) (#133–#189), which deploys by
 day.
 
 ```bash
@@ -85,11 +85,11 @@ Steps 4–7 for each repo: repo 1 in phase 1, repos 2 and 3 in phase 2.
 ### 4. The repo
 
 - **Allowlisted.** In `HANGAR_GITHUB_REPOS` with its environment: `hangar setup github` adds it and its webhook
-  ([jobs.md §4](../jobs.md#4-trigger-from-github)).
+  ([jobs.md §4](../jobs/from-github-slack-jira.md#4-trigger-from-github)).
 - **The GitHub App installed on this repo only** (Contents and Pull requests: Read and write, nothing else), and
   `HANGAR_GITHUB_APP_CREDENTIAL` set ([landing.md §1](../landing.md#1-the-github-app)). Not on any bypass list.
 - **`credential_mode: gateway`** on the repo's environment, with `HANGAR_GATEWAY_URL` set
-  ([security.md, turning it on](../security.md#turning-it-on)).
+  ([the git gateway, turning it on](../security/git-gateway.md#turning-it-on)).
 - **Branch protection** on the default branch ([landing.md §3](../landing.md#3-the-branch-protection-to-enable)):
   a pull request with at least 1 approval, dismiss stale approvals on a push, approval of the most recent push,
   required status checks, and *Allow auto-merge* in Settings → General.
@@ -129,7 +129,7 @@ hangar` has a different harness from the author's review every agent PR first ([
   projects already mapped. Tickets follow the
   [agent ticket template](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md).
 - **GitHub**: the `hangar` label (`HANGAR_GITHUB_TRIGGER_LABEL`) exists on the repo; labelling an issue starts a job
-  ([jobs.md §4](../jobs.md#4-trigger-from-github)).
+  ([jobs.md §4](../jobs/from-github-slack-jira.md#4-trigger-from-github)).
 - **Slack**: the team's channel maps to the repo in `HANGAR_SLACK_CHANNELS`, and the app is invited to it
   ([slack.md](../slack.md)).
 

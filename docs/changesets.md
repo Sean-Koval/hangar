@@ -7,7 +7,7 @@ Some work doesn't fit in one repository. A ticket that adds a table, the queue t
 - **Landing in order.** Each PR lands under its own repo's [policy](repo-policy.md) (its approvers, CODEOWNERS, [self-approval](landing.md#self-approval-who-may-be-the-only-approver), taint), with one more gate: the repos earlier in the profile's `land_order` have merged.
 - **The deploy repo last.** Once every changed repo has merged, a deterministic step (no agent) changes the trigger-deployment repo, for example bumping an image tag, and opens its PR under that repo's own policy. Its merge is your CD's input.
 
-Single-repo jobs are unchanged: a job without `changeset` runs exactly as [jobs](jobs.md) describes.
+Single-repo jobs are unchanged: a job without `changeset` runs exactly as [jobs](jobs/README.md) describes.
 
 ## The profile
 
@@ -146,7 +146,7 @@ Placeholders: `{job}`, `{ticket}`, `{ticket_key}` (`PAY-412` for `jira:PAY-412`)
 
 - No atomic cross-repo merge and no rollback: the PRs land one after another, and a broken set stops, nothing more.
 - One deploy environment per set, and no best-of-N over a set.
-- Every role's repo must be on the same git host for the [git gateway](security.md#git-credential-gateway) to serve them; one that isn't gets no grant, and the sandbox's warnings say so.
+- Every role's repo must be on the same git host for the [git gateway](security/git-gateway.md) to serve them; one that isn't gets no grant, and the sandbox's warnings say so.
 - Session checkpoints hold the primary role's checkout. The other roles' work is safe once hangar has pushed it (at the end of every turn); a resumed sandbox clones them again and continues their branches.
 
 ## API and CLI

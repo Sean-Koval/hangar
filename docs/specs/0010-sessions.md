@@ -1,8 +1,11 @@
 # 0010: Sessions, resumable streams of work
 
+!!! note "Design record"
+    Written 2026-10-12; **built**. The current behaviour is on [sessions.md](../sessions.md); the status line below says what shipped.
+
 Status: built (2026-10-15): #37; M4 partly. · Date: 2026-10-12 · Builds on: 0001 (runs, harness resume), 0006 (environments, harnesses), 0009 (jobs)
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 ## 1. Summary
 

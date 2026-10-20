@@ -1,4 +1,4 @@
-"""Injection canaries in shadow runs (#184; docs/security.md#injection-canaries, docs/repo-policy.md#shadows).
+"""Injection canaries in shadow runs (#184; docs/security/taint.md#injection-canaries, docs/repo-policy.md#shadows).
 
 A repo's shadow policy (#183) may add `canary: {p, placements}`. A shadow chosen for a canary (probability `p`) gets
 one benign instruction, carrying a fresh token `CANARY-<8 hex>`, planted where untrusted text reaches the agent:

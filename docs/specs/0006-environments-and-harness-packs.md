@@ -1,8 +1,11 @@
 # 0006: Environments and harness packs
 
+!!! note "Design record"
+    Written 2026-10-12; **built**. The current behaviour is on [environments.md](../environments.md) and [harnesses.md](../harnesses.md); the status line below says what shipped.
+
 Status: built (2026-10-15): M1–M3 (#22); M4–M7 not scheduled. · Date: 2026-10-12.
 
-> Part of a set. Ownership, cross-spec decisions and the build order are in [docs/specs/README.md](README.md) (decision 14).
+> Part of a set. Ownership, cross-spec decisions and the build order are in [docs/README.md](README.md) (decision 14).
 
 ## 1. Summary
 

@@ -19,7 +19,7 @@ builds, and compile output.
 
 Who may write what is the part that matters most. Members, branches and untrusted repos share this infrastructure,
 so a cache written from one sandbox must never feed another person's build. The rules are below, and the threat model
-is in [security.md](security.md#build-caches).
+is in [security/build-caches.md](security/build-caches.md).
 
 ## Turning it on
 
@@ -55,9 +55,9 @@ Each repo's caches have layers:
   there too. The layer belongs to the repo's builds in one environment, and only that environment's sandboxes read
   it. An environment's image and `setup` run in its builds before `install`, and members create environments, so a
   build in one member's environment never writes what sandboxes of another environment read. A build with
-  [build secrets](security.md#build-secrets) has every upload scanned for them from the start of `install`, and
+  [build secrets](security/credentials.md#build-secrets) has every upload scanned for them from the start of `install`, and
   can't store what the scan can't look into (zstd, zip and the like), so its sccache and turbo entries aren't kept
-  ([security.md](security.md#build-caches)).
+  ([security/build-caches.md](security/build-caches.md)).
 - **A private layer per session (or sandbox) and branch.** A session's or job's sandbox reads its own private layer
   first and the shared layer second. Its writes, from sccache, Bazel, turbo or `hangar-cache save`, go to its
   private layer. Nothing else ever reads that layer: not another session, not another person, and not a build.

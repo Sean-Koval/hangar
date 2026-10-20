@@ -92,7 +92,7 @@ Following them:
 `GET /api/fleet/stream` is the Fleet page's read (`GET /api/fleet`) as it changes: a `snapshot`, then `agent` (one
 unit, at most one per agent every 2 s), `gone`, `inbox` and `summary` events, resumable with `Last-Event-ID`. A
 browser gets a one-time ticket from `POST /api/fleet/tickets` (any `user` token: the stream shows that person's
-fleet). See [the fleet stream](console.md#the-fleet-stream).
+fleet). See [the fleet stream](fleet-api.md#the-fleet-stream).
 
 ## File watches
 

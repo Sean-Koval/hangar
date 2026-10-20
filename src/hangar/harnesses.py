@@ -563,7 +563,7 @@ class McpServer(BaseModel):
     harnesses: list[str] | None = None  # default: every harness
     # --- taint (#129): whether its tool results can carry text nobody hangar trusts wrote (issue comments, pages,
     # messages). Unset: `untrusted` for a remote (url) server, `trusted` for a local stdio one. A call to an untrusted
-    # server's tool taints the turn (docs/security.md#taint).
+    # server's tool taints the turn (docs/security/taint.md).
     trust: Literal["trusted", "untrusted"] | None = None
     # --- taint (#130): its tools that change something (fnmatch patterns of tool names, e.g. "create_*"). After an
     # untrusted read, a call to one needs a person under approvals ask and deny-risky.

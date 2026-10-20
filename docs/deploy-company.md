@@ -19,7 +19,7 @@ secret manager and hangar's admin configuration kept as reviewed files in your o
 The owner's path is unchanged: `deploy/k8s`, `deploy/gke/up.sh`, `deploy/terraform/gke` and `deploy.yml` work as
 before. The base and `deploy/k8s` share five files (namespaces, the gateway, the sandbox and envd network policies, the
 heavy admission policy). `tests/test_deploy_kustomize.py` keeps them byte-identical, so the
-[network checks](security.md) cover both.
+[network checks](security/README.md) cover both.
 
 ## What the cluster needs
 
@@ -123,7 +123,7 @@ create or have cert-manager issue (add its issuer annotation in your overlay).
 **The `hangar` Secret** holds `HANGAR_ADMIN_TOKEN` and `HANGAR_SECRET_KEY`. The `external-secrets` component syncs it
 from remote keys `hangar-admin-token` and `hangar-secret-key`; patch the names if yours differ. Without ESO, create it
 once by hand as [gke.md](gke.md#2-control-plane) shows. `HANGAR_SECRET_KEY` seals hangar's vault: rotate it with
-[`hangar admin rotate-key`](security.md#rotating-the-vault-key), never by replacing it.
+[`hangar admin rotate-key`](security/vault-key.md#rotating-the-vault-key), never by replacing it.
 
 Build and check the overlay, then let your CD apply it:
 

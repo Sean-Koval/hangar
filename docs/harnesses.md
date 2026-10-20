@@ -281,7 +281,7 @@ shape decides and hangar says so (`modelpolicy.is_concrete`; every built-in id a
 - **Experiments refuse aliases.** An experiment (and the trials API, #178) won't start when a variant's model, after
   its policy is resolved, isn't concrete; the error names the alias and the ids `balanced` and `frontier` resolve to
   now. A policy is fine: it is resolved once, at the start, and every trial gets that id
-  ([jobs.md](jobs.md#9-experiments)).
+  ([jobs/experiments.md](jobs/experiments.md)).
 - **Jobs and sessions keep working with aliases**, but their manifests record `model.concrete: false` (the outbox's `run.json`, #163, carries it as
   `pinned: false`), so evaluation leaves them out.
 

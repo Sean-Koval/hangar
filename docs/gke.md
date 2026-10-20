@@ -85,7 +85,7 @@ gs://<project>-hangar-runs`, `hangar outbox status` lists what's queued, and onc
 ```bash
 hangar login https://<ip>.sslip.io --token-file ~/.hangar/gke-admin-token
 hangar doctor --fix              # each problem, with the fixes it can apply on its own
-hangar setup github              # token, webhook secret, repo webhook, settings, test delivery (jobs.md §4)
+hangar setup github              # token, webhook secret, repo webhook, settings, test delivery (jobs/README.md §4)
 hangar connect claude-code       # or codex, cursor, vscode, gemini, claude-desktop (clients.md)
 ```
 
@@ -445,7 +445,7 @@ hangar doctor              # "database backups": fails when the newest is more t
 
 `HANGAR_BACKUP_HOURS` changes the interval (`0` turns it off; unset means 24 with a bucket, off without one) and `HANGAR_BACKUP_KEEP` the count. Both apply without a restart, from the next scheduled run (within an hour when backups were off). Without a bucket, backups go to `<data dir>/sessions/_backups`, which is the same disk: use PD snapshots instead (below).
 
-**Keep the vault key somewhere else.** A backup is useless without the `HANGAR_SECRET_KEY` it was encrypted with, and so is everything in the vault. `up.sh` keeps it in the `hangar` Secret, which dies with the cluster. Keep it in Secret Manager, piped straight there, not in a file on your machine; [security.md](security.md#the-vault-key) has how to rotate it:
+**Keep the vault key somewhere else.** A backup is useless without the `HANGAR_SECRET_KEY` it was encrypted with, and so is everything in the vault. `up.sh` keeps it in the `hangar` Secret, which dies with the cluster. Keep it in Secret Manager, piped straight there, not in a file on your machine; [security/vault-key.md](security/vault-key.md) has how to rotate it:
 
 ```bash
 kubectl -n hangar get secret hangar -o jsonpath='{.data.HANGAR_SECRET_KEY}' | base64 -d | \
@@ -541,8 +541,8 @@ Long streams (a command's output, a terminal) end after the backend timeout (one
 ## Notes
 
 - **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
-- **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. `config.yaml` sets `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788`, which keeps GitHub tokens out of sandboxes ([security.md](security.md#git-credential-gateway)); intake-triggered jobs need it.
-- **Intake posture.** `config.yaml` sets `HANGAR_INTAKE_POSTURE: "enforce"`: jobs from GitHub, Slack, Jira, GitHub Projects and webhooks need the gateway and get at least `allowlist` egress, even in an `open` environment ([security.md](security.md#intake-posture)). `"warn"` runs them as before for one release ([upgrading.md](upgrading.md)).
-- **Egress allowlists.** The same Service serves hangar's egress proxy on 3128. `config.yaml` sets `HANGAR_EGRESS_URL=http://hangar-gateway.hangar.svc:3128`. Pods of environments with `egress.mode: allowlist` or `none` are then labelled `dev.hangar/egress=proxied` and reach only the gateway and the proxy, with no DNS (hangar's Service names are in their /etc/hosts). Their SandboxTemplate carries that policy as its `networkPolicy`, in place of Agent Sandbox's default policy, which allows the internet; the template stays `Managed` ([security.md](security.md#egress-allowlists)).
+- **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. `config.yaml` sets `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788`, which keeps GitHub tokens out of sandboxes ([security/git-gateway.md](security/git-gateway.md)); intake-triggered jobs need it.
+- **Intake posture.** `config.yaml` sets `HANGAR_INTAKE_POSTURE: "enforce"`: jobs from GitHub, Slack, Jira, GitHub Projects and webhooks need the gateway and get at least `allowlist` egress, even in an `open` environment ([security/front-doors.md](security/front-doors.md#intake-posture)). `"warn"` runs them as before for one release ([upgrading.md](upgrading.md)).
+- **Egress allowlists.** The same Service serves hangar's egress proxy on 3128. `config.yaml` sets `HANGAR_EGRESS_URL=http://hangar-gateway.hangar.svc:3128`. Pods of environments with `egress.mode: allowlist` or `none` are then labelled `dev.hangar/egress=proxied` and reach only the gateway and the proxy, with no DNS (hangar's Service names are in their /etc/hosts). Their SandboxTemplate carries that policy as its `networkPolicy`, in place of Agent Sandbox's default policy, which allows the internet; the template stays `Managed` ([security/egress.md](security/egress.md)).
 - **Expiry.** Each claim gets `lifecycle.shutdownTime` (sandbox TTL plus 5 minutes) as a backstop to hangar's reaper.
 - **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. It backs itself up to the bucket; PD snapshots are the alternative (§7).

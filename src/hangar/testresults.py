@@ -1,4 +1,4 @@
-"""Structured results of every check hangar runs (--- testresults; docs/jobs.md, "Test results").
+"""Structured results of every check hangar runs (--- testresults; docs/jobs/test-results.md).
 
 `verify` used to come back as an exit code and the end of its output. Now every run of it that hangar makes, or
 that the in-turn gate makes for the agent, leaves its test reports (testreports.py parses them) as a TestRun:

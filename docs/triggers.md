@@ -1,6 +1,6 @@
 # Triggers: approvals, inbound webhooks and schedules
 
-Besides the API, MCP, the CLI and GitHub issues ([jobs.md](jobs.md)), jobs can start from any system that sends webhooks, and on a schedule. GitHub triggers from people you don't trust wait for approval. The plan is in [spec 0011](specs/0011-factory-roadmap.md), workstream A.
+Besides the API, MCP, the CLI and GitHub issues ([jobs/README.md](jobs/README.md)), jobs can start from any system that sends webhooks, and on a schedule. GitHub triggers from people you don't trust wait for approval. The plan is in [spec 0011](specs/0011-factory-roadmap.md), workstream A.
 
 ## 1. Who can start work from GitHub
 
@@ -60,7 +60,7 @@ GitHub signs only the body, so hangar treats the body as the delivery: a second 
 
 GitHub never retries a failed delivery on its own. So at startup hangar lists each repo's webhook deliveries since its last start (`GET /repos/{owner}/{repo}/hooks/{hook_id}/deliveries`, at most the 3 days GitHub keeps) and asks GitHub to redeliver every one with no successful attempt (`POST …/deliveries/{id}/attempts`). That covers everything sent while the cluster was down. It does the same for the organization webhook of each organization in `HANGAR_GITHUB_PROJECTS` (`GET /orgs/{org}/hooks/{hook_id}/deliveries`, `projects_v2_item` only), which needs the organization's Webhooks read and write permission ([intake.md](intake.md#2-the-token)). The redeliveries come in through the webhook route like any other delivery. The control plane's token already has the Webhooks read and write permission this needs (`hangar setup github`). Turn it off with `HANGAR_GITHUB_REDELIVER_ON_START=false`.
 
-Each GitHub user is a caller for [rate limits and the active-job cap](security.md#front-door-limits). Past a rate limit the webhook answers 429; a trusted person gets a comment saying so, someone untrusted gets none (so a flood of `/hangar` comments can't become a flood of hangar comments). The same goes for the active-job cap. Submissions that wait for approval are counted in a source bucket of their own, so outsiders can't use up the one trusted people need. Jobs waiting for approval count toward their requester's cap.
+Each GitHub user is a caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits). Past a rate limit the webhook answers 429; a trusted person gets a comment saying so, someone untrusted gets none (so a flood of `/hangar` comments can't become a flood of hangar comments). The same goes for the active-job cap. Submissions that wait for approval are counted in a source bucket of their own, so outsiders can't use up the one trusted people need. Jobs waiting for approval count toward their requester's cap.
 
 ### Untrusted text in the prompt
 
@@ -129,14 +129,14 @@ Responses:
 | `404` | No such source. |
 | `413` | Body larger than `HANGAR_INBOUND_MAX_BODY_BYTES` (1 MB). |
 | `422` | The payload doesn't make a valid job (e.g. empty instructions, repo not mapped, too many active jobs). |
-| `429` | The source is over its [rate limit](security.md#front-door-limits); the sender should retry later. |
+| `429` | The source is over its [rate limit](security/front-doors.md#front-door-limits); the sender should retry later. |
 | `503` | The source is misconfigured (bad settings, or its secret isn't in the vault). |
 
 Signatures are compared in constant time. Jobs from a webhook have requester and owner `webhook:<source>`, are fenced like a `jobs` service token (only the configured, mapped repo and its environments), and their text is untrusted input to the agent.
 
 **Replays.** A delivery is identified by what its signature covers. The delivery id header isn't signed, and neither is a timestamp header unless `signed_payload` contains `{timestamp}`, so whoever replays a captured request can change both; hangar ignores them for that decision and remembers signed content for `HANGAR_WEBHOOK_REPLAY_HOURS` (7 days, across restarts). `max_skew_seconds` protects only a timestamp that is signed: Sentry's `Sentry-Hook-Timestamp`, for example, isn't part of its signature. Where a provider signs a timestamp, configure it (`signed_payload: "{timestamp}.{body}"`): a replay is then rejected outright once the timestamp is stale.
 
-**Limits.** Each source is one caller for [rate limits and the active-job cap](security.md#front-door-limits): an alert storm starts at most 10 jobs at once and then 30 a minute, by default.
+**Limits.** Each source is one caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits): an alert storm starts at most 10 jobs at once and then 30 a minute, by default.
 
 ## 3. Scheduled jobs
 
@@ -174,4 +174,4 @@ The same over REST (`/api/schedules`: `GET`, `POST`, `GET/PATCH/DELETE /{id or n
 | `HANGAR_SCHEDULE_POLL_SECONDS` | 10 | Scheduler and approval-expiry loop |
 | `HANGAR_WEBHOOK_REPLAY_HOURS` | 168 | How long signed GitHub and inbound deliveries are remembered |
 
-Schedules aren't rate limited: each slot runs at most once by design. Rate limits and caps are in [security.md](security.md#front-door-limits).
+Schedules aren't rate limited: each slot runs at most once by design. Rate limits and caps are in [security/front-doors.md](security/front-doors.md#front-door-limits).

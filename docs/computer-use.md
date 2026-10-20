@@ -132,7 +132,7 @@ egress policy lets out. What stops it there:
   short-lived, and browsing only the app under test and what it needs. Playwright is pinned and should be bumped
   with Chromium security releases.
 - **Encrypted ClientHello is off.** The egress proxy refuses ClientHellos with ECH, which would hide the site
-  behind its CDN's name ([security.md](security.md#egress-allowlists)), and Chromium sends a GREASE ECH extension by
+  behind its CDN's name ([security/egress.md](security/egress.md)), and Chromium sends a GREASE ECH extension by
   default. The image sets the `EncryptedClientHelloEnabled: false` managed policy for Chromium, Chrome and Chrome
   for Testing, and `hangar-agent browse` also passes `--disable-features=EncryptedClientHello`. A browser of the
   agent's own needs the same switch to work through the proxy.

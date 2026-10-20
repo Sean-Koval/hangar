@@ -1,4 +1,4 @@
-"""The Docker network sandboxes run on (workstream isolation; docs/security.md).
+"""The Docker network sandboxes run on (workstream isolation; docs/security/README.md).
 
 On Docker's default bridge, and on any bridge network created without options, containers reach every port of each
 other: hangar-envd (49983), dev servers, whatever an agent listens on. Hangar puts sandboxes on a network of its own,
