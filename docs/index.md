@@ -37,7 +37,7 @@ Many doors bring work in; hangar runs it in a sandbox and verifies it; the pull 
 
 ## What it looks like
 
-The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place. [The web console](console.md) walks through it, the Jobs and Sessions pages and the Fleet's four views.
+The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place. [The web console](console.md) walks through it, the Jobs and Sessions pages and the Fleet.
 
 ![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](assets/front/ui-needs.png)
 
@@ -69,5 +69,5 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 <div class="af-tools">
   <a class="af-tool" href="guide/#quickstart"><small>Five minutes</small><b>Quickstart</b><span>Docker and uv on a laptop: <code>hangar up</code>, a credential, a first task, your own environment, then GKE and a team.</span></a>
   <a class="af-tool" href="concepts/"><small>The words</small><b>Concepts</b><span>Environment, harness, sandbox, session and job, and what hangar gives you that a laptop does not.</span></a>
-  <a class="af-tool" href="console/"><small>The screens</small><b>The web console</b><span>Needs you, Jobs, Sessions, the Fleet four ways, terminals, and what each action does.</span></a>
+  <a class="af-tool" href="console/"><small>The screens</small><b>The web console</b><span>Needs you, Jobs, Sessions, the Fleet, terminals, and what each action does.</span></a>
 </div>

@@ -20,8 +20,8 @@ Writes, next to this file (or into --out):
   hangar-demo.gif / .mp4        a ticket becomes a sandbox run and a draft PR (README: the GIF; docs: the MP4)
   hangar-review.gif / .mp4      the review loop: decide what is held, read the change, comment back to the agent
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
-  ui-fleet-{board,bays,columns,owners}.png    the Fleet page's four views, from the demo run (docs/console.md)
-  ui-needs.png, ui-fleet.png, ui-review.png   Needs you, the Fleet board and the Diff, from the fixture (cropped)
+  ui-fleet-board.png            the Fleet's Board with an agent open in place, from the demo run (docs/console.md)
+  ui-needs.png, ui-fleet.png, ui-review.png   Needs you (the deck), the Fleet with its deck, and the Diff, from the fixture
   inbox.png                     `hangar inbox` in a terminal
   hangar-suite.svg, -dark.png, -light.png     the diagram (diagram.py)
 CI (.github/workflows/front-page.yml) runs this, checks the files and their sizes, and keeps them as an artifact.
@@ -51,10 +51,10 @@ from fixture import Fixture  # noqa: E402
 W, H = 1440, 900  # the recordings' viewport; the demo run's stills are the same frame at 2x
 ZOOM = (1040, 650)  # the demo recording's close-up while the agent works: the job's detail panel, same aspect as W x H
 NARROW = 820  # the viewport for the Needs-you and Diff crops: one column, so the crop is 820 px wide at 1x
-DOCKED = 1100  # the narrowest viewport where the Fleet's detail panel docks beside the board
+DOCKED = 1280  # the Fleet still: the deck beside its side column and the rows at their full ten columns
 VIDEO = (1280, 800)  # the MP4's size; the GIF is 960 wide
 MAX_SECONDS = 20  # the demo recording's length
-FLEET_VIEWS = ("bays", "columns", "owners", "board")  # the Board last: it is shot with a held sandbox selected
+FLEET_VIEWS = ("board",)  # the Board, with an agent open in place (ui-fleet.png, from the fixture, is the List)
 MAX_BYTES = 3_000_000  # each asset stays small enough for the repo
 DEMO_PACE = "0.6"  # the scripted agent's pauses, so the ticket's run fits a 20 s recording
 FONTS = (
@@ -416,13 +416,13 @@ async def ui(pw, out: Path, work: Path) -> None:
     await tab.wait_for_timeout(1200)
     await tab.screenshot(path=str(out / "ui-sessions.png"))
     print("wrote", out / "ui-jobs.png", "and", out / "ui-sessions.png")
-    # the fleet four ways; on the Board, the sandbox waiting on a person is selected, so its detail panel shows
+    # the fleet both ways; on the Board, the first agent opens in place into its console
     for view in FLEET_VIEWS:
         await tab.goto(f"{demo.URL}/#fleet?view={view}", wait_until="networkidle")
-        await tab.wait_for_selector(f'#view-fleet[data-fleet-view="{view}"] #bays [data-tile]')
+        await tab.wait_for_selector(f'#view-fleet[data-fleet-view="{view}"] #fleet-body .af-agent')
         if view == "board":
-            await tab.locator("#bays [data-tile].af-stand--approval").first.click()
-            await tab.wait_for_selector("#fleet-detail .fd")
+            await tab.locator("#fleet-body .af-agent__face").first.click()
+            await tab.wait_for_selector("#fleet-body .af-agent.is-open .af-console")
         await tab.wait_for_timeout(800)
         await tab.screenshot(path=str(out / f"ui-fleet-{view}.png"))
         print("wrote", out / f"ui-fleet-{view}.png")
@@ -463,14 +463,14 @@ async def _fixture_context(browser, width: int):
 
 
 async def console(pw, out: Path) -> None:
-    """Needs you, the Fleet board with a held call docked beside it, and the Diff with a comment: stills at 2x,
+    """Needs you (the decision deck), the Fleet with its deck and the first rows, and the Diff with a comment: stills at 2x,
     each cropped to what its caption names, from a viewport narrow enough that the crop reads at a README's width."""
     browser = await pw.chromium.launch()
     fx = Fixture()
     narrow = await _fixture_context(browser, NARROW)
     page = await _console_page(narrow, fx, "needs")
-    # the page header, a job waiting for approval, the held push with its three decisions, and a question answered in place
-    await _crop(page, out / "ui-needs.png", "#view-needs .af-page-head", "#view-needs .af-question")
+    # the page header and the deck: the held push on top, the next ones peeking, the up-next list
+    await _crop(page, out / "ui-needs.png", "#view-needs .af-page-head", "#needs-deck .af-deck")
     await page.close()
     page = await _console_page(narrow, fx, "jobs")
     await page.locator("#job-list li", has_text="Push the refunds").first.click()
@@ -486,11 +486,9 @@ async def console(pw, out: Path) -> None:
     await page.close()
     await narrow.close()
     docked = await _fixture_context(browser, DOCKED)
-    page = await _console_page(docked, fx, "fleet?view=board")
-    await page.locator('[data-tile][aria-label*="Push the refunds"]').first.click()
-    await page.wait_for_timeout(500)
-    # the Fleet header, the board and the selected sandbox's approval card docked beside it
-    await _crop(page, out / "ui-fleet.png", "#view-fleet", "#fleet-detail")
+    page = await _console_page(docked, fx, "fleet")
+    # the headline, the deck band and the first agents of the first environment
+    await _crop(page, out / "ui-fleet.png", "#view-fleet .af-page-head", "#fleet-body .af-runway .af-agent:nth-child(5)")
     await page.close()
     await docked.close()
     await browser.close()
@@ -507,17 +505,18 @@ async def review(pw, out: Path, work: Path) -> None:
     hold = page.wait_for_timeout
     frames = Frames(page, work)
     frames.start()
-    await page.evaluate("fp.caption('1', 'Needs you: held tool calls, questions, failed runs and PRs to review, newest first')")
+    await page.evaluate("fp.caption('1', 'Needs you: one decision at a time, soonest to expire on top')")
     await hold(2200)
-    cargo = page.locator("[data-approval]", has_text="Cargo.toml").first
-    await cargo.scroll_into_view_if_needed()
-    await cargo.locator('[data-decide="allow_always"]').hover()
+    await page.locator('#needs-deck [data-dk="go"]', has_text="Shrink the KV cache").click()
+    await hold(700)
+    top = page.locator('#needs-deck .af-decision[data-k="0"]')
+    await top.locator('[data-dk="allow_always"]').hover()
     await hold(500)
-    await cargo.locator('[data-decide="allow_always"]').click()
-    await page.evaluate("fp.caption('2', 'Allow the edit for this turn: the agent carries on, the card goes')")
-    await hold(2200)
+    await top.locator('[data-dk="allow_always"]').click()
+    await page.evaluate("fp.caption('2', 'Allow the edit for this turn: the agent carries on, the next card rises')")
+    await hold(4200)
     await page.evaluate("window.scrollTo(0, 0)")
-    await page.locator("[data-approval]", has_text="git push origin main").first.locator("[data-go]").click()
+    await page.locator('#needs-deck .af-decision', has_text="git push origin main").first.locator("[data-go]").click()
     await hold(900)
     await page.evaluate("fp.caption('3', 'The held push waits on its job, with the change the agent made so far')")
     await hold(1500)

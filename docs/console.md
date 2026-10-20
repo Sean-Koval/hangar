@@ -6,9 +6,9 @@ it to `~/.hangar/bootstrap-token` (in its data directory). The console uses an a
 the token stays in that browser until you choose **Sign out**.
 
 The top bar's first four sections are where the work happens, and this page covers them: **Needs you** (what waits on
-a person), **Jobs**, **Sessions** and **Fleet** (every sandbox, four ways), each with a count. The other six are
+a person), **Jobs**, **Sessions** and **Fleet** (every agent, as a list or a board), each with a count. The other six are
 Environments, Credentials, Snapshots, Connect (MCP snippets and API tokens), Activity (the audit log) and Usage (spend,
-budget stops). The open section refreshes every 4 seconds while the browser tab is visible, and the Needs-you count
+budget stops). The Fleet and Needs you stay current from `GET /api/fleet/stream` (every 4 seconds when the stream is not available); the other open sections refresh every 4 seconds while the browser tab is visible, and the Needs-you count
 about every half minute elsewhere. On a phone (below 760 px) the first four sections move to a bottom tab bar, and the
 other six, with the providers' state, sit under **More**.
 
@@ -17,9 +17,16 @@ The console follows the browser's light or dark setting. Terminals are always da
 ## Needs you
 
 Everything waiting on a person, from the same list `hangar inbox`, Slack and MCP clients get (`GET /api/inbox`): your
-own work, and for an admin also the work nobody in particular owns, such as jobs from GitHub issues and Slack.
+own work, and for an admin also the work nobody in particular owns, such as jobs from GitHub issues and Slack. The page
+reads it with the Fleet (`GET /api/fleet` carries the inbox, and its stream keeps it current).
 
-First come the cards you decide in place:
+![Needs you: the held push on top of the deck with its command, changes and expiry, Deny and Approve push; the next decisions peeking behind it and listed under Up next](assets/front/ui-needs.png)
+
+It is a **deck**: one decision at a time, the soonest to expire on top, the next two peeking behind it, "1 of 7",
+previous and next, and an up-next list to jump to any of them. Decisions (a person is needed now) come before what
+stopped. Deciding happens on the card; a verdict line says what happened ("Approved by Sean; codex is running git push
+origin main"), the agent's row on the Fleet flips at once, and after a few seconds the card slides away and the next
+one rises. If someone else decided first, or the wait expired, the card says so and goes. The kinds:
 
 - **A held tool call**: a running turn under `approvals: ask` wants to run a command. The card shows the exact
   command, which agent asked and in which sandbox, for whom and how long ago, the policy that held it (and whether the
@@ -33,14 +40,20 @@ First come the cards you decide in place:
 - **A question** the agent asked: type an answer (or pick one of the options it offered) and **Answer**. The answer
   goes back as the agent's next message.
 
-**Deny** and **Reject** need a reason: the field opens in the card, and the reason goes back to the agent or the
-requester. **Open job** or **Open session** shows the work first. After the cards come the jobs that failed in the last
-week, the steps policy denied in turns still running (`denied`: the agent carried on without them), and the PRs
-waiting for your review on GitHub, with **Open job** and **Open PR**. A failed or denied item has **Acknowledge**
-(`POST /api/inbox/{id}/ack`): it leaves your list for a week; a decision never does. With nothing waiting, the page
-says so and shows how many jobs and sessions are running.
+- **A failed job** (in the last week): **Retry** continues the same session, so the agent keeps its context and
+  branch and re-runs the check that failed (`POST /api/jobs/{id}/retry`); **Start over** is a new job with the same
+  task from the base branch (`?fresh=1`); **Acknowledge** puts it away.
+- **A step policy denied** in a turn still running (`denied`): the agent was told and carries on without it; nothing
+  to decide, so **Acknowledge**.
 
-The same cards appear on the job or session they belong to, and in the Fleet's detail panel.
+**Deny** and **Reject** need a reason: the field opens in the card, an empty one is refused, and the reason goes back
+to the agent or the requester. **Open job** or **Open session** shows the work first. **Acknowledge**
+(`POST /api/inbox/{id}/ack`) puts a failed or denied item away for a week; a decision never goes that way. Below the
+deck are the PRs waiting for your review on GitHub, with **Open job** and **Open PR**. With nothing waiting, the deck
+says so and counts what is running. The top bar's **Needs you** count turns orange while a decision waits.
+
+The same deck sits at the top of the Fleet, and each decision also opens with its agent there; the job and session
+pages keep their approval cards.
 
 ## Jobs
 
@@ -97,47 +110,45 @@ A session that carries a job takes its messages on the job. See [sessions](sessi
 
 ## Fleet
 
-Every sandbox, whoever started it: a job, a session, or a person directly. The page header leads with what needs you:
-the loudest status present, the count of each status, and how many of the hangar's slots (`HANGAR_MAX_SANDBOXES`) are
-in use. **Show stopped** adds stopped sandboxes; **New sandbox** starts one or more identical sandboxes from an
-environment, each on its own numbered work branch.
+Every agent, whoever started it: a job, a session, or a person directly. The page reads the fleet in words ("19 agents
+at work. Five need you, 3 stopped."), with how many of the hangar's slots (`HANGAR_MAX_SANDBOXES`) are in use and
+what the live turns spent. **New sandbox** starts one or more identical sandboxes from an environment, each on its own
+numbered work branch; **Show stopped** adds stopped sandboxes; the **Owner** chips keep one person's agents
+(`?owner=`, kept in the URL as `#fleet?owner=priya`).
 
-The same sandboxes are shown four ways, with one selection shared by all four. The view is kept in the URL
-(`#fleet?view=bays`) and remembered by the browser.
+![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet.png)
 
-### Board
+Under the header is the **deck** from [Needs you](#needs-you), as a band you can hide (it remembers), then every agent
+grouped by environment, attention first: what needs you, failed, denied, running, queued, spun down. Two views of
+the same agents with one selection, kept in the URL (`#fleet?view=board`) and remembered:
 
-![The Board: every sandbox of the checkout-python environment as a small tile with its tail number, the one waiting on a person selected, its detail panel beside the board with the agent's question](assets/front/ui-fleet-board.png)
+- **List** (the default): one row per agent. Its status mark, its tail number (the sandbox id's last four
+  characters), the work's title, and what it is doing **now** ("running pytest -q", "editing api/orders.py",
+  "waiting on you: push to main") with a heartbeat: the time since it last did something, breathing while it runs
+  and orange while it waits on a person. Then the owner, the agent and model, the **stage rail** (plan, edit, test,
+  PR), the last two stages' times, a sparkline of its tokens over the last hour, and its spend.
+- **Board**: the same agents as cards: the agent, the tail number, a stage ring, the work, the now-line, a stage
+  capsule, and the owner with the status word or the heartbeat.
 
-Every sandbox at a glance: one small tile per sandbox, grouped by environment, labelled with the last four characters of
-its id. A tile shows its status mark and, while the work has a stage, four pips for plan, edit, test and PR. Tiles are
-ordered by attention: what needs a person, then failed, then denied, then the quiet states. Hover for the sandbox's
-name, status, reason and task. On a wide screen the detail panel sits beside the Board; elsewhere it opens as a drawer
-on the right.
+![The Board with an agent open in place](assets/front/ui-fleet-board.png)
 
-### Bays
+The rail fills solid only when the agent reported its progress (`hangar-agent progress --pct`). Otherwise the current
+stage is dotted and its head hollow: the server's estimate from how long the stage usually takes, labelled "about
+45% (estimate)". Rows and cards update in place as the agents work; nothing moves under the pointer.
 
-![Bays: a card per sandbox with its id, status, title, owner, harness, stage track and next action](assets/front/ui-fleet-bays.png)
+### An agent, opened
 
-A card per sandbox you can read and act on: its id and status, the job's or session's title, who it belongs to and the
-agent, the stage track, the reason it needs you (a question, a held step, a failure), its age and the time left on its
-lease, and one action. Each environment ends with a **Start in** card.
+Select a row or card (or press Enter on it) and it opens in place. First the **decision**, when one waits, decided
+here as on the deck. Then **now**: the now-line with its heartbeat, the labelled rail, the owner, agent, model, repo,
+branch, age, spend and lease, and every sandbox action. Then the **activity**: the files, commits, tokens and spend so
+far, the token sparkline, and a timeline with the wall-clock time and how long ago: the stages, the job's own steps,
+and what the agent ran, edited, reported, asked or hit (a run of edits is one line). Only the opened agent is
+followed live.
 
-### Columns
-
-![Columns: Needs you, Failed or denied, Running, Starting, and Paused or spun down](assets/front/ui-fleet-columns.png)
-
-One column per state, attention on the left: **Needs you**, **Failed or denied**, **Running**, **Starting**, and
-**Paused or spun down**. Cards in the first two columns show why, and their action.
-
-### Owners
-
-![Owners: one row per person with their sandbox and session use against their caps and their spend today, and their sandboxes per environment](assets/front/ui-fleet-owners.png)
-
-People down, environments across. Each row shows the sandboxes the person started directly and their live sessions,
-against the per-person caps (`HANGAR_PERSON_MAX_SANDBOXES`, `HANGAR_PERSON_MAX_SESSIONS`), what they spent today, and
-how many of theirs need someone. Sandboxes hangar started for itself sit in a `hangar` row. See
-[team scale](team-scale.md) for the caps.
+**Sandbox actions.** On a running sandbox: **Terminal** (a shell), **Run agent** (a headless agent on a task, in its own
+terminal, which opens), **Run command**, **Fork** (snapshot it and start copies with the same files, dependencies and
+repo state), **Snapshot**, **Pause** and **+1 h** on its lease. A paused one offers **Resume** and **+1 h**. Every
+sandbox that isn't stopped has **Destroy**. **Open job** or **Open session** goes to the work's own page.
 
 ### The status key
 
@@ -147,38 +158,24 @@ screen with no color on it needs nobody.
 | Status | Mark | When |
 | --- | --- | --- |
 | Running | grey dot | the sandbox is up and its work is going on |
-| Starting | ring | the sandbox is pending or starting |
+| Queued | ring | the sandbox is pending or starting |
 | Needs you (needs approval, needs input) | orange diamond | a job waits for approval to start, a running turn waits for a tool call to be allowed, or the agent asked a question |
 | Failed | red triangle | the sandbox stopped on an error, or its job failed |
 | Denied | red placard | policy denied a step in the running turn |
-| Paused or spun down | small dot | paused, stopping or stopped |
+| Spun down | small dot | paused, stopping or stopped |
 
-The brand yellow marks the selected tile, focus and the primary action, never a status.
-
-### The detail panel
-
-Select a sandbox in any view to open its detail panel. It holds every action, so all four views get the same ones.
-What waits on a person comes first: the [cards](#needs-you) for a held tool call or a job waiting to start, decided
-here, or the agent's question with its **Answer**. Then its stage, its name, the job or session it belongs to (a link)
-and whose it is, where it runs (environment, provider, agent, model), its age and lease, repo, branch, credentials, the
-sandbox it was forked from, and its task.
-
-**Sandbox actions.** On a running sandbox: **Terminal** (a shell), **Run agent** (a headless agent on a task, in its own
-terminal, which opens), **Run command**, **Fork** (snapshot it and start copies with the same files, dependencies and
-repo state), **Snapshot**, **Pause** and **+1 hour** on its lease. A paused one offers **Resume** and **+1 hour**. Every
-sandbox that isn't stopped has **Destroy**. The panel also lists the sandbox's last agent runs; choose one to attach to
-its terminal.
+The brand yellow marks focus and the primary action, never a status.
 
 ### Keyboard
 
-- Each view is one tab stop. **Arrow keys** move between tiles by position, across environments, cells and columns;
-  **Home** and **End** go to the first and last.
-- **Enter** (or **Space**) opens the focused sandbox in the detail panel.
-- **Escape** closes the panel where it is a drawer, and focus returns to the tile.
-- In a message box, **Ctrl+Enter** (⌘+Enter) sends.
+- The agents are one tab stop. **Arrow keys** move between rows and cards, across environments; **Home** and **End**
+  go to the first and last.
+- **Enter** (or **Space**) opens the focused agent in place; **Escape** closes it, and focus returns to its row.
+- On the deck, **Previous** and **Next** move through the decisions; **Ctrl+Enter** (⌘+Enter) in a reason or an
+  answer sends it.
 
-Focus, scroll and a half-written answer or reason survive the 4-second refresh. When the set of sandboxes that need
-someone, failed or were denied changes, a screen reader hears how many need you and how many failed or were denied.
+Focus, scroll and a half-written answer or reason survive every update. When the set of agents that need someone,
+failed or were denied changes, a screen reader hears how many need you and how many failed or were denied.
 
 ### The fleet read: `GET /api/fleet`
 
@@ -286,7 +283,7 @@ less), not to the console.
 
 - **Hide**, in the terminal drawer, only hides the drawer. The terminals stay open and the sandbox keeps running.
   Close a terminal with its tab's ×.
-- **Destroy**, in the detail panel, deletes the sandbox and its filesystem, after you confirm, and closes its
+- **Destroy**, in an opened agent, deletes the sandbox and its filesystem, after you confirm, and closes its
   terminals. Push or save what you want to keep first. A job's branch and a session's conversation are kept: a
   session's sandbox is checkpointed before it goes, so the session suspends and resumes later from that checkpoint.
 - **Snapshot** keeps the sandbox's state without stopping it: a full snapshot where the provider has them, otherwise

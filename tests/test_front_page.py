@@ -72,13 +72,14 @@ def test_the_docs_home_is_a_front_door():
 
 
 def test_the_fleet_views_are_explained_on_the_console_page_only():
-    """Board, Bays, Columns and Owners are walked through in docs/console.md; the README and the docs home name the
-    Fleet once and link there."""
+    """The Fleet's List and Board, the deck and an opened agent are walked through in docs/console.md; the README and
+    the docs home name the Fleet once and link there."""
     for text, name in ((README, "README.md"), (INDEX, "docs/index.md")):
         assert not re.search(r"\bBays\b.*\bColumns\b.*\bOwners\b", text), f"{name} explains the Fleet views"
         assert "console.md)" in text, f"{name} does not link to the console page"
     console = (ROOT / "docs" / "console.md").read_text()
-    assert all(f"\n### {v}\n" in console for v in ("Board", "Bays", "Columns", "Owners"))
+    assert "\n### An agent, opened\n" in console and "- **List** (the default)" in console and "- **Board**" in console
+    assert not re.search(r"\bBays\b|\bColumns\b", console), "Bays and Columns are retired (KAN-140)"
 
 
 def prose(text: str) -> str:

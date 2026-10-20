@@ -23,9 +23,9 @@ in the repository settings (Social preview).
 | `hangar-demo.gif`, `hangar-demo.mp4` | `make.py`: Playwright drives the console on :8787 while issue #42 becomes a job, a sandbox run and draft PR #43, ending on Needs you. It opens on the ticket over the live console (no title card), follows the job's detail panel as a close-up while the agent works, and runs under 20 s; ffmpeg encodes the frames (MP4 1280x800, GIF 960 wide) |
 | `ui-jobs.png`, `ui-sessions.png` | `make.py`, from the same run |
 | `inbox.png` | `make.py`: an asciinema recording of `hangar inbox` against the same server, played with asciinema-player |
-| `ui-needs.png`, `ui-fleet.png`, `ui-review.png` | `make.py --only console`, cropped to what each caption names (the Needs-you cards at an 820 px viewport, the Fleet board with its docked panel at 1100 px, the diff with its comment), at 2x, so their text reads at a README's width; the console on `fixture.py` (a team's afternoon: four environments, six people, held tool calls, a question, a failed run, a PR to review) served with Playwright's request interception |
+| `ui-needs.png`, `ui-fleet.png`, `ui-review.png` | `make.py --only console`, cropped to what each caption names (the Needs-you deck at an 820 px viewport, the Fleet headline, deck band and first rows at 1280 px, the diff with its comment), at 2x, so their text reads at a README's width; the console on `fixture.py` (a team's afternoon: four environments, six people, held tool calls, a question, a failed run, a PR to review) served with Playwright's request interception |
 | `hangar-review.gif`, `hangar-review.mp4` | `make.py --only console`: the review loop on the fixture (decide a held call, open the job, read the diff, comment back) |
-| `ui-fleet-board.png`, `-bays.png`, `-columns.png`, `-owners.png` | `make.py`, the Fleet page's four views ([the web console](../console.md)), from the demo run |
+| `ui-fleet-board.png` | `make.py`, the Fleet's Board with an agent open in place ([the web console](../console.md)), from the demo run |
 | `hangar-suite.svg`, `-dark.png`, `-light.png` | `diagram.py` (the agent-factory diagram helpers, copied) and `make.py` (PNGs in both Airframe flavors) |
 
 They run against `demo.py`: the real control plane with the test suite's fake provider

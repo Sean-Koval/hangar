@@ -15,7 +15,7 @@ Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io
 
 ## What it looks like
 
-The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review. [The web console](docs/console.md) walks through it, the Jobs and Sessions pages and the Fleet's four views.
+The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review. [The web console](docs/console.md) walks through it, the Jobs and Sessions pages and the Fleet.
 
 ![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](docs/assets/front/ui-needs.png)
 
