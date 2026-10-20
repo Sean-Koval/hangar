@@ -1,0 +1,22 @@
+<svg class="af-d" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 350 606" role="img" aria-label="People, front doors, the control plane and sandboxes">
+<style>
+  .af-d .bg { fill: var(--af-canvas, #000); }
+  .af-d .box { fill: var(--af-raised, #141414); }
+  .af-d .box-hub { fill: var(--af-raised, #141414); stroke: var(--af-brand-line, #FFC400); stroke-width: 1.5; }
+  .af-d .box-plan { fill: none; stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; stroke-dasharray: 4 4; }
+  .af-d .box-ext { fill: var(--af-surface, #0A0A0A); stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; }
+  .af-d .person { fill: var(--af-surface, #0A0A0A); stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1; }
+  .af-d .bound { fill: none; stroke: var(--af-rule, #3A3A3A); stroke-width: 1; stroke-dasharray: 2 5; }
+  .af-d .name { font: 700 15px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #fff); }
+  .af-d .name-s { font: 700 13px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #fff); }
+  .af-d .title { font: 700 20px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #fff); }
+  .af-d .body { font: 400 12.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-muted, #A6A6A6); }
+  .af-d .lbl { font: 500 10.5px "DM Mono", ui-monospace, Menlo, monospace; letter-spacing: .08em; fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .edge { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; }
+  .af-d .edge-plan { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; stroke-dasharray: 5 4; }
+  .af-d .elabel { font: 400 11.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .arrowhead { fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .dot { fill: var(--af-dot-field, #262626); }
+  .af-d .lbl-s { font: 500 11.5px "DM Mono", ui-monospace, Menlo, monospace; letter-spacing: .08em; fill: var(--af-fg-subtle, #8A8A8A); }
+</style>
+<defs><marker id="concepts-stacked-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs><rect class="bg" width="350" height="606"/><rect class="person" x="20" y="20" width="310" height="110" rx="3"/><text class="lbl-s" x="38" y="46">WHO</text><text class="name-s" x="38" y="68">People and tools</text><text class="body" x="38" y="90">MCP clients, CLI, browser</text><text class="body" x="38" y="108">Jira, GitHub, Slack</text><text class="body" x="38" y="126">services, CI, other agents</text><path class="edge" d="M175 130V164" marker-end="url(#concepts-stacked-arrow)"/><rect class="box" x="20" y="166" width="310" height="110" rx="3"/><text class="lbl-s" x="38" y="192">WORK IN</text><text class="name-s" x="38" y="214">Front doors</text><text class="body" x="38" y="236">MCP, REST, CLI</text><text class="body" x="38" y="254">GitHub, Jira, Projects, Slack</text><text class="body" x="38" y="272">webhooks, schedules, A2A</text><path class="edge" d="M175 276V310" marker-end="url(#concepts-stacked-arrow)"/><rect class="box-hub" x="20" y="312" width="310" height="128" rx="3"/><text class="lbl-s" x="38" y="338">HANGAR</text><text class="name-s" x="38" y="360">Control plane</text><text class="body" x="38" y="382">Jobs and sessions</text><text class="body" x="38" y="400">Policy, people, budgets</text><text class="body" x="38" y="418">Credentials: vault, gateway</text><text class="body" x="38" y="436">Verify, branch, PR, landing</text><path class="edge" d="M175 440V474" marker-end="url(#concepts-stacked-arrow)"/><rect class="box-ext" x="20" y="476" width="310" height="110" rx="3"/><text class="lbl-s" x="38" y="502">WORK RUNS</text><text class="name-s" x="38" y="524">Sandboxes</text><text class="body" x="38" y="546">Environment + harness</text><text class="body" x="38" y="564">+ repo checkout, isolated</text><text class="body" x="38" y="582">Docker, GKE or E2B</text></svg>

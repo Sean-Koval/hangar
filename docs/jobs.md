@@ -2,8 +2,12 @@
 
 A job is a piece of development work handed to hangar by a service, an app, an MCP client, the CLI, a GitHub issue or a Slack channel. hangar runs a coding agent on it in a fresh sandbox, checks the result with the repo's own command, and delivers a branch and a (draft) PR. Engineers can follow along, reply, or take over. The design is in [spec 0009](specs/0009-jobs-and-the-factory-front-door.md).
 
-<figure class="af-figure">
+<figure class="af-figure af-figure--wide">
 --8<-- "jobs-flow.svg"
+<figcaption>A job: the caller, the queue, a sandbox, the agent's turn, the repo's check, a branch and a draft PR; a signed callback comes back</figcaption>
+</figure>
+<figure class="af-figure af-figure--stacked">
+--8<-- "jobs-flow-stacked.svg"
 <figcaption>A job: the caller, the queue, a sandbox, the agent's turn, the repo's check, a branch and a draft PR; a signed callback comes back</figcaption>
 </figure>
 
