@@ -115,7 +115,7 @@ From an MCP client (Claude Code, Codex, …): `submit_job`, `get_job`, `list_job
 
 A `jobs` token can carry a budget cap (`hangar token create svc --scope jobs --max-cost 2`); its jobs never get more.
 
-**Questions.** An agent that needs a decision runs `hangar-agent ask "…"`. The job goes to state `needs_input` with `result.question`: nothing is verified or pushed yet, a `job.needs_input` callback is sent, and a GitHub job comments the question on its issue or PR. Answer with a follow-up (`/hangar <answer>` on GitHub); the agent continues in the same conversation. Cancelling a job that needs input ends it.
+**Questions.** An agent that needs a decision runs `hangar-agent ask "…"`. The job goes to state `needs_input` with `result.question`: nothing is verified or pushed yet, a `job.needs_input` callback is sent, and a GitHub job comments the question on its issue or PR. Answer with a follow-up (`/hangar <answer>` on GitHub); the agent continues in the same conversation. Cancelling a job that needs input ends it. When the answer is one of a few choices, the agent offers them (`hangar-agent question --option "A" --option "B" "…"`): the job's view and `result` carry `question_options` (at most 5, each at most 80 characters), as do its inbox item and Fleet unit, so the deck can show them as buttons; any other answer still works.
 
 To run several attempts and keep the best, see [§6](#6-forks-and-best-of-n).
 

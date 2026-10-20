@@ -76,6 +76,12 @@ def _item(kind: str, reason: str, action: str, since: float, **ref: Any) -> dict
             "id": item_id(kind, ref, reason)}
 
 
+def _options(x: dict[str, Any], options: list[str]) -> dict[str, Any]:
+    """KAN-140 S4: a question's offered answers (`hangar-agent question --option`), outside the item's id."""
+    x["question_options"] = list(options or [])
+    return x
+
+
 # ====================================================================== native links (#157)
 LINKS = ("pr", "ticket", "thread", "job")
 PERMALINK_PREFIX = "slack:permalink:"  # kv: chat.getPermalink's answer per thread (inbox_notify fills it)
@@ -186,9 +192,9 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
             job_sessions.add(j.session_id)
         pr_open = bool(r.pr_number) and st.pr_state == "open"
         if j.state == JobState.NEEDS_INPUT and r.question:
-            out.append(_item("question", f"the agent asks: {r.question[:500]}",
-                             f"hangar job follow-up {j.id} '<your answer>' (or reply /hangar <answer> where it "
-                             "asked)", j.updated_at, **ref))
+            out.append(_options(_item("question", f"the agent asks: {r.question[:500]}",
+                                      f"hangar job follow-up {j.id} '<your answer>' (or reply /hangar <answer> "
+                                      "where it asked)", j.updated_at, **ref), r.question_options))
         elif j.state == JobState.AWAITING_APPROVAL:
             why = (j.approval.reason if j.approval else "") or "it waits for a trusted person"
             out.append(_item("approval", f"job waits for approval: {why}", f"hangar job approve {j.id} (or reject)",
@@ -242,8 +248,9 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
                              d.decided_at or d.requested_at, session=s.name, job=s.job_id, approval=d.id,
                              tool=d.tool))
         if s.needs_input and not s.job_id and s.id not in job_sessions:
-            out.append(_item("question", f"the agent asks: {s.needs_input[:500]}",
-                             f"hangar session send {s.name} '<your answer>'", s.last_active_at, session=s.name))
+            out.append(_options(_item("question", f"the agent asks: {s.needs_input[:500]}",
+                                      f"hangar session send {s.name} '<your answer>'", s.last_active_at,
+                                      session=s.name), s.question_options))
     for source in SOURCES:
         out += source(svc, p)
     out.sort(key=lambda i: i.get("since") or 0, reverse=True)

@@ -642,7 +642,7 @@ class JobService:
             classes.mark(job.turns[-1], steer_class or "new_info", requester if steer_class else "hangar")
             classes.record(self.sessions, s, job.turns[-1].steer_class, len(job.turns),
                            job.turns[-1].classified_by or requester, job=job.id)
-        job.result.question = None
+        job.result.question, job.result.question_options = None, []
         job.cancel_requested = False
         self._event(job, f"follow-up from {requester}", JobState.QUEUED, reason=None)
         self.fleet.audit(requester, "job.follow_up", job.id, message=message[:300])
@@ -724,6 +724,8 @@ class JobService:
         d["session"] = {"name": s.name, "state": s.state.value, "checkpoints": len(s.checkpoints),
                         "resume_command": self.sessions.resume_command(s)} if s else None  # perf: not a full view
         d["active"] = job.state not in JOB_TERMINAL and job.state != JobState.NEEDS_INPUT
+        # KAN-140 S4: the answers the open question offers (the deck's buttons); none once it is answered
+        d["question_options"] = list(job.result.question_options) if job.state == JobState.NEEDS_INPUT else []
         # workstream C: the session's turns are the job's turns, and carry live usage while one runs
         d["usage"] = u.model_dump(mode="json") if (u := self.usage(job)) else None
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
@@ -1070,7 +1072,9 @@ class JobService:
             "verified it, and anything left open.",
             # workstream E: a question pauses the job (needs_input) instead of ending it
             "If you need a decision you can't make yourself, do not guess: run `hangar-agent ask \"<question>\"` "
-            "and end your turn; the job waits for the answer. If the task cannot be done, say why in RESULT.md.",
+            "and end your turn; the job waits for the answer. When the answer is one of a few choices, offer them "
+            "(up to 5, short): `hangar-agent question --option \"<choice>\" --option \"<choice>\" "
+            "\"<question>\"`. If the task cannot be done, say why in RESULT.md.",
             *envdoctor.autonomy_lines(self.fleet, job.environment),  # --- computer: blocked is not idle
         ]
         finish_txt = "\n".join(f"- {f}" for f in finish)
@@ -1240,6 +1244,7 @@ class JobService:
                 return
             job.result.question = (f"Interrupted by {who}. Follow up with what the agent should do instead "
                                    "(it continues the same conversation), or cancel the job.")
+            job.result.question_options = []
             await exchange.job_needs_input(self, job, turn, s)
             return
         if outcome == "failed" and st.outcome_reason == harness_thaw.DRIFT_REASON:  # --- harness locks (#134)

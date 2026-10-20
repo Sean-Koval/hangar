@@ -204,7 +204,7 @@ owns) keeps one person's units, the Owners filter; `?include_stopped=true` adds 
    "reason": {"title": "Held", "text": "Bash: git push origin main"},
    "ask": {"kind": "tool", "approval": "apr-9c1e", "job": "job-1a2b3c4d", "session": "ses-…"},
    "ask_expires_at": 1760903200.0, "inbox": ["inb-4b0d…"],
-   "work": "Fix the refunds export", "task": "The CSV export drops…", "question": null,
+   "work": "Fix the refunds export", "task": "The CSV export drops…", "question": null, "question_options": [],
    "now": "waiting on you: Bash", "last_activity_at": 1760899940.0,
    "stage": "pr", "stage_pct": null,
    "stage_estimate": {"pct": 35, "elapsed_s": 64, "typical_s": 180, "basis": "median of 12 recent pr stages",
@@ -226,6 +226,8 @@ Per unit:
   (`tool`, with the approval id), a job waiting to start (`job`), the agent's question (`question`) or a request
   another module raised (`inbox`, with the item). `inbox` lists the caller's inbox items that wait on this unit, so
   the deck and the tile agree; `ask_expires_at` is when the wait ends by itself.
+- `question` is the agent's open question, and `question_options` the answers it offered
+  (`hangar-agent question --option …`, at most 5 of at most 80 characters; empty otherwise), for the deck's buttons.
 - `now` is the humanised latest event of the live turn: `editing <path>`, `running <command>` (at most 60
   characters), the agent's progress message, `waiting on you: <tool>`, or the tool call. While hangar itself drives
   the work (verifying, delivering), it is the job's own timeline line. `last_activity_at` is that event's time.

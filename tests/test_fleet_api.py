@@ -378,3 +378,23 @@ def test_tokens_1h_on_the_fleet(client):
     assert len(a["tokens_1h"]) == 12 and sum(a["tokens_1h"]) == 1100  # the usage event _world recorded
     bare = next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["name"] == "bare")
     assert bare["tokens_1h"] == [0] * 12
+
+
+# ====================================================================== S4: a question's offered answers
+def test_question_options_on_the_unit_and_the_inbox(client):
+    h, sbs, job_a, _ = _world(client)
+    job_a.state = JobState.NEEDS_INPUT
+    job_a.result.question, job_a.result.question_options = "Keep the old column names?", ["Keep them", "Rename"]
+    body = client.get("/api/fleet", headers=ADMIN).json()
+    a = next(x for x in body["units"] if x["job"] == job_a.id)
+    assert a["role"] == "approval" and a["label"] == "Needs input" and a["question_options"] == ["Keep them", "Rename"]
+    alice = client.post("/api/people", json={"id": "alice"}, headers=ADMIN).json()["login"]["token"]
+    mine = client.get("/api/fleet", headers={"Authorization": f"Bearer {alice}"}).json()
+    q = next(x for x in mine["inbox"]["items"] if x["kind"] == "question")
+    assert q["question_options"] == ["Keep them", "Rename"] and mine["units"][0]["inbox"] == [q["id"]]
+    assert client.get("/api/inbox", headers={"Authorization": f"Bearer {alice}"}).json()["items"][0][
+        "question_options"] == ["Keep them", "Rename"]
+    assert h.jobs.view(job_a)["question_options"] == ["Keep them", "Rename"]
+    job_a.state, job_a.result.question = JobState.RUNNING, None  # answered (a follow-up clears the question)
+    a = next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["job"] == job_a.id)
+    assert a["question"] is None and a["question_options"] == [] and h.jobs.view(job_a)["question_options"] == []

@@ -321,6 +321,8 @@ class FleetRead:
             or sb.repo, "branch": (job.branch if job else None) or (ses.branch if ses else None) or sb.branch,
             "role": role, "label": label, "reason": reason, "ask": ask, "live": is_live,
             "work": work, "task": task[:TASK_MAX], "question": question or None,
+            "question_options": (list(job.result.question_options) if job is not None else
+                                 list(ses.question_options) if ses is not None else []) if question else [],
             "now": now_line, "last_activity_at": last_at,
             "stage": stage, "stage_pct": pct, "stage_estimate": est, "stages": stages,
             "files_changed": (len(r.files) if r is not None and r.files else 0) or (len(live.files) if live else 0),

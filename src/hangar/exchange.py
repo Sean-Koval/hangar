@@ -6,6 +6,7 @@ Every agent turn gets `HANGAR_IO`, one directory it reads and writes with plain 
     RESULT.md            summary for the people who asked
     out/result.json      structured result (validated against the turn's output_schema)
     out/QUESTION.md      "I need a decision": the turn ends as needs_input
+    out/QUESTION.json    the same question with the answers it offers: {"question": "...", "options": ["..."]}
     out/progress.jsonl   {"ts": ..., "message": "...", "pct": 40} lines
     out/artifacts/**     files to hand back
 
@@ -64,6 +65,7 @@ _SESSION_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 _JOB_RE = re.compile(r"^job-[0-9a-f]{8}$")
 MAX_SCHEMA = 64_000
 MAX_QUESTION = 8000
+MAX_OPTIONS, MAX_OPTION = 5, 80  # KAN-140 S4: a question's choices, as buttons on the deck
 _OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")  # a full commit id, as git rev-parse prints it
 MAX_UNTRACKED_FILES = 20_000  # entries restored from a session's untracked-files archive by `session pull`
 MAX_UNTRACKED_BYTES = 1 << 30  # ...and bytes: the archive's cap is compressed, and gzip expands ~1000x
@@ -86,6 +88,8 @@ usage() {
   cat <<'EOF'
 usage: hangar-agent progress [--pct N] MESSAGE   tell the requester how far along you are
        hangar-agent ask QUESTION                 you need a decision: ask, then end your turn
+       hangar-agent question [--option A]... QUESTION
+                                                 the same, offering up to 5 answers to pick from
        hangar-agent artifact PATH [NAME]         hand back a file or directory
        hangar-agent result JSON | - | @FILE      the structured result
        hangar-agent done [SUMMARY]               your summary for the people who asked (RESULT.md)
@@ -136,9 +140,23 @@ case "$cmd" in
       printf '{"ts": %s, "message": %s}\n' "$(date +%s)" "$msg" >> "$out/progress.jsonl"
     fi
     ;;
-  ask)
+  ask|question)
+    opts=""
+    n=0
+    while [ "${1:-}" = "--option" ]; do
+      [ "$#" -ge 2 ] || die "usage: hangar-agent question [--option ANSWER]... QUESTION"
+      n=$((n + 1))
+      [ "$n" -le 5 ] || die "at most 5 options"
+      o=$(printf '%s' "$2" | json_str)
+      [ "$o" != '""' ] || die "an option is empty"
+      opts="${opts:+$opts, }$o"; shift 2
+    done
     text "$@" > "$out/QUESTION.md"
     if ! grep -q '[^[:space:]]' "$out/QUESTION.md"; then rm -f "$out/QUESTION.md"; die "the question is empty"; fi
+    rm -f "$out/QUESTION.json"
+    if [ -n "$opts" ]; then
+      printf '{"question": %s, "options": [%s]}\n' "$(json_str < "$out/QUESTION.md")" "$opts" > "$out/QUESTION.json"
+    fi
     echo "hangar-agent: question saved. End your turn now; the answer arrives as your next message."
     ;;
   artifact)
@@ -318,7 +336,9 @@ def protocol_note(io_path: str) -> str:
         f"`$HANGAR_IO` (`{io_path}`) is how you hand things back to whoever asked. Use the `hangar-agent` helper:\n"
         "- `hangar-agent progress \"running the test suite\"` (optionally `--pct 40`): say how far along you are;\n"
         "- `hangar-agent ask \"Should the export keep the old column names?\"`: when you need a decision you can't "
-        "make yourself, ask it and end your turn; the answer arrives as your next message;\n"
+        "make yourself, ask it and end your turn; the answer arrives as your next message. When the answer is one "
+        "of a few choices, offer them: `hangar-agent question --option \"Keep them\" --option \"Rename them\" "
+        "\"Should the export keep the old column names?\"` (at most 5, short);\n"
         "- `hangar-agent artifact <path>`: hand back a file or directory (reports, screenshots, generated assets);\n"
         "- `hangar-agent result '<json>'`: the structured result, when one is asked for;\n"
         "- `hangar-agent done \"<summary>\"`: your summary for the people who asked.\n"
@@ -516,6 +536,7 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
     if turn.question and outcome == "exited":
         turn.outcome = "needs_input"
     s.needs_input = turn.question if turn.outcome == "needs_input" else None  # a stopped turn's waits on nobody
+    s.question_options = list(turn.question_options) if s.needs_input else []
     svc._save(s)
     return turn.outcome
 
@@ -526,7 +547,8 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
     cap = settings.exchange_max_result_kb * 1024
     # Sizes first: the agent wrote these files, so read only what we will keep (never a runaway file whole).
     res = await svc._sh(sb, f"cd {shlex.quote(io_path)} || exit 0; for f in RESULT.md out/QUESTION.md "
-                            "out/result.json; do [ -f \"$f\" ] && echo \"$(stat -c %s \"$f\") $f\"; done; "
+                            "out/QUESTION.json out/result.json; do "
+                            "[ -f \"$f\" ] && echo \"$(stat -c %s \"$f\") $f\"; done; "
                             "echo ---; [ -f out/progress.jsonl ] && tail -n 200 out/progress.jsonl; true", timeout=60)
     head, _, progress = res.stdout.partition("---\n")
     sizes = {name: int(size) for size, _, name in (ln.partition(" ") for ln in head.splitlines())
@@ -543,6 +565,11 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
     if summary := await text("RESULT.md", 8000):
         turn.summary = red(summary)
     turn.question = red(await text("out/QUESTION.md", MAX_QUESTION)) or None
+    turn.question_options = []
+    if raw_q := await text("out/QUESTION.json", 4 * MAX_QUESTION):  # KAN-140 S4: the answers it offers
+        q, opts = question_json(raw_q)
+        turn.question = turn.question or (red(q[:MAX_QUESTION]) if q else None)
+        turn.question_options = red(opts) if turn.question else []
     for ln in reversed(progress.splitlines()):
         if (ev := _progress_line(ln)) is not None:
             turn.progress = red(ev)
@@ -569,6 +596,34 @@ async def _read_out(svc: SessionService, s: Session, turn: SessionTurn, sb: Sand
         turn.result_error = "out/result.json does not match the output schema: " + "; ".join(errors)
     else:
         turn.result = red(data)
+
+
+def question_options(raw: Any) -> list[str]:
+    """The answers a question offers, as the deck shows them: strings, one line each, at most MAX_OPTION characters
+    and MAX_OPTIONS of them, duplicates and blanks dropped. Anything else is ignored, never an error."""
+    out: list[str] = []
+    for o in raw if isinstance(raw, list) else []:
+        if not isinstance(o, str):
+            continue
+        o = " ".join(o.split())
+        o = o if len(o) <= MAX_OPTION else o[: MAX_OPTION - 1] + "…"
+        if o and o not in out:
+            out.append(o)
+        if len(out) == MAX_OPTIONS:
+            break
+    return out
+
+
+def question_json(raw: str) -> tuple[str | None, list[str]]:
+    """out/QUESTION.json: (its question, its options). Not JSON, or not an object: (None, [])."""
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return None, []
+    if not isinstance(d, dict):
+        return None, []
+    q = d.get("question")
+    return (q.strip() if isinstance(q, str) and q.strip() else None), question_options(d.get("options"))
 
 
 def _progress_line(ln: str) -> dict[str, Any] | None:
@@ -1030,6 +1085,7 @@ def record_job_turn(job: Job, turn: Turn, st: SessionTurn) -> None:
     turn.outcome = st.outcome
     asked = st.question if st.outcome == "needs_input" else None  # a stopped turn's question waits on nobody
     turn.result, turn.result_error, turn.question = st.result, st.result_error, asked
+    turn.question_options = job.result.question_options = list(st.question_options) if asked else []
     turn.artifacts = list(st.artifacts)
     job.result.data, job.result.result_error, job.result.question = st.result, st.result_error, asked
     job.result.artifacts = [a for t in job.turns for a in t.artifacts]
