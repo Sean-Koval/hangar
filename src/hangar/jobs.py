@@ -599,13 +599,14 @@ class JobService:
                   reply_to: str | None = None, context: list[ContextItem] | None = None,
                   output_schema: dict[str, Any] | None = None,
                   front_door: bool = False, sender_person: str | None = None,
-                  steer_class: str | None = None) -> Job:
+                  steer_class: str | None = None, origin: str | None = None) -> Job:
         """`steer_class` (#162): what the follow-up is, when its sender said (a `fix:` prefix); an answer to the
-        agent's question is `new_info` unless they said otherwise."""
+        agent's question is `new_info` unless they said otherwise. `origin` (KAN-140 S6): "retry" when it is the
+        deck's Retry (jobretry.py), kept on the turn for metrics and audit."""
         job = self.get(job_id, owner)
         if job.parent:  # --- change sets: a part's PR is continued by the agent's job, the change set's parent
             return self.follow_up(job.parent, message, requester, owner, reply_to, context, output_schema,
-                                  front_door, sender_person, steer_class)
+                                  front_door, sender_person, steer_class, origin)
         # --- review: from a front door (GitHub, Slack, Jira; `sender_person` is the sender's linked person): a
         # person's job runs with their own login, so only they continue it there (teamcreds.may_continue)
         if front_door and (why := teamcreds.may_continue(job.person, sender_person)):
@@ -635,7 +636,7 @@ class JobService:
         self._posture_follow_up(job, context, requester)  # --- intake posture (#123): an auto-fix round's CI logs
         answer = job.state == JobState.NEEDS_INPUT
         job.turns.append(Turn(kind="follow_up", message=message, requester=requester, reply_to=reply_to,
-                              context=context, output_schema=output_schema))
+                              context=context, output_schema=output_schema, origin=origin))
         if steer_class is not None or answer:  # --- #162
             from hangar import steer_class as classes
 
@@ -645,7 +646,8 @@ class JobService:
         job.result.question, job.result.question_options = None, []
         job.cancel_requested = False
         self._event(job, f"follow-up from {requester}", JobState.QUEUED, reason=None)
-        self.fleet.audit(requester, "job.follow_up", job.id, message=message[:300])
+        self.fleet.audit(requester, "job.follow_up", job.id, message=message[:300], **({"origin": origin} if origin
+                                                                                      else {}))
         self._queue.put_nowait(job.id)
         return job
 

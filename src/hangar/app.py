@@ -1021,6 +1021,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                         owner=owner_filter(caller), context=body.context,
                                         output_schema=body.output_schema))
 
+    @app.post("/api/jobs/{job_id}/retry")
+    async def job_retry(job_id: str, fresh: bool = False, caller: Caller = J):
+        """KAN-140 S6: the deck's Retry (the canned follow-up in the same conversation) or, with ?fresh=1, Start
+        over (a new job with the same task). docs/jobs.md#retry"""
+        from hangar import jobretry
+
+        if fresh:
+            return jobretry.view(jobs, jobretry.start_over(jobs, job_id, caller, owner_filter(caller)), "fresh",
+                                 job_id)
+        return jobretry.view(jobs, jobretry.retry(jobs, job_id, caller, owner_filter(caller)), "same", job_id)
+
     @app.post("/api/jobs/{job_id}/cancel")
     async def job_cancel(job_id: str, caller: Caller = J):
         return jobs.view(jobs.cancel(job_id, requester=caller.requester, owner=owner_filter(caller)))

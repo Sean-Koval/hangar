@@ -104,6 +104,7 @@ With `HANGAR_TRACE_LIVE_TOOLS=true`, each turn's tool calls, subagents and appro
 | `hangar_warm_pool_claims_total` | counter | `provider`, `environment`, `result` (`hit`, `miss`). Only for environments with a warm pool. |
 | `hangar_sessions` | gauge | `state` |
 | `hangar_jobs` | gauge | `state`, `reason` (the outcome: `over_budget`, `verify_failed`, `agent_failed`…) |
+| `hangar_job_retries_total` | counter | `mode`: `same` (the deck's Retry, a canned follow-up) or `fresh` (Start over, a new job) ([jobs.md](jobs.md#5-work-with-the-agent)) |
 | `hangar_turn_seconds` | histogram | `harness`, `outcome`. The agent's time, start to finish. |
 | `hangar_tokens_total` | counter | `kind` (`input`, `output`, `cache_read`, `cache_write`), `model`, `harness`, `environment`, `requester` |
 | `hangar_cost_usd_total` | counter | `model`, `harness`, `environment`, `requester` |

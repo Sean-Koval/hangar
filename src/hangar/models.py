@@ -297,6 +297,7 @@ class Turn(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     message: str | None = None  # follow-up text
     requester: str | None = None
+    origin: str | None = None  # KAN-140 S6: "retry" for the deck's Retry (jobretry.py); None for a person's own
     steer_class: SteerClass = "unclassified"  # --- #162: a follow-up's class, who said so and when
     classified_by: str | None = None
     classified_at: float | None = None

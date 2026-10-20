@@ -1202,6 +1202,12 @@ job.reject:
   rest: POST /api/jobs/{job_id}/reject
   scope: approvals.can_decide
   owner: guard
+job.retry:
+  server: hangar
+  mcp: null
+  rest: POST /api/jobs/{job_id}/retry
+  scope: jobs
+  owner: token
 job.submit:
   server: hangar
   mcp: submit_job
