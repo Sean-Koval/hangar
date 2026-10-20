@@ -310,7 +310,7 @@ class Issuer:
             return {}
         if not self.settings.oidc_issuer and not self.settings.public_url.startswith("https://"):
             raise CloudError("cloud: needs HANGAR_OIDC_ISSUER (an https URL) or an https HANGAR_PUBLIC_URL to issue "
-                             "tokens from (docs/security.md#short-lived-cloud-credentials)")
+                             "tokens from (docs/security/credentials.md#short-lived-cloud-credentials)")
         d, gcp_tok, aws_tok = self._paths()
         env: dict[str, str] = {}
         exps = await self._write_tokens(prov, sb, cloud)

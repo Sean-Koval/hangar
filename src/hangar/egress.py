@@ -290,7 +290,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     mode, notes = base, []
     if base != env_mode(settings, spec):
         notes.append(f"egress {base} (intake floor): environment {spec.name} is {env_mode(settings, spec)}, and this "
-                     "sandbox runs an intake-triggered job (docs/security.md#intake-posture)")
+                     "sandbox runs an intake-triggered job (docs/security/front-doors.md#intake-posture)")
     if repo is not None and repo.mode:
         if _STRICTNESS[repo.mode] > _STRICTNESS[base]:
             mode = repo.mode
@@ -605,7 +605,7 @@ async def _proxy_url(fleet: Fleet, prov: Provider, sb: Sandbox) -> str:
         if not fleet.settings.egress_url:
             raise FleetError("egress allowlist/none needs HANGAR_EGRESS_URL (e.g. "
                              "http://hangar-gateway.hangar.svc:3128) and deploy/k8s/gateway.yaml's egress port "
-                             "(docs/security.md)")
+                             "(docs/security/README.md)")
         return fleet.settings.egress_url
     raise FleetError(f"egress allowlist/none isn't supported on the {prov.name} provider: its sandboxes can't be kept "
                      "off the internet yet; use an environment with egress.mode: open there")

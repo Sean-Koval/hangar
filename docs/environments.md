@@ -89,9 +89,9 @@ skills_remove: [repo-conventions]   # by the skill's name (its `name`, else its 
 `skills_remove` applies once, to the merged list, and is not inherited. Naming a skill the environment doesn't have
 is an error that lists the names it has. The table is `envspec.LIST_MERGE`. A repo's `.hangar/environment.yaml`
 follows it too: each field it sets replaces the environment's (every list it may set replaces under `extends` as
-well). An experiment variant's `skills` and `skills_remove` have the same meaning ([jobs.md](jobs.md#9-experiments)).
+well). An experiment variant's `skills` and `skills_remove` have the same meaning ([jobs/experiments.md](jobs/experiments.md)).
 Before #132 every list except `harnesses`, `credentials`, `terminals` and `ports` was appended. `hangar env
-migrate-merge --dry-run` lists which environments resolve differently ([upgrading.md](upgrading.md#the-extends-merge-rules-132)).
+migrate-merge --dry-run` lists which environments resolve differently ([releases/safe-release.md](releases/safe-release.md#the-extends-merge-rules-132)).
 
 ## The file
 
@@ -119,7 +119,7 @@ services:                        # images beside the sandbox, reachable at their
 ports:                           # the owner can open these in a browser, through hangar
   - {port: 5173, name: web}
 verify: uv run pytest -q         # the check jobs run, unless the job names one
-verify_reports: [reports/*.xml]  # JUnit, Cobertura or LCOV files it writes (most runners need none: docs/jobs.md §8)
+verify_reports: [reports/*.xml]  # JUnit, Cobertura or LCOV files it writes (most runners need none: docs/jobs/README.md §8)
 build_secrets: [NPM_TOKEN]       # ids only; an admin maps each to a credential (see Build secrets)
 lockfiles: [vendor/*.lock]       # more files whose change means a rebuild
 mocks:                           # stand-ins for real dependencies, so nobody mistakes them (agent-led setup)
@@ -176,8 +176,8 @@ the environment's image  →  clone the default branch  →  run install  →  k
 - **Where it runs.** `install` is code from whoever can push, so it runs where agents run: in an ordinary sandbox of
   the environment (gVisor on GKE, hangar's isolated network on Docker), under the same network rules as its agents.
   It never runs on the control plane or on an image builder.
-- **What the build sandbox holds:** a fetch-only grant of the [git gateway](security.md#git-credential-gateway) for
-  its clone, the [build secrets](security.md#build-secrets) an admin mapped (in `install`'s environment only), and
+- **What the build sandbox holds:** a fetch-only grant of the [git gateway](security/git-gateway.md) for
+  its clone, the [build secrets](security/credentials.md#build-secrets) an admin mapped (in `install`'s environment only), and
   egress per the environment and repo policy. Nothing else: no credential of the environment (no model or person
   login, no `git_token`, no tool key), none of its `secrets:`, no cloud tokens. Without the gateway
   (`HANGAR_GATEWAY_URL`) it holds no git credential at all, so a private repo's build fails and says so.
@@ -508,7 +508,7 @@ dockerd's pulls go through the sandbox's egress policy like everything else:
   Hub (`registry-1.docker.io`, `auth.docker.io` and its blob CDN, from [Docker's allowlist][docker-allowlist]); other
   registries go in `allow`. Docker Hub also takes pushes with anyone's token, so prefer hangar's mirror:
 - **hangar's mirror** (`HANGAR_HEAVY_MIRROR=true`): a read-only pull-through of Docker Hub on the git gateway's port,
-  in the same pattern as the [package mirrors](security.md#package-mirrors): GET and HEAD of manifests, blobs and
+  in the same pattern as the [package mirrors](security/package-mirrors.md): GET and HEAD of manifests, blobs and
   tags only. Its upstream is Docker Hub, or an Artifact Registry remote repository for Docker Hub
   (`HANGAR_HEAVY_MIRROR_UPSTREAM`, terraform's `dockerhub_mirror`) holding Docker Hub credentials of your own, so a
   team's pulls don't hit the anonymous limit. hangar reads it with its own Google identity; sandboxes never get
@@ -678,7 +678,7 @@ hangar owns (managed harness settings) and the [uid split](steering.md#the-uid-s
   and should put what it installs inside the repo (`.venv`, `node_modules`).
 - **`sudo: true`** for an environment whose people need root at runtime (`apt-get install` while exploring). Keep
   it for people's own sessions. On Docker, a job's sandbox runs with `no-new-privileges` under
-  `HANGAR_INTAKE_POSTURE=enforce` ([security.md](security.md#intake-posture)), so sudo fails there even with
+  `HANGAR_INTAKE_POSTURE=enforce` ([security/front-doors.md](security/front-doors.md#intake-posture)), so sudo fails there even with
   `sudo: true`, as it always does on GKE (`allowPrivilegeEscalation: false`).
 - **Heavy environments** run dockerd as root, so `heavy: true` (or `tier: heavy`) implies `sudo: true`, and an explicit
   `sudo: false` beside it is refused. Under `enforce`, an intake job on a heavy environment is refused unless the repo
@@ -718,7 +718,7 @@ mcp:
 ```
 
 `mcp.<name>.trust` is `trusted` or `untrusted`. Unset, a remote (`url`) server is `untrusted` and a local stdio
-(`command`) server is `trusted`. A call to an untrusted server's tool taints the turn ([security.md](security.md#taint)).
+(`command`) server is `trusted`. A call to an untrusted server's tool taints the turn ([security/taint.md](security/taint.md)).
 Mark a stdio server that relays third-party text (Jira, Slack, a mail or web reader) `untrusted`, and a remote one you
 run over your own data `trusted`. hangar's own `hangar-env` server is trusted; the built-in browser
 (`computer.browser_mcp`) is untrusted; a server the agent adds itself is untrusted. A repo's

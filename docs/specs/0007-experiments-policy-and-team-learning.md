@@ -1,8 +1,11 @@
 # 0007: Experiments, enforced policy, MCP gateway and team learning
 
+!!! note "Design record"
+    Written 2026-10-12; **deferred**. The current behaviour is on [experiments](../jobs/experiments.md) and [repo-policy.md](../repo-policy.md); the status line below says what shipped.
+
 Status: deferred (2026-10-15): the MCP gateway, the `policy:` block and labels are not scheduled; experiments shipped in [0014](0014-sister-tool-interfaces.md)'s shape (#114); §5.4–5.6 moved to flightdeck (decision 17). Was: draft. · Date: 2026-10-12 · Builds on: 0003 (gateway, egress), 0004 (performance, supervisor), 0005 (traces, decisions, evals), 0006 (environments, harness packs) · Evidence: the semver harness eval of 2026-10-12 (`evals/semver/`, PR #28)
 
-> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/specs/README.md](README.md); where this spec conflicts with that page, the page wins.
+> Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
 > **Update 2026-10-15 ([0014](0014-sister-tool-interfaces.md)):** interpreting runs moved to a sister tool in a separate repository. hangar keeps what needs sandboxes, credentials or the control plane's trust boundary: policy and its enforcement (§5.2), the MCP gateway (§5.1), budgets, and experiments as a job kind that runs task × variant × trial isolated and pinned and records each trial (manifest, trace, verification, an optional external grader's output). The sister tool owns the paired analysis and report (§5.4 rules 4–5, `experiment_report`), labels and the labeler cascade (§5.5), process mining and routing on labels, and team learning's miners and proposals (§5.6). Milestones M7, M8 and M10 are split accordingly (§7).
 

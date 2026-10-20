@@ -70,7 +70,7 @@ A client without elicitation sees `pending_approvals` in `wait_for_turn`, `get_s
 ### Taint
 
 Every turn records whether the agent has read untrusted content (a web page, an untrusted MCP server's result, an
-untrusted issue): `taint` on the turn, the session and its job ([security.md](security.md#taint)). It is sticky
+untrusted issue): `taint` on the turn, the session and its job ([security/taint.md](security/taint.md)). It is sticky
 across turns, follow-ups and forks. Once a turn is tainted, under `ask` and `deny-risky` these count as risky as well:
 
 - any `git push` (`bash -lc '...'` is looked into), and `gh pr create`;
@@ -80,7 +80,7 @@ across turns, follow-ups and forks. Once a turn is tainted, under `ask` and `den
 
 `deny-risky` denies them with "after reading untrusted content"; `ask` asks a person, and the request carries `taint`
 (why it asks). `auto` changes nothing. Intake jobs should run under `deny-risky`: they are tainted from turn 1
-([security.md](security.md#taint-gates)). The driver hears of the taint at the turn's start (`--tainted`), from
+([security/taint.md](security/taint.md#taint-gates)). The driver hears of the taint at the turn's start (`--tainted`), from
 hangar's signed `taint` command mid-turn, or from a web tool it sees in the stream; nothing clears it.
 
 ## Classifying steers
@@ -137,7 +137,7 @@ The turn still runs in tmux, so `hangar sb attach` and the run log work as befor
 
 **Status and restarts.** The driver's exit status is the turn's: 130 after an interrupt that brought no new message. The driver runs inside the sandbox, so a control-plane restart doesn't affect it. The restarted control plane re-attaches to the turn (from its saved event cursor), and pending approvals can still be answered.
 
-**The job's check.** For a job with `verify`, the driver runs the check whenever a Codex turn completes. If it fails, the driver sends the output back into the same conversation as the next message, up to `max_verify_rounds` times. It doesn't do this after an interrupt that brought no message. Claude Code gets the same check as a Stop hook instead. See [jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job). Under [the uid split](#the-uid-split) the check is the repo's own code, so the driver runs it as the agent, like the harness, never as hangar's user.
+**The job's check.** For a job with `verify`, the driver runs the check whenever a Codex turn completes. If it fails, the driver sends the output back into the same conversation as the next message, up to `max_verify_rounds` times. It doesn't do this after an interrupt that brought no message. Claude Code gets the same check as a Stop hook instead. See [jobs §7](jobs/agent-loop.md). Under [the uid split](#the-uid-split) the check is the repo's own code, so the driver runs it as the agent, like the harness, never as hangar's user.
 
 ### Trees
 
@@ -230,7 +230,7 @@ An `ask` or `deny-risky` turn in a single-user sandbox carries a warning on the 
 
 - **The harness is a process of the agent's uid.** Docker leaves same-uid `ptrace` to the kernel's Yama setting, and this repo's Docker hosts have no Yama at all. Where the kernel allows it, code running as the agent can change the running harness in memory. That code can be code you allowed in this turn, or a process it left running into a later turn. Changed this way, the harness can skip prompts or print anything into the run log. hangar's own state (approvals, exit status, answers) doesn't come from the harness. Tokens and cost read from the log can still be faked, and so can budget stops. Closing this needs the harness to run non-dumpable, or a ptrace policy for the sandbox. That is a follow-up.
 - **Commands hangar runs as the agent outside a turn don't get `no_new_privs`** (`hangar sb exec`, hangar-envd, including [streamed commands and background processes](streaming.md)). A setuid program in the image that grants root without a password still undoes the split from there. That is why the setup refuses an agent with sudo. Images ship no other such program by default (root's password is locked).
-- **`auto` turns start the harness as before:** the agent's binary on its `PATH`, its environment and its settings. There is nothing to approve, so the only control there is the job's verify gate, which stays advisory ([jobs §7](jobs.md#7-an-agent-loop-that-finishes-the-job)). hangar's own check after the turn decides delivery.
+- **`auto` turns start the harness as before:** the agent's binary on its `PATH`, its environment and its settings. There is nothing to approve, so the only control there is the job's verify gate, which stays advisory ([jobs §7](jobs/agent-loop.md)). hangar's own check after the turn decides delivery.
 - **deny-risky resolves paths as `hangar`.** It can't follow symlinks inside directories only the agent can enter, such as a repository under the agent's home (0750). It is a guard rail, as before.
 
 ## hangar-owned harness settings

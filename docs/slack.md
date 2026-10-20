@@ -1,6 +1,6 @@
 # Slack: start and steer jobs from a channel
 
-Type `/hangar fix the flaky upload test` in a channel, or mention `@hangar` with the instructions, and hangar runs a [job](jobs.md) on that channel's repo. It reports back in a thread:
+Type `/hangar fix the flaky upload test` in a channel, or mention `@hangar` with the instructions, and hangar runs a [job](jobs/README.md) on that channel's repo. It reports back in a thread:
 
 - when the agent starts;
 - when it needs a decision;
@@ -46,7 +46,7 @@ decision was made, on a mapped channel, and hangar drafts an ADR from the thread
   and earlier replies, as for any mention), with stored secrets redacted. The instructions are fixed
   (`src/hangar/prompts/adr.md`): write that one file and change nothing else. The agent runs with egress `none`, and
   the job is tainted from turn 1, so hangar opens the PR after the turn as a draft labelled `hangar:tainted`
-  ([security.md](security.md#taint-gates)); the agent never pushes or opens it.
+  ([security/taint.md](security/taint.md#taint-gates)); the agent never pushes or opens it.
 - **The PR.** Title `ADR: <title>`, labels `agent-drafted` and `adr`, and a body linking the thread. It never lands on
   the requester's approval, whatever the repo's `self_approval` says ([landing.md](landing.md#agent-drafted-adrs)).
 - **hangar checks it** after the turn, as the job's verify: exactly one new file, numbered one past the highest in
@@ -99,7 +99,7 @@ hangar setup slack --manifest slack-app.yaml
 - **Exactly once.** Slack retries an event it thinks failed (`X-Slack-Retry-Num`), and a mention in a thread arrives both as `app_mention` and as `message`. hangar acts once per `event_id` and once per message. The record of handled events survives a restart. An event counts as handled only once its handling finishes, so one that a dying process acknowledged but never handled runs when Slack retries it.
 - **No replays.** Slack doesn't retry slash commands, so a second copy of a signed command (same signature) inside the five-minute window is a replay: hangar answers "That request was already handled." and starts nothing.
 - **Other organizations.** In a Slack Connect channel, messages from another organization's members carry their own workspace ID (`user_team`). hangar ignores their mentions and thread replies unless they are listed in `HANGAR_SLACK_USERS`, so sharing a channel doesn't give a partner company an agent on your repo. (Slack doesn't let another organization run your app's slash commands at all.)
-- **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
+- **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
 - **Only people.** hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
 - **Who can follow up.** On a person's job, only that person (an admin uses `hangar job follow-up`); on a team job, anyone the channel trusts. A job started by someone whose Slack account is linked (`hangar person link <id> slack T…/U…`) is that person's: it runs with their own login and budget, and anyone else's reply in its thread is refused, naming whose job it is. A job started by someone with no linked account is a team job. GitHub and Jira follow the same rule (`teamcreds.may_continue`). A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
@@ -121,6 +121,6 @@ hangar also DMs people what needs them ([the inbox](landing.md#delivery-it-comes
 
 ## Security notes
 
-Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone in your workspace who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as untrusted data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs.md#security-notes). A thread reply is a follow-up with its sender's authority: on a team job, any allowed user's; on a person's job, only that person's ([who can follow up](#how-it-behaves)). Keep PR merges human-approved.
+Treat a mapped channel like write access to its repo's `hangar/*` branches. Anyone in your workspace who can post there can start an agent, unless `HANGAR_SLACK_USERS` is set. Messages in the thread are context for the agent, and the prompt marks them as untrusted data. Even so, they are untrusted input, like issue comments; see [jobs → Security notes](jobs/reference.md#security-notes). A thread reply is a follow-up with its sender's authority: on a team job, any allowed user's; on a person's job, only that person's ([who can follow up](#how-it-behaves)). Keep PR merges human-approved.
 
 `/hangar status JOB` answers for any job on a repo Slack may use, including jobs started over REST or GitHub, to anyone allowed in a mapped channel. It shows the title, state, requester and latest event.

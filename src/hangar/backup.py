@@ -298,7 +298,7 @@ async def isolation_check(backups: Backups, settings: Settings) -> dict[str, Any
         return None  # no bucket for the checkpoints, or backups on a disk: PD snapshots are the advice there
     fix = ("set HANGAR_BACKUP_STORE to a bucket of its own where hangar's service account has only "
            "roles/storage.objectCreator, with a lifecycle rule for how long backups are kept "
-           "(docs/security.md#backups-and-the-vault-key)")
+           "(docs/security/vault-key.md#backups-and-the-vault-key)")
     if bak == ses:
         return _check("backup isolation", None, f"backups share gs://{ses} and hangar's service account with the "
                       "checkpoints: one token or one grant on the bucket reads both", fix)

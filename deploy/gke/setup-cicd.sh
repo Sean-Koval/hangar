@@ -579,7 +579,7 @@ fi
 step "5. The vault key in Secret Manager ($VAULT_SECRET; docs/upgrading.md step 1)"
 if ! skipped vault; then
   if [ -n "$(look gcloud secrets describe "$VAULT_SECRET" --project "$PROJECT" --format='value(name)')" ]; then
-    note "$VAULT_SECRET exists: left as it is (a rotation puts new keys there first: docs/security.md)"
+    note "$VAULT_SECRET exists: left as it is (a rotation puts new keys there first: docs/security/README.md)"
   else
     printf '   + %s | base64 --decode | %s\n' \
       "$(show kubectl -n "$NS" get secret hangar -o 'jsonpath={.data.HANGAR_SECRET_KEY}')" \
@@ -611,7 +611,7 @@ if ! skipped mirrors; then
     bind artifacts "$name" roles/artifactregistry.reader "serviceAccount:$HANGAR_SA" \
       --location="$MIRROR_LOCATION"
   done
-  note "Go stays on the public proxy (docs/security.md, package mirrors). To use these, when you're ready:"
+  note "Go stays on the public proxy (docs/security/README.md, package mirrors). To use these, when you're ready:"
   note "  hangar config set HANGAR_PACKAGE_MIRRORS '{\"pypi\": \"https://$MIRROR_LOCATION-python.pkg.dev/$PROJECT/pypi-remote\", \"npm\": \"https://$MIRROR_LOCATION-npm.pkg.dev/$PROJECT/npm-remote\"}'"
 fi
 

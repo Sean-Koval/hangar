@@ -7,7 +7,7 @@ Phoenix. This page is the contract. It is versioned: a change that removes or re
 
 **Canonical.** OTLP on the OpenTelemetry GenAI conventions is hangar's canonical trajectory format: what it stores
 and exports for every run. Other formats (ATIF, Harbor's) are adapters in flightdeck, built on this export; hangar
-emits no ATIF ([spec decision 16](../specs/README.md#cross-spec-decisions)).
+emits no ATIF ([spec decision 16](../specs/decisions.md)).
 
 The boundary and the other two interfaces (the effective harness manifest and experiments) are in
 [spec 0014](../specs/0014-sister-tool-interfaces.md).
@@ -123,7 +123,7 @@ exported in that order. Order across sessions (best-of-N attempts) is by time on
 | `steer.classified` | `turn` | `hangar.steer.class`, `hangar.steer.ref` (the steer's id, or the job's follow-up turn number), `hangar.steer.classified_by`, `hangar.seq`: someone said what a steer or follow-up was |
 | `verify` | `turn` (the in-turn gate) or `job` (hangar's check after the turn) | `hangar.verify.phase` (`in_turn`, `after_turn`), `hangar.verify.passed`, `hangar.verify.exit_code`, `hangar.verify.round`, `hangar.verify.command` (job only), `hangar.verify.new_failures` (job only) |
 | `question` | `turn` | `hangar.text`: the agent asked a person (the job waits for an answer) |
-| `taint` | `turn` | `hangar.taint.ref`, `hangar.seq`: the session first read untrusted content here ([security.md](../security.md#taint)) |
+| `taint` | `turn` | `hangar.taint.ref`, `hangar.seq`: the session first read untrusted content here ([security/taint.md](../security/taint.md)) |
 | `git.commit` | `job` | `vcs.ref.head.revision` (the commit), `hangar.git.subject`. Each commit of the delivered branch, stamped when hangar delivered it (after its check): when the *agent* committed is its shell call with `hangar.shell.ops` `git.commit` |
 | `git.push` | `job` | `vcs.ref.head.name` (the branch), `vcs.ref.head.revision`, `hangar.git.pushed` |
 | `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft` |
@@ -186,12 +186,12 @@ hangar: `hangar.turn.number` (1-based, in the session), `hangar.run.id`, `hangar
 before them), `hangar.attempt` (best-of-N attempt number, job exports), `hangar.steer.class` and
 `hangar.steer.classified_by` (a job's follow-up turn started by a person: what the follow-up was, `unclassified` when
 nobody said; not on the first turn or on turns hangar started itself, such as verify-fix and auto-fix rounds),
-`hangar.taint` (whether the turn read untrusted content, or started tainted: [security.md](../security.md#taint)),
+`hangar.taint` (whether the turn read untrusted content, or started tainted: [security/taint.md](../security/taint.md)),
 `hangar.taint.first_seq` (the event that first tainted it; `0` when it started tainted, from its context or an earlier
 turn of the session) and `hangar.taint.sources` (`kind:ref`, e.g. `web:example.com`, `mcp:github`,
 `context:issue text jira-ABC-12.md`), `hangar.outcome.class` (`agent`, `infra_error`, `cancelled`, `human`: whether
-the outcome is the agent's or infrastructure's, [jobs.md](../jobs.md#outcome-classes); unset for turns recorded before
-#166, which means unknown, not `agent`) and `hangar.outcome.infra_reason` (`preempted`, `power_down`, `rate_limited`,
+the outcome is the agent's or infrastructure's, [jobs/reference.md](../jobs/reference.md#outcome-classes); unset for turns recorded
+before #166, which means unknown, not `agent`) and `hangar.outcome.infra_reason` (`preempted`, `power_down`, `rate_limited`,
 `provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`, `drift` (#178), `no_login` (#293); only with `infra_error`). Both are on the live
 span sent to the collector too. Leave `infra_error` turns out of yield and comparisons.
 

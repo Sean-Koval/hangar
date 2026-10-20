@@ -1,0 +1,60 @@
+# Cross-spec decisions
+
+Where a spec conflicts with this list, this list wins. The specs themselves, with their status, are on [the design notes index](README.md).
+
+Where a spec conflicts with this list, this list wins. Specs will be updated to match as their milestones start. Decisions about work that was never built are kept, marked superseded, with what replaced them.
+
+1. **One `Run` model with two axes.** *Superseded (2026-10-15): the `Run` model was never built. Jobs, sessions and their turns (0009, 0010; `Job`, `Session`, `SessionTurn` in `models.py`) carry the lifecycle and results, the reconciler (#84) and the event watcher replaced the liveness watcher, and a job's outcome classes ([jobs/reference.md](../jobs/reference.md#outcome-classes)) replaced the two axes. Kept for history:*
+   - **Lifecycle state:** 0001's `RunState` (queued, starting, running, waiting_input, succeeded, failed, crashed, cancelled, timed_out), set by 0001's supervisor and watcher.
+   - **Results pipeline:** 0002's `stage` (pending, publishing, collecting, verifying, done, degraded, error).
+   - **Results:** 0002's `RunResult` replaces 0001's smaller `RunResult`.
+   - **Name mapping:** 0002's `exited` becomes `succeeded` or `failed`, `lost` becomes `crashed`, `stop_agent` becomes `cancel_agent`, `max_minutes` becomes `timeout_minutes`, and `harness_session_id` becomes `session_id`.
+   - **Crash detection:** a single watcher (0001 M2). It adopts 0002's probe rules: `kill -0` on the recorded pid, a zombie counts as gone, two misses before `crashed`. It polls every 10 s, not 60 s.
+2. **Verification lives in 0002.** `repo.verify` in the environment spec (command, mode, retries) is the default. 0001's per-run `verify` argument overrides it for that run. The result is `RunResult.verification`, in 0002's shape. `succeeded` requires verification to pass when a verify command is set.
+3. **One usage tracker and one queue.** *Superseded (2026-10-15): there is no per-credential queue. Usage is the activity and usage view (0011 workstream C, #46), the queue is the job slots with fair share per person (#89), and login pools wait for a free login (`HANGAR_LOGIN_WAIT_SECONDS`). Kept for history:* These are 0001 M4; 0002's milestone 4 is dropped. Concurrency is counted per agent credential, default 2 for a subscription credential, configurable per credential. 0002's fan-out uses this queue rather than its own.
+4. **One credential gateway, owned by 0003.** It runs as a separate listener on port 8788 with `SandboxGrant` records, smart-HTTP push inspection, a GitHub REST allowlist and per-grant GitHub App tokens. 0002's `/git` router on the main port and its `hgs_` fields in `Sandbox.info` are dropped, along with 0002 milestone 10. 0002's publish step and land worker push through the gateway like any sandbox.
+5. **Merge rights never reach the gateway.** 0002's `Credential.purpose = "control-plane"` is adopted. The land credential is control-plane only. The gateway's REST allowlist must not include merge, review-approve, update-branch or ruleset endpoints. A test pins this.
+6. **Pull requests.** hangar opens the PR in the publish step (0002), using `open_pull_request` and `pull_request_status` (0003 M4). Agents may also run `gh pr create` through the allowlist. Either way hangar records the PR from GitHub, never from the agent's message.
+7. **Scopes: 0003's model plus two of 0002's.** The base is 0003's: `read` ⊂ `operate` ⊂ `admin`, `TokenLimits`, `Principal`, and OAuth scopes `hangar:read` / `hangar:operate`. To that add 0002's two scopes:
+   - **`land`:** request, inspect and cancel land requests.
+   - **`approve`:** approve or reject a land request. It is human-only. It's never implied by `admin`, never grantable over OAuth, and has no MCP tool. Only the bootstrap or env admin token, explicitly scoped tokens, and IAP-authenticated users get it.
+
+   Scopes are implemented once, in 0003 M1.
+8. **Branch protection first.** 0003 M0 applies it to `main` before any agent work that pushes. It requires a PR, passing CI and one approval, blocks force-push and deletion, and has no bypass list. Until the gateway ships, the sandboxes' fine-grained token is the only thing an agent holds, and branch protection is what keeps it off `main`.
+9. **Model-API proxy is gated.** 0003 M9 ships only after it is confirmed that routing a Claude subscription token through hangar is allowed and works (0003 open questions 1 and 5). Until then the subscription token stays in the sandbox, and egress limits (0003 M6–M7) are the mitigation.
+10. **The decision interface is 0005's.** *Superseded (2026-10-15): neither the `DecisionService` nor `classify_run` was built, and 0004's supervisor is deferred. Approvals go through one rule (`approvals.can_decide`, #121), with Tower's decision point behind it ([0015](0015-governance-decision-point.md)). Kept for history:* It uses fixed, versioned decision tasks: `classify_run(run_id, task)` returns `label`, `probabilities`, `actionable` and `evidence`. 0004's free-form `classify(question, options)` and its `rationale` field are dropped, since Decision-1 returns no rationale.
+    - 0004 adds its supervisor decisions as new decision task files, not ad-hoc questions.
+    - 0004 acts only when `actionable` is true. Otherwise it opens an escalation, as its spec describes.
+    - 0004's `TraceStore` is 0005's run-event store, extended with task events.
+11. **Scope names follow decision 7.** *Superseded (2026-10-15): 0005's `runs:*` scopes and 0004's escalations were never built. Tokens carry `admin`, `user`, `mcp`, `jobs`, `metrics` or `sandboxes`, and every tool and route's scope is pinned by the scope-parity test (#122). Kept for history:* 0005's `runs:read` maps to `read` and `runs:write` to `operate`. 0004's proposal is accepted: `approve` also covers resolving `human_only` escalations. 0004's new `TokenLimits` fields are added to 0003 M1.
+12. **One sandbox-facing listener.** Telemetry ingest (0005's `/otlp/v1/*`) lives on 0003's gateway listener (:8788) once it exists, behind a per-run ingest key. Until then it is on :8787 with the same key. Sandboxes never need the admin API.
+13. **0004's changes to 0001 are accepted.** *Superseded (2026-10-15): there is no `Run` to change (decision 1). Job slots order by fair share per person (#89), and workspace checkpoints shipped with sessions (0010). Kept for history:*
+    - The queue orders by class, priority, fair share and age, with adaptive concurrency under a hard cap.
+    - `Run` gains `task_id`, `subtask_id`, `attempt_no`, `priority`, `queue_class`, `owner` and `model`.
+    - The workspace half of 0001 M10 (checkpoints) moves to phase 2 as 0004 M4, because Spot preemption is the normal case on GKE.
+14. **Harnesses come from packs (spec 0006, M1–M3 built and live-tested 2026-10-12).** Harness binaries ship as read-only OCI image volumes mounted at sandbox start, not baked into environment images. This was verified on GKE 1.36 with gVisor. Baking is the fallback for E2B and for Docker without the containerd image store. 0004's `model_flag` and 0005's per-harness parsers attach to the harness profile, not the environment.
+
+
+15. **0007 extends 0003, 0005 and 0006; it does not fork them.**
+    - **MCP gateway:** a second protocol on 0003's gateway grant model, not a separate trust system.
+    - **Policy:** 0007's `policy:` block absorbs 0003's `network:` block as `policy.egress`.
+    - **Experiments:** 0007's `run_experiment` replaces 0005 M10's two-config `POST /api/evals`, keeping all eight of 0005's evaluation rules.
+    - **Parsers:** the stream parsers for Claude Code, Codex, pi and Antigravity are built, in `src/hangar/events.py` (`Parser`, `FORMATS`); the trace export and taint read them. `evals/semver/spans.py` is no longer the starting point (it moves to flightdeck, #145).
+
+16. **hangar is a development control plane first; evals are a feature (owner, 2026-10-12; trajectories and tasks restated 2026-10-17, #142).**
+    - **Priority:** sandboxes with agent harnesses for scaling coding work come first. Evals, labeling, the improvement loop and RL are built from the traces that real work produces. When the two conflict, development throughput and UX win.
+    - **Trajectories:** `hangar.trace/v1` (OTLP/JSON on the OpenTelemetry GenAI conventions, [0014 §3](0014-sister-tool-interfaces.md#3-trace-export-hangartracev1)) is the stored and exported per-run format. ATIF v1.7 is an import and export adapter owned by flightdeck; hangar emits no ATIF.
+    - **Tasks:** development work is GitHub issues, Jira tickets and jobs, checked by the repo's own commands. Graded-task formats (Harbor-compatible: a task directory, `tests/`, an environment) belong to flightdeck, and so does `save_as_task`, over hangar's outbox data. hangar's experiment job takes tasks as `instructions` or an `issue` plus a grader (`experiments.Task`, `Grader`; [0014 §4](0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)).
+    - **Forks:** disk-level forks on GKE are the default. Memory fork is opt-in (GKE Pod Snapshots, then E2B), chosen by 0008 M2's benchmark.
+    - **Learned changes:** the improvement loop opens PRs and never merges to a team environment's default channel (consistent with 0002's human-approved landing).
+    - **Tickets:** Jira and GitHub Projects (0007 OQ4), through one source-agnostic intake; GitHub Issues through the existing trigger.
+
+17. **Interpreting runs lives outside hangar (owner, 2026-10-15; [0014](0014-sister-tool-interfaces.md)).** Behavior specs, evals, rubrics, effect sizes, trace visualization and team learning belong to a sister tool in a separate repository. The sister tool is flightdeck. hangar adds only what needs the sandbox lifecycle, credentials or its trust boundary, and gives that tool three versioned, owner-scoped, redacted interfaces: the effective harness manifest, OTLP trace export and the experiment job kind (and, since #163, the outbox). Where 0005, 0007 or 0008 put evaluation, labeling, graded-task formats or reports in hangar, this decision wins.
+
+## Decisions needed from the owner
+
+- **Where the team harness repo lives**, and which good run `team-default` is frozen from ([#138](https://github.com/Sean-Koval/hangar/issues/138)).
+- **Required approvals on `main`.** Branch protection requires the `test`, `e2e-docker`, `terraform` and `contract` checks, with 0 required approvals and no last-push approval (checked through the API, 2026-10-17). They stayed at 0 until agents committed as a GitHub App identity; landing's App (#96) now exists, so raising them to 1 with last-push approval, as [landing.md](../landing.md#3-the-branch-protection-to-enable) asks of other repos, is the owner's call.
+- **Whether the A2A endpoint stays**, given no consumer uses it ([#148](https://github.com/Sean-Koval/hangar/issues/148), a spike: evidence first).
+
+Settled since the last version of this list: the GitHub App is decided and built (landing, #96); the Decision-1 account is moot (decision 10); subscription logins never pass through hangar for automated work (#125); Codex runs without its own sandbox inside hangar's; approvals are people's, through one rule (#121).

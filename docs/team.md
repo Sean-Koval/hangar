@@ -1,6 +1,6 @@
 # Team setup: people, linked accounts and credentials
 
-One hangar serves a team. This guide sets it up for one: add the people, link their GitHub, Slack and Jira accounts, add the team's credentials, and let each person add their own logins. [security.md](security.md#people) has the access model behind it; [upgrading.md](upgrading.md#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) covers an existing install.
+One hangar serves a team. This guide sets it up for one: add the people, link their GitHub, Slack and Jira accounts, add the team's credentials, and let each person add their own logins. [security/people.md](security/people.md#people) has the access model behind it; [releases/team-release-procedure.md](releases/team-release-procedure.md#7-people-your-logins-stay-yours-add-team-credentials-then-the-team) covers an existing install.
 
 ```bash
 hangar person add alice --name "Alice"                    # 1. people (prints her login token once)
@@ -138,7 +138,7 @@ A subscription login is a credential stored with `--kind oauth_token` or `--kind
   A job that names a subscription login in `credentials` is refused the same way. Their person's API key, or the team's, is used instead when there is one.
 - **Interactive sessions and sandboxes warn.** A person's own `new_session`, `create_sandbox` or `run_agent` still uses their subscription login, and says so: a warning event, `warnings` on `get_session` and the sandbox, and an entry in each turn's manifest `warnings[]`: `subscription login in a hangar sandbox: personal, interactive use only`.
 - **`HANGAR_SUBSCRIPTION_LOGINS`**: `interactive` (the default) as above; `any` lets jobs use them, with a warning on the job and sandbox, and `hangar doctor` fails the **subscription logins** check. Experiment trials and graders never get one, whatever it says.
-- **Spend caps.** Put a workspace spend limit on each API key at the vendor (Anthropic Console workspace limits, OpenAI project limits); hangar can't set those. hangar's job budgets and daily caps ([jobs.md](jobs.md)) are the cap inside hangar. Use both.
+- **Spend caps.** Put a workspace spend limit on each API key at the vendor (Anthropic Console workspace limits, OpenAI project limits); hangar can't set those. hangar's job budgets and daily caps ([jobs/README.md](jobs/README.md)) are the cap inside hangar. Use both.
 - **Codex Enterprise access tokens** ("for trusted scripts, schedulers, and private CI runners") are for automation: store one with `--kind api_key` and hangar treats it as an API key.
 - **Antigravity**: a Google sign-in is an `auth_file`, so fleets and jobs use a `GEMINI_API_KEY` credential (`--kind api_key`).
 - The one-at-a-time lease for sign-in files ([below](#codex-logins-one-sandbox-at-a-time)) still applies to interactive sessions.

@@ -15,7 +15,7 @@ data:
   HANGAR_K8S_RUNTIME_CLASS: "gvisor"        # kata-qemu-runtime-rs for microVM pools, "" for runc (not recommended)
   HANGAR_MAX_SANDBOXES: "120"               # a team of 6 x 10 sessions plus jobs (docs/team-scale.md)
   HANGAR_K8S_POD_SNAPSHOTS: "false"
-  # Git credential gateway and egress proxy (docs/security.md); gateway.yaml adds their Service.
+  # Git credential gateway and egress proxy (docs/security/README.md); gateway.yaml adds their Service.
   HANGAR_GATEWAY_URL: "http://hangar-gateway.hangar.svc:8788"
   HANGAR_EGRESS_URL: "http://hangar-gateway.hangar.svc:3128"
   HANGAR_INTAKE_POSTURE: "enforce"

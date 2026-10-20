@@ -17,7 +17,7 @@ what happened:
 | `401` "bad signature" | The webhook's secret in GitHub isn't the stored one (`gh-webhook` by default) | Run `hangar setup github` again, which sets the stored secret on the webhook |
 | `200` with `{"ignored": "…"}` | hangar received the event and skipped it on purpose; the reason says why | "repo … is not in HANGAR_GITHUB_REPOS": add it (`hangar setup github --repo`). "not the trigger label": the label must be `HANGAR_GITHUB_TRIGGER_LABEL` (`hangar`). "not a /hangar comment": the comment must start with `/hangar`. "… is not trusted to continue jobs": the commenter isn't an owner, member or collaborator (or in `HANGAR_GITHUB_TRUSTED` when that is set). "duplicate delivery": a redelivery of one already handled. "job … is already working on …": one job per issue at a time |
 | `202` with `{"ok": true, "job": …}` | A job was queued | The issue gets "Queued as hangar job …" at once; an untrusted labeller's job waits for an approver's `/hangar approve` instead, with a comment saying so |
-| `429` | A front-door rate limit ([security.md](security.md#front-door-limits)) | Wait; a redelivery after the limit refills runs |
+| `429` | A front-door rate limit ([security/front-doors.md](security/front-doors.md#front-door-limits)) | Wait; a redelivery after the limit refills runs |
 
 While the sandbox pools are powered down (01:00–10:00 ET) deliveries are still received and the jobs wait. With the
 whole infra `off`, nothing receives them: GitHub's are redelivered on the next start if they are at most 3 days old
@@ -49,7 +49,7 @@ environment changed; usually a few minutes)". Later jobs reuse it. To build ahea
 `HANGAR_JOB_TIMEOUT_MINUTES` (60), which limits each agent turn; waiting for the sandbox to start has a limit of its own,
 `HANGAR_SANDBOX_START_TIMEOUT_SECONDS` (900), sized for a node scale-up and a first image pull.
 
-**In `queued`.** The job's `reason` says why ([jobs.md](jobs.md#2-submit-a-job)):
+**In `queued`.** The job's `reason` says why ([jobs/README.md](jobs/README.md#2-submit-a-job)):
 
 - `powered_down`: the sandbox pools are off for the night; it starts after the 09:50 power-up
   ([gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)).

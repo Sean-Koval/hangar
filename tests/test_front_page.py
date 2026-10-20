@@ -22,12 +22,12 @@ def test_the_readme_keeps_its_security_posture():
     body = section(README, "Security posture")
     assert README.index("\n## Features") < README.index("\n## Security posture"), "it follows the features"
     assert "treats every sandbox as hostile" in body
-    assert "](docs/security.md)" in body and "](docs/upgrading.md#the-safe-release" in body
+    assert "](docs/security/README.md)" in body and "](docs/releases/safe-release.md)" in body
 
 
 def test_the_docs_home_page_keeps_its_security_posture():
     assert "**Security posture.** hangar treats every sandbox as hostile." in INDEX
-    assert "](security.md)" in INDEX and "](upgrading.md#the-safe-release" in INDEX
+    assert "](security/README.md)" in INDEX and "](releases/safe-release.md)" in INDEX
 
 
 def features(text: str, prefix: str) -> list[str]:
