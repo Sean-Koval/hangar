@@ -25,6 +25,11 @@ ALLOWED_IMPORTS: dict[str, set[str]] = {
     # Placeholder (part B, #153): if the outbox's GCS -> Parquet compactor ends up living in hangar rather than in
     # flightdeck (an open coordinator decision; today it is flightdeck#5), its module may import pyarrow to write
     # Parquet. Add it here as e.g. "outbox_compact.py": {"pyarrow"}, and nothing else.
+    # KAN-140: the Fleet tile's `stage_estimate` is a runtime display guess for one live turn (how far its current
+    # stage probably is), from the median of recent stage and turn durations held in memory; a median, no metric
+    # reported across runs.
+    "livestate.py": {"statistics"},
+    "fleet_api.py": {"statistics"},
 }
 
 # "module:function" -> reason. Names that match BANNED_NAMES but aren't estimators.
