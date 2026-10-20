@@ -346,6 +346,31 @@ def test_page_forms_are_airframe_fields_and_the_screen_has_an_empty_state():
     assert 'class="af-empty"' in vnc and 'show("no-data", "No screen to show."' in vnc and 'show("error"' in vnc
 
 
+def test_phones_land_under_the_header_with_a_compact_fleet_and_activity_cards():
+    """KAN-111: a tapped job or session scrolls in under the sticky header, not behind it; at 480px the Fleet header
+    is three short rows (the views as a select, one line of counts); the Activity log's detail is keyed pairs, a run
+    of identical rows collapses to one with a count, and on a phone each row is a card."""
+    html, css = (UI / "index.html").read_text(), (UI / "app.css").read_text()
+    app, fleet = (UI / "app.js").read_text(), (UI / "fleet.js").read_text()
+    assert ".job-detail, .env-detail { scroll-margin-top: calc(var(--af-header-h) + var(--af-space-16)); }" in css
+    assert '<select id="fleet-view-select" class="fleet-view-select" aria-label="Fleet view">' in html
+    select = html.split('id="fleet-view-select"')[1].split("</select>")[0]
+    assert re.findall(r'<option value="([a-z]+)">', select) == ["board", "bays", "columns", "owners"]
+    assert '$("#fleet-view-select").value = fleet.view;' in fleet
+    assert 'location.hash = `#fleet?view=${e.target.value}`' in fleet
+    assert '<span class="fleet-brief af-muted">' in fleet
+    phone = css[css.index("@media (max-width: 480px)"):]
+    for rule in ('grid-template-areas: "title new" "sum sum" "views stopped"',
+                 "#view-fleet .fleet-view-select { display: block;",
+                 "#view-fleet .fleet-views, #view-fleet #fleet-sub > .af-meta, #view-fleet #fleet-sub > .af-cap "
+                 "{ display: none; }",
+                 "#audit-table thead { display: none; }", '"action when" "who who" "target target" "detail detail"'):
+        assert rule in phone, rule
+    assert "function auditRows(" in app and "function auditDetail(" in app and 'class="af-meta__key"' in app
+    assert "× ${a.n} in ${auditSpan(a.ts - a.first)}" in app
+    assert 'td class="af-table__mono clip"' not in app and ".table td.clip" not in css, "the detail is keyed pairs"
+
+
 def test_job_detail_has_no_dead_terminal_and_a_feed_that_is_never_cut_mid_line():
     """KAN-112: a finished job's terminal button is disabled with a hint instead of opening an empty drawer (and a
     connection that never answers shows an empty state with a retry); the activity feed shows whole rows behind an
