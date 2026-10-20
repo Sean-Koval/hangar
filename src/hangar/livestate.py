@@ -10,6 +10,12 @@ Everything here is derived and rebuilt from the stream: a control-plane restart 
 fill again as the turns' logs are re-read from their saved cursors. A finished turn keeps its state until the
 session is deleted or the table is full (`MAX_STATES`), so a settled sandbox still says what its agent last did.
 
+Token use over the last hour (`tokens_1h`, KAN-140 S2): each usage event carries the turn's running totals, so the
+increase since the previous one (new tokens: input, output and cache writes, as `Usage.tokens`) goes into the
+five-minute bucket of the event's time; the view is the last `TOKEN_BUCKETS` buckets, oldest first, ending with the
+current one. The buckets live only here, in memory: after a restart they start empty (a re-read log refills only
+what its saved cursor had not yet passed), so the sparkline is "since hangar started, at most an hour".
+
 Stage times (`StageStats`) feed the `stage_estimate` the fleet reports when the agent reported no progress of its
 own: the median of the same stage's durations in this control plane's recent turns, per environment and harness.
 """
@@ -33,6 +39,8 @@ MAX_FILES = 500
 NOW_MAX = 80  # characters of a `now` line
 CMD_MAX = 60
 STAGE_SAMPLES = 50  # durations kept per (environment, harness, stage)
+TOKEN_BUCKET_S = 300  # S2: five minutes per bucket
+TOKEN_BUCKETS = 12  # an hour
 
 _PUSH = re.compile(r"\bgit\s+push\b|\bgh\s+pr\b|\bgh\s+api\b.*\bpulls\b")
 _COMMIT = re.compile(r"\bgit\s+commit\b")
@@ -114,6 +122,9 @@ class LiveState:
         self.denial: dict[str, Any] | None = None  # the latest policy denial of this turn
         self.last_command: str | None = None
         self.events = 0
+        # S2: new tokens per five-minute bucket {bucket index: tokens}, across turns; and this turn's running total
+        self.token_buckets: dict[int, int] = {}
+        self._turn_tokens = 0
 
     # ------------------------------------------------------------------ feeding
     def reset(self, turn: int, run_id: str, started_at: float | None) -> None:
@@ -123,6 +134,7 @@ class LiveState:
         self.stages, self.files, self.commits = [], {}, 0
         self.progress = self.usage = self.denial = self.last_command = None
         self.events = 0
+        self._turn_tokens = 0  # the totals start over with the turn; the hour's buckets do not
 
     def observe(self, ev: RunEvent, stats: StageStats | None = None, key: tuple[str, str] | None = None) -> bool:
         """Fold one event in. True when the picture a tile shows changed (now, stage, files, commits, denial)."""
@@ -156,6 +168,7 @@ class LiveState:
                 changed = True
         elif ev.kind == "usage":
             self.usage = {k: v for k, v in ev.data.items() if k != "final"}
+            changed = self._count_tokens(ev) or changed
         if (st := stage_signal(ev)) is not None and self._enter(st, ev.ts, stats, key):
             changed = True
         return changed
@@ -182,7 +195,28 @@ class LiveState:
         self.finished_at = ts or now()
         self._end(self.finished_at, stats, key)
 
+    def _count_tokens(self, ev: RunEvent) -> bool:
+        """S2: the increase in the turn's new tokens since the last usage event, into the event's bucket. A total
+        that went down (the harness's own final count replacing the running sum) adds nothing."""
+        d = ev.data
+        total = sum(int(d.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_write_tokens"))
+        delta, self._turn_tokens = total - self._turn_tokens, max(total, self._turn_tokens)
+        if delta <= 0:
+            return False
+        b = int(ev.ts // TOKEN_BUCKET_S)
+        self.token_buckets[b] = self.token_buckets.get(b, 0) + delta
+        if len(self.token_buckets) > TOKEN_BUCKETS:
+            for k in sorted(self.token_buckets)[:-TOKEN_BUCKETS]:
+                del self.token_buckets[k]
+        return True
+
     # ------------------------------------------------------------------ reading
+    def tokens_1h(self, at: float | None = None) -> list[int]:
+        """S2: new tokens in each of the last TOKEN_BUCKETS five-minute buckets, oldest first, the last one being
+        the bucket `at` falls in. All zeros when nothing was counted (or since a restart)."""
+        cur = int((at if at is not None else now()) // TOKEN_BUCKET_S)
+        return [self.token_buckets.get(b, 0) for b in range(cur - TOKEN_BUCKETS + 1, cur + 1)]
+
     def stage_elapsed(self, at: float | None = None) -> float | None:
         if not self.stages or self.stages[-1]["ended_at"] is not None:
             return None
@@ -192,7 +226,8 @@ class LiveState:
         return {"turn": self.turn, "now": self.now, "last_activity_at": self.last_activity_at, "stage": self.stage,
                 "stages": [dict(s) for s in self.stages], "files_changed": len(self.files),
                 "files": list(self.files)[-20:], "commits": self.commits, "progress": self.progress,
-                "usage": self.usage, "denial": self.denial, "finished": self.finished_at is not None}
+                "usage": self.usage, "denial": self.denial, "finished": self.finished_at is not None,
+                "tokens_1h": self.tokens_1h()}
 
 
 class StageStats:

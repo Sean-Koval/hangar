@@ -215,6 +215,7 @@ owns) keeps one person's units, the Owners filter; `?include_stopped=true` adds 
               {"stage": "pr", "started_at": 1760899876.0, "ended_at": null}],
    "files_changed": 4, "commits": 2,
    "usage": {"input_tokens": 182000, "output_tokens": 9100, "cache_read_tokens": 1500000, "cost_usd": 1.42, "…": "…"},
+   "tokens_1h": [0, 0, 0, 0, 0, 0, 12400, 30100, 41800, 22050, 51000, 34200],
    "pr": null, "created_at": 1760898000.0, "expires_at": 1760905200.0, "turn": 1, "live": true}]}
 ```
 
@@ -237,6 +238,10 @@ Per unit:
   stage in this control plane's recent turns for the environment and agent (`basis` says so, and `samples` how many),
   or a share of recent jobs' median turn, or a default. The UI shows an estimate as one; it never reaches 100.
 - `files_changed`, `commits` and `usage` are the live turn's (the delivered job's result once it has one).
+- `tokens_1h` is the agent's new tokens (input, output and cache writes; not cache reads) in each of the last twelve
+  five-minute buckets, oldest first, the last being the current five minutes: the tile's sparkline. Each usage event
+  carries the turn's running totals, so a bucket gets the increase since the previous one. The buckets are kept only
+  in memory: after a control-plane restart they start at zero and cover the time since, at most an hour.
 
 The server keeps one small `LiveState` per session, fed by the turn watcher as it records events; nothing on this
 path reads a log. A control-plane restart starts with empty states, which fill again as the running turns' logs are

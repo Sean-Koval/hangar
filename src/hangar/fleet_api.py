@@ -13,7 +13,8 @@ units (`none`: those nobody owns); `?include_stopped=true` adds settled sandboxe
 Per unit, beyond the join: `now` (the humanised latest event of the live turn), `last_activity_at`, `stage` (plan,
 edit, test or pr; only with a real signal), `stage_pct` (only when the agent reported progress itself:
 `hangar-agent progress --pct`), `stage_estimate` (elapsed in the stage against a typical time, clearly a guess:
-the UI styles it differently), `stages[]` with started and ended times, `files_changed`, `commits`, `usage`, the
+the UI styles it differently), `stages[]` with started and ended times, `files_changed`, `commits`, `usage`,
+`tokens_1h` (12 five-minute buckets of new tokens, oldest first; kept in memory, so empty after a restart), the
 status role, label and reason, and the inbox items that wait on this unit (`inbox`).
 """
 
@@ -28,7 +29,7 @@ from fastapi import HTTPException
 
 from hangar import identity, inbox, people, steer
 from hangar.events import total_usage
-from hangar.livestate import STAGES, LiveState
+from hangar.livestate import STAGES, TOKEN_BUCKETS, LiveState
 from hangar.models import JobState, Person, SandboxState, SessionState, now
 from hangar.runtime import FastJSON
 
@@ -325,6 +326,8 @@ class FleetRead:
             "files_changed": (len(r.files) if r is not None and r.files else 0) or (len(live.files) if live else 0),
             "commits": (len(r.commits) if r is not None and r.commits else 0) or (live.commits if live else 0),
             "usage": usage.model_dump(mode="json") if usage is not None else None,
+            # S2: new tokens per five minutes over the last hour, oldest first (in memory: empty after a restart)
+            "tokens_1h": live.tokens_1h(at) if live is not None else [0] * TOKEN_BUCKETS,
             "pr": r.pr_url if r is not None else None,
             "created_at": sb.created_at, "expires_at": sb.expires_at, "turn": len(ses.turns) if ses else 0,
             "inbox": [w["id"] for w in waiting],

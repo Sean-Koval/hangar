@@ -331,16 +331,50 @@ def test_two_hundred_sandboxes_read_in_under_fifty_ms(client):
     from hangar import identity
     from hangar.auth import Principal
 
-    identity.current.set(Principal("ops", "tok", ["admin"], person="owner", role="admin"))
-    assert len(reader.units(identity.principal())["units"]) == 200
-    times = []
-    for _ in range(30):
-        t0 = time.perf_counter()
-        reader.units(identity.principal())
-        times.append((time.perf_counter() - t0) * 1000)
+    tok = identity.current.set(Principal("ops", "tok", ["admin"], person="owner", role="admin"))
+    try:
+        assert len(reader.units(identity.principal())["units"]) == 200
+        times = []
+        for _ in range(30):
+            t0 = time.perf_counter()
+            reader.units(identity.principal())
+            times.append((time.perf_counter() - t0) * 1000)
+    finally:
+        identity.current.reset(tok)  # never leak the principal into the next test
     times.sort()
     p50, p95 = statistics.median(times), times[int(len(times) * 0.95) - 1]
     print(f"\nGET /api/fleet x200: p50 {p50:.1f} ms, p95 {p95:.1f} ms")
     assert p95 < 50, f"p95 {p95:.1f} ms"
     body = client.get("/api/fleet", headers=ADMIN)
     assert body.status_code == 200 and len(body.json()["units"]) == 200
+
+
+# ====================================================================== S2: tokens over the last hour
+def test_tokens_1h_buckets_the_increase_per_five_minutes():
+    st, base = LiveState("ses-1"), 1_000_000 * livestate.TOKEN_BUCKET_S  # a bucket boundary
+    assert st.tokens_1h(base) == [0] * 12  # nothing counted (as after a restart)
+    # running totals within a turn: the bucket gets each increase; cache reads are not new tokens
+    st.observe(ev("usage", "u", ts=base + 10, input_tokens=1000, output_tokens=100, cache_read_tokens=50000))
+    st.observe(ev("usage", "u", ts=base + 20, input_tokens=1500, output_tokens=200, cache_write_tokens=300))
+    assert st.tokens_1h(base + 30) == [0] * 11 + [2000]
+    st.observe(ev("usage", "u", ts=base + 30, input_tokens=1400, output_tokens=200, final=True))  # lower: nothing
+    st.observe(ev("usage", "u", ts=base + 400, input_tokens=3000, output_tokens=200, cache_write_tokens=300))
+    assert st.tokens_1h(base + 400) == [0] * 10 + [2000, 1500]
+    # a new turn starts its totals over; the hour's buckets carry on
+    st.reset(2, "run-2", base + 500)
+    st.observe(ev("usage", "u", ts=base + 610, input_tokens=700, output_tokens=0))
+    assert st.tokens_1h(base + 610) == [0] * 9 + [2000, 1500, 700]
+    # an hour on, the old buckets have scrolled out
+    assert st.tokens_1h(base + 3600) == [1500, 700] + [0] * 10
+    assert st.tokens_1h(base + 3 * 3600) == [0] * 12
+    for k in range(20):  # never more than twelve buckets held
+        st.observe(ev("usage", "u", ts=base + 3600 * 5 + 300 * k, input_tokens=1000 * (k + 1)))
+    assert len(st.token_buckets) == 12 and st.view()["tokens_1h"] is not None
+
+
+def test_tokens_1h_on_the_fleet(client):
+    h, sbs, job_a, _ = _world(client)
+    a = next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["job"] == job_a.id)
+    assert len(a["tokens_1h"]) == 12 and sum(a["tokens_1h"]) == 1100  # the usage event _world recorded
+    bare = next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["name"] == "bare")
+    assert bare["tokens_1h"] == [0] * 12
