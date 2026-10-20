@@ -24,15 +24,15 @@ h1, h2, h3, h4 { margin: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
   clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-/* headlines: Archivo Expanded for the gate (view titles are Airframe's af-page-head), Red Hat Text for panels, mono
-   capitals for section labels */
+/* headlines: Archivo Expanded for the gate (view titles are Airframe's af-page-head), Red Hat Text for panels and,
+   in Airframe's sentence-case label style, for section labels (theme-v12 retired the mono capitals) */
 .gate-brand h1 { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch);
   font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); line-height: 1.05; font-size: 36px;
   color: var(--af-fg); text-wrap: balance; }
 .panel > h3:not(.section-title) { font-family: var(--af-font-sans); font-weight: 600; font-size: 16px; line-height: 1.35;
   letter-spacing: -.005em; color: var(--af-fg); }
-.section-title, .snippet h3, .job-detail h4, .env-detail h4 { font-family: var(--af-font-mono); font-weight: 500;
-  font-size: 11px; line-height: 1.2; letter-spacing: var(--af-label-track); text-transform: uppercase; color: var(--af-fg-muted); }
+.section-title, .snippet h3, .job-detail h4, .env-detail h4 { font-family: var(--af-font-sans); font-weight: 500;
+  font-size: 12px; line-height: 1.2; letter-spacing: 0; color: var(--af-fg-muted); }
 .section-title { margin: var(--af-space-28) 0 var(--af-space-12); }
 .panel h3.section-title { margin-top: var(--af-space-24); }
 .sub { margin: var(--af-space-8) 0 0; max-width: 68ch; color: var(--af-fg-muted); }
@@ -46,20 +46,19 @@ h1, h2, h3, h4 { margin: 0; }
 button { font: inherit; color: inherit; cursor: pointer; }
 select, input[type="file"] { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--af-line-strong);
   border-radius: var(--af-radius-control); background: var(--af-surface); color: var(--af-fg);
-  font-family: var(--af-font-mono); font-size: 12.5px; font-weight: 400; letter-spacing: normal; text-transform: none;
+  font-family: var(--af-font-sans); font-size: 13px; font-weight: 400; letter-spacing: normal; text-transform: none;
   transition: border-color var(--af-dur) var(--af-ease); }
 select { cursor: pointer; }
 select:hover, input[type="file"]:hover { border-color: var(--af-fg-subtle); }
 input[type="file"] { height: auto; padding: 6px; font-size: 12px; }
 input[type="file"]::file-selector-button { margin-right: 10px; height: 26px; padding: 0 10px; border: 1px solid var(--af-line-strong);
   border-radius: var(--af-radius-control); background: transparent; color: var(--af-fg); cursor: pointer;
-  font-family: var(--af-font-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+  font-family: var(--af-font-sans); font-weight: 500; font-size: 12px; }
 input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--af-brand); }
 label.check { display: flex; align-items: center; gap: var(--af-space-8); min-width: 0; font-size: 13px; color: var(--af-fg-muted);
   cursor: pointer; white-space: nowrap; }
 .af-input > input { height: 100%; }
-details > summary { cursor: pointer; font-family: var(--af-font-mono); font-weight: 500; font-size: 10px; letter-spacing: .09em;
-  text-transform: uppercase; color: var(--af-fg-subtle); }
+details > summary { cursor: pointer; font-family: var(--af-font-sans); font-weight: 500; font-size: 12px; color: var(--af-fg-subtle); }
 details[open] > summary { margin-bottom: var(--af-space-8); }
 
 /* ---------- gate ---------- */
@@ -107,13 +106,13 @@ main { padding: var(--af-space-28) var(--page-pad) calc(var(--drawer-pad, 0px) +
 .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--af-space-16) var(--af-space-12); }
 .grid .wide { grid-column: span 2; }
 fieldset.creds { margin: 0; padding: 0; border: 0; min-width: 0; }
-fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-family: var(--af-font-mono); font-weight: 500;
-  font-size: 10px; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase; color: var(--af-fg-subtle); }  /* as af-field__label */
+fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-family: var(--af-font-sans); font-weight: 500;
+  font-size: 12px; line-height: 1.2; color: var(--af-fg-subtle); }  /* as af-field__label */
 .chips { display: flex; flex-wrap: wrap; gap: var(--af-space-8); }
 .chip { display: inline-flex; align-items: center; gap: var(--af-space-8); padding: 6px 10px; border: 1px solid var(--af-line-strong);
   border-radius: var(--af-radius-control); background: var(--af-surface); color: var(--af-fg); cursor: pointer; font-size: 12px; }
 .chip:hover { border-color: var(--af-fg-subtle); }
-.chip:has(input:checked) { border-color: var(--af-brand-text); background: var(--af-brand-wash); }
+.chip:has(input:checked) { border-color: var(--af-fg); background: var(--af-selected); }  /* selection is neutral (theme-v12) */
 .chip:has(input:disabled) { opacity: .45; cursor: default; }
 .chip .hint { font-size: 11.5px; }
 .form-foot { display: flex; gap: var(--af-space-8); align-items: center; justify-content: flex-end; flex-wrap: wrap; }
@@ -181,9 +180,11 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
   background: transparent; color: var(--af-fg); text-align: left; transition: background var(--af-dur) var(--af-ease); }
 .list button:hover { background: color-mix(in srgb, var(--af-fg) 3%, transparent); }
 .list button:focus-visible { outline-offset: -2px; }
-.list button.is-attention { background: color-mix(in srgb, var(--af-status-approval) 7%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--af-status-approval) 32%, transparent); }
-.list button.active { background: var(--af-selected); box-shadow: inset 2px 0 0 var(--af-brand-text); }
+/* attention is edge, mark, word (theme-v12): a neutral row with a 3px status edge; selection is neutral, `selected` and a
+   2px fg edge, and a selected row that needs a person keeps its orange edge */
+.list button.is-attention { box-shadow: inset 3px 0 0 var(--af-status-approval); }
+.list button.active { background: var(--af-selected); box-shadow: inset 2px 0 0 var(--af-fg); }
+.list button.active.is-attention { box-shadow: inset 3px 0 0 var(--af-status-approval); }
 .list .t { display: block; font-size: 14px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
 .list .d { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--af-fg-subtle); min-width: 0; }
 .list .d .af-status, .list .d .af-field__error { font-size: 12px; }
@@ -239,7 +240,6 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
    decided ones as verdict rows; the same in the Needs-you view, the detail panels and the Fleet drawer */
 .cards { display: flex; flex-direction: column; gap: var(--af-space-12); margin: var(--af-space-16) 0; }
 .panel .af-card { background: var(--af-surface); }  /* a card inside a raised panel sits one tone down */
-.panel .af-card--lit { background: color-mix(in srgb, var(--af-status-approval) 6%, var(--af-surface)); }
 .cards .af-approval__cmd { font-size: 14px; }
 .job-detail > .af-question { margin: var(--af-space-16) 0; }
 .verdicts { display: flex; flex-direction: column; gap: 4px; }
@@ -286,8 +286,7 @@ h4.with-meta .af-meta { text-transform: none; letter-spacing: normal; font-weigh
 .timeline li[data-tone="failed"] .what, .timeline li[data-tone="approval"] .what { color: var(--af-fg); }
 /* the activity feed shows the newest twelve whole rows and the rest behind "Earlier (n)"; a tool's output is a
    mono block capped at three lines with a fade and its own More, so nothing is ever cut mid-line */
-.activity .what b { margin-right: 6px; font-family: var(--af-font-mono); font-weight: 500; font-size: 9.5px; letter-spacing: .09em;
-  text-transform: uppercase; color: var(--af-fg-subtle); }
+.activity .what b { margin-right: 6px; font-family: var(--af-font-sans); font-weight: 500; font-size: 11px; color: var(--af-fg-subtle); }
 .activity .act-out { margin: 4px 0 0; padding: 6px 10px; background: var(--af-surface); border-radius: var(--af-radius-control);
   font-size: 12px; line-height: 1.55; color: var(--af-fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity .act-out.is-capped { max-height: calc(3 * 1.55em + 12px); overflow: hidden;

@@ -64,11 +64,12 @@ def test_there_is_one_quickstart_and_the_readme_repeats_it():
 
 def test_the_docs_home_is_a_front_door():
     """A hero, three audiences, the diagram, one console image, the features table and three links: outside the
-    features table, under 500 words of prose (alt text and markup aside), and no more than three images."""
+    features table, under 500 words of prose (alt text and markup aside), and two images, each in Night and Day."""
     prose = INDEX.replace(section(INDEX, "Features"), "")
     words = re.sub(r"!\[[^\]]*\]\([^)]*\)|aria-label=\"[^\"]*\"|<[^>]+>|\]\([^)]*\)|[|*`#-]", " ", prose).split()
     assert len(words) < 500, len(words)
-    assert len(re.findall(r"^!\[", INDEX, re.M)) <= 3, "one screenshot and the diagram in both flavors"
+    images = [m for m in re.findall(r"^!\[[^\]]*\]\(([^)]*)\)", INDEX, re.M) if not m.endswith("#only-light")]
+    assert len(images) <= 2, "one screenshot and the diagram, each in both flavors (a Day twin is the same image)"
 
 
 def test_the_fleet_views_are_explained_on_the_console_page_only():

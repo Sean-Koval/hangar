@@ -17,7 +17,10 @@ Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io
 
 The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place; then what failed and what waits for review. [The web console](docs/console.md) walks through it, the Jobs and Sessions pages and the Fleet.
 
-![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](docs/assets/front/ui-needs.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/front/ui-needs-light.png">
+  <img alt="Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it" src="docs/assets/front/ui-needs.png">
+</picture>
 
 The **review loop**: decide what is held, read the agent's change as a greyscale diff, and comment on a line; the comment goes back to the agent with your next message.
 

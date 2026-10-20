@@ -20,7 +20,10 @@ const ic = (name, size) => airframe.icon(name, { size });
 const mark = (role) => `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`;
 const word = (s) => String(s || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 // keyed inline data: [[key, value, modifier?]]; an item with no value is left out
-const meta = (items) => airframe.meta(items.filter((x) => x && x[1] !== "" && x[1] != null));
+// keyed inline data (Airframe meta): keys are sentence-case words (theme-v12 retired the mono capitals), acronyms stay
+const KEY_CASE = { pr: "PR", cpu: "CPU", id: "ID", url: "URL" };
+const keyCase = (k) => (typeof k !== "string" || !k ? k : KEY_CASE[k] || k.charAt(0).toUpperCase() + k.slice(1));
+const meta = (items) => airframe.meta(items.filter((x) => x && x[1] !== "" && x[1] != null).map(([k, ...rest]) => [keyCase(k), ...rest]));
 // an error line: the failed mark and the words, never a red fill (Airframe's field error)
 const errorLine = (text) => `<span class="af-field__error">${status("failed", text)}</span>`;
 // an empty state: what is not here and what to do about it (Airframe EmptyState); `compact` is the one-row form
@@ -1223,8 +1226,8 @@ function renderSession(x) {
 
 /* ------------------------------------------------------------------ activity (workstream C) */
 // What the agent did, from /api/{jobs,sessions}/<id>/events: the newest events, fetched incrementally by seq.
-const ACT_LABEL = { message: "said", tool_call: "tool", tool_result: "result", command: "ran", file_change: "changed",
-  error: "error", progress: "progress" };
+const ACT_LABEL = { message: "Said", tool_call: "Tool", tool_result: "Result", command: "Ran", file_change: "Changed",
+  error: "Error", progress: "Progress" };
 // quiet marks for what the agent did; only an error event carries color
 const ACT_TONE = { error: "failed" };
 const activity = new Map(); // "jobs:<id>" -> { next, events, busy }
@@ -1634,7 +1637,7 @@ function auditDetail(d) {
   const items = Object.entries(d || {}).map(([k, v]) => {
     const text = typeof v === "object" ? JSON.stringify(v) : String(v ?? "");
     const long = text.length > AUDIT_VAL;  // (Airframe's meta() markup by hand: a cut value keeps the whole in its title)
-    return `<span class="af-meta__item"><span class="af-meta__key">${esc(k.replace(/_/g, " "))}</span><span class="af-meta__val"${long ? ` title="${esc(text)}"` : ""}>${esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text)}</span></span>`;
+    return `<span class="af-meta__item"><span class="af-meta__key">${esc(keyCase(k.replace(/_/g, " ")))}</span><span class="af-meta__val"${long ? ` title="${esc(text)}"` : ""}>${esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text)}</span></span>`;
   });
   return items.length ? `<span class="af-meta">${items.join("")}</span>` : "";
 }

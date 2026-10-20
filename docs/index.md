@@ -6,7 +6,7 @@ hide:
 
 <div class="af-hero af-hero--visual" markdown>
 <div markdown>
-<span class="af-eyebrow">Agent factory · Run plane</span>
+<span class="af-eyebrow">Agent factory · Run</span>
 
 # Hand tickets to coding agents in isolated cloud sandboxes
 
@@ -39,7 +39,8 @@ Many doors bring work in; hangar runs it in a sandbox and verifies it; the pull 
 
 The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place. [The web console](console.md) walks through it, the Jobs and Sessions pages and the Fleet.
 
-![Needs you: a job from outside the team waiting for approval, a held git push with its policy and expiry and Deny, Allow for this turn and Allow, and an agent's question answered in place](assets/front/ui-needs.png)
+![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs.png#only-dark)
+![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs-light.png#only-light)
 
 ## Features
 
