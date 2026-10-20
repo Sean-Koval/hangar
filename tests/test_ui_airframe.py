@@ -154,7 +154,8 @@ def test_fleet_is_the_decision_deck_console():
     for gone in ("af-bays", "af-bay", "af-statecols", "af-mini", "af-owners", "af-stand", "fleet-detail"):
         assert gone not in js and gone not in html, f"{gone} is retired from hangar"
     # the data: one read and its stream (ticket first), polling when the stream is not there
-    assert '"/api/fleet' in js and '"POST", "/api/fleet/tickets"' in js and "new EventSource(`/api/fleet/stream?ticket=" in js
+    assert '"/api/fleet' in js and '"POST", "/api/fleet/tickets"' in js
+    assert "new EventSource(`/api/fleet/stream?ticket=" in js
     for ev in ('on("snapshot"', 'on("agent"', 'on("gone"', 'on("inbox"', 'on("summary"', 'on("close"'):
         assert ev in js, ev
     # progress is solid only from what the agent reported; an estimate is dotted and says so
@@ -277,7 +278,7 @@ def test_held_actions_are_approval_cards_decided_in_place():
     # where the cards are: job detail, session detail, Fleet detail (delegated clicks), Needs you
     assert app.count("approvalClick(e, ") >= 2
     assert "jobApproval(j, false)" in app and "toolApprovals(x.pending_approvals" in app
-    # KAN-140: Needs you is the DecisionDeck, drawn by fleet.js from GET /api/fleet's inbox, deny with a reason there too
+    # KAN-140: Needs you is the DecisionDeck, drawn by fleet.js from GET /api/fleet's inbox; deny takes a reason
     assert 'id="view-needs"' in html and 'id="needs-deck"' in html and 'deckHtml("page")' in fleet
     assert 'href="#needs" data-view="needs"' in html
     assert html.index('href="#needs"') < html.index('href="#jobs"'), "what needs a person leads the nav"
