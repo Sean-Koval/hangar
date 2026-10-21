@@ -22,7 +22,7 @@ This page gets a first job through: log in, a token for the service, submit, cal
 | [Experiments](experiments.md) | Trials, grading, shadows, the eval budget and queue |
 | [Reference](reference.md) | Failure labels, outcome classes, settings, tainted jobs, security notes |
 
-## 0. Log in and check your setup
+## 1. Log in and check your setup
 
 ```bash
 hangar login https://<your hangar> --token-file ~/.hangar/gke-admin-token   # once; no more HANGAR_URL/TOKEN exports
@@ -48,7 +48,7 @@ Slack mappings) and ends with `ready` or `not ready (N failing)`: see [repo-poli
 
 `hangar doctor --fix` offers each fix it can make safely on its own: building an environment, or creating or repairing a repo's webhook (events, JSON, and the stored secret). `--yes` applies them without asking. For the rest it prints the exact command.
 
-## 1. Give a service a token
+## 2. Give a service a token
 
 A `jobs` token can submit and read its own jobs and nothing else. It gets 403 on every other route and 401 on `/mcp`, and it can't be exchanged for an MCP OAuth grant. Within jobs it is fenced in:
 
@@ -64,7 +64,7 @@ hangar token create support-tool --scope jobs --callback-secret support-hook-key
 
 `HANGAR_GITHUB_REPOS` maps `owner/repo` (GitHub) or an exact git URL to one or more comma-separated environments; the first is the default. Admin tokens and MCP clients can submit against any repo and environment.
 
-## 2. Submit a job
+## 3. Submit a job
 
 A job runs on an **API key** for its harness: its person's own, else the team's ([team.md](../team.md#whose-login-a-job-uses)). Subscription logins (Claude Pro or Max, a ChatGPT or Google sign-in) are for interactive sessions only; a job that would need one is refused at submit with the `hangar cred add … --kind api_key` command to run ([subscription logins](../team.md#subscription-logins)). Cap spend at the vendor (a workspace or project limit on the key) and in hangar (job budgets, daily caps).
 
@@ -132,7 +132,7 @@ To run several attempts and keep the best, see [forks and best-of-N](working-wit
 
 From another agent (Google ADK's `RemoteA2aAgent`, any A2A client): hangar is an A2A agent at `/a2a`, with its card at `/.well-known/agent-card.json`. A task is a job, and a message in the same context is a follow-up. See [a2a.md](../a2a.md).
 
-## 3. Verify callbacks
+## 4. Verify callbacks
 
 Each callback is `POST` with `{"event": "job.started" | "job.needs_input" | "job.finished", "job": {...}}` and the header `X-Hangar-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. A receiver checks it like this:
 

@@ -41,8 +41,8 @@ def test_both_pages_show_one_features_table_with_a_status_per_row():
     assert readme == index, "README.md and docs/index.md show different features"
     assert readme[0] == "| Feature | What it gives your team | Status |"
     statuses = [row.rstrip(" |").rsplit("| ", 1)[1] for row in readme[2:]]
-    assert statuses and all(re.fullmatch(r"Shipped|Shadow|Partial|Planned \(\[#\d+\]\(https://github\.com/Sean-Koval/"
-                                         r"hangar/issues/\d+\)\)", s) for s in statuses), statuses
+    assert statuses and all(re.fullmatch(r"Shipped|Shadow|Partial|Planned \(\[roadmap\]\(https://sean-koval\.github\.io/"
+                                         r"agent-factory/roadmap/#[a-z0-9-]+\)\)", s) for s in statuses), statuses
 
 
 GUIDE = (ROOT / "docs" / "guide.md").read_text()
@@ -81,6 +81,15 @@ def test_the_fleet_views_are_explained_on_the_console_page_only():
     console = (ROOT / "docs" / "console.md").read_text()
     assert "\n### An agent, opened\n" in console and "- **List** (the default)" in console and "- **Board**" in console
     assert not re.search(r"\bBays\b|\bColumns\b", console), "Bays and Columns are retired (KAN-140)"
+
+
+def test_the_front_pages_link_the_roadmap_not_issue_numbers():
+    """Status lives on the suite roadmap (agent-factory AGENTS.md): the README, the docs home and the nav name no
+    issue or ticket numbers; a demo's fictional issue and PR (#42, #43) are what is on screen, not status."""
+    nav = re.search(r"^nav:\n(.*)", (ROOT / "mkdocs.yml").read_text(), re.M | re.S).group(1)
+    for text, name in ((README, "README.md"), (INDEX, "docs/index.md"), (nav, "the nav")):
+        refs = set(re.findall(r"KAN-\d+|#\d+", re.sub(r"#4[23]\b", "", text)))
+        assert not refs, f"{name} names {sorted(refs)}; link the roadmap instead"
 
 
 def prose(text: str) -> str:

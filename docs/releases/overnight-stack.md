@@ -1,4 +1,4 @@
-# Upgrading from before the overnight stack (#48–#69)
+# Upgrading an early install: the overnight stack
 
 For a hangar older than the overnight stack: back up, what happens to your data, then [the defaults that change](overnight-stack-defaults.md) and [the upgrade itself](overnight-stack-procedure.md). Every release is listed on [release notes](README.md).
 

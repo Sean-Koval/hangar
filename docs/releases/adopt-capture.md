@@ -1,4 +1,4 @@
-# Adopt & capture and frontier (#133–#189)
+# Harness lock, outbox and doors: adopt & capture and frontier
 
 What this release adds, what you configure and what changes for people. The steps are on [the procedure page](adopt-capture-procedure.md); every release is listed on [release notes](README.md).
 

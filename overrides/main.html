@@ -1,10 +1,5 @@
+{#- The suite strip above the header and the shared footer: overrides/partials/airframe-suite.html and
+    airframe-footer.html are vendored from agent-factory by scripts/sync-airframe.sh; never edit them here. -#}
 {% extends "base.html" %}
 {% block announce %}{% include "partials/airframe-suite.html" %}{% endblock %}
-{% block scripts %}{{ super() }}
-<script>
-  /* The front page's recording plays once on its own; with reduced motion it waits to be started. */
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    document.querySelectorAll("video[autoplay]").forEach((v) => { v.removeAttribute("autoplay"); v.pause(); });
-  }
-</script>
-{% endblock %}
+{% block footer %}{% include "partials/airframe-footer.html" %}{% endblock %}

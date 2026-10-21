@@ -1,20 +1,20 @@
-/* Airframe theme-v13 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
+/* Airframe theme-v14 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap");
 
 /*
   Airframe for the docs sites (Zensical / Material for MkDocs). Source: airframe/docs-site/airframe-docs.css
   in Sean-Koval/agent-factory, published as theme/airframe-docs.css by scripts/airframe.py build. Load after
   airframe.css. It maps the theme's --md-* variables onto Airframe tokens and adds the few Airframe details a
-  docs page needs: display type for headings, sentence-case sans labels (theme-v13), a 2px product marker under the header,
-  tonal blocks instead of boxed cards, and the suite strip (airframe-suite.html, included through
-  overrides/main.html) that links the family's docs sites.
+  docs page needs: display type for headings, sentence-case sans labels (theme-v13), the 2px product marker under the active tab,
+  tonal blocks instead of boxed cards, the suite strip (airframe-suite.html) that links the family's docs sites and
+  the shared footer (airframe-footer.html), both included through overrides/main.html.
 
-  Each site sets its own product hue once, e.g. in docs/stylesheets/product.css:
+  Each site sets its own product hue once (the default is neutral fg), e.g. in docs/stylesheets/product.css:
     :root { --af-product: var(--af-product-hangar); }
   and names itself for the strip in mkdocs.yml: extra: {airframe: {product: hangar}}.
 */
 
-:root { --af-product: var(--af-brand); }
+:root { --af-product: var(--af-fg); }
 
 [data-md-color-scheme="slate"],
 [data-md-color-scheme="default"] {
@@ -109,13 +109,18 @@ body { background: var(--af-canvas); }
 .md-typeset .af-suite [aria-current] { color: var(--af-fg); box-shadow: inset 0 -2px 0 var(--af-product); }
 .md-typeset .af-suite__home[aria-current] { box-shadow: none; color: var(--af-fg); }
 .md-typeset .af-suite__home[aria-current]::before { background: var(--af-brand); }
-/* narrow screens: the row scrolls sideways and snaps to an item, a fade on the right edge says there is more,
+/* narrow screens: the row scrolls sideways and snaps to an item, a fade on each edge that has more says so (the
+   partial's script scrolls the current item into view and marks the banner data-af-scrolled / data-af-at-end),
    and a spacer after the last item lets it scroll clear of the fade; nothing is cut */
 @media (max-width: 959px) {
   .md-banner__inner.md-typeset { position: relative; }
-  .md-banner__inner.md-typeset::after { content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: 2.4rem; pointer-events: none; background: linear-gradient(to right, transparent, var(--af-canvas) 70%); }
+  .md-banner__inner.md-typeset::before, .md-banner__inner.md-typeset::after { content: ""; position: absolute; top: 0; bottom: 0; width: 2.4rem; pointer-events: none; z-index: 1; transition: opacity var(--af-dur-fast, 120ms) linear; }
+  .md-banner__inner.md-typeset::after { right: 0; background: linear-gradient(to right, transparent, var(--af-canvas) 70%); }
+  .md-banner__inner.md-typeset::before { left: 0; opacity: 0; background: linear-gradient(to left, transparent, var(--af-canvas) 70%); }
+  .md-banner__inner[data-af-scrolled]::before { opacity: 1; }
+  .md-banner__inner[data-af-at-end]::after { opacity: 0; }
   .md-typeset .af-suite { scroll-snap-type: x proximity; overscroll-behavior-x: contain; }
-  .md-typeset .af-suite .af-suite__list li { scroll-snap-align: start; }
+  .md-typeset .af-suite .af-suite__list li, .md-typeset .af-suite__home { scroll-snap-align: start; }
   .md-typeset .af-suite .af-suite__list::after { content: ""; flex: none; width: 2.4rem; }
 }
 /* phones: product names only (the role words return in the suite's home page and each product's hero) */
@@ -133,7 +138,17 @@ body { background: var(--af-canvas); }
 .md-tabs__link { font-family: var(--af-font-sans); font-weight: 500; font-size: .62rem; letter-spacing: 0; text-transform: none; opacity: 1; color: var(--af-fg-muted); }
 .md-tabs__link--active, .md-tabs__link:hover { color: var(--af-fg); }
 .md-tabs__item--active { box-shadow: inset 0 -2px 0 var(--af-product); }
-.md-header::after { content: ""; position: absolute; left: 0; bottom: -1px; width: 48px; height: 2px; background: var(--af-product); }
+/* the repository widget: the name and a link, never the star and fork counts (a private or new repo reads "0") */
+.md-source__facts { display: none; }
+
+/* phones and small tablets: the theme's floating "On this page" button sits over the text, so it goes, and the
+   page's contents return to the menu drawer under the current page, where the theme had hidden them */
+@media screen and (max-width: 59.984em) {
+  .md-sidebar--secondary .md-sidebar-button, .md-sidebar--secondary .md-sidebar-button__wrapper { display: none; }
+  .md-nav--primary .md-nav__link[for=__toc] { display: flex; }
+  .md-nav--primary .md-nav__link[for=__toc] ~ .md-nav { display: block; }
+  .md-nav--primary .md-nav__link[for=__toc] + a.md-nav__link { display: none; }
+}
 
 /* headings: Archivo Expanded for the page title, quieter below */
 .md-typeset h1, .md-typeset h2 { font-family: var(--af-font-display); font-stretch: var(--af-display-stretch); font-weight: var(--af-display-weight); letter-spacing: var(--af-display-track); color: var(--af-fg); text-wrap: balance; }
@@ -164,6 +179,8 @@ body { background: var(--af-canvas); }
 .md-typeset pre:hover .md-code__button, .md-typeset .md-code__button:focus-visible, .md-typeset pre:hover .md-clipboard { color: var(--af-terminal-fg); }
 .md-typeset code { border-radius: var(--af-radius-control); font-size: .82em; }
 .md-typeset :not(pre) > code { background: var(--af-raised); color: var(--af-fg); padding: .1em .35em; }
+/* an ID (tail number) never wraps and is never cut: mark it <code class="af-id"> (scripts/airframe.py does for the guide) */
+.md-typeset code.af-id { white-space: nowrap; word-break: keep-all; overflow-wrap: normal; }
 
 /* tables: full column width, open header (no fill), sentence-case sans labels, a hairline under the header, row rules only */
 .md-typeset .md-typeset__table { display: block; width: 100%; }
@@ -192,6 +209,9 @@ body { background: var(--af-canvas); }
 .md-nav__link--active { color: var(--af-fg) !important; font-weight: 600; }
 .md-nav__item .md-nav__link--active { box-shadow: inset 2px 0 0 var(--af-product); padding-left: .5em; }
 .md-search__form { border-radius: var(--af-radius-control); background: var(--af-raised); }
+/* inline code in the nav and the table of contents (a heading like "GET /api/fleet") is a quiet raised chip in both
+   themes; the theme would paint it with the code-block colors, which are the black terminal in Day too */
+.md-nav code, .md-header__topic code, .md-footer code { background: var(--af-raised); color: inherit; padding: 0 .3em; border-radius: var(--af-radius-control); font-size: .9em; box-shadow: none; }
 
 /* images and diagrams sit on the canvas, never in boxed cards */
 .md-typeset img { border-radius: var(--af-radius-card); }
@@ -236,9 +256,19 @@ body { background: var(--af-canvas); }
 .af-tool small { font-family: var(--af-font-sans); font-weight: 500; font-size: .58rem; letter-spacing: 0; text-transform: none; color: var(--af-fg-subtle); opacity: 1; }
 .af-tool span { color: var(--af-fg-muted); font-size: .72rem; line-height: 1.5; }
 
-/* footer: on the canvas, separated by a rule */
-.md-footer, .md-footer-meta { background: var(--af-canvas); }
+/* footer (airframe-footer.html, the same on every site): on the canvas, separated by a rule; one line naming the site
+   and the suite, then three links; it wraps to two rows on phones */
+.md-footer, .md-footer-meta { background: var(--af-canvas); color: var(--af-fg-muted); }
 .md-footer-meta { border-top: 1px solid var(--af-line); }
+.md-footer__link { color: var(--af-fg); }
+.md-footer__direction { font-family: var(--af-font-sans); font-weight: 500; font-size: .6rem; color: var(--af-fg-subtle); opacity: 1; }
+.md-typeset .af-footer__inner { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .4rem 1.6rem; padding: 1rem .8rem; font-size: .64rem; }
+.md-typeset .af-footer__line { margin: 0; color: var(--af-fg-muted); }
+.md-typeset .af-footer__line b { color: var(--af-fg); font-weight: 600; }
+.md-footer .md-typeset ul.af-footer__links { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; list-style: none; margin: 0; padding: 0; }
+.md-footer .md-typeset ul.af-footer__links > li { margin: 0; padding: 0; }
+.md-typeset .af-footer a { color: var(--af-fg-muted); }
+.md-typeset .af-footer a:hover { color: var(--af-fg); }
 .md-copyright, .md-footer-meta a { color: var(--af-fg-subtle); }
 
 /* figures: full column width (the theme otherwise shrinks figures to fit their content) */
@@ -250,13 +280,13 @@ body { background: var(--af-canvas); }
 /* Windows Contrast Themes: colors are replaced and box-shadows dropped, so every marker and edge that was a
    shadow becomes a border in system colors, and the two textures go. */
 @media (forced-colors: active) {
-  .md-header::after, .af-hero--visual::after { display: none; }
+  .af-hero--visual::after { display: none; }
   .md-tabs__item--active { box-shadow: none; border-bottom: 2px solid Highlight; }
   .md-nav__item .md-nav__link--active { box-shadow: none; border-left: 2px solid Highlight; }
   .md-typeset .af-suite [aria-current] { box-shadow: none; border-bottom: 2px solid Highlight; }
   .md-typeset .af-suite__home[aria-current] { border-bottom: 2px solid Highlight; }
   .md-typeset .af-suite__home::before, .af-eyebrow::before { background: CanvasText; }
-  .md-banner__inner.md-typeset::after { display: none; }
+  .md-banner__inner.md-typeset::before, .md-banner__inner.md-typeset::after { display: none; }
   .md-typeset .admonition, .md-typeset details { box-shadow: none; border-left: 2px solid CanvasText; }
   .md-typeset .admonition:focus-within, .md-typeset details:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
   .af-tool { border-top-color: CanvasText; }
