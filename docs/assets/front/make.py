@@ -491,7 +491,7 @@ async def console(pw, out: Path) -> None:
     await page.wait_for_timeout(800)
     await page.hover(".af-diff__line--add >> nth=0")
     await page.click(".af-diff__line--add >> nth=0 >> [data-comment]")
-    await page.fill("[data-thread] textarea", "Cache the check; this path runs per request.")
+    await page.fill("[data-thread] textarea", "Compare before rounding: a refund of the whole line must pass.")
     await page.click("[data-add-comment]")
     await page.wait_for_timeout(400)
     # the change: its files, the diff and the comment on its line, with the sticky bar painted where it sits
@@ -537,7 +537,7 @@ async def review(pw, out: Path, work: Path) -> None:
     await page.click(".af-diff__line--add >> nth=0 >> [data-comment]")
     await hold(400)
     await page.evaluate("fp.caption('5', 'A comment on a line goes back to the agent with your next message')")
-    await page.type("[data-thread] textarea", "Cache the check; this path runs per request.", delay=28)
+    await page.type("[data-thread] textarea", "Compare before rounding: a refund of the whole line must pass.", delay=28)
     await hold(300)
     await page.click("[data-add-comment]")
     await hold(1400)

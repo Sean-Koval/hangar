@@ -45,7 +45,11 @@ const actorName = (actor, person) => { const p = actorParts(actor, person); retu
 const actorHtml = (actor) => { const p = actorParts(actor); return `<span title="${esc(actor)}">${esc(p.who)}</span>${p.for ? ` <span class="muted">for ${idHtml(p.for)}</span>` : ""}`; };
 // where a job came from, after who asked: nothing for the console or the API (the person is the news)
 const SOURCE_WORDS = { github: "from GitHub", slack: "from Slack", mcp: "from an MCP client", schedule: "on a schedule", a2a: "from an A2A client", jira: "from Jira" };
-const sourceWords = (j) => (SOURCE_WORDS[j.source] ? ` ${SOURCE_WORDS[j.source]}${j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : ""}` : "");
+const sourceWords = (j) => {
+  const ref = j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : "";
+  if (String(j.requester || "").startsWith(`${j.source}:`)) return ref;  // "maria on GitHub (acme/api#42)", not "… from GitHub"
+  return SOURCE_WORDS[j.source] ? ` ${SOURCE_WORDS[j.source]}${ref}` : "";
+};
 // keyed inline data: [[key, value, modifier?]]; an item with no value is left out
 // keyed inline data (Airframe meta): keys are sentence-case words (theme-v12 retired the mono capitals), acronyms stay
 const KEY_CASE = { pr: "PR", cpu: "CPU", id: "ID", url: "URL" };
@@ -956,7 +960,7 @@ function renderJob(j) {
         ? `<div><a class="af-mono" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a></div>`
         : `<div><code>${esc(c.name)}</code><span class="sub-val">${c.size} B</span></div>`).join("")}</dd>` : ""}
       <dt>Sandbox</dt><dd>${live ? idHtml(j.sandbox_id) : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
-      ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}" class="af-mono">${tails.isRaw(j.session.name) ? idHtml(j.session.name) : esc(j.session.name)}</a>
+      ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}">${tails.isRaw(j.session_id) ? idHtml(j.session_id) : esc(j.session.name)}</a>
         ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${plural(j.session.checkpoints, "checkpoint")}</span></dd>` : ""}
     </dl>
     <div class="env-bar">

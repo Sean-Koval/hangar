@@ -44,7 +44,7 @@ const money = (n) => (n == null ? "" : `$${Number(n).toFixed(2)}`);
 const wall = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 const repoShort = (r) => (r || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
 const tokensOf = (u) => (u.usage ? (u.usage.input_tokens || 0) + (u.usage.output_tokens || 0) + (u.usage.cache_write_tokens || 0) : 0);
-const ownerName = (id) => (id ? fleet.data?.owners?.find((o) => o.id === id)?.name || id : "hangar");
+const ownerName = (id) => { if (!id) return "hangar"; const n = fleet.data?.owners?.find((o) => o.id === id)?.name; return n && n !== id ? n : actorParts(id).who; };
 const firstName = (id) => ownerName(id).split(" ")[0];
 const personAvatar = (id, size = 22) => (id ? avatar("person", initialsOf(ownerName(id)), { size, name: ownerName(id) })
   : avatar("agent", "", { size, name: "hangar" }));
@@ -583,7 +583,7 @@ function drawFleet() {
   const owners = d.owners || [];
   paint($("#fleet-owners"), owners.length > 1 || fleet.owner ? `<span class="af-note">Owner</span><div class="af-chips" role="group" aria-label="Owner">
     <button type="button" class="af-chip" data-owner="" aria-pressed="${!fleet.owner}">Everyone</button>${owners.map((o) =>
-      `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "hangar" : esc(o.name || o.id)}<span class="af-note">${o.count}</span></button>`).join("")}</div>` : "", "owners");
+      `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "hangar" : esc(o.name && o.name !== o.id ? o.name : actorParts(o.id).who)}<span class="af-note">${o.count}</span></button>`).join("")}</div>` : "", "owners");
   // the deck band: the same deck as Needs you, collapsible; gone when nothing waits
   const q = queue();
   const band = $("#fleet-band");
