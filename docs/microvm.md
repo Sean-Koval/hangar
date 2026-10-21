@@ -34,7 +34,7 @@ tier: fast          # fast | isolated | default | heavy
 
 ### The heavy tier on microVMs
 
-The heavy tier ([environments.md](environments.md#the-heavy-tier): Docker inside the sandbox, and the large and
+The heavy tier ([environments.md](environments/heavy-tier.md): Docker inside the sandbox, and the large and
 xlarge profiles) can run here as well as on GKE's Kata pool, and on a cluster with GKE's Agent Sandbox add-on it has
 to, since the add-on refuses privileged Kata pods ([gke.md](gke.md#4a-the-heavy-tier-optional)):
 

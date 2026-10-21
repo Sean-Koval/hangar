@@ -5,7 +5,7 @@ hangar's doors, trackers, notifiers and deliverers are plugins. Its own (GitHub,
 Events out are the other half. Every change to a job becomes a [`hangar.event/v1`](#events) that each notifier hears once: queued, needs input, a tool approval, PR opened, approved, landed. The built-in [webhook notifier](#the-webhook) signs each event and POSTs it. So a bot in a room (the Symphony bot, for example) needs no code inside hangar.
 
 !!! note "Not Claude Code plugins"
-    The plugins on this page extend the control plane. The Claude Code plugins seeded into sandbox images are a different thing ([environments.md](environments.md#claude-code-plugins)).
+    The plugins on this page extend the control plane. The Claude Code plugins seeded into sandbox images are a different thing ([environments.md](environments/sudo-plugins-mcp.md#claude-code-plugins)).
 
 ## Write a plugin
 

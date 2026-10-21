@@ -256,7 +256,7 @@ Each sandbox keeps its 2-vCPU limit and its full 4 GiB; only the CPU it is *guar
 Memory is never overcommitted, so nothing is OOM-killed for its neighbours. gVisor enforces both limits only when all
 containers set them (they do) ([GKE Sandbox][sandbox]).
 
-**Services** ([environments.md](environments.md#services)) are sidecars in the sandbox's pod, so their requests add to
+**Services** ([environments.md](environments/services.md)) are sidecars in the sandbox's pod, so their requests add to
 it, up to `HANGAR_ENV_SERVICES_MAX_CPUS` and `HANGAR_ENV_SERVICES_MAX_MEMORY_GB` (2 and 2 GiB by default; the repo
 writes each service's size, the budget caps the sum). A sandbox that uses the whole budget requests 2 vCPU and 6 GiB:
 7 a node (CPU-bound) instead of 14. Size the node count for the share of sessions whose repos declare services.
@@ -432,7 +432,7 @@ db.commit()"
 
 Sandboxes with Docker inside, and the `large` (8 vCPU / 32 GiB / 100 GiB) and `xlarge` (16 / 64 / 200) profiles, run
 as Kata microVMs on their own pool, `sandboxes-heavy` (terraform's `enable_heavy_pool`;
-[environments.md](environments.md#the-heavy-tier), [gke.md](gke.md#4a-the-heavy-tier-optional)). It scales from zero
+[environments.md](environments/heavy-tier.md), [gke.md](gke.md#4a-the-heavy-tier-optional)). It scales from zero
 and powers down with the other sandbox pools, so it costs nothing while nobody runs heavy work.
 
 ### Machine type
