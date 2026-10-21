@@ -48,7 +48,7 @@ hangar sandboxes after you change `E2B_API_KEY` and a URL. See [the E2B-compatib
       Google-managed certificate. A remote MCP client created two sandboxes from the warm pool over HTTPS in 3.1 s.
       Each had the repo cloned on its own branch, a Claude Code token and a fine-grained GitHub token.
     - **That GKE run, continued:** it predates
-      [subscription logins being interactive-only](../team.md#subscription-logins); fleets use API keys. Claude Code
+      [subscription logins being interactive-only](../team/subscription-logins.md); fleets use API keys. Claude Code
       ran headless in both sandboxes, made a change with tests, and opened a PR that passed CI
       ([#13](https://github.com/Sean-Koval/hangar/pull/13), [#14](https://github.com/Sean-Koval/hangar/pull/14)).
       `scripts/agent_fleet_demo.py` reproduces the run.

@@ -72,7 +72,7 @@ hangar cred ls                       # kind and owner of each: who still holds o
 ```
 
 Only if some people can't have a key by the rollout: `hangar config set HANGAR_SUBSCRIPTION_LOGINS any` for this
-release ([team.md](../team.md#subscription-logins)), and unset it once they do.
+release ([team.md](../team/subscription-logins.md)), and unset it once they do.
 
 ## 2. Turn on the gateway and the egress proxy
 

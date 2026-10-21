@@ -86,15 +86,33 @@ nav:
           - Jobs and sessions: console/jobs-and-sessions.md
           - Sandboxes and terminals: console/sandboxes.md
           - The status key and the keyboard: console/status-and-keyboard.md
-      - Connecting clients: clients.md
-      - Using MCP: mcp.md
-      - Team setup: team.md
+      - Connecting clients:
+          - Connecting MCP clients: clients.md
+          - Config formats and tool refresh: clients/formats.md
+          - Bots that act for people: clients/relay.md
+          - OAuth clients: clients/oauth.md
+      - Using MCP:
+          - Using hangar from an MCP client: mcp.md
+          - Waiting, answering and subscribing: mcp/waiting.md
+          - Tasks, typed results and hints: mcp/tasks.md
+          - Deployment notes: mcp/deployment.md
+      - Team setup:
+          - People and credentials: team.md
+          - Linked accounts and inbox delivery: team/linked-accounts.md
+          - Who is trusted: team/who-is-trusted.md
+          - Subscription logins: team/subscription-logins.md
+          - What the vendors allow: team/vendor-terms.md
+          - "Check it: hangar doctor": team/doctor.md
       - Runbooks:
           - runbooks/README.md
           - Onboarding a team: runbooks/onboarding.md
+          - The per-repo checklist: runbooks/repo-checklist.md
+          - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md
           - The Friday harness review: runbooks/harness-review.md
           - "Run capture: the outbox": runbooks/outbox.md
+          - "Run capture: how runs are written": runbooks/outbox-writes.md
           - Governance break-glass: runbooks/break-glass.md
+          - "Break-glass: once Tower decides": runbooks/break-glass-tower.md
   - Guides:
       - Work:
           - Jobs:

@@ -66,4 +66,4 @@ approver: `hangar job approve <id>` ([landing.md](landing.md)).
 - [The Cloud Doctor](doctor.md): the nightly pass that groups failures and opens fixes.
 - [hangar-envd](envd.md#troubleshooting): when sandboxes fall back to exec.
 - [Acceptance](acceptance.md#when-a-check-fails): when a check on the cluster fails.
-- [Run capture](runbooks/outbox.md#when-writes-fail): when runs don't reach the bucket.
+- [Run capture](runbooks/outbox-writes.md#when-writes-fail): when runs don't reach the bucket.

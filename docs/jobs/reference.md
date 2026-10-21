@@ -74,7 +74,7 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](../api/
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](../slack.md) |
 | `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` | `{}` | See [intake.md](../intake.md) |
 | `HANGAR_HARNESS_REPO`, `HANGAR_HARNESS_DRIFT` | unset, `warn` | The harness registry `harness_lock` resolves against, and what turn 1's drift from the lock does (`warn` or `fail`); see [harness-lock.md](../harness-lock.md#thaw-and-drift) |
-| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive` | Jobs never use a subscription login (`oauth_token`, `auth_file`): they need an API key. `any` allows them, with a warning, and `hangar doctor` fails. See [team.md](../team.md#subscription-logins) |
+| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive` | Jobs never use a subscription login (`oauth_token`, `auth_file`): they need an API key. `any` allows them, with a warning, and `hangar doctor` fails. See [team.md](../team/subscription-logins.md) |
 
 ## Tainted jobs
 

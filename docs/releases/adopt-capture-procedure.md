@@ -98,7 +98,7 @@ the reviewing harness (an API key: [team.md](../team.md#3-team-credentials)).
 
 ## 8. People and the inbox
 
-DMs go to a person's linked Slack account only ([team.md](../team.md#inbox-delivery-dms-and-the-digest)):
+DMs go to a person's linked Slack account only ([team.md](../team/linked-accounts.md#inbox-delivery-dms-and-the-digest)):
 
 ```bash
 hangar person link alice slack T0123ABCD/U012AB3CD

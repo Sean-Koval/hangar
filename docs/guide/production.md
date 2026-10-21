@@ -43,7 +43,7 @@ hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
 
 Members see and act on their own sandboxes, sessions and jobs; admins on everyone's. Alice's sessions and jobs use her
 own API key. Teammates without one of their own use a team API key (`hangar cred add NAME --team --kind api_key`).
-Jobs and other automated work never use a subscription login ([subscription logins](../team.md#subscription-logins)).
+Jobs and other automated work never use a subscription login ([subscription logins](../team/subscription-logins.md)).
 
 A job that waits for approval is approved by an admin or a repo policy approver, from `hangar job approve` or a login
 connection. Its own person and its requester never may ([the safe-release upgrade](../releases/safe-release.md)).

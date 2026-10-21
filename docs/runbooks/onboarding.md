@@ -1,28 +1,35 @@
 # Runbook: onboard 2 engineers on 1 repo, then 6 engineers on 3 repos
 
-One ordered checklist for putting a team on hangar: weeks 1–2 end with 2 engineers merging agent PRs on 1 repo,
+One ordered checklist for putting a team on hangar. Weeks 1–2 end with 2 engineers merging agent PRs on 1 repo, and
 weeks 3–4 with all 6 on 3 repos. Every step names the command and the page it comes from, and every command is on
 main. It ends, for each repo, with `hangar repo check` green.
 
-Read it with [team.md](../team.md) (people and credentials), [landing.md](../landing.md) (the App and branch
-protection), [intake.md](../intake.md) (Jira and GitHub Projects) and [security/README.md](../security/README.md) (the gateway).
+Read it with [team setup](../team.md) (people and credentials), [landing](../landing.md) (the App and branch
+protection), [intake](../intake.md) (Jira and GitHub Projects) and [the security model](../security/README.md) (the
+gateway).
+
+| Part | Page |
+| --- | --- |
+| Phase 1: the control plane, people and credentials (steps 1–3), and the first day (step 8) | this page |
+| The per-repo checklist (steps 4–7), run for each repo | [The per-repo checklist](repo-checklist.md) |
+| Phase 2: 6 engineers on 3 repos, the daily loop, and rollback | [Phase 2, the daily loop and rollback](onboarding-phase-2.md) |
 
 **Three hard stops.** If any of these is true, the repo isn't onboarded, whatever else is green:
 
 - **CI isn't required on the default branch.** With no required status checks GitHub merges as soon as hangar arms
-  auto-merge ([landing.md §4](../landing.md#4-how-a-pr-lands)). `hangar repo check` fails `required checks`.
+  auto-merge ([how a PR lands](../landing.md#4-how-a-pr-lands)). `hangar repo check` fails `required checks`.
 - **The GitHub App is on a bypass list.** Never add it to "Allow specified actors to bypass required pull requests"
-  or to a ruleset's bypass list: branch protection is what makes a merge wait for a person
-  ([landing.md §1](../landing.md#create-it)).
+  or to a ruleset's bypass list. Branch protection is what makes a merge wait for a person
+  ([creating the App](../landing.md#create-it)).
 - **The repo's environment is `credential_mode: direct`, or the gateway is off.** A direct-mode job's sandbox holds a
   GitHub token, and hangar never lands such a job: landing is off for it
-  ([landing.md, what it doesn't cover](../landing.md#what-it-doesnt-cover)).
+  ([what landing doesn't cover](../landing.md#what-it-doesnt-cover)).
 
 ## Engineer-hours
 
 The product lead's question: how long does one repo take to onboard? Record it here when the per-repo checklist is
-run, from the first command to `hangar repo check` green, counting each person's hands-on time (not waiting for a
-GitHub admin or for CI).
+run, from the first command to `hangar repo check` green. Count each person's hands-on time, not waiting for a GitHub
+admin or for CI.
 
 | Repo | Who ran it | Date | Phase 1 control-plane steps (1–3), hours | Per-repo checklist (4–7), hours | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -38,12 +45,13 @@ of the per-repo checklist (#154).
 ### 1. Control-plane prerequisites
 
 The safe release (#120–#132) is deployed: secure defaults for intake jobs, API keys for automated work, one approval
-rule ([upgrading.md, the safe release](../releases/safe-release.md)). It changes every environment's image,
-so deploy it by hand in the power-down window, **01:00–09:50 ET**, while the sandbox pools are down and the control
-plane is up ([team-scale.md, applying it](../team-scale.md#applying-it)). Later routine deploys go through
-`deploy.yml` while the pools are on, 10:00–01:00 ET ([upgrading.md, when to deploy](../upgrading.md#when-to-deploy)).
-Then the [adopt & capture upgrade](../releases/adopt-capture.md) (#133–#189), which deploys by
-day.
+rule ([the safe release](../releases/safe-release.md)). It changes every environment's image, so deploy it by hand in
+the power-down window, **01:00–09:50 ET**. Then the sandbox pools are down and the control plane is up
+([applying it](../team-scale.md#applying-it)).
+
+Later routine deploys go through `deploy.yml` while the pools are on, 10:00–01:00 ET
+([when to deploy](../upgrading.md#when-to-deploy)). Then comes the
+[adopt & capture upgrade](../releases/adopt-capture.md) (#133–#189), which deploys by day.
 
 ```bash
 hangar doctor                          # clean: no failures
@@ -52,9 +60,9 @@ hangar config get HANGAR_INTAKE_POSTURE   # enforce (not warn, not off)
 
 ### 2. People
 
-Add each engineer and link their accounts elsewhere ([team.md §1–2](../team.md#1-add-people)). Links use ids that
-don't change hands: GitHub is stored as the account's numeric id, Slack as `TEAM/USER`, Jira as the Atlassian
-account id.
+Add each engineer and link their accounts elsewhere ([add people](../team.md#1-add-people),
+[linked accounts](../team/linked-accounts.md)). Links use ids that don't change hands: GitHub is stored as the
+account's numeric id, Slack as `TEAM/USER`, Jira as the Atlassian account id.
 
 ```bash
 hangar person add alice --name "Alice"        # prints her login token once; she runs hangar login, hangar connect
@@ -68,8 +76,8 @@ Two people means approvals work without `HANGAR_SELF_APPROVAL=allow_solo`: nobod
 ### 3. Credentials
 
 API keys with a spend cap set in the vendor's console, one per engineer or one for the team
-([team.md §3–4](../team.md#3-team-credentials)). Never a subscription login: jobs refuse them
-([team.md, subscription logins](../team.md#subscription-logins)).
+([team credentials](../team.md#3-team-credentials)). Never a subscription login: jobs refuse them
+([subscription logins](../team/subscription-logins.md)).
 
 ```bash
 hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt
@@ -80,138 +88,29 @@ hangar cred ls                         # kind api_key; owner=team or owner=<pers
 
 ## The per-repo checklist
 
-Steps 4–7 for each repo: repo 1 in phase 1, repos 2 and 3 in phase 2.
-
-### 4. The repo
-
-- **Allowlisted.** In `HANGAR_GITHUB_REPOS` with its environment: `hangar setup github` adds it and its webhook
-  ([jobs.md §4](../jobs/from-github-slack-jira.md#4-trigger-from-github)).
-- **The GitHub App installed on this repo only** (Contents and Pull requests: Read and write, nothing else), and
-  `HANGAR_GITHUB_APP_CREDENTIAL` set ([landing.md §1](../landing.md#1-the-github-app)). Not on any bypass list.
-- **`credential_mode: gateway`** on the repo's environment, with `HANGAR_GATEWAY_URL` set
-  ([the git gateway, turning it on](../security/git-gateway.md#turning-it-on)).
-- **Branch protection** on the default branch ([landing.md §3](../landing.md#3-the-branch-protection-to-enable)):
-  a pull request with at least 1 approval, dismiss stale approvals on a push, approval of the most recent push,
-  required status checks, and *Allow auto-merge* in Settings → General.
-- **CI required.** The repo's CI is among the required status checks (the first hard stop).
-
-```bash
-hangar setup github --repo acme/app=python   # token, webhook secret, HANGAR_GITHUB_REPOS, the repo's webhook
-hangar config set HANGAR_GITHUB_APP_CREDENTIAL github-app
-#   the environment's YAML: credential_mode: gateway (step 7 checks it: `credential mode ENV`)
-```
-
-hangar can't apply branch protection or install the App: the App deliberately lacks Administration. A GitHub admin
-does those by hand; step 7 checks them.
-
-### 5. The repo policy
-
-What every job on the repo gets, whichever door it came through ([repo-policy.md](../repo-policy.md)):
-
-```bash
-hangar repo set acme/app --land auto_after_approval --approver alice --approver bob \
-  --risk-path 'infra/**' --risk-path '**/migrations/**' \
-  --verify "uv run pytest -q" --max-usd-per-day 60 \
-  --ai-review hangar --self-approval low_risk_with_ai_review
-hangar repo get acme/app
-```
-
-**The review rule.** The person who asked for the work may be its PR's only approver only for a low-risk PR (docs and
-tests) with an independent AI review of the approved head ([self-approval](../landing.md#self-approval-who-may-be-the-only-approver));
-anything else, and every tainted PR (every Jira-door job), needs a second reviewer from `--approver`. `--ai-review
-hangar` has a different harness from the author's review every agent PR first ([AI review](../landing.md#6a-ai-first-pass-review)).
-
-### 6. Doors
-
-- **Jira**: map the project to the repo with `hangar setup jira`; moving an issue to *Ready for agent* starts a job
-  unless you pass another `--trigger-status` or a `--trigger-label` ([intake.md §3](../intake.md#3-the-configuration)).
-  Create that status in the project's workflow first. Run it again with `--project` for repos 2 and 3: it keeps the
-  projects already mapped. Tickets follow the
-  [agent ticket template](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md).
-- **GitHub**: the `hangar` label (`HANGAR_GITHUB_TRIGGER_LABEL`) exists on the repo; labelling an issue starts a job
-  ([jobs.md §4](../jobs/from-github-slack-jira.md#4-trigger-from-github)).
-- **Slack**: the team's channel maps to the repo in `HANGAR_SLACK_CHANNELS`, and the app is invited to it
-  ([slack.md](../slack.md)).
-
-```bash
-hangar setup jira --url https://acme.atlassian.net --email hangar@acme.com --project APP=acme/app \
-  --token-file jira-token --webhook-secret-file jira-webhook-secret   # trigger: "Ready for agent"
-hangar setup slack --channel C0123ABCD=acme/app   # asks for the app's secrets; or edit HANGAR_SLACK_CHANNELS
-```
-
-### 7. `hangar repo check` until green
-
-```bash
-hangar repo check acme/app
-```
-
-It reads the App installation, the webhook, the label, the policy, branch protection and required checks, the gateway,
-the environments' credential mode, sudo, egress and logins, and the Jira and Slack mappings, and ends with `ready` or
-`not ready (N failing)`, each failure with its fix ([repo-policy.md, is this repo ready](../repo-policy.md#is-this-repo-ready)).
-Fix and run it again until it says `ready`; then record the engineer-hours in the table above.
+Steps 4–7 for each repo: repo 1 in phase 1, repos 2 and 3 in phase 2. They are on
+[the per-repo checklist](repo-checklist.md): the repo, its policy, its doors, and `hangar repo check` until green.
 
 ### 8. First day (phase 1)
 
 Each engineer:
 
 1. moves 2 tickets to **Ready for agent** (or labels 2 issues `hangar`);
-2. reviews the agent PRs at the 10:00 triage (`hangar inbox`), and approves one that is ready: hangar lands it once
-   the required checks pass (a teammate's PR as its second reviewer; their own only when it is low risk with an AI
-   review). Past 5 open agent PRs awaiting them, their new jobs wait as `awaiting_capacity`
-   ([review capacity](../team-scale.md#review-capacity)): reviewing is what frees them;
+2. reviews the agent PRs at the 10:00 triage (`hangar inbox`), and approves one that is ready. hangar lands it once
+   the required checks pass. That is a teammate's PR as its second reviewer, or their own only when it is low risk
+   with an AI review;
+    - past 5 open agent PRs awaiting them, their new jobs wait as `awaiting_capacity`
+      ([review capacity](../team-scale.md#review-capacity)): reviewing is what frees them;
 3. answers one agent question in its thread or ticket (`/hangar <answer>`, a thread reply, a Jira comment).
 
-## Phase 2: 6 engineers, 3 repos (weeks 3–4)
+## Moved from this page
 
-1. Steps 2 and 3 for the four new engineers.
-2. The per-repo checklist (4–7) for repos 2 and 3, each ending with `hangar repo check` green and its hours recorded.
-3. Check the team features, all shipped with the adopt & capture release; the first three are on by default:
-   - inbox DMs for questions and approvals, and the per-person digest at 10:15 and 16:00 (#157, #158): on for everyone
-     with a linked Slack account (step 2); `hangar person set <id> --dm off` opts out;
-   - review-aware admission: new jobs wait as `awaiting_capacity` past 5 open agent PRs per reviewer (#159;
-     `HANGAR_PERSON_MAX_OPEN_AGENT_PRS`, or `--max-open-agent-prs` per repo, [team-scale.md](../team-scale.md#review-capacity));
-   - the self-approval rule (#160, the default `low_risk_with_ai_review`): a requester's own approval lands only a
-     low-risk PR with an independent AI review, and the AI first-pass review (#161) is off until
-     `hangar repo set <repo> --ai-review hangar`, so turn it on for each repo where people approve their own docs and
-     test PRs;
-   - run capture: on in the GKE deploy, where `deploy/gke/up.sh` sets `HANGAR_OUTBOX_URL` (#273); elsewhere off until
-     it is set ([observability.md, run capture](../observability.md#run-capture); operating it:
-     [the outbox runbook](outbox.md)).
-4. The weekly adoption metrics start counting active delegators (#168).
-5. Once the last 14 days' agent PR yield is at least 60% (`hangar metrics weekly`), consider the overnight lane: one Spot
-   node 01:00–10:00 (~$87 a month) so evening tickets of the repos set to `overnight: true` are PRs by the 10:00 triage
-   ([gke.md, the overnight lane](../gke.md#the-overnight-lane)). Below 60% it only adds to the morning's review queue,
-   and `hangar power overnight on` refuses.
-
-## The daily loop
-
-| When | What | Where |
-| --- | --- | --- |
-| Any time | An agent's question or approval reaches its person in a Slack DM within a minute, linked to the thread, ticket or PR to answer in | [landing.md, delivery](../landing.md#delivery-it-comes-to-you); `hangar person set <id> --dm …` |
-| 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs). The 10:15 Slack digest lists it, questions first; reviews are a count and a link to GitHub's review queue | `hangar inbox` ([landing.md §7](../landing.md#7-the-inbox-what-needs-you)) |
-| 10:20 | Standup, with the bot's line at 10:18 ET: yesterday's merged and abandoned agent PRs (by reason), review wait p50, top failure; Mondays, last week's summary | `HANGAR_STANDUP_CHANNEL` ([metrics.md](../metrics.md#the-standup-line)) |
-| 16:00 | The afternoon digest catches what came in since | Slack DM ([team.md](../team.md#inbox-delivery-dms-and-the-digest)) |
-| Friday, 30 min | Harness review: label the first failure on failed or abandoned jobs, until 20 candidate tasks | `hangar review queue` ([harness-review.md](harness-review.md)) |
-
-Sandboxes power on at 09:50 ET, so work queued overnight starts before triage. The digests and DMs come from the control plane, which stays up while the pools are off; a 10:15 digest sent before power-up finished says "sandboxes not up yet". Each engineer needs their Slack account linked (`hangar person link <id> slack T…/U…`); `hangar doctor` lists anyone the inbox can't reach.
-
-## Rollback
-
-From lightest to heaviest:
-
-1. **Stop landing on a repo**: a person merges again.
-
-   ```bash
-   hangar repo set acme/app --land manual
-   ```
-
-2. **Stop the Jira door**: remove the project from `HANGAR_JIRA`'s `projects` (`hangar config set jira '{…}'`
-   without it). Issues moved to *Ready for agent* then start nothing.
-3. **Stop all agent work for a while**: after the power-down (01:00), hold the power schedule so the sandbox pools
-   stay down; jobs queue and wait. `hangar power release` (or `hangar power up`) ends it.
-
-   ```bash
-   hangar power hold --days 2
-   ```
-
-Nothing here deletes work: jobs, sessions and their PRs stay as they are.
+| Section | Now on |
+| --- | --- |
+| <span id="4-the-repo"></span>4. The repo | [The per-repo checklist](repo-checklist.md#4-the-repo) |
+| <span id="5-the-repo-policy"></span>5. The repo policy | [The per-repo checklist](repo-checklist.md#5-the-repo-policy) |
+| <span id="6-doors"></span>6. Doors | [The per-repo checklist](repo-checklist.md#6-doors) |
+| <span id="7-hangar-repo-check-until-green"></span>7. hangar repo check until green | [The per-repo checklist](repo-checklist.md#7-hangar-repo-check-until-green) |
+| <span id="phase-2-6-engineers-3-repos-weeks-34"></span>Phase 2 | [Phase 2, the daily loop and rollback](onboarding-phase-2.md#phase-2-6-engineers-3-repos-weeks-34) |
+| <span id="the-daily-loop"></span>The daily loop | [Phase 2, the daily loop and rollback](onboarding-phase-2.md#the-daily-loop) |
+| <span id="rollback"></span>Rollback | [Phase 2, the daily loop and rollback](onboarding-phase-2.md#rollback) |

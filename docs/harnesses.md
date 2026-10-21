@@ -315,4 +315,4 @@ shape decides and hangar says so (`modelpolicy.is_concrete`; every built-in id a
   without Mythos access never resolves to Mythos. Codex with a ChatGPT login has no API key to list with. Give it an
   OpenAI key from the same organization, or pin `codex: gpt-6-astra` if you have it. A ChatGPT login is also interactive-only:
   jobs, schedules and experiments run Codex on an OpenAI API key, or a ChatGPT Enterprise Codex access token stored with
-  `--kind api_key` ([team.md](team.md#subscription-logins)).
+  `--kind api_key` ([team.md](team/subscription-logins.md)).

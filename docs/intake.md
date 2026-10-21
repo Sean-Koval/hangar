@@ -20,7 +20,7 @@ GitHub issues ([jobs/README.md §4](jobs/from-github-slack-jira.md#4-trigger-fro
 
 ## Who a job belongs to, and who is trusted
 
-Every front door uses one rule ([team.md](team.md#who-is-trusted) has it in full). An account in Jira or GitHub is a hangar person only when an admin has linked it to one (`hangar person link dana jira <account id>`, `hangar person link dana github <login>`, which is stored as the account's numeric GitHub id). hangar asks `people.resolve_external` for every sender, by an id that doesn't change hands: the Atlassian account id (Data Center: the user key) and the GitHub user id (`sender.id`), never a GitHub login.
+Every front door uses one rule ([team.md](team/who-is-trusted.md) has it in full). An account in Jira or GitHub is a hangar person only when an admin has linked it to one (`hangar person link dana jira <account id>`, `hangar person link dana github <login>`, which is stored as the account's numeric GitHub id). hangar asks `people.resolve_external` for every sender, by an id that doesn't change hands: the Atlassian account id (Data Center: the user key) and the GitHub user id (`sender.id`), never a GitHub login.
 
 - **A linked sender acts as their person, so they are trusted.** The job is theirs: it counts against their caps and budget, runs with their own credentials where they have them, and they see it in their own job list.
 - **Only the job's person continues it.** A person's job runs with their own login, so in Jira only that person's comment answers its question or continues it with `/hangar <message>`. Anyone else's, a linked teammate's included, is refused with a comment saying whose job it is (an admin uses `hangar job follow-up`). The same holds on GitHub issues, PRs and Slack threads.

@@ -150,4 +150,4 @@ def verify(key: bytes, body: bytes, headers) -> bool:
 | `webhook` | Notifier `webhook` | `HANGAR_PLUGINS.notifiers.webhook` ([above](#the-webhook)) |
 | `command`, `image-ready` | Deliverers for a [change set's deploy step](changesets.md#deliverers) | Always on; a profile's `deploy` names them |
 
-The Slack inbox DMs and digests ([team.md](team.md#inbox-delivery-dms-and-the-digest)) stay as they were.
+The Slack inbox DMs and digests ([team.md](team/linked-accounts.md#inbox-delivery-dms-and-the-digest)) stay as they were.
