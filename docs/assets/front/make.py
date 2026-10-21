@@ -20,11 +20,12 @@ Writes, next to this file (or into --out):
   hangar-demo.gif / .mp4        a ticket becomes a sandbox run and a draft PR (README: the GIF; docs: the MP4)
   hangar-review.gif / .mp4      the review loop: decide what is held, read the change, comment back to the agent
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
+  ui-hero.png, ui-hero-light.png  the delivered job's panel, Night and Day (the docs home's hero, linking to the MP4)
   ui-fleet-board.png            the Fleet's Board with an agent open in place, from the demo run (docs/console.md)
   ui-needs.png, ui-fleet.png, ui-review.png   Needs you (the deck), the Fleet with its deck, and the Diff, from the fixture
   ui-needs-light.png, ui-fleet-light.png      the same two in Day, for the docs' light scheme and the README's <picture>
   inbox.png                     `hangar inbox` in a terminal
-  hangar-suite.svg, -dark.png, -light.png     the diagram (diagram.py)
+  hangar-suite.svg, -stacked.svg, -dark.png, -light.png   the diagram (diagram.py)
 CI (.github/workflows/front-page.yml) runs this, checks the files and their sizes, and keeps them as an artifact.
 """
 
@@ -51,6 +52,7 @@ from fixture import Fixture  # noqa: E402
 
 W, H = 1440, 900  # the recordings' viewport; the demo run's stills are the same frame at 2x
 ZOOM = (1040, 650)  # the demo recording's close-up while the agent works: the job's detail panel, same aspect as W x H
+HERO = 780  # the docs home hero's window: the job panel at about the 600 px the hero shows it at
 NARROW = 820  # the viewport for the Needs-you and Diff crops: one column, so the crop is 820 px wide at 1x
 DOCKED = 1280  # the Fleet still: the deck beside its side column and the rows at their full ten columns
 VIDEO = (1280, 800)  # the MP4's size; the GIF is 960 wide
@@ -427,7 +429,29 @@ async def ui(pw, out: Path, work: Path) -> None:
         await tab.wait_for_timeout(800)
         await tab.screenshot(path=str(out / f"ui-fleet-{view}.png"))
         print("wrote", out / f"ui-fleet-{view}.png")
+    await hero(browser, out)
     await browser.close()
+
+
+async def hero(browser, out: Path) -> None:
+    """The docs home's hero: the demo's delivered job (#42, check passed, draft PR, the agent's summary), cropped to
+    the job's panel from a HERO px window at 2x, close to the size the hero shows it at, so its text reads; Night and Day."""
+    for theme, suffix in (("dark", ""), ("light", "-light")):
+        ctx = await browser.new_context(viewport={"width": HERO, "height": H}, device_scale_factor=2,
+                                        color_scheme=theme)
+        await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
+        tab = await ctx.new_page()
+        await tab.goto(f"{demo.URL}/#jobs", wait_until="networkidle")
+        await tab.evaluate("document.fonts.ready")
+        await tab.locator("#job-list li", has_text="#42").first.click()
+        await tab.wait_for_selector("#job-detail .kv")
+        await tab.wait_for_timeout(800)
+        box = await tab.evaluate("""() => { const r = document.querySelector('#job-detail').getBoundingClientRect();
+            const pad = 12, w = r.width + 2 * pad;
+            return {x: Math.max(r.left - pad, 0), y: Math.max(r.top + scrollY - pad, 0), width: w, height: Math.min(r.height + 2 * pad, Math.round(w * 0.74))}; }""")
+        await tab.screenshot(path=str(out / f"ui-hero{suffix}.png"), clip=box, full_page=True)
+        print("wrote", out / f"ui-hero{suffix}.png", f"({box['width']:.0f}x{box['height']:.0f} at 2x)")
+        await ctx.close()
 
 
 async def _console_page(ctx, fx: Fixture, hash_: str):
@@ -551,8 +575,9 @@ async def review(pw, out: Path, work: Path) -> None:
 
 def check(out: Path, only: str | None) -> None:
     names = {
-        "diagram": ["hangar-suite.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
-        "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png",
+        "diagram": ["hangar-suite.svg", "hangar-suite-stacked.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
+        "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png", "ui-hero.png",
+               "ui-hero-light.png",
                *(f"ui-fleet-{v}.png" for v in sorted(FLEET_VIEWS))],
         "console": ["ui-needs.png", "ui-needs-light.png", "ui-fleet.png", "ui-fleet-light.png", "ui-review.png",
                     "hangar-review.gif", "hangar-review.mp4"],

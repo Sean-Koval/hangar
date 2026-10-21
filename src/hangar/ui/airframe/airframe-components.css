@@ -1,4 +1,4 @@
-/* Airframe theme-v13 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v14 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -553,7 +553,7 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 .af-approval__hint{display:flex;align-items:flex-start;gap:7px;margin:0;font-size:12.5px;line-height:1.45;color:var(--af-fg-muted)}
 .af-approval__hint .af-ic{flex:none;margin-top:2px;color:var(--af-fg-subtle)}
 .af-approval__hint b{font-family:var(--af-font-mono);font-weight:500;font-size:12px;color:var(--af-fg)}
-/* quorum strip: who signed, who is waited on. Grey throughout; the card's lit ring already says whether it is yours. */
+/* quorum strip: who approved, who is waited on. Grey throughout; the card's lit ring already says whether it is yours. */
 .af-approval__quorum{display:flex;align-items:center;gap:12px 16px;flex-wrap:wrap;min-height:28px;padding-top:12px;border-top:1px solid var(--af-line-subtle);font-size:12.5px;color:var(--af-fg-muted);min-width:0}
 .af-approval__quorum>.af-avatars{flex:none}
 .af-approval__signed{white-space:nowrap}

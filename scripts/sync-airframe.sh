@@ -11,7 +11,8 @@
 # scripts/sync-airframe.sh and lists what it vendors in FILES, one "<theme file> <destination>"
 # pair per line. Published theme files: airframe.css (tokens), airframe-components.css (the af-
 # classes), airframe-docs.css (docs-site mapping), airframe-suite.html (the suite strip partial for the
-# docs header; overrides/main.html includes it), airframe-icons.svg (sprite), airframe-tokens.json,
+# docs header; overrides/main.html includes it), airframe-footer.html (the suite's docs footer, from theme-v14; also
+# included by overrides/main.html), airframe-icons.svg (sprite), airframe-tokens.json,
 # airframe.js (the helpers and behaviours: toast, confirm, drawer; an ES module).
 set -eu
 
@@ -19,6 +20,7 @@ FILES="
 airframe.css            docs/stylesheets/airframe.css
 airframe-docs.css       docs/stylesheets/airframe-docs.css
 airframe-suite.html     overrides/partials/airframe-suite.html
+airframe-footer.html    overrides/partials/airframe-footer.html
 airframe.css            src/hangar/ui/airframe/airframe.css
 airframe-components.css src/hangar/ui/airframe/airframe-components.css
 airframe-icons.svg      src/hangar/ui/airframe/airframe-icons.svg

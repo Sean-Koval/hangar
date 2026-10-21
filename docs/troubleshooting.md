@@ -49,7 +49,7 @@ environment changed; usually a few minutes)". Later jobs reuse it. To build ahea
 `HANGAR_JOB_TIMEOUT_MINUTES` (60), which limits each agent turn; waiting for the sandbox to start has a limit of its own,
 `HANGAR_SANDBOX_START_TIMEOUT_SECONDS` (900), sized for a node scale-up and a first image pull.
 
-**In `queued`.** The job's `reason` says why ([jobs/README.md](jobs/README.md#2-submit-a-job)):
+**In `queued`.** The job's `reason` says why ([submit a job](jobs/README.md#3-submit-a-job)):
 
 - `powered_down`: the sandbox pools are off for the night; it starts after the 09:50 power-up
   ([gke.md](gke.md#6-sandbox-nodes-off-at-night-optional)).

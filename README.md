@@ -11,7 +11,7 @@ Documentation site: **[sean-koval.github.io/hangar](https://sean-koval.github.io
 
 ![A GitHub issue labelled hangar becomes a job: a sandbox starts, the agent edits and tests the code, hangar verifies and opens draft PR #43, and the PR waits in Needs you with a question another job asked](docs/assets/front/hangar-demo.gif)
 
-<sub>Recorded by [`docs/assets/front/make.py`](docs/assets/front/make.py) against the demo hangar (the fake provider, a scripted agent and a stand-in GitHub); [MP4](docs/assets/front/hangar-demo.mp4).</sub>
+<sub>Issue #42 is labelled `hangar`; a sandbox runs the agent, the repo's check passes and draft PR #43 waits in Needs you ([MP4](docs/assets/front/hangar-demo.mp4)).</sub>
 
 ## What it looks like
 
@@ -26,11 +26,11 @@ The **review loop**: decide what is held, read the agent's change as a greyscale
 
 ![The review loop: decide a held edit in Needs you, open the held push's job, show the change as a diff, comment on a line and send it to the agent](docs/assets/front/hangar-review.gif)
 
-<sub>Recorded on the fixture (`docs/assets/front/fixture.py`: a team's afternoon served over the same console); [MP4](docs/assets/front/hangar-review.mp4).</sub>
+<sub>A held edit allowed for this turn, then the held push's job: its diff, and a comment on a line sent back to the agent ([MP4](docs/assets/front/hangar-review.mp4)).</sub>
 
 ## Where it sits
 
-Many doors bring work in; hangar runs it; the pull request is the one gate out. Around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions: its decision API is built, and hangar's wiring to it is open ([#172](https://github.com/Sean-Koval/hangar/issues/172), [spec 0015](docs/specs/0015-governance-decision-point.md)).
+Many doors bring work in; hangar runs it; the pull request is the one gate out. Around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions: its decision API is built, and hangar's wiring to it is next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture) ([spec 0015](docs/specs/0015-governance-decision-point.md)).
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/front/hangar-suite-light.png">
@@ -76,13 +76,13 @@ To look around first without Docker or a key, run the demo hangar the recording 
 | **Hostile-sandbox security** | Credentials stay behind a gateway; intake jobs get an egress allowlist and no push rights; tainted work opens as a draft and needs a second person. See the [security model](docs/security/README.md). | Shipped |
 | **Usage and insight** | Tokens, cost and budgets per job and person ([activity](docs/activity.md)), traces as OTLP ([observability](docs/observability.md)), and run capture for [flightdeck](docs/specs/0014-sister-tool-interfaces.md). | Shipped |
 | **Shadow runs** | A repo policy samples real tickets and runs a candidate harness on each at the same base commit; it delivers nothing, and flightdeck grades it against what people merged ([shadows](docs/repo-policy.md#shadows)). | Shadow |
-| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. Today hangar's own approval rule decides; the client and contract are built ([spec 0015](docs/specs/0015-governance-decision-point.md)). | Planned ([#172](https://github.com/Sean-Koval/hangar/issues/172)) |
+| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. Today hangar's own approval rule decides; the client and contract are built ([spec 0015](docs/specs/0015-governance-decision-point.md)). | Planned ([roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture)) |
 | **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00) for the intake jobs of repos that opt in and for evals, so evening tickets become PRs by morning; off until an admin turns it on ([the overnight lane](docs/gke.md#the-overnight-lane)). | Shipped |
 | **Plugins and events out** | Doors, trackers, notifiers and deliverers are plugins: a package of your own adds a chat bot's door or a company tracker without changing hangar, and every job change goes out as a signed `hangar.event/v1` ([plugins](docs/plugins.md)). | Shipped |
 | **Deploy on your company's cluster** | Kustomize base and components, a Terraform module that never creates a cluster, released images, secrets from your secret manager and admin configuration as reviewed files (`hangar apply`) ([company deploy](docs/deploy-company.md)). | Shipped |
 | **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](docs/clients.md#bots-that-act-for-people-relay)). | Partial |
 
-*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: an open issue.
+*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
 
 ## Security posture
 
@@ -102,6 +102,6 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 | Security and design decisions | [Security model](docs/security/README.md) · [Specs](docs/specs/README.md) |
 | Release history | [Changelog](CHANGELOG.md) |
 
-**Developing hangar:** `uv sync --all-extras && uv run pytest -n 8 && uv run ruff check src tests`; see [development](docs/guide.md#development) and [CI](docs/ci.md). The front page's recording, screenshots and diagram are rendered by [`docs/assets/front/make.py`](docs/assets/front/make.py) ([how](docs/assets/README.md)).
+**Developing hangar:** `uv sync --all-extras && uv run pytest -n 8 && uv run ruff check src tests`; see [development](docs/guide.md#development) and [CI](docs/ci.md). To re-render the images on this page after a console change, see [the front-page assets](docs/assets/README.md).
 
 Licensed under [Apache 2.0](LICENSE).

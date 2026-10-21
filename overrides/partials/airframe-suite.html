@@ -11,7 +11,9 @@
   shows the same family. The order is the suite story: the four planes (Define = the team harness, Run =
   hangar, Judge = flightdeck, Govern = Tower), then ai-dlc as Setup and Airframe as Design. The role word
   is a <small> that the stylesheet drops under 480px, where the strip shows names only and scrolls with
-  a fade. A product joins the strip when its docs site is public.
+  a fade on each edge that has more; the script below scrolls the current item into view and keeps the two
+  fades honest (data-af-scrolled / data-af-at-end on the banner). A product joins the strip when its docs site
+  is public.
 -#}
 {% set product = (config.extra.airframe.product if config.extra.airframe else "") or "" %}
 {% if product == "agent-factory" and page and page.url[:9] == "airframe/" %}{% set product = "airframe" %}{% endif %}
@@ -26,3 +28,21 @@
     <li><a href="https://sean-koval.github.io/agent-factory/airframe/"{% if product == "airframe" %} aria-current="true"{% endif %}><small>Design</small>Airframe</a></li>
   </ul>
 </nav>
+<script>
+  (function () {
+    var strip = document.querySelector(".md-typeset .af-suite"), box = strip && strip.parentElement;
+    if (!strip) return;
+    function edges() {
+      box.toggleAttribute("data-af-scrolled", strip.scrollLeft > 2);
+      box.toggleAttribute("data-af-at-end", strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 2);
+    }
+    var cur = strip.querySelector(".af-suite__list [aria-current]");
+    if (cur && strip.scrollWidth > strip.clientWidth) {
+      var at = cur.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
+      strip.scrollLeft = Math.max(0, at - (strip.clientWidth - cur.offsetWidth) / 2);
+    }
+    edges();
+    strip.addEventListener("scroll", edges, { passive: true });
+    window.addEventListener("resize", edges);
+  })();
+</script>

@@ -7,6 +7,7 @@ on:
       - docs/**
       - mkdocs.yml
       - overrides/**
+      - scripts/sync-brand.sh
       - .github/workflows/docs.yml
   push:
     branches: [main]
@@ -32,6 +33,14 @@ jobs:
         run: |
           python3 docs/assets/front/diagram.py
           git diff --exit-code -- docs/assets/diagrams docs/assets/front/hangar-suite.svg
+      - name: The brand files are agent-factory's, at the commit docs/assets/brand/SOURCE records
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: sh scripts/sync-brand.sh --check
+      - name: Report drift from agent-factory main (a warning; re-run scripts/sync-brand.sh to take it)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: sh scripts/sync-brand.sh --check main || echo "::warning::agent-factory main has newer brand files; run sh scripts/sync-brand.sh <ref>"
       - run: pip install zensical==0.0.71
       # --strict: a broken link or anchor (a warning) fails the build instead of deploying with it
       - run: zensical build --strict
