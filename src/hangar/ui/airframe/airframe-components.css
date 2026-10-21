@@ -1,4 +1,4 @@
-/* Airframe theme-v12 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v13 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -221,6 +221,9 @@ body{margin:0;background:var(--af-canvas);color:var(--af-fg);font-family:var(--a
 .af-gauge__fill{position:absolute;inset:0 auto 0 0;background:var(--af-fg-muted)}
 .af-gauge__bug{position:absolute;top:-9px;bottom:-4px;width:1px;margin-left:-.5px;background:var(--af-brand-text)}
 .af-gauge__bug::before{content:"";position:absolute;top:0;left:-4.5px;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid var(--af-brand-text)}
+/* in a list (one gauge per agent) the bug is neutral, like the list sparkline's end dot: a yellow tick per row would say every row is yours */
+.af-gauge--mini .af-gauge__bug{background:var(--af-fg-muted)}
+.af-gauge--mini .af-gauge__bug::before{border-top-color:var(--af-fg-muted)}
 
 /* ---- readouts: display windows that hold digit cells ---- */
 .af-readouts{--af-cols:3;display:grid;grid-template-columns:repeat(var(--af-cols),minmax(0,1fr));gap:2px;background:var(--af-canvas);border-radius:var(--af-radius-control);overflow:hidden;min-width:0}
@@ -1376,6 +1379,8 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-deck__stack>.af-decision[data-k="2"]{--k:2}
 .af-deck__stack>.af-decision:not([data-k="0"]){height:100%;overflow:hidden;pointer-events:none}
 .af-deck__stack>.af-decision:not([data-k="0"])>:not(.af-decision__hd){visibility:hidden}
+/* the cards behind are neutral: only the top card carries the status edge */
+.af-deck__stack>.af-decision:not([data-k="0"])::before{display:none}
 .af-deck__stack>.af-decision:not([data-k="0"]):not([data-k="1"]):not([data-k="2"]){display:none}
 .af-decision.is-leaving{transform:translateX(40px) scale(.98);opacity:0;pointer-events:none}
 .af-decision__hd{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:500;min-width:0}
@@ -1391,16 +1396,17 @@ button.af-lanes__label:focus-visible{outline:2px solid var(--af-focus);outline-o
 .af-deck__side{display:flex;flex-direction:column;gap:14px;padding-top:4px;min-width:0}
 .af-deck__title{display:flex;align-items:baseline;gap:8px;margin:0;font-size:15px;font-weight:600;color:var(--af-fg)}
 .af-deck__count{font-family:var(--af-font-mono);font-weight:400;font-size:12px;color:var(--af-fg-subtle);font-variant-numeric:tabular-nums}
+.af-deck__subtitle{margin:6px 0 0;font-size:13px;font-weight:600;color:var(--af-fg)}
 .af-deck__side>p{margin:0;max-width:40ch;font-size:13px;line-height:1.5;color:var(--af-fg-muted)}
 .af-deck__nav{display:flex;align-items:center;gap:6px}
 .af-deck__nav>.af-note{margin-left:4px}
-.af-deck__upnext{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
-.af-deck__upnext button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:var(--af-radius-control);background:none;color:var(--af-fg-muted);font:inherit;font-size:13px;text-align:left;cursor:pointer;min-width:0}
-.af-deck__upnext button:hover{background:var(--af-raised)}
-.af-deck__upnext button>.af-status{gap:0}
-.af-deck__upnext .af-id{font-size:12px;color:var(--af-fg-subtle)}
-.af-deck__upnext .af-deck__what{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.af-deck__upnext .af-deck__when{margin-left:auto;font-size:12px;color:var(--af-fg-muted);white-space:nowrap}
+:is(.af-deck__upnext,.af-deck__stopped){display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+:is(.af-deck__upnext,.af-deck__stopped) button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:var(--af-radius-control);background:none;color:var(--af-fg-muted);font:inherit;font-size:13px;text-align:left;cursor:pointer;min-width:0}
+:is(.af-deck__upnext,.af-deck__stopped) button:hover{background:var(--af-raised)}
+:is(.af-deck__upnext,.af-deck__stopped) button>.af-status{gap:0}
+:is(.af-deck__upnext,.af-deck__stopped) .af-id{font-size:12px;color:var(--af-fg-subtle)}
+:is(.af-deck__upnext,.af-deck__stopped) .af-deck__what{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:is(.af-deck__upnext,.af-deck__stopped) .af-deck__when{margin-left:auto;font-size:12px;color:var(--af-fg-muted);white-space:nowrap}
 .af-deck__empty{min-height:120px;border-radius:var(--af-radius-sheet);box-shadow:inset 0 0 0 1px var(--af-line)}
 
 /* ---- runway groups: a pool or environment header above its rows or cards ---- */
