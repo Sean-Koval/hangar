@@ -66,13 +66,26 @@ exclude_docs: |
 # exclude_docs lists and the superseded and deferred specs (0001, 0004, 0005, 0007, 0008): a design record that no
 # longer describes hangar would mislead from the nav, so they keep their pages and are reached from specs/README.md
 # only. The built specs stay in the nav: they are the reasoning behind what runs today.
-# tests/test_docs_size.py keeps every page in this map under its word cap.
+# tests/test_editorial.py checks every page in this map exists, and holds each page to the editorial rule: 700 words of
+# prose, 60 to a paragraph, 25 to a sentence (a page written before the rule keeps under its listed ceilings).
 nav:
   - Home: index.md
   - Start here:
-      - Concepts: concepts.md
-      - Quickstart and first task: guide.md
-      - The web console: console.md
+      - Concepts:
+          - The words: concepts.md
+          - What hangar gives you: concepts/control-plane.md
+      - Getting started:
+          - Quickstart and first task: guide.md
+          - After the first task: guide/after-the-first-task.md
+          - From a laptop to GKE and a team: guide/production.md
+          - Where it runs: guide/where-it-runs.md
+          - Configuration and development: guide/configuration.md
+      - The web console:
+          - The console and the Fleet: console.md
+          - Needs you: console/needs-you.md
+          - Jobs and sessions: console/jobs-and-sessions.md
+          - Sandboxes and terminals: console/sandboxes.md
+          - The status key and the keyboard: console/status-and-keyboard.md
       - Connecting clients: clients.md
       - Using MCP: mcp.md
       - Team setup: team.md
@@ -86,6 +99,7 @@ nav:
       - Work:
           - Jobs:
               - jobs/README.md
+              - After you submit a job: jobs/after-submit.md
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
               - Working with the agent: jobs/working-with-the-agent.md
               - An agent loop that finishes the job: jobs/agent-loop.md
@@ -126,6 +140,8 @@ nav:
           - Model gateway and tapes: model-gateway.md
       - Security model:
           - security/README.md
+          - What a compromised sandbox does not get: security/compromised-sandbox.md
+          - Running hangar safely: security/operations.md
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
           - The git credential gateway: security/git-gateway.md
