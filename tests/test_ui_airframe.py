@@ -265,12 +265,14 @@ def test_held_actions_are_one_decision_card_everywhere():
     for part in ("af-verdict", "af-verdict__ok", "af-verdict__why"):
         assert part in app, f"app.js lacks {part}"
     assert "function verdictHtml(" in app and "function decisionCard(" in fleet and "function decisionBody(" in fleet
-    for dead in ("function approvalHtml(", "function denyReasonHtml(", "function questionHtml(", "approvalClick(", "Reject"):
+    for dead in ("function approvalHtml(", "function denyReasonHtml(", "function questionHtml(", "approvalClick(",
+                 "Reject"):
         assert dead not in app, f"app.js still has {dead}"
     assert '"Reject' not in fleet and "rejecting" not in fleet, "the words are Approve and Deny"
     # the detail panels draw the deck's card and decide through its act()
     assert app.count('decisionCard(it, 0, "detail", u)') == 1 and 'act(dk.dataset.dk, it, dk, "detail", u)' in app
-    assert app.count("detailDecisionClick(e, items, unit)") == 2 and "detailItems(j, null)" in app and "detailItems(null, x)" in app
+    assert app.count("detailDecisionClick(e, items, unit)") == 2
+    assert "detailItems(j, null)" in app and "detailItems(null, x)" in app
     # the decision order and the reason rule
     body = fleet[fleet.index("function decisionBody("):fleet.index("function decisionCard(")]
     btns = body[body.index('if (kind === "tool")'):body.index('if (kind === "job" || kind === "request")')]
@@ -288,7 +290,8 @@ def test_held_actions_are_one_decision_card_everywhere():
     assert html.index('href="#needs"') < html.index('href="#jobs"'), "what needs a person leads the nav"
     assert "Nothing waits on you." in fleet, "the clear state"
     # a half-written reason or answer survives every repaint and live update, in the deck and the detail panels
-    assert "fleet.drafts.set(k, e.target.value)" in fleet and 'for (const root of [$("#job-detail"), $("#session-detail")])' in fleet
+    assert "fleet.drafts.set(k, e.target.value)" in fleet
+    assert 'for (const root of [$("#job-detail"), $("#session-detail")])' in fleet
     assert "function keepFocus(" in app
 
 def test_narrow_screens_get_a_bottom_tab_bar():
