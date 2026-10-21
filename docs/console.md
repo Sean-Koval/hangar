@@ -7,8 +7,8 @@ the token stays in that browser until you choose **Sign out**.
 
 The top bar's first four sections are where the work happens, and this page covers them: **Needs you** (what waits on
 a person), **Jobs**, **Sessions** and **Fleet** (every agent, as a list or a board), each with a count. The other six are
-Environments, Credentials, Snapshots, Connect (MCP snippets for this hangar's address, and API tokens), Activity (the
-audit log: filter by who and by action; hangar's own commands in a sandbox stay hidden until you show them) and Usage (spend,
+Environments, Credentials, Snapshots, Connect (MCP snippets and API tokens), Activity (the audit log, filtered by who and
+action) and Usage (spend,
 budget stops). The Fleet and Needs you stay current from `GET /api/fleet/stream` (every 4 seconds when the stream is not available); the other open sections refresh every 4 seconds while the browser tab is visible, and the Needs-you count
 about every half minute elsewhere. On a phone (below 760 px) the first four sections move to a bottom tab bar, and the
 other six, with the providers' state, sit under **More**.
@@ -52,14 +52,10 @@ one rises. If someone else decided first, or the wait expired, the card says so 
 to the agent or the requester. **Open job** or **Open session** shows the work first. **Acknowledge**
 (`POST /api/inbox/{id}/ack`) puts a failed or denied item away for a week; a decision never goes that way. Below the
 deck are the PRs waiting for your review on GitHub, with **Open job** and **Open PR**. With nothing waiting, the deck
-says so and counts what is running. The **Needs you** count, in the top bar and the phone's tab bar, turns orange
-while a decision waits.
+says so and counts what is running. The **Needs you** count turns orange while a decision waits.
 
-The same deck sits at the top of the Fleet, and each decision also opens with its agent there. A job's or session's
-own page shows the same card, with the same words and buttons.
-
-Each card leads with the work's tail number (`HGR-JOB-VDTR`, `HGR-SES-PP85`), with its sandbox beside it
-(**Sandbox** `HGR-8AS5`).
+The same deck sits at the top of the Fleet, and each decision also opens with its agent there and on its job's or
+session's page, as the same card.
 
 ## Jobs
 
@@ -70,8 +66,7 @@ Work handed to cloud agents by people, services and the [front doors](intake.md)
 repo, base branch, check command (**Check with**), what to deliver (draft PR, PR, branch only, or nothing) and minutes
 per turn, plus context files and links. Files go to `~/.hangar/jobs/<job>/` beside the repo, never into it.
 
-Each job leads with its tail number (`HGR-JOB-VDTR`) and names its sandbox. A job shows the status its agent has on
-the Fleet: a job whose running turn had a step denied by policy reads **Denied** in both places.
+A job shows its agent's Fleet status, **Denied** included.
 
 Choose a job to see what waits on you (its cards, above), then:
 
@@ -99,7 +94,7 @@ branch. See [jobs](jobs/README.md) and [steering](steering.md).
 
 ![The sessions view: a resumable session with its saved conversation and checkpoint](assets/front/ui-sessions.png)
 
-Streams of work you come back to, each with its tail number (`HGR-SES-PP85`) and name. The list shows your own sessions; **Show job sessions** adds the ones jobs run in.
+Streams of work you come back to. The list shows your own sessions; **Show job sessions** adds the ones jobs run in.
 **New session** takes a name, an environment, an agent and an optional first message. Without a message the sandbox
 just opens.
 
@@ -119,12 +114,11 @@ A session that carries a job takes its messages on the job. See [sessions](sessi
 
 ## Fleet
 
-Every agent, whoever started it: a job, a session, or a person directly. The page counts the fleet in its headline ("26 agents. 5 need
-you, 3 stopped."), over the rest ("14 running, 1 queued, 3 off"); the parts add up to the Fleet count in the nav. Under
-it are how many of the hangar's slots (`HANGAR_MAX_SANDBOXES`) are in use and
+Every agent, whoever started it: a job, a session, or a person directly. The headline counts the fleet ("26 agents. 5 need
+you, 3 stopped."), with how many of the hangar's slots (`HANGAR_MAX_SANDBOXES`) are in use and
 what the live turns spent. **New sandbox** starts one or more identical sandboxes from an environment, each on its own
 numbered work branch; **Show stopped** adds stopped sandboxes; the **Owner** chips keep one person's agents
-(`?owner=`, kept in the URL as `#fleet?owner=priya`; **hangar** keeps the agents nobody owns).
+(`?owner=`, kept in the URL as `#fleet?owner=priya`).
 
 ![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet.png#only-dark)
 ![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet-light.png#only-light)
@@ -153,7 +147,7 @@ stage is dotted and its head hollow: the server's estimate from how long the sta
 
 Select a row or card (or press Enter on it) and it opens in place. First the **decision**, when one waits, decided
 here as on the deck. Then **now**: the now-line with its heartbeat, the labelled rail, the owner, agent, model, repo,
-the job or session and the sandbox, branch, age, spend and lease, and every sandbox action. Then the **activity**: the files, commits, tokens and spend so
+the sandbox, branch, age, spend and lease, and every sandbox action. Then the **activity**: the files, commits, tokens and spend so
 far, the token sparkline, and a timeline with the wall-clock time and how long ago: the stages, the job's own steps,
 and what the agent ran, edited, reported, asked or hit (a run of edits is one line). Only the opened agent is
 followed live.
@@ -174,7 +168,7 @@ screen with no color on it needs nobody.
 | Queued | ring | the sandbox is pending or starting |
 | Needs you (needs approval, needs input) | orange diamond | a job waits for approval to start, a running turn waits for a tool call to be allowed, or the agent asked a question |
 | Failed | red triangle | the sandbox stopped on an error, or its job failed |
-| Denied | red placard, the word "Denied" on red | policy denied a step in the running turn |
+| Denied | red placard | policy denied a step in the running turn |
 | Spun down | small dot | paused, stopping or stopped |
 
 The brand yellow marks focus and the primary action, never a status.
@@ -187,8 +181,8 @@ The brand yellow marks focus and the primary action, never a status.
 - On the deck, **Previous** and **Next** move through the decisions; **Ctrl+Enter** (⌘+Enter) in a reason or an
   answer sends it.
 
-Focus, scroll and a half-written answer or reason survive every update. When the set of agents that need someone,
-failed or were denied changes, a screen reader hears how many need you and how many failed or were denied.
+Focus, scroll and a half-written answer or reason survive every update. A screen reader hears how many need you,
+failed or were denied whenever that changes.
 
 ### The data
 
