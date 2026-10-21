@@ -1,0 +1,9 @@
+# Written by scripts/sync-brand.sh: where the vendored brand files came from. Do not edit; re-run the sync.
+ref theme-v14
+commit ced7a73825fc66f7b1e6de7d91ab309e5fb43da8
+sha256 e45df67ff90e2c05f4b7e4085d0c93361a472b58bc8d4a200108014cb9576d69 docs/assets/brand/banner-dark.svg
+sha256 2434a96ba7d8cc9da986952ffb91448a57e58d5c08ab859c0350e4c28c9c7fd5 docs/assets/brand/banner-light.svg
+sha256 8d19af78b2437d11a9019f317bb7a7ebb429a518ddc459a552ab4cacd53cb07f docs/assets/brand/social.png
+sha256 a6d83715ec51f1932b6d4de2627eace63b5cd746f0b9f42577d80fd568b742f5 docs/assets/brand/favicon.svg
+sha256 a6d83715ec51f1932b6d4de2627eace63b5cd746f0b9f42577d80fd568b742f5 src/hangar/ui/favicon.svg
+sha256 912a293b07507d23f471d61aa217943069ce5b7890861f341cb7e47fb656bc38 docs/assets/brand/mark.svg

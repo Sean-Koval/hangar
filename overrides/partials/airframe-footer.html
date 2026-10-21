@@ -1,0 +1,42 @@
+{#-
+  Airframe footer for the docs sites (Material for MkDocs and Zensical): the same footer on every site in the
+  suite. Vendored from Sean-Koval/agent-factory theme/airframe-footer.html; never edit it in a tool repo.
+
+  Wire it next to the suite strip, in overrides/main.html:
+    {% block footer %}{% include "partials/airframe-footer.html" %}{% endblock %}
+  It keeps the theme's previous / next links (feature navigation.footer) and replaces the copyright line,
+  the generator credit and the social icons with one row: the site's name, its place in the suite, the
+  source link (repo_url) and the design system. Set nothing else; `copyright` and `extra.social` are ignored.
+  Styled by airframe-docs.css (.af-footer).
+-#}
+<footer class="md-footer af-footer">
+  {% if "navigation.footer" in features and (page.previous_page or page.next_page) %}
+    {% if page.meta and page.meta.hide %}{% set hidden = "hidden" if "footer" in page.meta.hide %}{% endif %}
+    <nav class="md-footer__inner md-grid" aria-label="{{ lang.t('footer') }}" {{ hidden }}>
+      {% if page.previous_page %}
+        <a href="{{ page.previous_page.url | url }}" class="md-footer__link md-footer__link--prev" aria-label="{{ lang.t('footer.previous') }}: {{ page.previous_page.title | e }}">
+          <div class="md-footer__title"><span class="md-footer__direction">{{ lang.t("footer.previous") }}</span><div class="md-ellipsis">{{ page.previous_page.title }}</div></div>
+        </a>
+      {% endif %}
+      {% if page.next_page %}
+        <a href="{{ page.next_page.url | url }}" class="md-footer__link md-footer__link--next" aria-label="{{ lang.t('footer.next') }}: {{ page.next_page.title | e }}">
+          <div class="md-footer__title"><span class="md-footer__direction">{{ lang.t("footer.next") }}</span><div class="md-ellipsis">{{ page.next_page.title }}</div></div>
+        </a>
+      {% endif %}
+    </nav>
+  {% endif %}
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid af-footer__inner">
+      {% if config.extra.airframe and config.extra.airframe.product == "agent-factory" %}
+      <p class="af-footer__line"><b>{{ config.site_name }}</b> is the suite's home: how the tools fit, the roadmap and Airframe.</p>
+      {% else %}
+      <p class="af-footer__line"><b>{{ config.site_name }}</b> is part of the <a href="https://sean-koval.github.io/agent-factory/">Agent factory</a> suite.</p>
+      {% endif %}
+      <ul class="af-footer__links">
+        {% if config.repo_url %}<li><a href="{{ config.repo_url }}">Source on GitHub</a></li>{% endif %}
+        <li><a href="https://sean-koval.github.io/agent-factory/roadmap/">Roadmap</a></li>
+        <li><a href="https://sean-koval.github.io/agent-factory/airframe/">Design: Airframe</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>

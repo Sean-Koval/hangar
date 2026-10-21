@@ -21,8 +21,11 @@ Everything waiting on a person, from the same list `hangar inbox`, Slack and MCP
 own work, and for an admin also the work nobody in particular owns, such as jobs from GitHub issues and Slack. The page
 reads it with the Fleet (`GET /api/fleet` carries the inbox, and its stream keeps it current).
 
-![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs.png#only-dark)
-![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs-light.png#only-light)
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-needs.png"><img src="assets/front/ui-needs.png#only-dark" alt="Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it"></a>
+<a href="assets/front/ui-needs-light.png"><img src="assets/front/ui-needs-light.png#only-light" alt="Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it"></a>
+<figcaption>A held git push to main on top of the deck: its command, its changes and when it expires, with Deny, Allow for this turn and Approve push.</figcaption>
+</figure>
 
 It is a **deck**: one decision at a time, the soonest to expire on top, the next two peeking behind it, "1 of 7",
 previous and next, and an up-next list to jump to any of them. Decisions (a person is needed now) come before what
@@ -59,7 +62,11 @@ session's page, as the same card.
 
 ## Jobs
 
-![The jobs view: issue #42's job succeeded, check passed, draft PR #43, the agent's summary](assets/front/ui-jobs.png)
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-jobs.png"><img src="assets/front/ui-hero.png#only-dark" alt="A job opened: issue #42 succeeded, its check passed, draft PR #43, its sandbox and session, and the agent's summary"></a>
+<a href="assets/front/ui-jobs.png"><img src="assets/front/ui-hero-light.png#only-light" alt="A job opened: issue #42 succeeded, its check passed, draft PR #43, its sandbox and session, and the agent's summary"></a>
+<figcaption>Issue #42's job, opened: who asked, where it ran, the branch, draft PR #43, the check that passed and the agent's summary.</figcaption>
+</figure>
 
 Work handed to cloud agents by people, services and the [front doors](intake.md). The list filters by **In progress**,
 **Succeeded**, **Failed** or **Cancelled**. **New job** submits one with its instructions, environment, agent, model,
@@ -92,7 +99,10 @@ branch. See [jobs](jobs/README.md) and [steering](steering.md).
 
 ## Sessions
 
-![The sessions view: a resumable session with its saved conversation and checkpoint](assets/front/ui-sessions.png)
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-sessions.png"><img src="assets/front/ui-sessions.png" alt="The sessions view: a resumable session with its saved conversation and checkpoint"></a>
+<figcaption>A session, opened: its sandbox, its saved conversation and the checkpoint it resumes from.</figcaption>
+</figure>
 
 Streams of work you come back to. The list shows your own sessions; **Show job sessions** adds the ones jobs run in.
 **New session** takes a name, an environment, an agent and an optional first message. Without a message the sandbox
@@ -120,8 +130,11 @@ what the live turns spent. **New sandbox** starts one or more identical sandboxe
 numbered work branch; **Show stopped** adds stopped sandboxes; the **Owner** chips keep one person's agents
 (`?owner=`, kept in the URL as `#fleet?owner=priya`).
 
-![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet.png#only-dark)
-![The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend](assets/front/ui-fleet-light.png#only-light)
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-fleet.png"><img src="assets/front/ui-fleet.png#only-dark" alt="The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend"></a>
+<a href="assets/front/ui-fleet-light.png"><img src="assets/front/ui-fleet-light.png#only-light" alt="The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend"></a>
+<figcaption>The Fleet's List: the headline, the deck as a band, and each agent's status, work, now-line, owner, model, stage rail and spend.</figcaption>
+</figure>
 
 Under the header is the **deck** from [Needs you](#needs-you), as a band you can hide (it remembers), then every agent
 grouped by environment, attention first: what needs you, failed, denied, running, queued, spun down. Two views of
@@ -135,7 +148,10 @@ the same agents with one selection, kept in the URL (`#fleet?view=board`) and re
 - **Board**: the same agents as cards: the agent, the tail number, a stage ring, the work, the now-line, a stage
   capsule, and the owner with the status word or the heartbeat.
 
-![The Board with an agent open in place](assets/front/ui-fleet-board.png)
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-fleet-board.png"><img src="assets/front/ui-fleet-board.png" alt="The Board with an agent open in place"></a>
+<figcaption>The Board, with one agent opened in place into its console.</figcaption>
+</figure>
 
 IDs show as tail numbers (`HGR-8AS5`); hover or copy one for the real ID.
 

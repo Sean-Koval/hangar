@@ -34,15 +34,9 @@ extra_css:
   - stylesheets/airframe-docs.css
   - stylesheets/product.css
 
-copyright: Part of the <a href="https://sean-koval.github.io/agent-factory/">agent factory</a>
-
 extra:
   airframe:
     product: hangar   # the current item in the suite strip
-  social:
-    - icon: material/factory
-      link: https://sean-koval.github.io/agent-factory/
-      name: Part of the agent factory
 
 markdown_extensions:
   - admonition
@@ -59,7 +53,7 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.details
   - pymdownx.snippets:
-      base_path: [docs/assets/diagrams]   # the theme-aware SVGs diagram.py draws, inlined with --8<--
+      base_path: [docs/assets/diagrams, docs/assets/front]   # the theme-aware SVGs diagram.py draws, inlined with --8<--
       check_paths: true
 
 # Not pages: benchmark scripts kept next to a research note, and the repo's notes on the brand and front-page assets.
@@ -67,14 +61,18 @@ exclude_docs: |
   research/0012/
   assets/README.md
 
-# The site's map. Every page under docs/ is in it except what exclude_docs lists and the superseded and deferred specs
-# (0001, 0004, 0005, 0007, 0008), which keep their pages and are reached from specs/README.md only (#220, KAN-106).
+# The site's map, in the order a newcomer reads it: start here (the words, the quickstart, the console), the guides by
+# task, the reference (the APIs first), design notes, operations. Every page under docs/ is in it except what
+# exclude_docs lists and the superseded and deferred specs (0001, 0004, 0005, 0007, 0008): a design record that no
+# longer describes hangar would mislead from the nav, so they keep their pages and are reached from specs/README.md
+# only. The built specs stay in the nav: they are the reasoning behind what runs today.
 # tests/test_docs_size.py keeps every page in this map under its word cap.
 nav:
   - Home: index.md
-  - Get started:
+  - Start here:
       - Concepts: concepts.md
-      - Getting started: guide.md
+      - Quickstart and first task: guide.md
+      - The web console: console.md
       - Connecting clients: clients.md
       - Using MCP: mcp.md
       - Team setup: team.md
@@ -86,7 +84,6 @@ nav:
           - Governance break-glass: runbooks/break-glass.md
   - Guides:
       - Work:
-          - The web console: console.md
           - Jobs:
               - jobs/README.md
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
@@ -119,6 +116,14 @@ nav:
           - Observability: observability.md
           - Weekly adoption metrics: metrics.md
   - Reference:
+      - APIs:
+          - The Fleet API: api/fleet.md
+          - E2B-compatible API: e2b.md
+          - hangar-envd: envd.md
+          - Trace export (hangar.trace/v1): api/traces.md
+          - Run capture (hangar.run/v1): api/outbox.md
+          - Trials and pin sets (hangar.pinset/v1): api/trials.md
+          - Model gateway and tapes: model-gateway.md
       - Security model:
           - security/README.md
           - "The threat model": security/threat-model.md
@@ -136,13 +141,6 @@ nav:
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md
-      - E2B-compatible API: e2b.md
-      - hangar-envd: envd.md
-      - The Fleet API: api/fleet.md
-      - Trace export (hangar.trace/v1): api/traces.md
-      - Run capture (hangar.run/v1): api/outbox.md
-      - Model gateway and tapes: model-gateway.md
-      - Trials and pin sets (hangar.pinset/v1): api/trials.md
       - CI: ci.md
   - Design notes:
       - specs/README.md
@@ -167,17 +165,17 @@ nav:
       - Upgrading: upgrading.md
       - Release notes:
           - releases/README.md
-          - "Adopt & capture and frontier (#133–#189)": releases/adopt-capture.md
-          - "Adopt & capture: the procedure": releases/adopt-capture-procedure.md
-          - "The safe release (#120–#132)": releases/safe-release.md
-          - "The team release (#75–#117)": releases/team-release.md
-          - "Team release: what changes": releases/team-release-changes.md
-          - "Team release: steps 1–8": releases/team-release-procedure.md
-          - "Team release: steps 9–11": releases/team-release-sandboxes.md
-          - "Team release: steps 12–14, rollback": releases/team-release-operations.md
-          - "The overnight stack (#48–#69)": releases/overnight-stack.md
-          - "Overnight stack: defaults": releases/overnight-stack-defaults.md
-          - "Overnight stack: upgrade and prove": releases/overnight-stack-procedure.md
+          - "Harness lock, outbox and doors": releases/adopt-capture.md
+          - "Harness lock, outbox and doors: the steps": releases/adopt-capture-procedure.md
+          - "Secure intake and API keys": releases/safe-release.md
+          - "One hangar for a team": releases/team-release.md
+          - "One hangar for a team: changed defaults": releases/team-release-changes.md
+          - "One hangar for a team: backup to budgets": releases/team-release-procedure.md
+          - "One hangar for a team: doors and sandboxes": releases/team-release-sandboxes.md
+          - "One hangar for a team: operations, rollback": releases/team-release-operations.md
+          - "Upgrading an early install": releases/overnight-stack.md
+          - "Early install: changed defaults": releases/overnight-stack-defaults.md
+          - "Early install: upgrade and prove": releases/overnight-stack-procedure.md
       - Troubleshooting: troubleshooting.md
       - Team scale: team-scale.md
       - The Cloud Doctor: doctor.md

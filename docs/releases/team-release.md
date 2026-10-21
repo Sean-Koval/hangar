@@ -1,4 +1,4 @@
-# The team release (#75–#117)
+# One hangar for a team: the team release
 
 One hangar for a team of six. What the four waves add and what you configure; then [what changes as soon as it starts](team-release-changes.md), the steps ([1–8](team-release-procedure.md), [9–11](team-release-sandboxes.md), [12–14 and rolling back](team-release-operations.md)). Every release is listed on [release notes](README.md).
 

@@ -7,3 +7,19 @@
   .md-typeset figure.af-figure--wide { display: none; }
   .md-typeset figure.af-figure--stacked { display: block; max-width: 22rem; }
 }
+
+/* A screenshot, framed as agent-factory frames its captures (theme/suite.css there, .af-figure--lead): the card radius,
+   a 1px line, and a caption that says what is on the screen. The image links to the full capture. */
+.md-typeset figure.af-figure--lead { margin: 1.2em 0 1.6em; }
+.md-typeset figure.af-figure--lead > a > img { display: block; width: 100%; height: auto; border-radius: var(--af-radius-card); box-shadow: 0 0 0 1px var(--af-line); }
+/* the Night or Day twin only, as Material does for a Markdown image (the display: block above would show both) */
+[data-md-color-scheme="default"] .md-typeset figure img[src$="#only-dark"],
+[data-md-color-scheme="slate"] .md-typeset figure img[src$="#only-light"] { display: none; }
+.md-typeset figure.af-figure--lead figcaption { font-family: inherit; font-size: .72rem; letter-spacing: 0; text-transform: none; color: var(--af-fg-muted); text-align: left; max-width: none; margin-top: .7em; }
+
+/* The docs home's hero: a still of a delivered job that links to the recording, in the page's theme */
+.md-typeset .af-hero__visual figcaption a { color: var(--af-fg-muted); }
+
+@media (forced-colors: active) {
+  .md-typeset figure.af-figure--lead > a > img { box-shadow: none; outline: 1px solid CanvasText; }
+}

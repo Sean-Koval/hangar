@@ -1,5 +1,5 @@
 /*
-  Airframe theme-v13 tokens. Generated from airframe/tokens.json by scripts/airframe.py; do not edit.
+  Airframe theme-v14 tokens. Generated from airframe/tokens.json by scripts/airframe.py; do not edit.
   Change a value in airframe/tokens.json, run `python3 scripts/airframe.py build`, and add a
   theme/CHANGELOG.md entry. Tool repos vendor this file unmodified (scripts/sync-airframe.sh).
 
@@ -66,9 +66,9 @@
   --af-readout-cell: #161616;
   --af-display-window: #0A0A0A;
   --af-dot-field: #262626;
-  --af-product-hangar: #EE8F63;
+  --af-product-hangar: #24C1C9;
   --af-product-flightdeck: #D98CD2;
-  --af-product-tower: #C5A93B;
+  --af-product-tower: #67B0F9;
   --af-product-aidlc: #69C27E;
   --af-product-spaceport: #B199F4;
   --af-chart-1: #FFFFFF;
@@ -122,9 +122,9 @@
     --af-readout-cell: #EBEBEA;
     --af-display-window: #FAFAF9;
     --af-dot-field: #DCDCD9;
-    --af-product-hangar: #A44C1D;
+    --af-product-hangar: #00787D;
     --af-product-flightdeck: #914A8C;
-    --af-product-tower: #816600;
+    --af-product-tower: #1F6CB0;
     --af-product-aidlc: #1D7D3E;
     --af-product-spaceport: #6F57AB;
     --af-chart-1: #000000;
@@ -179,9 +179,9 @@
   --af-readout-cell: #EBEBEA;
   --af-display-window: #FAFAF9;
   --af-dot-field: #DCDCD9;
-  --af-product-hangar: #A44C1D;
+  --af-product-hangar: #00787D;
   --af-product-flightdeck: #914A8C;
-  --af-product-tower: #816600;
+  --af-product-tower: #1F6CB0;
   --af-product-aidlc: #1D7D3E;
   --af-product-spaceport: #6F57AB;
   --af-chart-1: #000000;

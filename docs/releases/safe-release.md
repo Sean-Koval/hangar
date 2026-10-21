@@ -1,4 +1,4 @@
-# The safe release (#120–#132)
+# Secure intake and API keys: the safe release
 
 Secure defaults for intake jobs, API keys for automated work, one approval rule, sealed graders, taint gates, new manifest fields and the `extends` merge rules. Every release is listed on [release notes](README.md).
 

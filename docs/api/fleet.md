@@ -1,12 +1,12 @@
-# The Fleet API (`GET /api/fleet`, `/api/fleet/stream`)
+# The Fleet API
 
-What the console's [Fleet and Needs-you pages](../console.md#fleet) read: one joined view of every agent, with what
-each is doing now and the caller's inbox, and a stream of the same view as it changes (KAN-140). Any client can use
-them; the CLI, Slack and MCP clients keep the inbox's own routes.
+`GET /api/fleet` and `GET /api/fleet/stream` are what the console's [Fleet and Needs-you pages](../console.md#fleet)
+read: one joined view of every agent, with what each is doing now and the caller's inbox, and a stream of the same
+view as it changes. Any client can use them; the CLI, Slack and MCP clients keep the inbox's own routes.
 
 ## The read: `GET /api/fleet`
 
-The page is one read (KAN-140). Where the console used to fetch sandboxes, jobs and sessions and join them in the
+The page is one read. Where the console used to fetch sandboxes, jobs and sessions and join them in the
 browser, `GET /api/fleet` joins them on the server, from what is already in memory, and adds what each agent is doing
 right now. An admin's token sees every sandbox; a person's own `user` token their work, as `GET /api/jobs` does. Text
 passes through the same redaction as every other view. Query: `?owner=<person id>` (or `none` for sandboxes nobody
@@ -19,7 +19,7 @@ owns) keeps one person's units, the Owners filter; `?include_stopped=true` adds 
  "slots": {"used": 3, "max": 120},
  "inbox": {"counts": {"approval": 1}, "items": [{"id": "inb-…", "kind": "approval", "…": "as GET /api/inbox"}]},
  "units": [{
-   "id": "sb-7f3a…3mx9", "tail": "3mx9", "name": "checkout-python-2", "environment": "checkout-python",
+   "id": "sb-8e7f50c8", "tail": "50c8", "name": "checkout-python-2", "environment": "checkout-python",
    "provider": "docker", "state": "running", "kind": "job", "job": "job-1a2b3c4d", "job_state": "running",
    "session": {"id": "ses-…", "name": "job-1a2b3c4d", "state": "running"},
    "owner": "sean", "actor": "ui:sean", "harness": "claude-code", "model": "claude-opus-5-5",
@@ -45,6 +45,9 @@ owns) keeps one person's units, the Owners filter; `?include_stopped=true` adds 
 
 Per unit:
 
+- `id` is the real ID, which every route and command takes. A person reads its tail number instead, `HGR-8AS5`
+  for this sandbox: the console derives it from `id` ([the Fleet](../console.md#fleet)). `tail` is the
+  last four characters of `id`, kept for older clients.
 - `role` is one of the six statuses (`approval`, `failed`, `denied`, `running`, `queued`, `off`), with `label` its
   word and `reason` why, when it needs someone or stopped. `ask` says what the person decides: a held tool call
   (`tool`, with the approval id), a job waiting to start (`job`), the agent's question (`question`) or a request
