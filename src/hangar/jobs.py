@@ -734,6 +734,8 @@ class JobService:
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steer.pending(s)]  # workstream steer
         if s is not None and self.sessions.env_requests is not None:  # --- computer: answered like approvals
             d["pending_approvals"] += self.sessions.env_requests.approvals_view(s)
+        # KAN-155: the step policy stopped in the live turn, so the Jobs page shows Denied as the Fleet does
+        d["policy_denial"] = den.model_dump(mode="json") if (den := steer.policy_denial(s)) else None
         d["autofix_state"] = autofix.view(job)  # --- overnight/autofix: what is waiting, not the logs it carries
         if job.changeset and (cs := changesets.of(self).of(job)) is not None:  # --- change sets
             d["changeset"] = changesets.view(self, cs)

@@ -56,6 +56,14 @@ def test_connect_snippets(client):
     assert 'bearer_token_env_var = "HANGAR_TOKEN"' in d["codex_config_toml"]
 
 
+def test_connect_names_the_address_the_page_used_without_a_public_url(client, settings):
+    """KAN-155: with no HANGAR_PUBLIC_URL the snippets carry the request's origin, not the default localhost:8787."""
+    d = client.get("/api/connect", headers={"host": "hangar.internal:9000"}).json()
+    assert d["mcp_url"] == "http://hangar.internal:9000/mcp" and "hangar's approval page" in d["chatgpt"]
+    settings.public_url = "https://hangar.example.com"  # set: it wins
+    assert client.get("/api/connect").json()["mcp_url"] == "https://hangar.example.com/mcp"
+
+
 def test_tickets_are_single_use_and_tokens_not_accepted_in_urls(client):
     job = {"id": "nope"}
     t = client.post("/api/tickets").json()["ticket"]

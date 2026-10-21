@@ -23,7 +23,6 @@ const DECIDE = new Set(["approval", "question"]);
 const STOPPED = new Set(["failed", "denied", "alert", "abandon"]);
 const POLL_MS = 4000;
 const VERDICT_MS = 3200;  // how long a verdict line stays readable before the card leaves
-const NUMBERS = ["None", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 
 const fleet = {
   view: "list", owner: null, data: null, byId: new Map(), open: null, opening: false,
@@ -44,16 +43,21 @@ const since = (ts) => { const s = Math.max(0, now() - (ts || now())); return s <
 const money = (n) => (n == null ? "" : `$${Number(n).toFixed(2)}`);
 const wall = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 const repoShort = (r) => (r || "").replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
-const number = (n) => NUMBERS[n] || String(n);
 const tokensOf = (u) => (u.usage ? (u.usage.input_tokens || 0) + (u.usage.output_tokens || 0) + (u.usage.cache_write_tokens || 0) : 0);
-const ownerName = (id) => (id ? fleet.data?.owners?.find((o) => o.id === id)?.name || id : "hangar");
+const ownerName = (id) => { if (!id) return "hangar"; const n = fleet.data?.owners?.find((o) => o.id === id)?.name; return n && n !== id ? n : actorParts(id).who; };
 const firstName = (id) => ownerName(id).split(" ")[0];
 const personAvatar = (id, size = 22) => (id ? avatar("person", initialsOf(ownerName(id)), { size, name: ownerName(id) })
   : avatar("agent", "", { size, name: "hangar" }));
 const meName = () => (state.me?.person ? firstName(state.me.person) : "you");
+// the work's own tail number leads (HGR-JOB-…, HGR-SES-…); a bare sandbox's is the sandbox's (KAN-155)
+const leadId = (u) => u?.job || u?.session?.id || u?.id || "";
+// the sandbox beside the work's tail: "Sandbox HGR-8AS5"; nothing when the sandbox is the lead
+const sandboxBeside = (u) => (u?.id && leadId(u) !== u.id ? `<span class="sandbox-id">Sandbox ${idHtml(u.id)}</span>` : "");
 // the role's modifier on the row, the rail, the ring and the capsule: only the three that need someone carry one
 const mod = (u) => (u.role === "approval" ? "approval" : u.role === "failed" ? "failed" : u.role === "denied" ? "denied" : "");
-const markOnly = (role) => `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`;
+// a mark alone; denied is a placard, whose word is its shape, so it always carries "Denied" (never a blank lozenge)
+const markOnly = (role) => (role === "denied" ? `<span class="af-status af-status--denied"><i class="af-status__mark"></i>Denied</span>`
+  : `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`);
 
 /* ------------------------------------------------------------------ the model */
 // a unit as drawn: the server's, with an optimistic decision on top while the server catches up
@@ -272,13 +276,13 @@ const stWord = (u) => status(u.role, u.label);
 /* ------------------------------------------------------------------ List (AgentRow) and Board (AgentCard) */
 const unitCls = (u, extra = "") => ["af-agent", extra, mod(u) === "approval" ? "af-agent--lit" : mod(u) ? `af-agent--${mod(u)}` : "",
   u.role === "off" ? "af-agent--off" : ""].filter(Boolean).join(" ");
-const ariaOf = (u) => `${tailOf(u.id)}, ${u.label}, ${u.work}`;
+const ariaOf = (u) => `${tailOf(leadId(u))}, ${u.label}, ${u.work}${leadId(u) !== u.id ? `, sandbox ${tailOf(u.id)}` : ""}`;
 const body = (u) => `<div class="af-agent__body"><div>${fleet.open === u.id ? `<div class="af-console" data-console="${esc(u.id)}">${consoleHtml(u)}</div>` : ""}</div></div>`;
 function rowHtml(u) {
   return `<article class="${unitCls(u)}" data-id="${esc(u.id)}">
     <button type="button" class="af-agent__line" tabindex="-1" aria-expanded="false" aria-label="${esc(ariaOf(u))}" title="${esc(u.name)}">
-      ${markOnly(u.role)}${idHtml(u.id, { codeOnly: true, cls: "af-agent__tail" })}
-      <span class="af-agent__ttl"><span class="af-agent__work">${esc(u.work)}</span><span class="af-agent__sub"><span class="af-agent__now" data-now="${esc(u.id)}">${esc(nowLine(u))}</span>${hbHtml(u)}</span></span>
+      ${u.role === "denied" ? `<span aria-hidden="true"></span>` : markOnly(u.role)}${idHtml(u.id, { codeOnly: true, cls: "af-agent__tail" })}
+      <span class="af-agent__ttl"><span class="af-agent__work">${esc(u.work)}</span><span class="af-agent__sub">${u.role === "denied" ? markOnly("denied") : ""}<span class="af-agent__now" data-now="${esc(u.id)}">${esc(nowLine(u))}</span>${hbHtml(u)}</span></span>
       <span class="af-agent__who">${personAvatar(u.owner)}<span>${esc(u.owner ? firstName(u.owner) : "hangar")}</span></span>
       <span class="af-agent__rig">${agentAvatar(u.harness, 22)}<span class="af-mono">${esc(u.model || u.harness || "")}</span></span>
       ${railHtml(u)}${stagesHtml(u)}${sparkHtml(u)}<span class="af-agent__cost" data-cost="${esc(u.id)}">${money(u.usage?.cost_usd)}</span>${ic("chevron-right").replace('class="af-ic', 'class="af-ic af-agent__chev')}
@@ -323,13 +327,12 @@ function pairs(list) {
   const xs = list.filter((x) => x && x[1] !== "" && x[1] != null);
   return xs.length ? `<div class="af-pairs">${xs.map(([k, v, mono]) => `<span><small>${esc(k)}</small>${mono ? `<span class="af-mono">${esc(v)}</span>` : esc(v)}</span>`).join("")}</div>` : "";
 }
-function reasonHtml(where, it, kind) {
-  const id = `${where}-r-${it.id}`, bad = fleet.invalid.has(it.id), back = tailOf(unitOfItem(it)?.id || it.job || it.session) || "the agent";
-  const verb = kind === "job" ? "rejecting" : "denying";
-  return `<div class="af-reason"><label for="${esc(id)}">Reason for ${verb} (required, goes back to ${esc(back)})</label>
+function reasonHtml(where, it, kind, u = unitOfItem(it)) {
+  const id = `${where}-r-${it.id}`, bad = fleet.invalid.has(it.id), back = tailOf(u ? leadId(u) : it.job || it.session) || "the agent";
+  return `<div class="af-reason"><label for="${esc(id)}">Reason for denying (required, goes back to ${esc(back)})</label>
     <div class="af-input af-input--area af-input--sans${bad ? " is-invalid" : ""}"><textarea id="${esc(id)}" rows="2" data-draft="${esc(DRAFT(where, it.id, "reason"))}" aria-invalid="${bad}" placeholder="What the agent should do instead">${esc(draftOf(where, it.id, "reason"))}</textarea></div>
     ${bad ? `<span class="af-field__error">${status("failed", "Give a reason.")}</span>` : ""}
-    <div class="af-acts"><div class="af-acts__end">${sbtn("Cancel", "ghost", { "data-dk": "cancel" })}${sbtn(kind === "job" ? "Reject job" : kind === "tool" && /\bgit\s+push\b/.test(heldCall(it, unitOfItem(it)).cmd) ? "Deny push" : "Deny", "danger af-btn--secondary", { "data-dk": "deny-confirm" })}</div></div></div>`;
+    <div class="af-acts"><div class="af-acts__end">${sbtn("Cancel", "ghost", { "data-dk": "cancel" })}${sbtn(kind === "tool" && /\bgit\s+push\b/.test(heldCall(it, u).cmd) ? "Deny push" : "Deny", "danger af-btn--secondary", { "data-dk": "deny-confirm" })}</div></div></div>`;
 }
 const openLink = (u, it) => {
   const job = u?.job || it.job, ses = u?.session?.id;
@@ -347,13 +350,13 @@ function decisionBody(it, u, where) {
     return `<p class="af-lead">${lead}${taint ? `, <span class="af-muted">${esc(taint[1])}</span>` : ""}.</p>
       <pre class="af-cmd">${esc(cmd)}</pre>
       ${pairs([["Changes", files], ["Branch", u?.branch || "", true], ["Asked", it.since ? `${since(it.since)} ago` : ""], ["Expires", it.expires_at ? untilWords(it.expires_at) : ""]])}
-      ${denying ? reasonHtml(where, it, kind) : `<div class="af-acts">${openLink(u, it)}<div class="af-acts__end">${sbtn("Deny", "danger", { "data-dk": "deny" })}${
+      ${denying ? reasonHtml(where, it, kind, u) : `<div class="af-acts">${where === "detail" ? "" : openLink(u, it)}<div class="af-acts__end">${sbtn("Deny", "danger", { "data-dk": "deny" })}${
         sbtn("Allow for this turn", "ghost", { "data-dk": "allow_always", title: "Also allows calls like this one until the turn ends; the next turn asks again" })}${sbtn(push ? "Approve push" : "Approve", "primary", { "data-dk": "allow" })}</div></div>`}`;
   }
   if (kind === "job" || kind === "request") {
     return `<p class="af-lead">${esc(clean(it.reason) || "A job waits for a trusted person before it starts.")}</p>
       ${pairs([["Requested", it.since ? `${since(it.since)} ago` : ""], ["Expires", it.expires_at ? untilWords(it.expires_at) : ""], ["Repo", repoShort(it.repo || u?.repo), true]])}
-      ${denying ? reasonHtml(where, it, kind) : `<div class="af-acts">${openLink(u, it)}<div class="af-acts__end">${sbtn(kind === "job" ? "Reject" : "Deny", "danger", { "data-dk": "deny" })}${sbtn(kind === "job" ? "Approve job" : "Approve", "primary", { "data-dk": "allow" })}</div></div>`}`;
+      ${denying ? reasonHtml(where, it, kind, u) : `<div class="af-acts">${where === "detail" ? "" : openLink(u, it)}<div class="af-acts__end">${sbtn("Deny", "danger", { "data-dk": "deny" })}${sbtn("Approve", "primary", { "data-dk": "allow" })}</div></div>`}`;
   }
   if (kind === "question") {
     const opts = (it.question_options && it.question_options.length ? it.question_options : u?.question_options || []).slice(0, 5);
@@ -361,27 +364,27 @@ function decisionBody(it, u, where) {
     return `<p class="af-lead">${esc(clean(it.reason) || u?.question || "The agent asks a question.")}</p>
       ${opts.length ? `<div class="af-chips" role="group" aria-label="Options">${opts.map((o, i) => `<button type="button" class="af-chip${/^[\w./-]+$/.test(o) ? " af-chip--mono" : ""}${free ? " is-dismissed" : ""}" aria-pressed="${pick === i}" data-dk="pick" data-i="${i}">${esc(o)}</button>`).join("")}</div>` : ""}
       <div class="af-input af-input--area af-input--sans"><textarea rows="${opts.length ? 1 : 2}" data-draft="${esc(DRAFT(where, it.id, "answer"))}" aria-label="${opts.length ? "Or answer in your own words" : "Your answer"}" placeholder="${opts.length ? "Or type an answer" : "The agent continues with this"}">${esc(free)}</textarea></div>
-      <div class="af-acts">${openLink(u, it)}<span class="af-note">${u?.turn ? `Holding turn ${u.turn}` : ""}</span><div class="af-acts__end">${sbtn("Answer", "primary", { "data-dk": "answer" })}</div></div>`;
+      <div class="af-acts">${where === "detail" ? "" : openLink(u, it)}<span class="af-note">${u?.turn ? `Holding turn ${u.turn}` : ""}</span><div class="af-acts__end">${sbtn("Answer", "primary", { "data-dk": "answer" })}</div></div>`;
   }
   if (kind === "denied") {
     return `<p class="af-lead">${esc(u?.reason?.text || clean(it.reason).replace(/^policy denied /, "Policy denied "))}</p>
       <p class="af-ctx">A hard stop: ${esc(h)} was told and carries on without that step. Nothing to decide; acknowledge it to put it away.</p>
-      <div class="af-acts">${openLink(u, it)}<div class="af-acts__end">${sbtn("Acknowledge", "secondary", { "data-dk": "ack" })}</div></div>`;
+      <div class="af-acts">${where === "detail" ? "" : openLink(u, it)}<div class="af-acts__end">${sbtn("Acknowledge", "secondary", { "data-dk": "ack" })}</div></div>`;
   }
   const job = u?.job || it.job;
   return `<p class="af-lead">${esc(u?.reason?.text || clean(it.reason))}</p>
     <p class="af-ctx">${job ? `Retry continues the same session: ${esc(h)} keeps its context and branch and re-runs the check. Start over is a new job from the base branch.` : "Acknowledge it to put it away for a week."}</p>
-    <div class="af-acts">${openLink(u, it)}${sbtn("Acknowledge", "ghost", { "data-dk": "ack" })}<div class="af-acts__end">${job ? `${sbtn("Start over", "secondary", { "data-dk": "fresh" })}${sbtn("Retry", "primary", { "data-dk": "retry" }, "retry")}` : ""}</div></div>`;
+    <div class="af-acts">${where === "detail" ? "" : openLink(u, it)}${sbtn("Acknowledge", "ghost", { "data-dk": "ack" })}<div class="af-acts__end">${job ? `${sbtn("Start over", "secondary", { "data-dk": "fresh" })}${sbtn("Retry", "primary", { "data-dk": "retry" }, "retry")}` : ""}</div></div>`;
 }
-function decisionCard(it, k, where) {
-  const u = unitOfItem(it), role = roleOfItem(it), v = fleet.verdicts.get(it.id);
+function decisionCard(it, k, where, u = unitOfItem(it)) {
+  const role = roleOfItem(it), v = fleet.verdicts.get(it.id);
   const exp = DECIDE.has(it.kind) ? (it.expires_at || u?.ask_expires_at ? `${untilWords(it.expires_at || u.ask_expires_at)} left` : `asked ${since(it.since)} ago`) : `${since(it.since)} ago`;
   const work = u?.work || it.title || tailOf(it.job || it.session) || "";
-  return `<article class="af-decision af-decision--${role}${v ? " af-decision--done" : ""}" data-k="${k}" data-item="${esc(it.id)}" aria-label="${esc(`${u ? tailOf(u.id) : tailOf(it.job || it.session)} ${wordOfItem(it)}: ${work}`)}"${k ? " inert" : ""}>
+  return `<article class="af-decision af-decision--${role}${v ? " af-decision--done" : ""}" data-k="${k}" data-item="${esc(it.id)}" aria-label="${esc(`${tailOf(u ? leadId(u) : it.job || it.session)} ${wordOfItem(it)}: ${work}`)}"${k ? " inert" : ""}>
     <div class="af-decision__hd">${status(role, wordOfItem(it))}<span class="af-decision__exp">${esc(exp)}</span></div>
-    <div class="af-decision__who">${u ? `<button type="button" class="af-decision__link" data-dk="jump" data-unit="${esc(u.id)}">${idHtml(u.id)}${esc(work)}</button>`
+    <div class="af-decision__who">${u ? `<button type="button" class="af-decision__link" data-dk="jump" data-unit="${esc(u.id)}">${idHtml(leadId(u))}${esc(work)}</button>`
       : `<span class="af-decision__link">${tails.isRaw(it.job || it.session) ? idHtml(it.job || it.session) : `<span class="af-id">${esc(it.job || it.session || "")}</span>`}${esc(work)}</span>`}
-      <span class="af-decision__by">${u ? `${agentAvatar(u.harness, 22)}${esc(u.harness || "agent")} for ${esc(u.owner ? firstName(u.owner) : "hangar")}` : esc(repoShort(it.repo))}</span></div>
+      <span class="af-decision__by">${u ? `${agentAvatar(u.harness, 22)}${esc(u.harness || "agent")} for ${esc(u.owner ? firstName(u.owner) : "hangar")}${sandboxBeside(u)}` : esc(repoShort(it.repo))}</span></div>
     <div class="af-decision__bd">${decisionBody(it, u, where)}</div>
   </article>`;
 }
@@ -395,7 +398,7 @@ function deckHtml(where) {
     : `<div class="af-empty af-empty--compact af-deck__empty">${ic("check")}<div class="af-empty__body"><h3 class="af-empty__title">Nothing waits on you.</h3>
         <p class="af-empty__text">${plural(running, "agent")} running, ${queued} queued. You will hear when one needs you.</p></div></div>`;
   const when = (it) => (DECIDE.has(it.kind) ? (it.expires_at || unitOfItem(it)?.ask_expires_at ? `${untilWords(it.expires_at || unitOfItem(it).ask_expires_at)} left` : `${since(it.since)} ago`) : wordOfItem(it));
-  const row = (it, attrs) => { const u = unitOfItem(it); return `<li><button type="button" ${attrs(u)}>${markOnly(roleOfItem(it))}${idHtml(u?.id || it.job || it.session || "")}<span class="af-deck__what">${esc(u?.work || it.title || tailOf(it.job || it.session) || "")}</span><span class="af-deck__when">${esc(when(it))}</span></button></li>`; };
+  const row = (it, attrs) => { const u = unitOfItem(it); return `<li><button type="button" ${attrs(u)}>${markOnly(roleOfItem(it))}${idHtml(u ? leadId(u) : it.job || it.session || "")}<span class="af-deck__what">${esc(u?.work || it.title || tailOf(it.job || it.session) || "")}</span><span class="af-deck__when">${esc(it.kind === "denied" ? `${since(it.since)} ago` : when(it))}</span></button></li>`; };
   // what stopped, under the decisions: its own list, never in the stack or up next; a row opens the agent, whose console
   // holds retry, start over and acknowledge
   const stoppedHtml = stopped.length ? `<h3 class="af-deck__subtitle">Stopped</h3>
@@ -446,7 +449,9 @@ function consoleHtml(u) {
         <span><small>Harness</small><span class="af-mono">${esc(u.harness || "none")}</span></span>
         <span><small>Model</small><span class="af-mono">${esc(u.model || "default")}</span></span>
         <span><small>Repo</small><span class="af-mono">${esc(repoShort(u.repo) || "none")}</span></span>
-        ${u.branch ? `<span><small>Branch</small><span class="af-mono">${esc(u.branch)}</span></span>` : ""}
+        ${u.job ? `<span><small>Job</small>${idHtml(u.job)}</span>` : u.session ? `<span><small>Session</small>${idHtml(u.session.id)}</span>` : ""}
+        <span><small>Sandbox</small>${idHtml(u.id)}</span>
+        ${u.branch ? `<span><small>Branch</small><span class="af-mono branch" title="${esc(u.branch)}">${esc(u.branch)}</span></span>` : ""}
         <span><small>Age</small><span class="af-mono">${esc(duration(now() - u.created_at))}</span></span>
         <span><small>Spent</small><span class="af-mono" data-cost="${esc(u.id)}">${u.usage?.cost_usd != null ? `${money(u.usage.cost_usd)}, ${kTok(tokensOf(u))} tok` : "nothing yet"}</span></span>
         ${left != null ? `<span><small>Lease</small>${left > 0 ? `${esc(duration(left))} left` : "expiring"}</span>` : ""}
@@ -473,7 +478,7 @@ function timelineEntries(u) {
   }
   for (const e of tl?.job || []) {
     if (["queued", "provisioning", "verifying", "delivering"].includes(e.state) && !e.message) continue;
-    out.push({ ts: e.ts, k: JOB_KIND[e.state] || "job", txt: words(e.message || word(e.state)) });
+    out.push({ ts: e.ts, k: JOB_KIND[e.state] || "job", txt: sentence(words(e.message || word(e.state))) });
   }
   let edit = null;
   for (const e of tl?.events || []) {
@@ -483,8 +488,8 @@ function timelineEntries(u) {
       if (edit) { edit.paths.add(path); edit.ts = e.ts; edit.txt = edit.paths.size === 1 ? `Edited ${path}` : `Edited ${edit.paths.size} files`; continue; }
       edit = { ts: e.ts, k: "files", paths: new Set([path]), txt: `Edited ${path}` };
       out.push(edit);
-    } else if (e.kind === "command") out.push({ ts: e.ts, k: "cmd", txt: `Ran ${String(e.text || "").split("\n")[0].slice(0, 120)}` });
-    else if (e.kind === "progress") out.push({ ts: e.ts, k: "progress", txt: words(String(e.text || "").split("\n")[0].slice(0, 160)) });
+    } else if (e.kind === "command") { const cmd = String(e.text || "").split("\n")[0].slice(0, 120); out.push({ ts: e.ts, k: "cmd", txt: `Ran ${cmd}`, cmd }); }
+    else if (e.kind === "progress") out.push({ ts: e.ts, k: "progress", txt: sentence(words(String(e.text || "").split("\n")[0].slice(0, 160))) });
     else if (e.kind === "error") out.push({ ts: e.ts, k: "fail", txt: String(e.text || "error").split("\n")[0].slice(0, 160) });
     else if (e.kind === "approval_request") out.push({ ts: e.ts, k: "hold", txt: `Asked to run ${String(e.text || "").slice(0, 120)}` });
   }
@@ -498,7 +503,7 @@ function timelineEntries(u) {
 }
 function timelineHtml(u) {
   const es = timelineEntries(u);
-  return es.map((e, i) => `<li class="af-timeline__ev af-timeline__ev--${e.k}${i === es.length - 1 ? " is-last" : ""}"><i class="af-timeline__dot"></i><time class="af-timeline__time" datetime="${new Date(e.ts * 1000).toISOString()}">${wall(e.ts)}<small>${since(e.ts) === "now" ? "now" : `${since(e.ts)} ago`}</small></time><span class="af-timeline__text">${esc(e.txt)}</span></li>`).join("");
+  return es.map((e, i) => `<li class="af-timeline__ev af-timeline__ev--${e.k}${i === es.length - 1 ? " is-last" : ""}"><i class="af-timeline__dot"></i><time class="af-timeline__time" datetime="${new Date(e.ts * 1000).toISOString()}">${wall(e.ts)}<small>${since(e.ts) === "now" ? "now" : `${since(e.ts)} ago`}</small></time><span class="af-timeline__text">${e.cmd ? `Ran <code class="af-mono">${esc(e.cmd)}</code>` : esc(e.txt)}</span></li>`).join("");
 }
 async function followOpen(first = false) {
   const u = fleet.byId.get(fleet.open);
@@ -543,11 +548,12 @@ function toLatest(ol) {
 
 /* ------------------------------------------------------------------ the pages */
 const ENV_ICON = (env) => ic(/gpu/i.test(env) ? "gpu" : "environment");
+// The headline, the note under it, the groups and the Fleet count in the nav all count the same agents (KAN-155):
+// "26 agents. 5 need you, 3 stopped." over "14 running, 1 queued, 3 off", whose parts add up to the 26.
+const roleCounts = (us) => Object.fromEntries(ATTENTION.map((r) => [r, us.filter((u) => u.role === r).length]));
 function headline(us) {
-  const c = Object.fromEntries(ATTENTION.map((r) => [r, us.filter((u) => u.role === r).length]));
-  const atWork = c.running + c.approval, need = c.approval, stopped = c.failed + c.denied;
-  const n = atWork === 1 ? "One agent at work." : `${number(atWork)} agent${atWork === 1 ? "" : "s"} at work.`;
-  return `${n} ${need ? `<em>${number(need)} need${need === 1 ? "s" : ""} you</em>` : "None need you"}${stopped ? `, ${stopped === 1 ? "one" : stopped} stopped` : ""}.`;
+  const c = roleCounts(us), need = c.approval, stopped = c.failed + c.denied;
+  return `${plural(us.length, "agent")}. ${need ? `<em>${need} need${need === 1 ? "s" : ""} you</em>` : "Nobody is needed"}${stopped ? `, ${stopped} stopped` : ""}.`;
 }
 function draw() {
   if (!fleet.data) return;
@@ -558,10 +564,13 @@ function draw() {
 }
 function counts() {
   const us = units(), q = queue().filter((i) => DECIDE.has(i.kind) && !fleet.verdicts.has(i.id)).length;
-  navCount("fleet", us.filter((u) => u.live).length);
+  navCount("fleet", us.length);
   navCount("needs", q);
-  const top = $("#nav-needs");
-  if (top) { top.className = q ? "af-nav__badge" : "af-nav__count"; top.setAttribute("aria-label", q ? `${q} need you` : ""); }
+  // the Needs-you count is Airframe's badge while someone is needed, in the top bar and the phone's tab bar alike
+  for (const el of $$('[data-count="needs"]')) {
+    el.classList.toggle("af-nav__badge", !!q); el.classList.toggle("af-nav__count", !q);
+    if (q) el.setAttribute("aria-label", `${q} need you`); else el.removeAttribute("aria-label");
+  }
 }
 function drawFleet() {
   const us = units(), d = fleet.data, root = $("#view-fleet");
@@ -574,7 +583,7 @@ function drawFleet() {
   const owners = d.owners || [];
   paint($("#fleet-owners"), owners.length > 1 || fleet.owner ? `<span class="af-note">Owner</span><div class="af-chips" role="group" aria-label="Owner">
     <button type="button" class="af-chip" data-owner="" aria-pressed="${!fleet.owner}">Everyone</button>${owners.map((o) =>
-      `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "Nobody" : esc(o.name || o.id)}<span class="af-note">${o.count}</span></button>`).join("")}</div>` : "", "owners");
+      `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "hangar" : esc(o.name && o.name !== o.id ? o.name : actorParts(o.id).who)}<span class="af-note">${o.count}</span></button>`).join("")}</div>` : "", "owners");
   // the deck band: the same deck as Needs you, collapsible; gone when nothing waits
   const q = queue();
   const band = $("#fleet-band");
@@ -582,9 +591,10 @@ function drawFleet() {
   if (q.length) {
     const sq = deckSets().stack, lit = DECIDE.has(sq[0].kind), n = sq.length;
     paint(band, fleet.band ? deckHtml("band") : `<button type="button" class="fleet-band__bar" data-band="open" aria-expanded="false" aria-controls="fleet-band">${markOnly(roleOfItem(sq[0]))}
-      <span class="fleet-band__what"><b>${lit ? "Needs you" : "Stopped"}</b> ${lit ? (n === 1 ? "one decision" : `${n} decisions`) : (n === 1 ? "one agent" : `${n} agents`)}: ${esc(unitOfItem(sq[0])?.work || sq[0].title || "")}</span>${ic("chevron-down")}<span class="af-note">Show</span></button>`, `band:${fleet.band}`);
+      <span class="fleet-band__what"><b>${lit ? "Needs you" : "Stopped"}</b> ${lit ? plural(n, "decision") : plural(n, "agent")}: ${esc(unitOfItem(sq[0])?.work || sq[0].title || "")}</span>${ic("chevron-down")}<span class="af-note">Show</span></button>`, `band:${fleet.band}`);
   }
-  $("#fleet-note").textContent = `${us.filter((u) => u.role === "running").length} running, ${us.filter((u) => u.role === "queued").length} queued${fleet.owner ? `, ${firstName(fleet.owner === "none" ? null : fleet.owner)}'s only` : ""}`;
+  const rc = roleCounts(us);
+  $("#fleet-note").textContent = `${rc.running} running, ${rc.queued} queued, ${rc.off} off${fleet.owner ? `, ${firstName(fleet.owner === "none" ? null : fleet.owner)}'s only` : ""}`;
   const envs = [...new Set(us.map((u) => u.environment))].sort();
   const view = fleet.view === "board" ? cardHtml : rowHtml;
   const groups = envs.map((env) => {
@@ -620,7 +630,7 @@ function afterBodyPaint() {
 function drawNeeds() {
   const items = fleet.data?.inbox?.items || [], q = queue();
   const lit = q.filter((i) => DECIDE.has(i.kind)).length, stopped = q.length - lit;
-  $("#needs-sum").innerHTML = (lit ? status("approval", `${number(lit)} waiting on you`, { lit: true }) : status("running", "Nothing is waiting on you"))
+  $("#needs-sum").innerHTML = (lit ? status("approval", `${lit} waiting on you`, { lit: true }) : status("running", "Nothing is waiting on you"))
     + meta([["stopped", stopped], ["review", items.filter((i) => i.kind === "review").length]]);
   paint($("#needs-deck"), deckHtml("page"), "needs");
   const review = items.filter((i) => i.kind === "review");
@@ -628,7 +638,7 @@ function drawNeeds() {
   // (queued mark, tail, title and why, repo, the two links); waiting on others stays grey
   paint($("#needs-review"), review.length ? `<div class="fleet-title needs-review__title"><h2>Waiting for review</h2><span class="af-note">on GitHub, ${plural(review.length, "pull request")}</span></div>
     <ul class="needs-review__list">${review.map((i) => { const u = unitOfItem(i), pr = i.links?.pr || i.pr; return `<li class="af-agent needs-review__row">${markOnly("queued")}
-      ${u ? idHtml(u.id, { codeOnly: true, cls: "af-agent__tail" }) : `<span class="af-agent__tail"></span>`}
+      ${idHtml(i.job || leadId(u), { cls: "af-id af-agent__tail" })}
       <span class="af-agent__ttl"><span class="af-agent__work">${esc(i.title || u?.work || tailOf(i.job) || "")}</span><span class="af-agent__sub"><span class="af-agent__now">${esc(i.reason || "")}</span></span></span>
       <span class="af-agent__rig">${i.repo ? `<span class="af-mono">${esc(repoShort(i.repo))}</span>` : ""}</span>
       <span class="needs-review__acts">${pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job ? sbtn("Open job", "ghost", { "data-go": `job:${i.job}` }) : ""}</span></li>`; }).join("")}</ul>` : "", "review");
@@ -703,6 +713,7 @@ setInterval(() => {
 }, airframe.duration("dur") ? 5000 : 15000);
 
 /* ------------------------------------------------------------------ deciding: optimistic verdict, then reload */
+const redraw = () => { draw(); repaintDetail(); };
 function itemById(id) { return (fleet.data?.inbox?.items || []).find((i) => i.id === id); }
 // a verdict lands: the card shows it at once, the agent's row flips, and after a few seconds the card leaves and the
 // fleet reloads. A 404 or 409 means someone else got there first (or it expired): say so, and let the card go.
@@ -712,18 +723,18 @@ async function decide(it, verdict, send, flip) {
   fleet.done.add(it.id);
   fleet.deny.delete(it.id); fleet.invalid.delete(it.id);
   if (u && flip) fleet.overrides.set(u.id, { from: u.role, until: Date.now() + 15000, patch: flip });
-  draw();
+  draw(); repaintDetail();
   try { await send(); }
   catch (e) {
     if (e.status === 404 || e.status === 409) fleet.verdicts.set(it.id, { ok: false, text: `Already settled: someone else decided it, or it expired. ${e.message && e.message.length < 120 ? e.message : ""}`.trim() });
     else {
       fleet.verdicts.delete(it.id); fleet.done.delete(it.id); if (u) fleet.overrides.delete(u.id);
-      draw();
+      draw(); repaintDetail();
       if (e.message !== "unauthorized") toast(e.message, true);
       return;
     }
     if (u) fleet.overrides.delete(u.id);
-    draw();
+    draw(); repaintDetail();
   }
   setTimeout(() => leave(it.id), VERDICT_MS);
 }
@@ -734,22 +745,24 @@ async function leave(id) {
   if (fleet.deckTop === id) fleet.deckTop = null;
   fleet.painted = {};
   try { await fetchFleet(); } catch { draw(); }
+  if (state.view === "jobs") loadJobs(true);
+  if (state.view === "sessions") loadSessions(true);
 }
 const pathOf = (it, u) => (it.job || u?.job ? `/api/jobs/${it.job || u.job}` : `/api/sessions/${encodeURIComponent(u?.session?.id || it.session)}`);
-function act(dk, it, el, where) {
-  const u = unitOfItem(it), h = harnessOf(it, u), kind = decisionKind(it), me = meName();
+function act(dk, it, el, where, u = unitOfItem(it)) {
+  const h = harnessOf(it, u), kind = decisionKind(it), me = meName();
   const running = (now) => ({ role: "running", label: "Running", reason: null, now, last_activity_at: Date.now() / 1000 });
-  if (dk === "deny") { fleet.deny.add(it.id); draw(); setTimeout(() => $(`[data-draft="${CSS.escape(DRAFT(where, it.id, "reason"))}"]`)?.focus(), 30); return; }
-  if (dk === "cancel") { fleet.deny.delete(it.id); fleet.invalid.delete(it.id); draw(); return; }
-  if (dk === "pick") { const i = Number(el.dataset.i); fleet.picks.set(it.id, fleet.picks.get(it.id) === i ? undefined : i); draw(); return; }
+  if (dk === "deny") { fleet.deny.add(it.id); redraw(); setTimeout(() => $(`[data-draft="${CSS.escape(DRAFT(where, it.id, "reason"))}"]`)?.focus(), 30); return; }
+  if (dk === "cancel") { fleet.deny.delete(it.id); fleet.invalid.delete(it.id); redraw(); return; }
+  if (dk === "pick") { const i = Number(el.dataset.i); fleet.picks.set(it.id, fleet.picks.get(it.id) === i ? undefined : i); redraw(); return; }
   if (dk === "dismiss") { leave(it.id); return; }
   if (dk === "deny-confirm") {
     const reason = draftOf(where, it.id, "reason").trim();
-    if (!reason) { fleet.invalid.add(it.id); draw(); setTimeout(() => $(`[data-draft="${CSS.escape(DRAFT(where, it.id, "reason"))}"]`)?.focus(), 30); return; }
+    if (!reason) { fleet.invalid.add(it.id); redraw(); setTimeout(() => $(`[data-draft="${CSS.escape(DRAFT(where, it.id, "reason"))}"]`)?.focus(), 30); return; }
     fleet.drafts.delete(DRAFT(where, it.id, "reason"));
-    if (kind === "job") return decide(it, { ok: false, text: `Rejected by ${me}: "${reason}". The job is dropped.` }, () => api("POST", `/api/jobs/${it.job}/reject`, { reason }));
-    if (kind === "request") return decide(it, { ok: false, text: `Denied by ${me}: "${reason}".` }, () => api("POST", `/api/env-requests/${it.request}`, { decision: "deny", note: reason }), running("reading the deny reason"));
-    return decide(it, { ok: false, text: `Denied by ${me}: "${reason}". ${h} was told and is revising.` },
+    if (kind === "job") return decide(it, { ok: false, text: `Denied by ${me}: "${reason.replace(/\.+$/, "")}". The job is dropped.` }, () => api("POST", `/api/jobs/${it.job}/reject`, { reason }));
+    if (kind === "request") return decide(it, { ok: false, text: `Denied by ${me}: "${reason.replace(/\.+$/, "")}".` }, () => api("POST", `/api/env-requests/${it.request}`, { decision: "deny", note: reason }), running("reading the deny reason"));
+    return decide(it, { ok: false, text: `Denied by ${me}: "${reason.replace(/\.+$/, "")}". ${h} was told and is revising.` },
       () => api("POST", `${pathOf(it, u)}/approvals/${it.approval}`, { decision: "deny", message: reason }), running("reading the deny reason"));
   }
   if (dk === "allow" || dk === "allow_always") {
@@ -774,7 +787,7 @@ function act(dk, it, el, where) {
     () => api("POST", `/api/jobs/${it.job || u.job}/retry?fresh=1`).then((r) => { const v = fleet.verdicts.get(it.id); if (v && r?.id) v.text = `Started over as ${tailOf(r.id)}, from the base branch; this one stays as it ended.`; }));
   if (dk === "ack") {
     fleet.done.add(it.id);
-    api("POST", `/api/inbox/${encodeURIComponent(it.id)}/ack`).catch((e) => { if (e.status !== 404 && e.status !== 409) { fleet.done.delete(it.id); toast(e.message, true); draw(); } });
+    api("POST", `/api/inbox/${encodeURIComponent(it.id)}/ack`).catch((e) => { if (e.status !== 404 && e.status !== 409) { fleet.done.delete(it.id); toast(e.message, true); redraw(); } });
     leave(it.id);
   }
 }
@@ -868,6 +881,10 @@ async function onClick(e) {
     else if (a === "extend") { await api("POST", `/api/sandboxes/${u.id}/extend?minutes=60`); toast(`${tailOf(u.id)} extended by 1 hour`); }
     await fetchFleet();
   });
+}
+// the job and session panels decide with the same cards (decisionCard, act): their drafts, chips and keys work here too
+for (const root of [$("#job-detail"), $("#session-detail")]) {
+  root.addEventListener("input", (e) => { const k = e.target.dataset?.draft; if (k) fleet.drafts.set(k, e.target.value); });
 }
 for (const root of [$("#view-fleet"), $("#view-needs")]) {
   root.addEventListener("click", onClick);

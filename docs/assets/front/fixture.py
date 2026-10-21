@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from urllib.parse import parse_qs, urlparse
 
 ENVS = [
     ("base-codex", "https://github.com/acme/checkout-api.git"),
@@ -68,7 +69,7 @@ ROWS = [
 # estimates from time, which the console draws dotted), the estimate, the now-line, files and commits so far, and how
 # long ago it last did something. Rows not listed have no stage (idle, paused, a sandbox nobody drives).
 LIVE = {
-    "push-refunds": ("pr", None, 92, None, 6, 3, 300),
+    "push-refunds": ("pr", None, 92, None, 2, 2, 300),
     "flaky-payments": ("test", None, 60, None, 3, 2, 1500),
     "stripe-key": ("edit", None, 45, "choosing another way to rotate the key", 2, 1, 40),
     "orders-pagination": ("edit", 40, None, "editing api/orders.py", 2, 0, 3),
@@ -92,41 +93,42 @@ QUESTION_OPTIONS = {
 }
 STAGE_SHARE = {"plan": 0.12, "edit": 0.5, "test": 0.25, "pr": 0.13}
 
-# the change on the held job, as GET /api/jobs/{id}/patch returns it
-PATCH = """diff --git a/src/auth/refresh.py b/src/auth/refresh.py
-index 3f1a2b4..a41f2c0 100644
---- a/src/auth/refresh.py
-+++ b/src/auth/refresh.py
-@@ -118,7 +118,9 @@ def refresh(token: Token) -> Token:
-     now = time.time()
--    if token.expires_at < now:
-+    if token.expires_at - EARLY_REFRESH_S < now:
-         return _issue(token.subject)
-+    if token.revoked:
-+        raise Revoked(token.subject)
-     return token
+# What the agents changed, file by file, in the order their activity edits them: the timeline (events), the diff
+# (GET /api/{jobs,sessions}/{id}/patch) and the Fleet's file count all read this list, so they agree (KAN-155).
+FILES = ["checkout/refunds.py", "tests/test_refunds.py", "checkout/models.py", "checkout/export.py", "api/orders.py",
+         "docs/openapi/orders.yaml", "tests/test_orders.py", "checkout/tax.py", "tests/test_tax.py", "pyproject.toml",
+         "ruff.toml"]
+COMMITS = ["Round refunds half-even", "Test refunds at the half cent", "Keep the refund model in step", "Tidy the export",
+           "Address review"]
+# the change on the held push (push-refunds): the half-even rounding its plan and its commits name
+HUNKS = {
+    "checkout/refunds.py": ("@@ -12,7 +12,9 @@ def refund_amount(line: OrderLine, qty: int) -> Decimal:",
+                            ["     unit = line.total / line.qty"],
+                            ["-    return (unit * qty).quantize(CENT)"],
+                            ["+    amount = (unit * qty).quantize(CENT, rounding=ROUND_HALF_EVEN)",
+                             "+    if amount > line.total:",
+                             "+        raise RefundTooLarge(line.id)",
+                             "+    return amount"]),
+    "tests/test_refunds.py": ("@@ -30,3 +30,8 @@ def test_full_refund():",
+                              ["     assert refund_amount(line(9.50, 1), 1) == Decimal(\"9.50\")"], [],
+                              ["+", "+", "+def test_half_cent_rounds_to_even():",
+                               "+    assert refund_amount(line(0.25, 2), 1) == Decimal(\"0.12\")",
+                               "+    assert refund_amount(line(0.75, 2), 1) == Decimal(\"0.38\")"]),
+}
 
 
-@@ -140,6 +142,10 @@ def _issue(subject: str) -> Token:
-     claims = {"sub": subject, "iat": int(time.time())}
-+    claims["exp"] = claims["iat"] + TTL_S
-+    if subject in _PINNED:
-+        claims["pin"] = _PINNED[subject]
-+    _audit(subject)
-     return Token.sign(claims)
-diff --git a/tests/test_refresh.py b/tests/test_refresh.py
-index 9c0d1e2..b7e6f31 100644
---- a/tests/test_refresh.py
-+++ b/tests/test_refresh.py
-@@ -38,3 +38,9 @@ def test_refresh_keeps_subject():
-     t = refresh(issue("ana"))
-     assert t.subject == "ana"
-+
-+
-+def test_refresh_early():
-+    t = issue("ana", expires_in=EARLY_REFRESH_S - 1)
-+    assert refresh(t) is not t
-"""
+def patch_of(files: list[str]) -> str:
+    """A unified diff over `files`: the refund change where there is one, a one-line change elsewhere."""
+    out = []
+    for i, f in enumerate(files):
+        idx = hashlib.sha1(f.encode()).hexdigest()
+        head, ctx, dels, adds = HUNKS.get(f, ("@@ -1,2 +1,3 @@", ["# " + f], [], [f"+# updated for this change ({i + 1})"]))
+        if f.endswith((".yaml", ".toml")) and f not in HUNKS:
+            head, ctx, adds = "@@ -1,2 +1,3 @@", [" # " + f], ["+# updated for this change"]
+        else:
+            ctx = [c if c.startswith(" ") else " " + c for c in ctx]
+        out += [f"diff --git a/{f} b/{f}", f"index {idx[:7]}..{idx[7:14]} 100644", f"--- a/{f}", f"+++ b/{f}", head, *ctx, *dels, *adds]
+    return "\n".join(out) + "\n"
 
 
 def hexid(s: str, n: int = 8) -> str:
@@ -170,6 +172,7 @@ def stub(now: float | None = None) -> dict:
                           "finished_at": None if live else now - 120, "started_at": created + 60, "run_id": "run-x", "live": live,
                           "harness": harness, "mode": "new"})
             pending = [a for a in approvals if a["status"] == "pending"]
+            policy_denial = next((a for a in approvals if a["status"] == "denied" and a.get("by") == "policy"), None) if live else None
             ses_state = "running" if phase == "running" else "idle" if sb_state == "running" else "suspended" if sb_state == "paused" else "starting"
             sessions.append({
                 "id": ses_id, "name": name if kind == "session" else job_id, "title": title if kind == "session" else "",
@@ -178,6 +181,7 @@ def stub(now: float | None = None) -> dict:
                 "needs_input": extra.get("question"), "busy": phase == "running", "turns": turns, "pending_approvals": pending,
                 "created_at": created, "last_active_at": now - 60, "checkpoint_count": 1, "last_checkpoint_at": now - 400, "checkpoints": [],
                 "environment": env, "repo": repo, "branch": f"hangar/{name}", "idle_minutes": 30, "usage": None,
+                "policy_denial": policy_denial,
             })
             usage.append({"key": name if kind == "session" else job_id, "cost_usd": round(0.15 + (i % 7) * 0.37, 2)})
         if job_id:
@@ -204,6 +208,7 @@ def stub(now: float | None = None) -> dict:
                 "instructions": f"{title}. Keep the change small, add a regression test, and explain what you changed in the PR.",
                 "result": result, "approval": None,
                 "pending_approvals": [a for a in (turns[0]["approvals"] if turns else []) if a["status"] == "pending"],
+                "policy_denial": sessions[-1]["policy_denial"] if ses_id else None,
                 "created_at": created, "events": events, "turns": [], "context": [], "usage": None,
             })
     # one job from outside the team, waiting for a trusted person before it starts
@@ -244,6 +249,10 @@ class Fixture:
         self.now = self.data["now"]
         self.sent: list[dict] = []  # what the recording sent to agents (comments, answers)
         self.acked: set[str] = set()  # inbox items put away (POST /api/inbox/{id}/ack)
+        # each job's and session's usage is its agent's, as the Fleet shows it, so the detail panels say the same
+        by_sb = {u["id"]: u["usage"] for u in self.fleet()["units"]}
+        for rec in (*self.data["jobs"], *self.data["sessions"]):
+            rec["usage"] = by_sb.get(rec["sandbox_id"])
 
     # ---- what the inbox lists from this data, as GET /api/inbox does
     def inbox(self) -> dict:
@@ -287,9 +296,49 @@ class Fixture:
             counts[i["kind"]] = counts.get(i["kind"], 0) + 1
         return {"person": "sean", "counts": counts, "items": items}
 
-    def patch(self) -> dict:
-        return {"session": "x", "branch": "hangar/x", "base": "fed98cfd0312", "head": "429461a6ec9a", "source": "sandbox",
-                "as_of": self.now - 20, "bytes": len(PATCH), "truncated": False, "files": [], "patch": PATCH}
+    def unit_of(self, ref: str) -> dict | None:
+        """The Fleet unit a job or session (by id or name) runs in."""
+        job = next((j for j in self.data["jobs"] if j["id"] == ref), None)
+        ses = next((x for x in self.data["sessions"] if ref in (x["id"], x["name"])), None)
+        sid = (job or {}).get("sandbox_id") or (ses or {}).get("sandbox_id") or ref
+        return next((x for x in self.fleet()["units"] if x["id"] == sid), None)
+
+    def patch(self, ref: str = "") -> dict:
+        """GET /api/{jobs,sessions}/{ref}/patch: the files the agent's activity edited (FILES), so the two agree."""
+        u = self.unit_of(ref)
+        files = FILES[: u["files_changed"]] if u else []
+        text = patch_of(files) if files else ""
+        return {"session": ref, "branch": (u or {}).get("branch") or "hangar/x", "base": "fed98cfd0312", "head": "429461a6ec9a",
+                "source": "sandbox", "as_of": self.now - 20, "bytes": len(text), "truncated": False, "files": files, "patch": text}
+
+    def usage_rows(self, group: str) -> dict:
+        """GET /api/usage?group_by=day|repo|requester: today is what the Fleet's agents spent (the same figures the
+        units carry), and the days before it a quieter history, so the Usage page and the Fleet agree."""
+        units = [u for u in self.fleet()["units"] if u["usage"]]
+        tok = lambda u: u["usage"]["input_tokens"] + u["usage"]["output_tokens"] + u["usage"]["cache_write_tokens"]  # noqa: E731
+        day = 86400
+        today = time.strftime("%Y-%m-%d", time.gmtime(self.now))
+        rows: dict[str, dict] = {}
+
+        def add(key: str, cost: float, tokens: int, turns: int) -> None:
+            r = rows.setdefault(key, {"key": key, "cost_usd": 0.0, "tokens": 0, "turns": 0, "cache_read_tokens": 0, "unpriced_turns": 0, "budget_stops": 0})
+            r["cost_usd"] = round(r["cost_usd"] + cost, 2)
+            r["tokens"] += tokens
+            r["turns"] += turns
+
+        for u in units:
+            key = today if group == "day" else (u["repo"] or "").removeprefix("https://github.com/").removesuffix(".git") if group == "repo" \
+                else dict(PEOPLE).get(u["owner"], "hangar") if group == "requester" else u["id"]
+            add(key, u["usage"]["cost_usd"], tok(u), max(1, u["turn"]))
+        if group == "day":  # a quieter history: the same shape every run
+            for k in range(1, 30):
+                h = int(hexid(f"day{k}", 4), 16)
+                if h % 5:
+                    add(time.strftime("%Y-%m-%d", time.gmtime(self.now - k * day)), round(4 + (h % 900) / 100, 2), 180_000 + h * 7, 6 + h % 9)
+        out = sorted(rows.values(), key=lambda r: r["key"] if group == "day" else -r["cost_usd"])
+        total = {"cost_usd": round(sum(r["cost_usd"] for r in out), 2), "tokens": sum(r["tokens"] for r in out),
+                 "turns": sum(r["turns"] for r in out), "cache_read_tokens": 0, "unpriced_turns": 0, "budget_stops": 0}
+        return {"group_by": group, "since": self.now - 30 * day, "rows": out, "total": total, "budget_stops": []}
 
     def decide(self, approval_id: str, decision: str, message: str | None, by: str = "sean") -> None:
         """A decision on a held tool call: the pending approval becomes a verdict, as the server would record it."""
@@ -421,15 +470,15 @@ class Fixture:
         if not u or not u["stages"]:
             return []
         out: list[dict] = []
-        files = ["checkout/refunds.py", "checkout/models.py", "tests/test_refunds.py", "checkout/export.py"]
+        files = FILES
         for st in u["stages"]:
             t0, t1 = st["started_at"], st["ended_at"] or self.now - 20
             if st["stage"] == "plan":
                 out += [{"ts": t0 + 5, "kind": "command", "text": "rg -n 'def refund' checkout"}, {"ts": t0 + 40, "kind": "progress", "text": "Plan: change the rounding, then add a test"}]
             elif st["stage"] == "edit":
                 out += [{"ts": t0 + 10 + i * 20, "kind": "file_change", "text": f, "data": {"path": f}} for i, f in enumerate(files[: max(1, u["files_changed"])])]
-                if u["commits"]:
-                    out.append({"ts": (t0 + t1) / 2 + 30, "kind": "command", "text": 'git commit -m "Round refunds half-even"'})
+                for c in range(u["commits"]):
+                    out.append({"ts": t0 + (t1 - t0) * (c + 1) / (u["commits"] + 1), "kind": "command", "text": f'git commit -m "{COMMITS[c % len(COMMITS)]}"'})
             elif st["stage"] == "test":
                 out += [{"ts": t0 + 4, "kind": "command", "text": "pytest -q"}, {"ts": t0 + 50, "kind": "progress", "text": "pytest: 202 passed, 1 failed" if u["role"] == "failed" else "pytest: 202 passed"}]
             elif st["stage"] == "pr":
@@ -459,8 +508,13 @@ class Fixture:
             self.sent.append({"url": route.request.url, **body})
             await fixed(route, {"ok": True, "status": "queued", "id": "str-" + hexid(str(len(self.sent)))})
 
-        await page.route("**/api/jobs/*/patch", lambda r: fixed(r, self.patch()))
-        await page.route("**/api/sessions/*/patch", lambda r: fixed(r, self.patch()))
+        def ref_of(url: str) -> str:
+            return url.split("/patch")[0].rsplit("/", 1)[-1]
+
+        await page.route("**/api/jobs/*/patch", lambda r: fixed(r, self.patch(ref_of(r.request.url))))
+        await page.route("**/api/sessions/*/patch", lambda r: fixed(r, self.patch(ref_of(r.request.url))))
+        # the Usage page: registered before the session grouping below, which Playwright then tries first
+        await page.route("**/api/usage?*", lambda r: fixed(r, self.usage_rows(parse_qs(urlparse(r.request.url).query).get("group_by", ["day"])[0])))
         await page.route("**/api/inbox", lambda r: fixed(r, self.inbox()))
         await page.route("**/api/sandboxes?*", lambda r: fixed(r, d["sandboxes"]))
         await page.route("**/api/jobs?limit=200", lambda r: fixed(r, d["jobs"]))
@@ -491,8 +545,6 @@ class Fixture:
 
         await page.route("**/api/jobs/*/events?*", agent_events)
         await page.route("**/api/sessions/*/events?*", agent_events)
-
-        from urllib.parse import parse_qs, urlparse
 
         async def fleet_read(route):
             q = parse_qs(urlparse(route.request.url).query)

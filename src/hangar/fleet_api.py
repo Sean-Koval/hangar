@@ -236,9 +236,7 @@ class FleetRead:
         pending = steer.pending(ses)
         turn = ses.turns[-1] if ses is not None and ses.turns else None
         live_turn = live is not None and turn is not None and not turn.finished_at and live.turn == len(ses.turns)
-        denial = None
-        if turn is not None and not turn.finished_at:
-            denial = next((a for a in reversed(turn.approvals) if a.status == "denied" and a.by == "policy"), None)
+        denial = steer.policy_denial(ses)
         question = (job.result.question if job is not None else None) or (ses.needs_input if ses is not None
                                                                            else None) or ""
         is_live = sb.state in LIVE_STATES

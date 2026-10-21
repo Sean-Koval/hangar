@@ -23,6 +23,33 @@ const { status, btn, avatar } = airframe;
 const ic = (name, size) => airframe.icon(name, { size });
 const mark = (role) => `<span class="af-status af-status--${role}" aria-hidden="true"><i class="af-status__mark"></i></span>`;
 const word = (s) => String(s || "").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+// a line a person reads starts with a capital ("Queued", "Agent turn 1 started"); hangar, flightdeck and ai-dlc stay lowercase
+const sentence = (s) => String(s ?? "").replace(/^(\s*)([a-z])/, (m, sp, c, off, all) => (/^\s*(hangar|flightdeck|ai-dlc)\b/.test(all) ? m : sp + c.toUpperCase()));
+// who did something, as a person reads it: "ui:sean" is Sean Koval, "github:maria" is maria on GitHub, a job's or
+// session's own calls are its person's (KAN-155); the raw actor stays in the title where one is shown
+const personName = (id) => (state.people || []).find((p) => p.id === id)?.name || (typeof fleet !== "undefined" && fleet.data?.owners?.find((o) => o.id === id)?.name) || id;
+function actorParts(actor, person) {
+  const a = String(actor || ""), i = a.indexOf(":"), kind = i > 0 ? a.slice(0, i) : "", rest = i > 0 ? a.slice(i + 1) : a;
+  if (!a) return { who: person ? personName(person) : "hangar" };
+  if (kind === "job" || kind === "session") {
+    const rec = kind === "job" ? (state.jobs || []).find((j) => j.id === rest) : (state.sessions || []).find((x) => x.id === rest);
+    return { who: rec?.person ? personName(rec.person) : "hangar", for: rest };
+  }
+  if (kind === "github") return { who: `${rest} on GitHub` };
+  if (kind === "schedule") return { who: `the ${rest} schedule` };
+  if (["ui", "user", "person", "slack", "web", "mcp", "token", "api"].includes(kind)) return { who: personName(rest) };
+  if (["prebuild", "reaper", "system", "hangar"].includes(a) || kind === "system") return { who: "hangar" };
+  return { who: person && !kind ? personName(person) : personName(rest) };
+}
+const actorName = (actor, person) => { const p = actorParts(actor, person); return p.for ? `${p.who}, for ${tailOf(p.for)}` : p.who; };
+const actorHtml = (actor) => { const p = actorParts(actor); return `<span title="${esc(actor)}">${esc(p.who)}</span>${p.for ? ` <span class="muted">for ${idHtml(p.for)}</span>` : ""}`; };
+// where a job came from, after who asked: nothing for the console or the API (the person is the news)
+const SOURCE_WORDS = { github: "from GitHub", slack: "from Slack", mcp: "from an MCP client", schedule: "on a schedule", a2a: "from an A2A client", jira: "from Jira" };
+const sourceWords = (j) => {
+  const ref = j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : "";
+  if (String(j.requester || "").startsWith(`${j.source}:`)) return ref;  // "maria on GitHub (acme/api#42)", not "… from GitHub"
+  return SOURCE_WORDS[j.source] ? ` ${SOURCE_WORDS[j.source]}${ref}` : "";
+};
 // keyed inline data: [[key, value, modifier?]]; an item with no value is left out
 // keyed inline data (Airframe meta): keys are sentence-case words (theme-v12 retired the mono capitals), acronyms stay
 const KEY_CASE = { pr: "PR", cpu: "CPU", id: "ID", url: "URL" };
@@ -48,9 +75,6 @@ const initialsOf = (name) => {
   return ((w.length > 1 ? w[0][0] + w[1][0] : (w[0] || "?").slice(0, 2)) || "?").toUpperCase();
 };
 const agentAvatar = (harness, size = 28) => avatar("agent", harness ? initialsOf(harness) : "", { size, name: harness || "agent" });
-// a readout: one unlit cell per digit or letter; punctuation sits between cells
-const readout = (text, size = "m") => `<span class="af-readout af-readout--${size}">${[...String(text)].map((c) =>
-  /[0-9a-z]/i.test(c) ? `<b>${esc(c)}</b>` : `<b class="af-readout__p">${esc(c)}</b>`).join("")}</span>`;
 const tok = (name, el = document.documentElement) => getComputedStyle(el).getPropertyValue(`--af-${name}`).trim();
 
 /* ---- Airframe Composer: the input a person steers an agent with. One send button, a queued row per message that
@@ -101,130 +125,82 @@ function wireComposer(el, { onSend, onTakeBack, draft = "" }) {
   $$("[data-take-back]", el).forEach((b) => b.addEventListener("click", () => busy(b, () => onTakeBack(b.dataset.takeBack))));
 }
 
-/* ---- Airframe ApprovalCard v2: one held action waiting on a reviewer. The exact command, who asked and for whom,
-   the policy that held it, when it expires and what happens then; the decision in inspect / refuse / accept order,
-   "Allow for this turn" as the second accept with a hint; Deny opens a reason field, and the reason is required
-   (it goes back to the agent); approve needs none. Decided ones become verdict rows. ---- */
-const HARNESS_WORD = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", antigravity: "Antigravity" };
-const harnessWord = (h) => HARNESS_WORD[h] || h || "the agent";
 const untilWords = (ts) => (!ts ? "" : until(ts).replace(/^in /, ""));  // "2 h 10 min", as Airframe's cards read
-// a: {id, kind: tool | job | request, cmd, tool, taint, policy, since, expires, who: {harness, sandbox, owner, requester},
-//     job, session (names, for the inspect link and the words), allowAlways, approve, deny}
-function approvalHtml(a) {
-  const who = a.who || {};
-  const consequence = a.kind === "job" ? "the job is dropped" : a.kind === "request" ? "the request lapses" : "it is denied and the agent carries on";
-  const label = a.kind === "job" ? "Job approval" : a.kind === "request" ? "Request" : "Approval";
-  const inspect = !a.inspect ? "" : a.job ? btn("Open job", { kind: "ghost", sm: true, attrs: { "data-go": `job:${a.job}` } })
-    : a.sessionId ? btn("Open session", { kind: "ghost", sm: true, attrs: { "data-go": `session:${a.sessionId}` } }) : "";
-  return `<article class="af-card af-card--lit af-approval" data-approval="${esc(a.id)}" data-kind="${esc(a.kind)}">
-    <div class="af-card__top">
-      <span class="af-lbl">${ic("approval")}${label}${idHtml(a.id, { cls: "af-lbl__sub af-id" })}</span>
-      ${status("approval", "Needs approval", { lit: true })}
-    </div>
-    <div class="af-approval__subject">
-      <p class="af-approval__cmd">${esc(a.cmd)}</p>
-      ${meta([["tool", a.tool && a.tool !== a.cmd ? a.tool : ""], ["taint", a.taint || ""], ["job", a.kind !== "job" ? a.job || "" : ""], ["session", a.job ? "" : a.session || ""]])}
-    </div>
-    <dl class="af-kv">
-      <dt>Requested by</dt><dd>${who.sandbox ? `<span class="af-who">${agentAvatar(who.harness, 22)}${idHtml(who.sandbox)}</span> ` : ""}<span class="af-muted">${esc(
-        who.sandbox ? harnessWord(who.harness) : who.requester || "someone")}${who.owner ? `, for ${esc(who.owner)}` : ""}${a.since ? `, ${ago(a.since)}` : ""}</span></dd>
-      ${a.policy ? `<dt>Policy</dt><dd>${a.policy}</dd>` : ""}
-      ${a.expires ? `<dt>Expires</dt><dd>in <span class="af-mono">${esc(untilWords(a.expires))}</span>, then ${consequence}</dd>` : ""}
-    </dl>
-    <div class="af-approval__act">
-      ${meta([["reviewer", "you"]])}
-      <div class="af-approval__btns">${inspect}${btn(a.deny || "Deny", { kind: "danger", sm: true, attrs: { "data-decide": "deny" } })}${a.allowAlways
-        ? btn("Allow for this turn", { kind: "secondary", sm: true, attrs: { "data-decide": "allow_always" } }) : ""}${btn(a.approve || "Allow", { kind: "primary", sm: true, attrs: { "data-decide": "allow" } })}</div>
-    </div>
-    ${a.allowAlways ? `<p class="af-approval__hint">${ic("info")}<span>For this turn also allows calls like this one until the turn ends. Nothing is written to the harness's settings; the next turn asks again.</span></p>` : ""}
-  </article>`;
-}
-// the reason block that takes the action row's place once Deny is pressed; the reason is required
-function denyReasonHtml(a) {
-  const back = tailOf(a.who?.sandbox || a.job || a.session || "the requester");
-  return `<div class="af-approval__reason" role="group" aria-labelledby="deny-lbl-${esc(a.id)}">
-    <label class="af-field">
-      <span class="af-field__label" id="deny-lbl-${esc(a.id)}">Reason for ${a.kind === "job" ? "rejecting" : "denying"} (required)</span>
-      <span class="af-input af-input--area af-input--sans"><textarea rows="2" placeholder="What the agent should do instead"></textarea></span>
-      <span class="af-field__error" hidden>${status("failed", `Give a reason. It goes back to ${esc(back)}.`)}</span>
-    </label>
-    <div class="af-approval__btns">${btn("Cancel", { kind: "ghost", sm: true, attrs: { "data-decide": "cancel" } })}${btn(a.deny || "Deny", { kind: "danger", sm: true, attrs: { "data-decide": "deny-confirm" } })}</div>
-  </div>`;
-}
-// a click inside a card, delegated from the panel that holds it (panels repaint): `find(id)` gives the card's
-// object, `after()` reloads. Deny asks for the reason first and refuses without one. True when it handled the click.
-function openReason(el, a, text = "") {
-  const act = $(".af-approval__act", el);
-  if (!act || $(".af-approval__reason", el)) return;
-  act.hidden = true;
-  act.insertAdjacentHTML("afterend", denyReasonHtml(a));
-  $(".af-approval__reason textarea", el).value = text;
-}
-// the open reason fields in a panel, so a repaint (the 4 s refresh) keeps what the person is writing
-const openReasons = (root) => $$(".af-approval__reason", root).map((r) => [r.closest("[data-approval]").dataset.approval, $("textarea", r).value]);
-function restoreReasons(root, saved, find) {
-  for (const [id, text] of saved) {
-    const el = $(`[data-approval="${CSS.escape(id)}"]`, root), a = el && find(id);
-    if (a) openReason(el, a, text);
+
+/* ---- decisions on a job's or session's own page (KAN-155): the same card the deck and the Fleet console draw
+   (fleet.js decisionCard and act), with the same header, words and buttons: Approve, Deny with a required reason,
+   Allow for this turn, or the agent's question with its options. An item is the inbox's own when the caller's inbox
+   lists it (so a verdict shows in both places), else built here from the job or session in the inbox's shape. ---- */
+const itemKey = (kind, id) => `detail-${kind}-${id}`;  // an item built here, not the inbox's (a lookup key, never shown)
+function detailItems(j, x) {
+  const inbox = state.inbox?.items || [], rec = j || x, out = [];
+  const sid = j ? j.session_id : x.id;
+  const own = (pred, made) => inbox.find(pred) || made;
+  if (j && j.state === "awaiting_approval") out.push(own((i) => i.kind === "approval" && i.job === j.id && !i.approval && !i.request,
+    { id: itemKey("job", j.id), kind: "approval", job: j.id, reason: `job waits for approval: ${j.approval?.reason || "started from outside the team"}`,
+      since: j.created_at, expires_at: j.approval?.expires_at, repo: j.repo, title: j.title }));
+  for (const ap of rec.pending_approvals || []) {
+    const req = (ap.tool || "").startsWith("env_request:");
+    out.push(own((i) => i.approval === ap.id || (req && i.request === ap.id),
+      { id: itemKey("apr", ap.id), kind: "approval", reason: `the agent wants to run ${ap.tool}: ${ap.detail || ""}`, since: ap.requested_at,
+        expires_at: ap.expires_at, job: j?.id, session: sid, ...(req ? { request: ap.id } : { approval: ap.id }) }));
   }
+  const question = j ? (j.state === "needs_input" && j.result?.question) : (!x.job_id && x.needs_input && x.state !== "running" && x.needs_input);
+  if (question) out.push(own((i) => i.kind === "question" && (j ? i.job === j.id : i.session === x.name || i.session === x.id),
+    { id: itemKey("q", rec.id), kind: "question", reason: `the agent asks: ${question}`, job: j?.id, session: j ? null : x.id,
+      since: j ? j.updated_at : x.last_active_at, question_options: rec.question_options || [] }));
+  // a decision made here keeps its card, with the verdict line, until the verdict has been read, even once the
+  // server has stopped listing it (the deck does the same)
+  for (const [id, kept] of shownItems) if (kept.ref === rec.id && fleet.verdicts.has(id) && !out.some((i) => i.id === id)) out.push(kept.item);
+  for (const i of out) shownItems.set(i.id, { ref: rec.id, item: i });
+  return out.filter((i) => !fleet.done.has(i.id) || fleet.verdicts.has(i.id));
 }
-function approvalClick(e, find, after) {
-  const b = e.target.closest("[data-decide]");
-  if (!b) return false;
-  const el = b.closest("[data-approval]"), a = find(el.dataset.approval), d = b.dataset.decide;
-  if (!a) return true;
-  if (d === "deny") {
-    openReason(el, a);
-    $(".af-approval__reason textarea", el).focus();
-  } else if (d === "cancel") {
-    $(".af-approval__reason", el).remove();
-    $(".af-approval__act", el).hidden = false;
-  } else if (d === "deny-confirm") {
-    const box = $(".af-approval__reason", el), ta = $("textarea", box), reason = ta.value.trim();
-    if (!reason) {
-      $(".af-input", box).classList.add("is-invalid"); ta.setAttribute("aria-invalid", "true");
-      $(".af-field__error", box).hidden = false; ta.focus();
-      return true;
-    }
-    busy(b, async () => { await decideApproval(a, "deny", reason); await after(); });
-  } else busy(b, async () => { await decideApproval(a, d, ""); await after(); });
+const shownItems = new Map();  // item id -> {ref (job or session id), item}: what the detail panels last drew
+// the agent the decisions are about: the Fleet's unit when the Fleet has it, else what this page knows
+function detailUnit(j, x) {
+  const rec = j || x, sb = rec.sandbox_id, fu = sb ? fleet.byId.get(sb) : null;
+  if (fu) return fu;
+  const held = (rec.pending_approvals || [])[0];
+  return { id: sb || "", job: j?.id || null, session: j ? (j.session_id ? { id: j.session_id, name: j.session?.name } : null) : { id: x.id, name: x.name },
+    harness: rec.harness, owner: rec.person || null, branch: rec.branch, work: j ? j.title : x.title || x.name, files_changed: 0, commits: 0,
+    turn: (rec.turns || []).length, question_options: rec.question_options || [],
+    reason: held ? { text: `${held.tool}: ${held.detail || ""}${held.taint ? ` (${held.taint})` : ""}` } : null };
+}
+const detailDecisions = (items, u) => (items.length ? `<div class="cards">${items.map((it) => decisionCard(it, 0, "detail", u)).join("")}</div>` : "");
+// a click on a decision in a detail panel: the same act() as the deck; "jump" opens the agent on the Fleet
+function detailDecisionClick(e, items, u) {
+  const dk = e.target.closest("[data-dk]");
+  if (!dk || !dk.closest(".af-decision")) return false;
+  e.preventDefault();
+  if (dk.dataset.dk === "jump") { if (dk.dataset.unit) { location.hash = "#fleet"; fleet.open = null; setTimeout(() => openUnit(dk.dataset.unit), 60); } return true; }
+  const it = items.find((i) => i.id === dk.closest("[data-item]")?.dataset.item);
+  if (it) act(dk.dataset.dk, it, dk, "detail", u);
   return true;
+}
+// fleet.js calls this when a decision changes, so the job or session panel shows the verdict at once
+function repaintDetail() {
+  if (state.view === "jobs" && state.selectedJob) renderJob(state.jobs.find((j) => j.id === state.selectedJob));
+  if (state.view === "sessions" && state.selectedSession) renderSession(state.sessions.find((x) => x.id === state.selectedSession));
+}
+// a repaint keeps the field being typed in focused, with its caret (the 4 s refresh redraws the panel)
+function keepFocus(box, paint) {
+  const a = document.activeElement, k = box.contains(a) ? a?.dataset?.draft : null;
+  const caret = k && a.setSelectionRange ? [a.selectionStart, a.selectionEnd] : null;
+  paint();
+  if (!k) return;
+  const t = $(`[data-draft="${CSS.escape(k)}"]`, box);
+  if (t) { t.focus({ preventScroll: true }); if (caret) t.setSelectionRange(...caret); }
 }
 // a decided action on one line: the denied placard with its reason, or a quiet check for allowed
 function verdictHtml(v) {
   const denied = v.status === "denied";
   const when = v.decided_at ? new Date(v.decided_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
   return `<div class="af-verdict">
-    ${denied ? status("denied", "Denied") : `<span class="af-verdict__ok">${ic("check")}${v.status === "allowed_always" ? "Allowed for the turn" : v.status === "cancelled" ? "Withdrawn" : "Allowed"}</span>`}
+    ${denied ? status("denied", "Denied") : `<span class="af-verdict__ok">${ic("check")}${v.status === "allowed_always" ? "Allowed for the turn" : v.status === "cancelled" ? "Withdrawn" : "Approved"}</span>`}
     <span class="af-verdict__body"><span class="af-verdict__cmd">${esc(v.detail || v.tool || "")}</span>${v.message || v.by
-      ? `<span class="af-verdict__why">${esc(v.message || "")}${v.by ? `${v.message ? " " : ""}By ${esc(v.by)}.` : ""}</span>` : ""}${meta([["tool", v.tool && v.detail ? v.tool : ""]])}</span>
+      ? `<span class="af-verdict__why">${esc(sentence(v.message || ""))}${v.by ? `${v.message ? " " : ""}By ${esc(actorName(v.by))}.` : ""}</span>` : ""}${meta([["tool", v.tool && v.detail ? v.tool : ""]])}</span>
     <span class="af-verdict__time">${esc(when)}</span>
   </div>`;
-}
-// the held tool calls on a job or session, as cards; `ctx`: {harness, sandbox, owner, job (id), session (name),
-// sessionId, inspect (false on the job's or session's own page)}
-function toolApprovals(list, ctx) {
-  return (list || []).map((ap) => {
-    const req = (ap.tool || "").startsWith("env_request:");
-    return { id: ap.id, kind: req ? "request" : "tool", cmd: ap.detail || ap.tool, tool: ap.tool, taint: ap.taint,
-      policy: req ? `The agent asked for ${esc(ap.tool.slice(12))} access; nothing is granted until someone answers.`
-        : `<span class="af-mono">approvals: ask</span>${ap.taint ? ` <span class="af-muted">and the turn read untrusted content</span>` : ""}`,
-      since: ap.requested_at, expires: ap.expires_at, who: ctx, job: ctx.job, session: ctx.session, sessionId: ctx.sessionId,
-      inspect: ctx.inspect !== false, allowAlways: !req, approve: req ? "Approve" : "Allow" };
-  });
-}
-// a job waiting for a trusted person before it starts
-function jobApproval(j, inspect = true) {
-  return { id: j.id, kind: "job", cmd: j.title, policy: esc(j.approval?.reason || "Started from outside the team: a trusted person approves it."),
-    since: j.created_at, expires: j.approval?.expires_at, who: { requester: j.requester, owner: j.person, harness: j.harness }, job: j.id,
-    inspect, approve: "Approve job", deny: "Reject" };
-}
-// answers a card: a tool call on its job or session, a job waiting to start, or an environment request
-async function decideApproval(a, decision, reason) {
-  if (a.kind === "job") await api("POST", `/api/jobs/${a.job}/${decision === "deny" ? "reject" : "approve"}`, reason ? { reason } : {});
-  else if (a.kind === "request") await api("POST", `/api/env-requests/${a.id}`, { decision: decision === "deny" ? "deny" : "approve", note: reason || null });
-  else await api("POST", `${a.job ? `/api/jobs/${a.job}` : `/api/sessions/${a.sessionId}`}/approvals/${a.id}`, { decision, message: reason || null });
-  toast(decision === "deny" ? `${a.kind === "job" ? "Rejected" : "Denied"}: ${a.cmd.slice(0, 80)}` : `${a.kind === "job" ? "Approved" : "Allowed"}: ${a.cmd.slice(0, 80)}`);
 }
 
 /* ---- Airframe Diff: the change the agent made, greyscale, with line comments that go back to the agent. The patch is
@@ -405,44 +381,6 @@ function changesHtml(kind, id, hasWork) {
       : `<div class="env-bar">${btn("Show the change", { kind: "secondary", sm: true, icon: "diff", attrs: { "data-diff-show": true } })}<span class="hint">The commits, uncommitted edits and new files against the base, from ${hasWork ? "the sandbox" : "the last checkpoint"}. Comment on a line and it goes to the agent with your next message.</span></div>`}</div>`;
 }
 
-/* ---- Airframe Question: an agent asks a person. The approval role (a person is needed now) with the word "Needs
-   input"; the agent's options as chips when it offered any, free text otherwise (text wins); one primary, Answer.
-   The answer goes back as the agent's next message, in place. ---- */
-function questionHtml({ id, who, turn, question, context = "", options = [], asked, meanwhile = "holding the turn" }) {
-  return `<article class="af-card af-card--lit af-question" id="${esc(id)}">
-    <div class="af-card__top">
-      <span class="af-lbl">${ic("agent")}Question${tails.isRaw(who) ? idHtml(who, { cls: "af-lbl__sub af-id" }) : `<span class="af-lbl__sub">${esc(who)}</span>`}${turn ? `<span class="af-lbl__sub">turn ${turn}</span>` : ""}</span>
-      ${status("approval", "Needs input", { lit: true })}
-    </div>
-    <p class="af-question__q">${esc(question)}</p>
-    ${context ? `<p class="af-question__ctx">${context}</p>` : ""}
-    ${options.length ? `<div class="af-question__opts" role="group" aria-label="Options">${options.slice(0, 5).map((o) =>
-      `<button type="button" class="af-chip" aria-pressed="false" data-option>${esc(o)}</button>`).join("")}</div>` : ""}
-    <label class="af-field af-question__free">
-      <span class="af-field__label">${options.length ? "Or answer in your own words" : "Your answer"}</span>
-      <span class="af-input af-input--area af-input--sans"><textarea rows="2" placeholder="${options.length ? "Free text dismisses the options" : "The agent continues with this"}"></textarea></span>
-    </label>
-    <div class="af-question__act">
-      ${meta([["asked", asked ? ago(asked) : ""], ["while", meanwhile]])}
-      ${btn("Answer", { kind: "primary", sm: true, attrs: { "data-answer": true } })}
-    </div>
-  </article>`;
-}
-// wires a question card: a pressed option is the answer unless the person wrote; `onAnswer(text)` sends it
-function wireQuestion(el, onAnswer) {
-  if (!el) return;
-  const ta = $("textarea", el);
-  $$("[data-option]", el).forEach((o) => o.addEventListener("click", () => {
-    $$("[data-option]", el).forEach((x) => x.setAttribute("aria-pressed", String(x === o && x.getAttribute("aria-pressed") !== "true")));
-  }));
-  $("[data-answer]", el).addEventListener("click", (e) => {
-    const picked = $('[data-option][aria-pressed="true"]', el);
-    const text = ta.value.trim() || (picked ? picked.textContent : "");
-    if (!text) { ta.focus(); return; }
-    busy(e.currentTarget, () => onAnswer(text));
-  });
-}
-
 const store = {
   get token() { try { return localStorage.getItem("hangar.token") || ""; } catch { return ""; } },
   set token(v) { try { v ? localStorage.setItem("hangar.token", v) : localStorage.removeItem("hangar.token"); } catch {} },
@@ -609,10 +547,11 @@ async function boot() {
 }
 
 async function refreshMeta() {
-  const [ov, envs, creds, harnesses] = await Promise.all([
+  const [ov, envs, creds, harnesses, people] = await Promise.all([
     api("GET", "/api/overview"), api("GET", "/api/environments"), api("GET", "/api/credentials"), api("GET", "/api/harnesses"),
+    api("GET", "/api/people").catch(() => []),  // names for who did what; a member may not list people
   ]);
-  Object.assign(state, { overview: ov, envs, creds, harnesses });
+  Object.assign(state, { overview: ov, envs, creds, harnesses, people: Array.isArray(people) ? people : people?.people || [] });
   // a provider is quiet while it works (running) and a failed triangle when it doesn't
   const providers = Object.entries(ov.providers).map(([n, p]) =>
     `<span class="prov af-status af-status--${p.ok ? "running" : "failed"}" title="${esc(p.error || (p.capabilities?.microvm ? "microVM isolation" : ""))}">
@@ -884,8 +823,19 @@ const JOB_STATE = { queued: "queued", provisioning: "queued", running: "running"
   succeeded: "off", failed: "failed", cancelled: "off", needs_input: "approval" };
 JOB_STATE.awaiting_approval = "approval"; // workstream A: approve with `hangar job approve` or `/hangar approve`
 const JOB_WORD = { needs_input: "Needs input", awaiting_approval: "Needs approval" };
-const jobRole = (j) => (j.pending_approvals?.length && j.active ? "approval" : JOB_STATE[j.state] || "off");
-const jobWord = (j) => (j.pending_approvals?.length && j.active ? "Needs approval" : JOB_WORD[j.state] || word(j.state));
+// in the Fleet's order (fleet_api): a job waiting to start, a held tool call, the agent's question, then what policy
+// stopped in the live turn (policy_denial: Denied, as the Fleet says), then the job's own state
+const jobRole = (j) => (j.state === "awaiting_approval" || j.state === "needs_input" ? "approval"
+  : j.pending_approvals?.length && j.active ? "approval" : j.policy_denial && j.active ? "denied" : JOB_STATE[j.state] || "off");
+const jobWord = (j) => {
+  const r = jobRole(j);
+  if (r === "denied") return "Denied";
+  if (r === "approval") return j.state === "needs_input" ? "Needs input" : "Needs approval";
+  return JOB_WORD[j.state] || word(j.state);
+};
+// "WebFetch: https://hooks.example.net/collect was denied by policy: deny-secrets-egress: no receipt issued."
+const denialText = (a) => `${a.tool || "A tool"}${a.detail ? `: ${a.detail}` : ""} was denied by policy${a.message ? `: ${a.message}` : ""}.`;
+const reasonWord = (r) => sentence(String(r || "").replace(/_/g, " "));
 
 async function loadJobs(quiet = false) {
   try {
@@ -911,8 +861,8 @@ function renderJobs() {
       class="job-row ${j.id === state.selectedJob ? "active" : ""} ${jobRole(j) === "approval" ? "is-attention" : ""}" data-tone="${jobRole(j)}">
       <span class="t">${idHtml(j.id)} ${esc(j.title)}</span>
       <span class="d">${status(jobRole(j), jobWord(j))}${meta([
-        j.reason ? ["reason", j.reason.replace(/_/g, " "), jobRole(j) === "failed" ? "failed" : ""] : null,
-        ["source", j.source], ["created", ago(j.created_at)], j.result?.pr_number ? ["pr", `#${j.result.pr_number}`] : null])}</span></button></li>`).join("")
+        j.reason ? ["reason", reasonWord(j.reason), "strong"] : null,
+        ["sandbox", j.sandbox_id || ""], ["created", ago(j.created_at)], j.result?.pr_number ? ["pr", `#${j.result.pr_number}`] : null])}</span></button></li>`).join("")
     : `<li>${state.jobs.length
       ? emptyState({ kind: "after-action", icon: "job", title: `${hidden} job${hidden === 1 ? " is" : "s are"} hidden by the filter.`,
         actions: btn("Show all jobs", { sm: true, attrs: { "data-clear-filter": true } }) })
@@ -920,7 +870,7 @@ function renderJobs() {
   if (state.selectedJob) renderJob(state.jobs.find((j) => j.id === state.selectedJob));
   // with no job open the panel's empty state carries the view's one primary, New job (the header's is secondary)
   else if (!$("#job-detail .af-empty")) $("#job-detail").innerHTML = emptyState({ compact: true, icon: "job", title: "No job selected.",
-    text: "Choose one to see its timeline, result and sandbox.", actions: btn("New job", { kind: "primary", sm: true, attrs: { "data-new-job": true } }) });
+    text: "Choose one to see its timeline, result and sandbox.", actions: btn("New job", { kind: "secondary", sm: true, attrs: { "data-new-job": true } }) });
 }
 $("#job-detail").addEventListener("click", (e) => { if (e.target.closest("[data-new-job]")) $("#btn-new-job").click(); });
 $("#jobs-filter").addEventListener("change", renderJobs);
@@ -952,7 +902,7 @@ const inflight = new Map();  // job id -> a steer on its way (the direct route a
 // the Composer's state for a job: steer while a live turn runs, follow up after, and say why when neither works
 function jobComposer(j, info) {
   const live = !!j.sandbox_id;
-  if (j.state === "awaiting_approval") return { disabled: true, why: "Waiting for approval. Approve or reject it from the Fleet page; a reply comes after." };
+  if (j.state === "awaiting_approval") return { disabled: true, why: "Waiting for approval. Approve or deny it above; a reply comes after." };
   if (j.active) {
     if (j.state === "running" && info?.running && !info.live) return { disabled: true,
       why: `${esc(j.harness || "These")} turns run one-shot and can't take a message mid-turn; wait for the turn, or cancel the job.` };
@@ -969,19 +919,18 @@ function renderJob(j) {
   const box = $("#job-detail");
   if (!j) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "job", title: "That job is no longer listed.", text: "It may have been cleaned up, or the filter hides it." }); return; }
   // keep a half-typed message across the 4s refresh
-  const draft = $("#job-composer .af-composer__input")?.value || $("#job-question textarea")?.value || "";
-  const reasons = openReasons(box), threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
+  const draft = $("#job-composer .af-composer__input")?.value || "";
+  const threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
   const rkey = reviewKey("jobs", j.id), queued = (review.get(rkey) || []).length;
   const r = j.result || {};
   const info = turnInfo.get(j.id);
   if (j.active && j.state === "running") fetchTurnInfo(j);
   else if (j.pending_approvals?.length && !info) fetchTurnInfo(j);
-  const question = j.state === "needs_input" && r.question;
+  // what waits on a person: the same decision cards as the deck (a job to start, held tool calls, the agent's question)
+  const items = detailItems(j, null), unit = detailUnit(j, null);
+  const question = items.some((i) => i.kind === "question");
   const cm = question ? null : jobComposer(j, info);
   const pending = inflight.get(j.id);
-  // what waits on a person, as Airframe approval cards: the job itself (a trusted person starts it) or held tool calls
-  const cards = [...(j.state === "awaiting_approval" ? [jobApproval(j, false)] : []),
-    ...toolApprovals(j.pending_approvals, { harness: j.harness, sandbox: j.sandbox_id, owner: j.person || j.requester, job: j.id, inspect: false })];
   const verdicts = (info?.decided || []).filter((v) => v.status !== "pending").slice(-5).reverse();
   const verify = j.verify ? (r.verify_exit_code == null ? `<span class="hint">not run yet</span>`
     : r.verify_exit_code === 0 ? `<span class="passed">${ic("check", 14)}passed</span>`
@@ -993,15 +942,17 @@ function renderJob(j) {
   const lastTurn = turns.at(-1);
   const turnOver = `The agent's turn ended ${lastTurn?.finished_at ? ago(lastTurn.finished_at) : ago(j.updated_at) || "already"}.`;
   box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
-  box.innerHTML = `
-    <div class="detail-head"><h3>${idHtml(j.id, { cls: "af-id detail-tail" })} ${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
-      ${j.reason ? meta([["reason", j.reason.replace(/_/g, " "), role === "failed" ? "failed" : ""]]) : ""}</div>
-    ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}
+  const den = role === "denied" ? j.policy_denial : null;
+  keepFocus(box, () => { box.innerHTML = `
+    <div class="detail-head"><h3>${idHtml(j.id, { cls: "af-id detail-tail" })} ${esc(j.title)}</h3>${status(role, jobWord(j), { lit: role !== "denied" })}
+      ${j.reason ? meta([["reason", reasonWord(j.reason), "strong"]]) : ""}</div>
+    ${den ? `<p class="detail-reason">${esc(denialText(den))}</p>` : ""}
+    ${detailDecisions(items, unit)}
     <dl class="kv af-kv">
-      <dt>Asked by</dt><dd>${esc(j.requester)} via ${esc(j.source)}${j.source_ref ? ` (${esc(j.source_ref.replace(/^github:/, ""))})` : ""}, ${ago(j.created_at)}</dd>
+      <dt>Asked by</dt><dd>${esc(actorName(j.requester, j.person))}${sourceWords(j)}, ${ago(j.created_at)}</dd>
       <dt>Where</dt><dd>${meta([["env", j.environment, "strong"], ["harness", j.harness || "default agent"], ["model", j.model || ""]])}</dd>
       ${j.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(j))}</span></dd>
-        <dt>Branch</dt><dd><code>${esc(j.branch)}</code>${j.base_branch ? ` <span class="sub-val">from</span> <code>${esc(j.base_branch)}</code>` : ""}</dd>` : ""}
+        <dt>Branch</dt><dd><code class="branch" title="${esc(j.branch)}">${esc(j.branch)}</code>${j.base_branch ? ` <span class="sub-val">from</span> <code class="branch">${esc(j.base_branch)}</code>` : ""}</dd>` : ""}
       ${r.pr_url ? `<dt>Pull request</dt><dd><a href="${esc(r.pr_url)}" target="_blank" rel="noopener" class="af-mono">#${esc(r.pr_number)}</a></dd>` : ""}
       ${j.verify ? `<dt>Check</dt><dd><code>${esc(j.verify)}</code> <span class="sub-val">${verify}</span></dd>` : ""}
       ${r.commits?.length ? `<dt>Commits</dt><dd>${r.commits.map((c) => `<div><code>${esc(c)}</code></div>`).join("")}</dd>` : ""}
@@ -1009,7 +960,7 @@ function renderJob(j) {
         ? `<div><a class="af-mono" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a></div>`
         : `<div><code>${esc(c.name)}</code><span class="sub-val">${c.size} B</span></div>`).join("")}</dd>` : ""}
       <dt>Sandbox</dt><dd>${live ? idHtml(j.sandbox_id) : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
-      ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}" class="af-mono">${tails.isRaw(j.session.name) ? idHtml(j.session.name) : esc(j.session.name)}</a>
+      ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}">${tails.isRaw(j.session_id) ? idHtml(j.session_id) : esc(j.session.name)}</a>
         ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${plural(j.session.checkpoints, "checkpoint")}</span></dd>` : ""}
     </dl>
     <div class="env-bar">
@@ -1021,9 +972,7 @@ function renderJob(j) {
     </div>
     ${r.summary ? `<h4>Agent's summary</h4><pre class="log summary">${esc(r.summary)}</pre>` : ""}
     ${r.verify_tail && r.verify_exit_code ? `<h4>Check output</h4><pre class="log">${esc(r.verify_tail)}</pre>` : ""}
-    ${question ? `<h4>The agent asks</h4>${questionHtml({ id: "job-question", who: j.id, turn: turns.length, question: r.question, asked: j.updated_at,
-        meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" })}`
-      : `<h4>${cm.mode === "steer" ? "Steer the agent" : "Reply to the agent"}</h4>${composerHtml({ id: "job-composer", ...cm,
+    ${question ? "" : `<h4>${cm.mode === "steer" ? "Steer the agent" : "Reply to the agent"}</h4>${composerHtml({ id: "job-composer", ...cm,
         note: queued && !cm.disabled ? `${queued} review comment${queued === 1 ? " goes" : "s go"} with this message` : "",
         queued: pending ? [{ id: "", text: pending, sub: "on its way; applies after this tool call" }] : [] })}`}
     ${live || j.session?.checkpoints || r.commits?.length ? changesHtml("jobs", j.id, live) : ""}
@@ -1032,15 +981,13 @@ function renderJob(j) {
     <h4>Timeline</h4>
     <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "off"}"><i class="tl-dot" aria-hidden="true"></i>
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
-      <span class="what">${tails.inText(linkify(words(e.message)))}</span></li>`).join("")}</ol>
+      <span class="what">${tails.inText(linkify(sentence(words(e.message))))}</span></li>`).join("")}</ol>
     ${turns.length > 1 ? `<h4>Turns</h4><ol class="turns">${turns.map((t, i) => `<li><b>${i + 1}. ${esc(t.kind.replace("_", "-"))}</b>
       ${meta([["by", t.requester || ""], ["exit", t.exit_code ?? ""]])}
       ${t.message ? `<div class="hint">${esc(t.message)}</div>` : ""}</li>`).join("")}</ol>` : ""}
-    <details><summary>Instructions</summary><pre class="log summary">${esc(j.instructions)}</pre></details>`;
+    <details><summary>Instructions</summary><pre class="log summary">${esc(j.instructions)}</pre></details>`; });
   fillActivity(box);
   const sb = { id: j.sandbox_id, name: j.id };
-  const findCard = (id) => cards.find((c) => c.id === id);
-  restoreReasons(box, reasons, findCard);
   restoreThreads(box, threads, rkey);
   if (focused) $("[data-thread] textarea", box)?.focus({ preventScroll: true });
   // the reply: an answer to the agent's question and a follow-up both run another turn; a steer lands in this one;
@@ -1068,10 +1015,7 @@ function renderJob(j) {
     await loadJobs();
   };
   const sendAlone = () => (cm?.mode === "steer" ? steer("") : followUp(""));
-  box.onclick = (e) => approvalClick(e, findCard, async () => { turnInfo.delete(j.id); await loadJobs(); })
-    || diffClick(e, "jobs", j.id, () => renderJob(j), sendAlone);
-  wireQuestion($("#job-question"), (text) => { $("#job-question textarea").value = ""; return followUp(text, true); });
-  if ($("#job-question textarea")) $("#job-question textarea").value = draft;
+  box.onclick = (e) => detailDecisionClick(e, items, unit) || diffClick(e, "jobs", j.id, () => renderJob(j), sendAlone);
   wireComposer($("#job-composer"), { draft, onSend: (text) => (cm.mode === "steer" ? steer(text) : followUp(text)) });
   $("#job-watch")?.addEventListener("click", () => openTerminal(sb, j.terminal_session));
   $("#job-shell")?.addEventListener("click", () => openTerminal(sb));
@@ -1091,8 +1035,10 @@ function renderJob(j) {
 // on a person (orange diamond), a saved one is off; only a failed boot is red.
 const SES_TONE = { starting: "queued", idle: "running", running: "running", suspending: "off", suspended: "off",
   failed: "failed", archived: "off" };
-const sesRole = (x) => (x.pending_approvals?.length ? "approval" : x.needs_input && x.state !== "running" ? "approval" : SES_TONE[x.state] || "off");
-const sesWord = (x) => (x.pending_approvals?.length ? "Needs approval" : x.needs_input && x.state !== "running" ? "Needs input" : word(x.state));
+const sesRole = (x) => (x.pending_approvals?.length ? "approval" : x.needs_input && x.state !== "running" ? "approval"
+  : x.policy_denial ? "denied" : SES_TONE[x.state] || "off");
+const sesWord = (x) => (x.pending_approvals?.length ? "Needs approval" : x.needs_input && x.state !== "running" ? "Needs input"
+  : x.policy_denial ? "Denied" : word(x.state));
 
 async function loadSessions(quiet = false) {
   try {
@@ -1101,21 +1047,23 @@ async function loadSessions(quiet = false) {
   } catch (e) { if (!quiet && e.message !== "unauthorized") toast(e.message, true); }
 }
 
+// a session reads as its tail number (HGR-SES-…) and its name; a job's session is named for its job, shown as the job's tail
+const sesTitle = (x) => (tails.isRaw(x.name) ? `<span class="hint">for</span> ${idHtml(x.name)}` : `<span class="af-mono">${esc(x.name)}</span>`);
 function renderSessions() {
   const showJobs = $("#ses-jobs").checked;
   const mine = state.sessions.filter((x) => showJobs || !x.job_id);
-  tails.see(state.sessions.flatMap((x) => [x.name, x.job_id, x.sandbox_id]));
+  tails.see(state.sessions.flatMap((x) => [x.id, x.name, x.job_id, x.sandbox_id]));
   navCount("sessions", mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length);
   if (state.view !== "sessions") return;
   $("#session-list").innerHTML = mine.length ? mine.map((x) => `<li><button data-ses="${esc(x.id)}"
       class="job-row ${x.id === state.selectedSession ? "active" : ""} ${sesRole(x) === "approval" ? "is-attention" : ""}" data-tone="${sesRole(x)}">
-      <span class="t af-mono">${tails.isRaw(x.name) ? idHtml(x.name) : esc(x.name)}</span>
+      <span class="t">${idHtml(x.id)} ${sesTitle(x)}</span>
       <span class="d">${status(sesRole(x), `${sesWord(x)}${x.busy && x.state !== "running" ? "…" : ""}`)}${meta([
-        ["env", x.environment], ["active", ago(x.last_active_at)]])}</span></button></li>`).join("")
+        ["env", x.environment], ["sandbox", x.sandbox_id || ""], ["active", ago(x.last_active_at)]])}</span></button></li>`).join("")
     : `<li>${emptyState({ icon: "session", title: "No sessions yet.", text: `Start one here, or from an MCP client with <code>new_session</code>.` })}</li>`;
   if (state.selectedSession) renderSession(state.sessions.find((x) => x.id === state.selectedSession));
   else if (!$("#session-detail .af-empty")) $("#session-detail").innerHTML = emptyState({ compact: true, icon: "session", title: "No session selected.",
-    text: "Choose one to resume it, talk to its agent, or open its terminal.", actions: btn("New session", { kind: "primary", sm: true, attrs: { "data-new-session": true } }) });
+    text: "Choose one to resume it, talk to its agent, or open its terminal.", actions: btn("New session", { kind: "secondary", sm: true, attrs: { "data-new-session": true } }) });
 }
 $("#session-detail").addEventListener("click", (e) => { if (e.target.closest("[data-new-session]")) $("#btn-new-session").click(); });
 $("#ses-jobs").addEventListener("change", renderSessions);
@@ -1149,29 +1097,27 @@ function sesComposer(x) {
 function renderSession(x) {
   const box = $("#session-detail");
   if (!x) { box.innerHTML = emptyState({ kind: "after-action", compact: true, icon: "session", title: "That session is no longer listed." }); return; }
-  const draft = $("#ses-composer .af-composer__input")?.value || $("#ses-question textarea")?.value || "";
-  const reasons = openReasons(box), threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
+  const draft = $("#ses-composer .af-composer__input")?.value || "";
+  const threads = openThreads(box), focused = !!document.activeElement?.closest?.("[data-thread]");
   const rkey = reviewKey("sessions", x.id), queued = (review.get(rkey) || []).length;
   const live = !!x.sandbox_id && ["idle", "running"].includes(x.state);
   const ck = x.checkpoints?.at(-1);
   const keep = x.idle_minutes;
   const role = sesRole(x);
-  const question = x.needs_input && role === "approval" && !x.job_id;
+  const items = detailItems(null, x), unit = detailUnit(null, x);
+  const question = items.some((i) => i.kind === "question");
   const cm = question ? null : sesComposer(x);
   const form = !cm?.disabled || question;  // the message carries the panel's one primary action
-  const cards = toolApprovals(x.pending_approvals, { harness: x.harness, sandbox: x.sandbox_id, owner: x.person || x.owner, job: x.job_id,
-    session: x.name, sessionId: x.id, inspect: false });
   const verdicts = (x.turns.at(-1)?.approvals || []).filter((v) => v.status !== "pending").slice(-5).reverse();
   box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
-  box.innerHTML = `
-    <div class="detail-head"><h3 class="af-mono">${tails.isRaw(x.name) ? idHtml(x.name) : esc(x.name)}</h3>${status(role, sesWord(x), { lit: true })}</div>
+  keepFocus(box, () => { box.innerHTML = `
+    <div class="detail-head"><h3>${idHtml(x.id, { cls: "af-id detail-tail" })} ${sesTitle(x)}</h3>${status(role, sesWord(x), { lit: role !== "denied" })}</div>
     ${x.reason ? (role === "failed" ? `<p class="detail-reason">${errorLine(x.reason)}</p>` : `<p class="hint">${esc(x.reason)}</p>`) : ""}
-    ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}
-    ${question ? questionHtml({ id: "ses-question", who: x.name, turn: x.turns.length, question: x.needs_input, asked: x.last_active_at,
-      meanwhile: live ? "holding the sandbox" : "the sandbox is released; your answer resumes it" }) : ""}
+    ${role === "denied" && x.policy_denial ? `<p class="detail-reason">${esc(denialText(x.policy_denial))}</p>` : ""}
+    ${detailDecisions(items, unit)}
     <dl class="kv af-kv">
       <dt>Where</dt><dd>${meta([["env", x.environment, "strong"], ["harness", x.harness || "default agent"], ["model", x.model || ""]])}</dd>
-      ${x.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(x))}</span></dd><dt>Branch</dt><dd><code>${esc(x.branch)}</code></dd>` : ""}
+      ${x.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(x))}</span></dd><dt>Branch</dt><dd><code class="branch" title="${esc(x.branch)}">${esc(x.branch)}</code></dd>` : ""}
       <dt>Conversation</dt><dd>${x.harness_session ? `<code>${esc(x.harness_session)}</code> <span class="sub-val">resumes natively</span>`
         : `<span class="hint">${x.turns.length ? "summary handoff on the next turn" : "starts with the first message"}</span>`}</dd>
       <dt>Saved</dt><dd>${x.checkpoint_count ? `${plural(x.checkpoint_count, "checkpoint")}, last ${ago(x.last_checkpoint_at)}
@@ -1182,6 +1128,7 @@ function renderSession(x) {
         `<option value="${v}" ${v === keep ? "selected" : ""}>${t}</option>`).join("")}${[15, 30, 120, 480, 0].includes(keep)
         ? "" : `<option value="${keep}" selected>after ${keep} min</option>`}</select></dd>
       ${x.job_id ? `<dt>Job</dt><dd><a href="#jobs" data-goto-job="${esc(x.job_id)}" >${idHtml(x.job_id)}</a></dd>` : ""}
+      ${x.sandbox_id ? `<dt>Sandbox</dt><dd>${idHtml(x.sandbox_id)}</dd>` : ""}
     </dl>
     <div class="env-bar">
       ${live ? "" : (x.state === "archived" ? "" : `<button id="ses-open" type="button" class="af-btn ${form ? "af-btn--secondary" : "af-btn--primary"}">${ic("play")}${x.checkpoint_count ? "Resume" : "Open"}</button>`)}
@@ -1199,11 +1146,9 @@ function renderSession(x) {
       <b>${esc(t.message.split("\n")[0].slice(0, 140))}</b>
       ${meta([["harness", t.harness || ""], ["mode", t.mode], t.exit_code != null ? ["exit", t.exit_code] : t.run_id ? ["exit", "running"] : null,
         ["started", t.started_at ? ago(t.started_at) : ""]])}
-      ${t.summary ? `<div class="turn-summary">${esc(t.summary.slice(0, 600))}</div>` : ""}</li>`).join("")}</ol>` : ""}`;
+      ${t.summary ? `<div class="turn-summary">${esc(t.summary.slice(0, 600))}</div>` : ""}</li>`).join("")}</ol>` : ""}`; });
   fillActivity(box);
   const sb = { id: x.sandbox_id, name: x.name };
-  const findCard = (id) => cards.find((c) => c.id === id);
-  restoreReasons(box, reasons, findCard);
   restoreThreads(box, threads, rkey);
   if (focused) $("[data-thread] textarea", box)?.focus({ preventScroll: true });
   // one route for all of it: a send starts a turn, or steers the running one (queued server-side, with a take-back);
@@ -1215,10 +1160,8 @@ function renderSession(x) {
     toast(x.state === "suspended" ? `Resuming ${x.name}, then sending` : x.busy || x.state === "running" ? "Queued; it applies after this tool call" : "Sent");
     await loadSessions();
   };
-  box.onclick = (e) => approvalClick(e, findCard, loadSessions) || diffClick(e, "sessions", x.id, () => renderSession(x), () => send(""));
   // (a send with no words of its own carries the review comments alone)
-  wireQuestion($("#ses-question"), (text) => { $("#ses-question textarea").value = ""; return send(text, true); });
-  if ($("#ses-question textarea")) $("#ses-question textarea").value = draft;
+  box.onclick = (e) => detailDecisionClick(e, items, unit) || diffClick(e, "sessions", x.id, () => renderSession(x), () => send(""));
   wireComposer($("#ses-composer"), { draft, onSend: send, onTakeBack: async (id) => {
     await api("POST", `/api/sessions/${x.id}/steers/${id}/withdraw`);
     toast("Taken back; the agent never saw it.");
@@ -1272,7 +1215,7 @@ function drawActivity(el, st) {
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
       <span class="what"><b>${esc(ACT_LABEL[e.kind] || e.kind)}</b>${block
         ? `<pre class="act-out af-mono${long ? " is-capped" : ""}">${esc(text)}</pre>${long ? btn("More", { kind: "ghost", sm: true, icon: "chevron-down", attrs: { "data-act-more": true, "aria-expanded": "false" } }) : ""}`
-        : ` ${tails.inText(linkify(words(text)))}`}</span></li>`;
+        : e.kind === "command" ? ` <code class="af-mono">${esc(text)}</code>` : ` ${tails.inText(linkify(words(text)))}`}</span></li>`;
   };
   el.innerHTML = shown.length ? shown.map(row).join("") + (all.length > shown.length
       ? `<li class="act-more">${btn(`Earlier (${all.length - shown.length})`, { kind: "ghost", sm: true, icon: "chevron-down", attrs: { "data-act-all": true } })}</li>` : "")
@@ -1484,14 +1427,16 @@ $("#btn-new-env").addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------ credentials */
+// a credential's kind in words: "API key", "OAuth token", "Git token"
+const kindWord = (k) => sentence(String(k || "").replace(/_/g, " ")).replace(/\b(api|ssh|oauth|aws|gcp|url)\b/gi, (w) => ({ oauth: "OAuth" }[w.toLowerCase()] || w.toUpperCase()));
 async function loadCreds() {
   state.creds = await api("GET", "/api/credentials");
   $("#cred-table tbody").innerHTML = state.creds.length ? state.creds.map((c) => `<tr>
       <td><span class="af-table__id">${esc(c.name)}</span>${c.description ? `<div class="muted">${esc(c.description)}</div>` : ""}</td>
-      <td class="af-table__mono">${esc(c.harness)}</td>
-      <td>${esc(c.kind.replace("_", " "))}<div class="muted af-mono">${esc(c.env_var || c.file_path || "")}</div></td>
-      <td>${c.exclusive ? (c.leased_to ? `<span class="af-tag">exclusive</span> ${meta([["held by", c.leased_to]])}`
-        : `<span class="af-tag">exclusive</span> <span class="muted">free</span>`) : `<span class="af-tag">shared</span>`}</td>
+      <td class="af-table__mono c-harness">${esc(c.harness)}</td>
+      <td>${esc(kindWord(c.kind))}<div class="muted af-mono">${esc(c.env_var || c.file_path || "")}</div></td>
+      <td class="c-use">${c.exclusive ? (c.leased_to ? `Exclusive <span class="muted">held by ${idHtml(c.leased_to)}</span>`
+        : `Exclusive <span class="muted">free</span>`) : "Shared"}</td>
       <td class="act">${c.leased_to ? `<button type="button" class="af-btn af-btn--secondary af-btn--sm" data-release="${esc(c.name)}" title="Use only if the holding sandbox is gone">Release</button>` : ""}
         <button type="button" class="af-btn af-btn--ghost af-btn--sm" data-del="${esc(c.name)}">Delete</button></td></tr>`).join("")
     : `<tr><td colspan="5">${emptyState({ compact: true, icon: "secret", title: "No credentials yet.", text: "Add an API key on the right, or sign in with a subscription below." })}</td></tr>`;
@@ -1504,7 +1449,7 @@ async function loadCreds() {
 function syncCredKinds() {
   const f = $("#cred-form");
   const h = state.harnesses.find((x) => x.name === f.harness.value);
-  f.kind.innerHTML = (h?.credential_kinds || []).map((k) => `<option value="${esc(k.kind)}">${esc(k.kind.replace("_", " "))}</option>`).join("");
+  f.kind.innerHTML = (h?.credential_kinds || []).map((k) => `<option value="${esc(k.kind)}">${esc(kindWord(k.kind))}</option>`).join("");
   syncSlot();
 }
 function syncSlot() {
@@ -1518,7 +1463,7 @@ $("#cred-form").harness.addEventListener("change", syncCredKinds);
 $("#cred-form").kind.addEventListener("change", syncSlot);
 $("#cred-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
-  if (file) $("#cred-form").value.value = await file.text();
+  if (file) { $("#cred-form").value.value = await file.text(); $("#cred-file-name").textContent = file.name; }
 });
 $("#cred-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1527,7 +1472,7 @@ $("#cred-form").addEventListener("submit", async (e) => {
     const body = Object.fromEntries(new FormData(f));
     if (!body.description) delete body.description;
     const c = await api("POST", "/api/credentials", body);
-    toast(`Saved ${c.name}`); f.reset(); await loadCreds(); syncCredKinds();
+    toast(`Saved ${c.name}`); f.reset(); $("#cred-file-name").textContent = ""; await loadCreds(); syncCredKinds();
   });
 });
 $("#cred-table").addEventListener("click", async (e) => {
@@ -1642,16 +1587,22 @@ $("#token-table").addEventListener("click", async (e) => {
 });
 
 /* ------------------------------------------------------------------ activity */
-// The detail is keyed pairs (Airframe meta: STATUS 401, METHOD GET), a long value cut with the whole in its title;
-// a run of identical rows (same who, action, target and detail, one after the other) is one row with "× n" and the
-// span it covers; on a phone each row is a card (app.css), so nothing hides off the side of the table.
-const AUDIT_VAL = 96;
+// What people and MCP clients did (GET /api/audit), newest first. hangar's own commands in a job's or session's sandbox
+// (the clone, the secret scan, the push: sandbox.exec by job:… or session:…) bury the people, so they are hidden
+// until asked for; the actor and action filters narrow the rest, and the list pages fifty rows at a time (KAN-155).
+// The detail is keyed pairs (Airframe meta), a long value cut with the whole in its title, a missing one a dash;
+// a run of identical rows is one row with "× n" and the span it covers; on a phone each row is a card (app.css).
+const AUDIT_VAL = 96, AUDIT_PAGE = 50, AUDIT_FETCH = 1000;
+const audit = { rows: [], page: 0 };
 const auditSpan = (s) => (s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`);
+const isSystemAudit = (a) => a.action === "sandbox.exec" && /^(job|session):/.test(a.actor || "") || ["prebuild", "reaper", "system"].includes(a.actor);
 function auditDetail(d) {
   const items = Object.entries(d || {}).map(([k, v]) => {
-    const text = typeof v === "object" ? JSON.stringify(v) : String(v ?? "");
+    const none = v == null || v === "";
+    const text = none ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v);
     const long = text.length > AUDIT_VAL;  // (Airframe's meta() markup by hand: a cut value keeps the whole in its title)
-    return `<span class="af-meta__item"><span class="af-meta__key">${esc(keyCase(k.replace(/_/g, " ")))}</span><span class="af-meta__val"${long ? ` title="${esc(text)}"` : ""}>${tails.inText(esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text))}</span></span>`;
+    const cmd = k === "command" && !none;
+    return `<span class="af-meta__item"><span class="af-meta__key">${esc(keyCase(k.replace(/_/g, " ")))}</span><span class="af-meta__val${cmd ? " af-mono" : ""}"${long ? ` title="${esc(text)}"` : ""}>${tails.inText(esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text))}</span></span>`;
   });
   return items.length ? `<span class="af-meta">${items.join("")}</span>` : "";
 }
@@ -1666,14 +1617,40 @@ function auditRows(ev) {
   return rows;
 }
 async function loadAudit() {
-  const ev = await api("GET", "/api/audit?limit=300");
-  $("#audit-table tbody").innerHTML = auditRows(ev).map((a) => `<tr>
+  audit.rows = await api("GET", `/api/audit?limit=${AUDIT_FETCH}`);
+  const who = $("#audit-who"), what = $("#audit-what"), cw = who.value, ca = what.value;
+  const names = new Map();
+  for (const a of audit.rows) { const n = actorParts(a.actor).who; if (!names.has(n)) names.set(n, n); }
+  who.innerHTML = `<option value="">Everyone</option>${[...names.keys()].sort().map((n) => `<option>${esc(n)}</option>`).join("")}`;
+  what.innerHTML = `<option value="">Every action</option>${[...new Set(audit.rows.map((a) => a.action))].sort().map((n) => `<option>${esc(n)}</option>`).join("")}`;
+  who.value = names.has(cw) ? cw : ""; what.value = audit.rows.some((a) => a.action === ca) ? ca : "";
+  drawAudit();
+}
+function drawAudit() {
+  const sys = $("#audit-system").checked, who = $("#audit-who").value, what = $("#audit-what").value;
+  const hidden = audit.rows.filter(isSystemAudit).length;
+  $("#audit-system-n").textContent = hidden ? `(${hidden})` : "";
+  const kept = audit.rows.filter((a) => (sys || !isSystemAudit(a)) && (!who || actorParts(a.actor).who === who) && (!what || a.action === what));
+  const rows = auditRows(kept), pages = Math.max(1, Math.ceil(rows.length / AUDIT_PAGE));
+  audit.page = Math.min(audit.page, pages - 1);
+  const shown = rows.slice(audit.page * AUDIT_PAGE, (audit.page + 1) * AUDIT_PAGE);
+  $("#audit-table tbody").innerHTML = shown.map((a) => `<tr>
     <td class="af-table__mono c-when" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}${a.n > 1
       ? `<span class="af-table__sub">× ${a.n} in ${auditSpan(a.ts - a.first)}</span>` : ""}</td>
-    <td class="c-who">${tails.inText(esc(a.actor))}</td><td class="af-table__mono c-action">${esc(a.action)}</td><td class="af-table__mono c-target">${tails.inText(esc(a.target || ""))}</td>
+    <td class="c-who">${actorHtml(a.actor)}</td><td class="af-table__mono c-action">${esc(a.action)}</td><td class="af-table__mono c-target">${tails.inText(esc(a.target || "")) || "—"}</td>
     <td class="c-detail">${auditDetail(a.detail)}</td></tr>`).join("")
-    || `<tr><td colspan="5">${emptyState({ compact: true, icon: "log", title: "Nothing recorded yet.", text: "Every action by a person or an MCP client lands here." })}</td></tr>`;
+    || `<tr><td colspan="5">${audit.rows.length
+      ? emptyState({ compact: true, icon: "log", title: "Nothing matches these filters.", text: hidden && !sys ? `hangar's own commands are hidden; show them to see ${plural(hidden, "more row")}.` : "Clear a filter to see more." })
+      : emptyState({ compact: true, icon: "log", title: "Nothing recorded yet.", text: "Every action by a person or an MCP client lands here." })}</td></tr>`;
+  const first = rows.length ? audit.page * AUDIT_PAGE + 1 : 0, last = Math.min(rows.length, (audit.page + 1) * AUDIT_PAGE);
+  $("#audit-pager").hidden = rows.length <= AUDIT_PAGE;
+  $("#audit-range").textContent = `${first} to ${last} of ${rows.length}`;
+  $("#audit-newer").disabled = audit.page === 0;
+  $("#audit-older").disabled = audit.page >= pages - 1;
 }
+for (const id of ["#audit-who", "#audit-what", "#audit-system"]) $(id).addEventListener("change", () => { audit.page = 0; drawAudit(); });
+$("#audit-newer").addEventListener("click", () => { audit.page = Math.max(0, audit.page - 1); drawAudit(); $("#view-activity").scrollIntoView({ block: "start" }); });
+$("#audit-older").addEventListener("click", () => { audit.page++; drawAudit(); $("#view-activity").scrollIntoView({ block: "start" }); });
 
 /* ------------------------------------------------------------------ usage (--- observe) */
 const usd = (v) => (v >= 100 ? `$${Math.round(v).toLocaleString()}` : `$${v.toFixed(2)}`);
@@ -1694,19 +1671,19 @@ async function loadUsage() {
       ["policy", "Budget stops", String(t.budget_stops), t.budget_stops ? "turns stopped over their budget" : "none in range", ""],
     ].map(([icon, label, value, note, scope]) => `<article class="af-card tile">
       <div class="af-card__top"><span class="af-lbl">${ic(icon)}${esc(label)}</span><span class="af-card__meta">${esc(range)}</span></div>
-      <div class="af-card__value" aria-label="${esc(`${label}: ${value}`)}">${readout(value)}</div>
+      <div class="af-card__value" aria-label="${esc(`${label}: ${value}`)}"><span class="usage-num">${esc(value)}</span></div>
       <div class="af-card__foot"><span>${esc(note)}</span><span>${esc(scope)}</span></div></article>`).join("");
     drawSpend(days.rows, days.since);
-    const rows = (sel, data) => {
-      $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr><td class="af-table__mono">${esc(r.key)}</td>
+    const rows = (sel, data, people = false) => {
+      $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr>${people ? `<td title="${esc(r.key)}">${esc(actorName(r.key))}</td>` : `<td class="af-table__mono">${esc(r.key)}</td>`}
         <td class="af-num af-table__mono">${r.turns}</td><td class="af-num af-table__mono">${kTok(r.tokens)}</td>
         <td class="af-num af-table__mono" title="${r.unpriced_turns ? `${plural(r.unpriced_turns, "turn")} with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
         : `<tr><td colspan="4">${emptyState({ compact: true, title: "No agent turns in this range." })}</td></tr>`;
     };
     rows("#usage-repos", repos);
-    rows("#usage-requesters", people);
+    rows("#usage-requesters", people, true);
     $("#usage-stops tbody").innerHTML = days.budget_stops.length ? days.budget_stops.map((b) => `<tr>
-      <td class="af-table__id">${tails.isRaw(b.job || b.session) ? idHtml(b.job || b.session, { cls: "af-id" }) : esc(b.job || b.session || "")}</td><td class="af-table__mono">${esc(b.repo)}</td><td>${esc(b.requester || "")}</td>
+      <td class="af-table__id">${tails.isRaw(b.job || b.session) ? idHtml(b.job || b.session, { cls: "af-id" }) : esc(b.job || b.session || "")}</td><td class="af-table__mono">${esc(b.repo)}</td><td>${esc(b.requester ? actorName(b.requester) : "\u2014")}</td>
       <td>${esc(b.reason || "")}</td>
       <td class="af-table__mono" title="${new Date(b.ts * 1000).toLocaleString()}">${ago(b.ts)}</td></tr>`).join("")
       : `<tr><td colspan="5">${emptyState({ compact: true, title: "No turn was stopped over its budget in this range." })}</td></tr>`;

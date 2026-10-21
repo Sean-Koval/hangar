@@ -499,6 +499,8 @@ class SessionService:
         d["pending_approvals"] = [a.model_dump(mode="json") for a in steering.pending(s)]  # workstream steer
         if self.env_requests is not None:  # --- computer: the agent's requests, answered like approvals
             d["pending_approvals"] += self.env_requests.approvals_view(s)
+        # KAN-155: the step policy stopped in the live turn, so the Sessions page shows Denied as the Fleet does
+        d["policy_denial"] = den.model_dump(mode="json") if (den := steering.policy_denial(s)) else None
         return exchange.scrub_turns(d)  # workstream E: attachment contents never leave in a view
 
     @staticmethod

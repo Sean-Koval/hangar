@@ -486,6 +486,16 @@ def pending(s: Session | None) -> list[Approval]:
     return [a for a in t.approvals if a.status == "pending" and (a.expires_at is None or a.expires_at > now())]
 
 
+def policy_denial(s: Session | None) -> Approval | None:
+    """The step policy stopped in the turn still under way: the latest approval policy denied (`by == "policy"`),
+    which the agent carries on without. The Fleet's denied role (fleet_api) and the job and session views read it
+    from here, so every page shows the same status for the same work (KAN-155)."""
+    t = s.turns[-1] if s is not None and s.turns else None
+    if t is None or t.finished_at:
+        return None
+    return next((a for a in reversed(t.approvals) if a.status == "denied" and a.by == "policy"), None)
+
+
 def view(s: Session) -> dict[str, Any]:
     t = s.turns[-1] if s.turns else None
     return {"session": s.name, "turn": len(s.turns) or None, "running": bool(t and t.run_id and not t.finished_at),

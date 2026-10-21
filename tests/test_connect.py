@@ -207,7 +207,8 @@ def test_connect_writes_config_with_an_mcp_only_token(client, home):
     data = json.loads((home / ".claude.json").read_text())
     assert data["numStartups"] == 3 and data["mcpServers"]["other"] == {"type": "http", "url": "http://o"}
     entry = data["mcpServers"]["hangar"]
-    assert entry["type"] == "http" and entry["url"] == "http://localhost:8787/mcp"
+    # no HANGAR_PUBLIC_URL: the address the CLI reached hangar at (KAN-155), here the test client's
+    assert entry["type"] == "http" and entry["url"] == "http://testserver/mcp"
     token = entry["headers"]["Authorization"].removeprefix("Bearer ")
     assert token not in r.output
     # the token works for MCP and nothing else
