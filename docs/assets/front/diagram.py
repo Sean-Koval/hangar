@@ -74,9 +74,9 @@ STYLE = """
 """
 
 PRODUCT = {
-    "hangar": "var(--af-product-hangar, #EE8F63)",
+    "hangar": "var(--af-product-hangar, #24C1C9)",
     "flightdeck": "var(--af-product-flightdeck, #D98CD2)",
-    "tower": "var(--af-product-tower, #C5A93B)",
+    "tower": "var(--af-product-tower, #67B0F9)",
     "aidlc": "var(--af-product-aidlc, #69C27E)",
     # The team harness repo is not a product: it has no hue of its own.
     "harness": "var(--af-fg-subtle, #8A8A8A)",
