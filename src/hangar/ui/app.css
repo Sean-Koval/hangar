@@ -85,9 +85,9 @@ details[open] > summary { margin-bottom: var(--af-space-8); }
 .theme-switch .theme-switch__moon, .theme-switch[data-theme="light"] .theme-switch__sun { display: none; }
 .theme-switch[data-theme="light"] .theme-switch__moon { display: inline-block; }
 main { padding: var(--af-space-28) var(--page-pad) calc(var(--drawer-pad, 0px) + var(--af-space-40)); min-width: 0; }
-/* every view opens with Airframe's page header; its actions slot holds the view's filter and at most one primary.
-   On Jobs and Sessions the composer's Send is the primary while something is open, so New job / New session are
-   secondary up there and primary only in the panel's empty state, and never while the new form (Submit) is open. */
+/* every view opens with Airframe's page header; its actions slot holds the view's filter and its New button. Every
+   "New …" is secondary, in the header and in a panel's empty state alike (KAN-155): the primary is what a form submits
+   or a message sends, and the empty state's New hides while the new form is open. */
 .view > .af-page-head { margin-bottom: var(--af-space-24); }
 .view:has(> .new-form:not([hidden])) .job-detail .af-empty__act { display: none; }
 .af-page-head__actions { gap: var(--af-space-12); }
@@ -159,7 +159,7 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 .needs-review:not(:empty) { display: flex; flex-direction: column; gap: var(--af-space-16); margin-top: var(--af-space-40); }
 .needs-review__title { margin-top: 0; }
 .needs-review__list { display: flex; flex-direction: column; gap: var(--af-space-8); margin: 0; padding: 0; list-style: none; }
-.needs-review__row { display: grid; grid-template-columns: 18px 54px minmax(180px, 1fr) minmax(0, 220px) auto; align-items: center; gap: 14px;
+.needs-review__row { display: grid; grid-template-columns: 18px max-content minmax(180px, 1fr) minmax(0, 220px) auto; align-items: center; gap: 14px;
   min-height: 58px; padding: 9px 14px 9px 18px; }
 .needs-review__row > .af-status { gap: 0; }
 .needs-review__acts { display: flex; justify-content: flex-end; gap: var(--af-space-4); }
@@ -171,6 +171,20 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 }
 .af-decision .af-lead code { overflow-wrap: anywhere; }
 .af-decision .af-pairs .af-mono, .af-console .af-pairs .af-mono { overflow-wrap: anywhere; }
+/* IDs and branches never break mid-token (KAN-155): an ID is whole; a branch too long for its place ends in an
+   ellipsis with the whole in its title */
+.af-id { white-space: nowrap; overflow-wrap: normal; }
+.branch, .af-pairs .af-mono.branch { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: normal; vertical-align: bottom; }
+/* the sandbox beside the work's tail number in a decision's byline: "codex for Sean · Sandbox HGR-8AS5" */
+.sandbox-id { display: inline-flex; align-items: baseline; gap: 5px; margin-left: var(--af-space-8); padding-left: var(--af-space-8);
+  border-left: 1px solid var(--af-line); }
+.sandbox-id .af-id { font-size: 11.5px; color: var(--af-fg-muted); }
+/* the denied placard leads the now-line of a denied row (the mark column has no room for a word) */
+.af-agent__sub > .af-status--denied { flex: none; margin-right: 8px; }
+/* decisions on a job's or session's own page: the deck's card, resting on the panel (DecisionDeck: shadow-1 outside a stack) */
+.job-detail .cards .af-decision { box-shadow: var(--af-shadow-1); }
+.detail-reason { color: var(--af-fg); }
 
 /* ---------- lists (jobs, sessions, environments) ---------- */
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; background: var(--af-raised);
@@ -190,7 +204,9 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 #job-list .t .af-id { font-size: 12px; color: var(--af-fg-muted); margin-right: 2px; }
 .list .d { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--af-fg-subtle); min-width: 0; }
 .list .d .af-status, .list .d .af-field__error { font-size: 12px; }
+.list .d .af-status--denied { font-size: 10.5px; }  /* the placard keeps Airframe's size */
 #env-list .t { font-family: var(--af-font-mono); font-size: 13px; }
+#session-list .t .af-id { font-size: 12px; color: var(--af-fg-muted); margin-right: 2px; }
 
 /* ---------- tables (Airframe FleetTable: unfilled header, faint row rules) ---------- */
 .table td { padding-block: 6px; }
@@ -318,6 +334,17 @@ form.inline .af-input { flex: 1; }
 #cred-form { display: flex; flex-direction: column; gap: var(--af-space-16); padding: var(--af-space-20); }
 #cred-form .af-btn { align-self: flex-start; }
 #cred-form p { margin: 0; }
+#cred-form .af-input > input::placeholder, #cred-form textarea::placeholder { font-family: var(--af-font-sans); }
+.cred-file { position: relative; }
+.cred-file__row { display: flex; align-items: center; gap: var(--af-space-12); min-width: 0; }
+.cred-file__row .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cred-file:has(#cred-file:focus-visible) .af-btn { outline: 2px solid var(--af-focus); outline-offset: 2px; }
+#cred-table .c-use { white-space: nowrap; }
+/* the Activity log: two filters and the toggle for hangar's own commands in the header, a pager under the table */
+.audit-filters { flex-wrap: wrap; }
+.audit-filters select { max-width: 200px; }
+.audit-pager { display: flex; align-items: center; justify-content: flex-end; gap: var(--af-space-12); margin-top: var(--af-space-12); }
+.audit-pager[hidden] { display: none; }
 
 /* ---------- terminal drawer: Airframe's bottom drawer, always dark (a nested Night scope, data-theme="dark"), the
    terminal's own ground; the head holds one tab per terminal ---------- */
@@ -351,6 +378,9 @@ form.inline .af-input { flex: 1; }
 /* ---------- usage (--- observe): summary cards with readouts, a greyscale bar chart ---------- */
 .tiles { margin-bottom: var(--af-space-12); }
 .tiles .af-card__foot { min-height: 27px; }
+/* a summary card's figure: mono tabular digits at the readout's size, set tight (no cells, no letter-spacing) */
+.usage-num { font-family: var(--af-font-mono); font-weight: 500; font-size: 30px; line-height: 1; letter-spacing: 0;
+  font-variant-numeric: tabular-nums; color: var(--af-fg); }
 .usage-chart { padding: var(--af-space-16) var(--af-space-20) var(--af-space-20); }
 .usage-chart h3 { margin-bottom: var(--af-space-16); }
 .bars { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 180px auto; gap: 6px 10px; }
@@ -398,8 +428,10 @@ form.inline .af-input { flex: 1; }
   .tab[aria-current="page"]::after { content: ""; position: absolute; left: 22%; right: 22%; top: -1px; height: 2px; background: var(--pc, var(--af-fg)); }
   .tab:focus-visible { outline-offset: -2px; }
   .tab-ic { position: relative; display: grid; place-items: center; }
-  .tab-count { position: absolute; top: -6px; left: 16px; padding: 0 3px; background: var(--af-canvas); color: var(--af-fg); font-family: var(--af-font-mono);
-    font-size: 10.5px; letter-spacing: .04em; }
+  /* a count over a tab's icon: Airframe's grey count, or its Needs-you badge while someone is needed */
+  .tab-count { position: absolute; top: -7px; left: 14px; }
+  .tab-count.af-nav__count { padding: 0 3px; background: var(--af-canvas); color: var(--af-fg); font-size: 10.5px; }
+  .tab-count.af-nav__badge { min-width: 16px; height: 16px; padding: 0 4px; font-size: 10.5px; }
   .tab-count:empty { display: none; }
   .more-sheet { display: flex; flex-direction: column; gap: var(--af-space-16); position: fixed; left: 0; right: 0; top: var(--af-header-h); bottom: var(--tabbar-h);
     z-index: var(--af-z-scrim); padding: var(--af-space-12) var(--af-space-16) var(--af-space-24); overflow-y: auto; background: var(--af-canvas); }
@@ -421,6 +453,14 @@ form.inline .af-input { flex: 1; }
   .job-detail, .env-detail { padding: var(--af-space-16); }
   .kv { grid-template-columns: 84px minmax(0, 1fr); }
   #usage-stops th:nth-child(2), #usage-stops td:nth-child(2), #usage-stops th:nth-child(3), #usage-stops td:nth-child(3) { display: none; }
+}
+/* a phone: the credentials table drops the harness column (the kind and its variable say which), so Delete stays on
+   screen at 390 */
+@media (max-width: 600px) {
+  #cred-table th:nth-child(2), #cred-table td.c-harness { display: none; }
+  #cred-table td:first-child { overflow-wrap: anywhere; }
+  .audit-filters { width: 100%; }
+  .audit-filters select { flex: 1 1 140px; max-width: none; }
 }
 /* a phone, narrower still: the Fleet header is three short rows (title and New sandbox; one line of what is not zero
    and the slots; the view as a select beside Show stopped), and the Activity log is a card per row instead of five

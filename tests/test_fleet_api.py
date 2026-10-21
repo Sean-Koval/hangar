@@ -398,3 +398,22 @@ def test_question_options_on_the_unit_and_the_inbox(client):
     job_a.state, job_a.result.question = JobState.RUNNING, None  # answered (a follow-up clears the question)
     a = next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["job"] == job_a.id)
     assert a["question"] is None and a["question_options"] == [] and h.jobs.view(job_a)["question_options"] == []
+
+
+def test_a_policy_denial_reads_the_same_on_the_fleet_and_the_job(client):
+    """KAN-155: policy stopped a step in the job's live turn. The Fleet said Denied while the Jobs page said Running;
+    the job and session views now carry the same denial (`policy_denial`), from the one rule both read."""
+    h, sbs, job_a, ses_b = _world(client)
+    ses_a = h.sessions._sessions[job_a.session_id]
+    ses_a.turns[-1].approvals.append(Approval(id="apr-9", tool="WebFetch", detail="https://hooks.example.net/collect",
+                                              status="denied", by="policy", message="deny-secrets-egress"))
+    a = next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["job"] == job_a.id)
+    assert a["role"] == "denied" and a["label"] == "Denied"
+    j = client.get(f"/api/jobs/{job_a.id}", headers=ADMIN).json()
+    assert j["state"] == "running" and j["policy_denial"]["id"] == "apr-9" and j["policy_denial"]["by"] == "policy"
+    assert h.sessions.view(ses_a)["policy_denial"]["tool"] == "WebFetch"
+    assert h.sessions.view(ses_b)["policy_denial"] is None  # a held approval is not a denial
+    ses_a.turns[-1].finished_at = now()  # the turn ended: the denial is history, not a status
+    assert client.get(f"/api/jobs/{job_a.id}", headers=ADMIN).json()["policy_denial"] is None
+    assert next(x for x in client.get("/api/fleet", headers=ADMIN).json()["units"] if x["job"] == job_a.id)[
+        "role"] != "denied"

@@ -626,8 +626,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return fleet.overview()
 
     @app.get("/api/connect")
-    async def connect(_: str = U):
-        url = h.settings.public_url.rstrip("/") + "/mcp"
+    async def connect(request: Request, _: str = U):
+        # KAN-155: with no HANGAR_PUBLIC_URL the snippets name the address this page reached hangar at, not the default
+        base = h.settings.public_url if "public_url" in h.settings.model_fields_set else str(request.base_url)
+        url = base.rstrip("/") + "/mcp"
         return {
             "mcp_url": url,
             "mcp_sandbox_url": url + "/sandbox",  # --- #140: hangar-sandbox, the raw drive tools
@@ -640,10 +642,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f'claude mcp add --transport http hangar {url} --header "Authorization: Bearer $HANGAR_TOKEN"'
             ),
             "oauth": app.state.oauth is not None,
-            "a2a_agent_card": (h.settings.public_url.rstrip("/") + "/.well-known/agent-card.json") if a2a else None,
+            "a2a_agent_card": (base.rstrip("/") + "/.well-known/agent-card.json") if a2a else None,
             "chatgpt": (
                 f"In ChatGPT: Settings → Connectors → Create. MCP server URL: {url}. Authentication: OAuth. "
-                "ChatGPT registers itself and opens Hangar's approval page, where you paste a hangar token."
+                "ChatGPT registers itself and opens hangar's approval page, where you paste a hangar token."
                 if app.state.oauth is not None else
                 "OAuth is off: set HANGAR_PUBLIC_URL to the https URL clients reach hangar at to enable it."
             ),

@@ -213,10 +213,10 @@ def test_the_reply_is_a_composer_and_a_question_is_a_question_card():
     place, instead of a kv line and "Answer the agent" elsewhere."""
     app, css = (UI / "app.js").read_text(), (UI / "app.css").read_text()
     for part in ("af-composer", "af-composer__queued", "af-composer__qmsg", "af-composer__box", "af-composer__input",
-                 "af-composer__row", "af-composer__send", "af-composer__why", "af-question", "af-question__q",
-                 "af-question__free", "af-question__act", "af-chip"):
+                 "af-composer__row", "af-composer__send", "af-composer__why", "af-chip"):
         assert part in app, f"app.js lacks {part}"
-    assert "function composerHtml(" in app and "function questionHtml(" in app
+    # KAN-155: the agent's question on a job or session page is the deck's own card (fleet.js decisionCard)
+    assert "function composerHtml(" in app and "function detailItems(" in app and 'kind: "question"' in app
     # every disabled composer says why; the busy one queues through the server's steer and takes back with withdraw
     assert 'disabled: true, why:' in app and '"data-take-back"' in app
     assert '/steers/${id}/withdraw' in app and "/api/jobs/${j.id}/steer" in app and "/api/jobs/${j.id}/follow-up" in app
@@ -226,7 +226,8 @@ def test_the_reply_is_a_composer_and_a_question_is_a_question_card():
         assert dead not in app, dead
     assert ".followup" not in css
     # a question is distinct from an approval but takes the same role and word
-    assert 'status("approval", "Needs input", { lit: true })' in app
+    fleet = (UI / "fleet.js").read_text()
+    assert 'it.kind === "question" ? "Needs input"' in fleet and 'DECIDE.has(it.kind) ? "approval"' in fleet
 
 
 def test_the_change_is_a_greyscale_diff_with_comments_for_the_agent():
@@ -255,39 +256,40 @@ def test_the_change_is_a_greyscale_diff_with_comments_for_the_agent():
     assert "af-diff__line--add" not in css and "af-diff__line--del" not in css, "the diff's tones are Airframe's"
 
 
-def test_held_actions_are_approval_cards_decided_in_place():
-    """theme-v6: a held tool call, a job waiting to start and an environment request are Airframe's ApprovalCard v2,
-    on the job and session details, in the Fleet detail and in the Needs-you view; Deny asks for a reason and refuses
-    without one (it goes back to the agent), Approve is the primary, "Allow for this turn" the second accept with a
-    hint; decided ones are verdict rows. The Needs-you view reads GET /api/inbox and leads the nav."""
+def test_held_actions_are_one_decision_card_everywhere():
+    """KAN-155 (was theme-v6's ApprovalCard v2 on the details): a held tool call, a job waiting to start, an environment
+    request and the agent's question are one card, fleet.js's decisionCard, in the deck, the Fleet console and the job
+    and session pages, with one header, one set of words (Approve, Deny, Allow for this turn) and one act(). Deny asks
+    for a reason and refuses without one; decided ones are verdict rows. Needs you reads GET /api/fleet's inbox."""
     html, app, fleet = (UI / "index.html").read_text(), (UI / "app.js").read_text(), (UI / "fleet.js").read_text()
-    for part in ("af-approval", "af-approval__subject", "af-approval__cmd", "af-approval__act", "af-approval__btns",
-                 "af-approval__reason", "af-approval__hint", "af-field__error", "af-verdict", "af-verdict__ok",
-                 "af-verdict__why"):
+    for part in ("af-verdict", "af-verdict__ok", "af-verdict__why"):
         assert part in app, f"app.js lacks {part}"
-    assert "function approvalHtml(" in app and "function denyReasonHtml(" in app and "function verdictHtml(" in app
+    assert "function verdictHtml(" in app and "function decisionCard(" in fleet and "function decisionBody(" in fleet
+    for dead in ("function approvalHtml(", "function denyReasonHtml(", "function questionHtml(", "approvalClick(", "Reject"):
+        assert dead not in app, f"app.js still has {dead}"
+    assert '"Reject' not in fleet and "rejecting" not in fleet, "the words are Approve and Deny"
+    # the detail panels draw the deck's card and decide through its act()
+    assert app.count('decisionCard(it, 0, "detail", u)') == 1 and 'act(dk.dataset.dk, it, dk, "detail", u)' in app
+    assert app.count("detailDecisionClick(e, items, unit)") == 2 and "detailItems(j, null)" in app and "detailItems(null, x)" in app
     # the decision order and the reason rule
-    btns = re.search(r'<div class="af-approval__btns">\$\{inspect\}(.*?)</div>', app, re.S).group(1)
-    order = [btns.index(f'"data-decide": "{d}"') for d in ("deny", "allow_always", "allow")]
+    body = fleet[fleet.index("function decisionBody("):fleet.index("function decisionCard(")]
+    btns = body[body.index('if (kind === "tool")'):body.index('if (kind === "job" || kind === "request")')]
+    order = [btns.index(f'"data-dk": "{d}"') for d in ("deny", "allow_always", "allow")]
     assert order == sorted(order), "refuse, the second accept, then the primary accept"
-    assert "(required)</span>" in app and "Reason for ${a.kind" in app
-    assert "if (!reason) {" in app and "aria-invalid" in app, "deny without a reason is refused in place"
-    # the three routes a card answers through, with the reason where each takes it
-    assert "reason ? { reason } : {}" in app and '"reject" : "approve"' in app
-    assert "{ decision, message: reason || null }" in app and "/api/env-requests/${a.id}" in app
-    # where the cards are: job detail, session detail, Fleet detail (delegated clicks), Needs you
-    assert app.count("approvalClick(e, ") >= 2
-    assert "jobApproval(j, false)" in app and "toolApprovals(x.pending_approvals" in app
-    # KAN-140: Needs you is the DecisionDeck, drawn by fleet.js from GET /api/fleet's inbox; deny takes a reason
+    assert "Reason for denying (required" in fleet
+    assert 'status("failed", "Give a reason.")' in fleet and "fleet.invalid.add(it.id)" in fleet
+    # the routes a decision answers through
+    assert "/api/jobs/${it.job}/reject`, { reason }" in fleet and "/api/jobs/${it.job}/approve`" in fleet
+    assert "/approvals/${it.approval}`, { decision: \"deny\", message: reason }" in fleet
+    assert "/api/env-requests/${it.request}`" in fleet
+    # KAN-140: Needs you is the DecisionDeck, drawn by fleet.js from GET /api/fleet's inbox
     assert 'id="view-needs"' in html and 'id="needs-deck"' in html and 'deckHtml("page")' in fleet
     assert 'href="#needs" data-view="needs"' in html
     assert html.index('href="#needs"') < html.index('href="#jobs"'), "what needs a person leads the nav"
     assert "Nothing waits on you." in fleet, "the clear state"
-    assert 'status("failed", "Give a reason.")' in fleet and "fleet.invalid.add(it.id)" in fleet
-    # a half-written reason or answer survives every repaint and live update
-    assert "function openReasons(" in app or "const openReasons" in app
-    assert "restoreReasons(box, reasons, findCard)" in app and "fleet.drafts.set(k, e.target.value)" in fleet
-
+    # a half-written reason or answer survives every repaint and live update, in the deck and the detail panels
+    assert "fleet.drafts.set(k, e.target.value)" in fleet and 'for (const root of [$("#job-detail"), $("#session-detail")])' in fleet
+    assert "function keepFocus(" in app
 
 def test_narrow_screens_get_a_bottom_tab_bar():
     """Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the six other sections sit in
@@ -321,7 +323,8 @@ def test_fleet_header_leads_with_what_needs_a_person():
     assert order, "fleet.js defines ATTENTION, the one attention order"
     assert re.findall(r'"([a-z]+)"', order.group(1)) == ["approval", "failed", "denied", "running", "queued", "off"]
     assert "ROLE_RANK = Object.fromEntries(ATTENTION" in js and "ROLE_RANK[a.role] - ROLE_RANK[b.role]" in js
-    assert "<em>${number(need)} need${need === 1 ? \"s\" : \"\"} you</em>" in js, "the status as the subject"
+    assert "<em>${need} need${need === 1 ? \"s\" : \"\"} you</em>" in js, "the status as the subject, in digits"
+    assert "NUMBERS" not in js, "KAN-155: numbers are digits throughout"
     assert "SEVERITY" not in js and "SEVERITY" not in (UI / "app.js").read_text(), "the old denied-first order is gone"
 
 
@@ -396,7 +399,7 @@ def test_job_detail_has_no_dead_terminal_and_a_feed_that_is_never_cut_mid_line()
     feed = css.split("/* the activity feed")[1].split("/* ---------- connect")[0]
     assert "max-height: 360px; overflow-y: auto; }" not in feed, "the feed is no longer a scroll box cut mid-line"
     assert "function duration(seconds" in app and "const words = (text)" in app and "const linkify = (text)" in app
-    assert 'linkify(words(e.message))' in app and '<i class="tl-dot" aria-hidden="true"></i>' in app
+    assert 'linkify(sentence(words(e.message)))' in app and '<i class="tl-dot" aria-hidden="true"></i>' in app
     assert "mark(JOB_STATE[e.state]" not in app and "mark(ACT_TONE[e.kind]" not in app, "timeline entries are dots"
     assert ".timeline .tl-dot {" in css and "background: var(--af-line-strong)" in css
     assert "toFixed(1)} h" not in app, "durations are whole units with one space: 5 h, not 5.0 h"
@@ -415,8 +418,8 @@ def test_theme_switch_lands_on_needs_you_and_one_primary_per_view():
     assert 'localStorage.setItem("hangar.theme"' in app and "function applyTheme(" in app
     # the landing: Needs you when its count is above zero, the Fleet otherwise
     assert 'history.replaceState(null, "", waiting ? "#needs" : "#fleet")' in app
-    # one primary: the page header's New job / New session are secondary; the panel's empty state carries the primary
-    assert 'class="af-btn af-btn--secondary" id="btn-new-job"' in html
-    assert 'class="af-btn af-btn--secondary" id="btn-new-session"' in html
-    assert 'btn("New job", { kind: "primary"' in app and 'btn("New session", { kind: "primary"' in app
+    # KAN-155: every "New …" is secondary, in the header and in a panel's empty state
+    for b in ("btn-new-job", "btn-new-session", "btn-new", "btn-new-env"):
+        assert f'class="af-btn af-btn--secondary" id="{b}"' in html, b
+    assert 'btn("New job", { kind: "secondary"' in app and 'btn("New session", { kind: "secondary"' in app
     assert ".view:has(> .new-form:not([hidden])) .job-detail .af-empty__act { display: none; }" in css

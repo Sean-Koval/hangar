@@ -189,7 +189,7 @@
             <button type="button" class="af-seg__btn" data-fleet-view="list" aria-pressed="true"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-log"/></svg>List</button>
             <button type="button" class="af-seg__btn" data-fleet-view="board" aria-pressed="false"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg>Board</button>
           </span>
-          <button class="af-btn af-btn--primary" id="btn-new" type="button"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-plus"/></svg>New sandbox</button>
+          <button class="af-btn af-btn--secondary" id="btn-new" type="button"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-plus"/></svg>New sandbox</button>
         </div>
       </header>
       <div class="fleet-filters">
@@ -236,7 +236,7 @@
       <header class="af-page-head">
         <div class="af-page-head__text"><h1 class="af-page-head__title">Environments</h1>
           <p class="af-page-head__lede">Layered templates: base, tools, harnesses, dependencies, skills, then repo.</p></div>
-        <div class="af-page-head__actions"><button class="af-btn af-btn--primary" id="btn-new-env" type="button">New environment</button></div>
+        <div class="af-page-head__actions"><button class="af-btn af-btn--secondary" id="btn-new-env" type="button">New environment</button></div>
       </header>
       <div class="split">
         <ul id="env-list" class="list"></ul>
@@ -268,10 +268,12 @@
           <label class="af-field"><span class="af-field__label">Harness</span><select name="harness"></select></label>
           <label class="af-field"><span class="af-field__label">Kind</span><select name="kind"></select></label>
           <p id="cred-slot" class="hint"></p>
-          <label class="af-field"><span class="af-field__label">Name</span><span class="af-input"><input name="name" required placeholder="claude-max"></span></label>
-          <label class="af-field"><span class="af-field__label">Value</span><span class="af-input af-input--area"><textarea name="value" rows="4" required placeholder="Paste the key, token, or file contents"></textarea></span></label>
-          <label class="af-field file"><span class="af-field__label">…or load a file</span><input type="file" id="cred-file"></label>
-          <label class="af-field"><span class="af-field__label">Description</span><span class="af-input"><input name="description" placeholder="optional"></span></label>
+          <label class="af-field"><span class="af-field__label">Name</span><span class="af-input"><input name="name" required placeholder="claude-max" autocomplete="off"></span></label>
+          <label class="af-field"><span class="af-field__label">Value</span><span class="af-input af-input--area"><textarea name="value" rows="4" required placeholder="Paste the key, token or file contents"></textarea></span></label>
+          <label class="af-field cred-file"><span class="af-field__label">Or load it from a file</span>
+            <span class="cred-file__row"><span class="af-btn af-btn--secondary af-btn--sm" aria-hidden="true">Choose a file</span>
+              <input type="file" id="cred-file" class="visually-hidden"><span id="cred-file-name" class="hint"></span></span></label>
+          <label class="af-field"><span class="af-field__label">Description (optional)</span><span class="af-input af-input--sans"><input name="description" placeholder="What it is for"></span></label>
           <button class="af-btn af-btn--primary" type="submit">Save credential</button>
         </form>
       </div>
@@ -313,13 +315,23 @@
     <!-- ACTIVITY -->
     <section id="view-activity" class="view" hidden>
       <header class="af-page-head"><div class="af-page-head__text"><h1 class="af-page-head__title">Activity</h1>
-        <p class="af-page-head__lede">Everything people and MCP clients did, newest first.</p></div></header>
+        <p class="af-page-head__lede">Everything people and MCP clients did, newest first.</p></div>
+        <div class="af-page-head__actions audit-filters">
+          <select id="audit-who" aria-label="Who"><option value="">Everyone</option></select>
+          <select id="audit-what" aria-label="Action"><option value="">Every action</option></select>
+          <label class="check"><input type="checkbox" id="audit-system"> Show hangar's own commands <span id="audit-system-n" class="hint"></span></label>
+        </div></header>
       <div class="af-table-wrap">
         <table class="table af-table" id="audit-table">
           <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Detail</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
+      <nav id="audit-pager" class="audit-pager" aria-label="Pages" hidden>
+        <button type="button" class="af-btn af-btn--ghost af-btn--sm" id="audit-newer">Newer</button>
+        <span id="audit-range" class="af-note"></span>
+        <button type="button" class="af-btn af-btn--ghost af-btn--sm" id="audit-older">Older</button>
+      </nav>
     </section>
 
     <!-- USAGE (--- observe) -->
@@ -357,10 +369,10 @@
   <!-- Below 760px the nine tabs become a bottom tab bar (Jobs, Sessions, Fleet, More) and the other six sections
        sit in the More sheet between the bar and the header; app.js marks the current one and toggles the sheet. -->
   <nav id="tabbar" class="tabbar af-hue--hangar" aria-label="Sections">
-    <a class="tab" href="#needs" data-view="needs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-approval"/></svg><span class="tab-count" data-count="needs"></span></span>Needs you</a>
-    <a class="tab" href="#jobs" data-view="jobs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg><span class="tab-count" data-count="jobs"></span></span>Jobs</a>
-    <a class="tab" href="#sessions" data-view="sessions"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg><span class="tab-count" data-count="sessions"></span></span>Sessions</a>
-    <a class="tab" href="#fleet" data-view="fleet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg><span class="tab-count" data-count="fleet"></span></span>Fleet</a>
+    <a class="tab" href="#needs" data-view="needs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-approval"/></svg><span class="tab-count af-nav__count" data-count="needs"></span></span>Needs you</a>
+    <a class="tab" href="#jobs" data-view="jobs"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-job"/></svg><span class="tab-count af-nav__count" data-count="jobs"></span></span>Jobs</a>
+    <a class="tab" href="#sessions" data-view="sessions"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-session"/></svg><span class="tab-count af-nav__count" data-count="sessions"></span></span>Sessions</a>
+    <a class="tab" href="#fleet" data-view="fleet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-fleet"/></svg><span class="tab-count af-nav__count" data-count="fleet"></span></span>Fleet</a>
     <button type="button" class="tab" id="tab-more" data-more aria-expanded="false" aria-controls="more-sheet"><span class="tab-ic"><svg class="af-ic" aria-hidden="true"><use href="/ui/airframe/airframe-icons.svg#af-more"/></svg></span>More</button>
   </nav>
   <div id="more-sheet" class="more-sheet" role="dialog" aria-label="More sections" hidden>
