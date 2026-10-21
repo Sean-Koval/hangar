@@ -39,6 +39,7 @@ from hangar import (  # strategies: workstream D; --- observe; steer: live turns
     scratch,  # --- frontdoor
     steer,
     strategies,
+    tails,
     taint,  # --- taint (#129)
     verifyloop,
     weekly,  # --- #168: `/hangar abandon <reason>` on an agent PR
@@ -1176,7 +1177,8 @@ class JobService:
             self._spawn(self._callback(job, "job.started"))
             if turn.reply_to:
                 await self._comment(job, turn.reply_to,
-                                    f"Agent started on hangar job `{job.id}` ({job.environment}, {job.harness}"
+                                    f"Agent started on hangar job {tails.label(job.id)} "
+                                    f"({job.environment}, {job.harness}"
                                     f"{', ' + job.model if job.model else ''}), branch `{job.branch}`.")
 
     async def _finish_turn(self, job: Job, turn: Turn, s) -> None:
@@ -1466,7 +1468,7 @@ class JobService:
         lines += clouddoctor.pr_lines(self, job)  # --- clouddoctor: a doctor fix names its evidence
         lines += adr.pr_lines(job)  # --- #170: the thread it was drafted from
         lines += changesets.pr_lines(self, job)  # --- change sets: the sibling PRs and the landing order
-        lines.append(f"hangar job `{job.id}` · requested by {job.requester} via {job.source} · "
+        lines.append(f"hangar job {tails.label(job.id)} · requested by {job.requester} via {job.source} · "
                      f"{job.environment} / {job.harness}" + (f" / {job.model}" if job.model else ""))
         if usage := self.usage(job):  # workstream C
             lines.append(f"Usage: {usage_line(usage)}")
@@ -1507,7 +1509,7 @@ class JobService:
         r = job.result
         head = {"succeeded": "Done", "failed": "Finished with problems", "cancelled": "Cancelled"}.get(
             job.state.value, job.state.value)
-        lines = [f"**{head}** — hangar job `{job.id}`" + (f" ({job.reason})" if job.reason else "")]
+        lines = [f"**{head}** — hangar job {tails.label(job.id)}" + (f" ({job.reason})" if job.reason else "")]
         if r.pr_url:
             lines.append(f"PR: {r.pr_url}")
         elif r.pushed:
@@ -1801,7 +1803,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         svc._spawn(svc._comment(job, ref, jobbudget.held_message(job)))
         return {"ok": True, "job": job.id, "awaiting_approval": True}
     # Acknowledge right away: provisioning (and a first image build) can take minutes before the agent starts.
-    svc._spawn(svc._comment(job, ref, f"Queued as hangar job `{job.id}` in `{job.environment}`. I'll comment here "
+    svc._spawn(svc._comment(job, ref, f"Queued as hangar job {tails.label(job.id)} in `{job.environment}`. "
+                                      "I'll comment here "
                                       "when the agent starts and again with the result."
                                       + fairness.queued_note(svc, job)  # --- review capacity (#159)
                                       + intake.queued_notes(svc, job, "github")))  # --- #156

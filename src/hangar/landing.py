@@ -40,7 +40,7 @@ from urllib.parse import quote
 
 import httpx
 
-from hangar import aireview, baseline, reviewtrust, weekly
+from hangar import aireview, baseline, reviewtrust, tails, weekly
 from hangar import modelpolicy as modelpolicy  # --- review #105
 from hangar.events import DEFAULT_PRICES, usage_line
 from hangar.gateway import AppTokens
@@ -1157,7 +1157,7 @@ class Landing:
     def packet(self, job: Job) -> str:
         svc, r, st = self.svc, job.result, job.landing
         policy = svc.policies.get(job.repo)
-        out = [PACKET, f"**Review packet** · hangar job `{job.id}`", ""]
+        out = [PACKET, f"**Review packet** · hangar job {tails.label(job.id)}", ""]
         if job.verify and r.verify_exit_code is not None:
             v = baseline.verdict(job, r.verify_exit_code, r.new_failures)
             word = {"pass": "passed", "fail": f"failed (exit {r.verify_exit_code})",

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hangar import trailers
+from hangar import tails, trailers
 from hangar.jobs import handle_github
 from tests.test_landing import HEAD, approval, gh, green, lands, pr_job, settle, svc  # noqa: F401 - fixtures
 
@@ -41,7 +41,7 @@ def test_the_pr_body_ends_with_trailers_git_reads(svc, monkeypatch):  # noqa: F8
     body = svc._pr_body(job)
     assert _parse(body) == [("Hangar-Job", job.id), ("Harness-Digest", H1), ("Environment-Digest", E1),
                             ("Harness-Lock", "team-default@r14")]
-    assert body.endswith("Harness-Lock: team-default@r14") and f"hangar job `{job.id}`" in body
+    assert body.endswith("Harness-Lock: team-default@r14") and f"hangar job {tails.label(job.id)}" in body
 
 
 def test_old_turns_print_no_empty_trailer_and_drifting_turns_list_each(svc, monkeypatch):  # noqa: F811

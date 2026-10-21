@@ -66,6 +66,8 @@ function unitView(u) {
 const units = () => (fleet.data?.units || []).map(unitView);
 function index() {
   fleet.byId = new Map((fleet.data?.units || []).map((u) => [u.id, u]));
+  tails.see(fleet.byId.keys());  // tail numbers widen together when two agents share a code (tails.js)
+  if (fleet.open) fleet.open = tails.resolve(fleet.open, fleet.byId.keys());  // #fleet?open=HGR-7Q2K works too
   if (fleet.open && !fleet.byId.has(fleet.open)) fleet.open = null;
   const listed = new Set((fleet.data?.inbox?.items || []).map((i) => i.id));
   for (const id of fleet.done) if (!listed.has(id) && !fleet.verdicts.has(id)) fleet.done.delete(id);
@@ -270,12 +272,12 @@ const stWord = (u) => status(u.role, u.label);
 /* ------------------------------------------------------------------ List (AgentRow) and Board (AgentCard) */
 const unitCls = (u, extra = "") => ["af-agent", extra, mod(u) === "approval" ? "af-agent--lit" : mod(u) ? `af-agent--${mod(u)}` : "",
   u.role === "off" ? "af-agent--off" : ""].filter(Boolean).join(" ");
-const ariaOf = (u) => `${u.tail}, ${u.label}, ${u.work}`;
+const ariaOf = (u) => `${tailOf(u.id)}, ${u.label}, ${u.work}`;
 const body = (u) => `<div class="af-agent__body"><div>${fleet.open === u.id ? `<div class="af-console" data-console="${esc(u.id)}">${consoleHtml(u)}</div>` : ""}</div></div>`;
 function rowHtml(u) {
   return `<article class="${unitCls(u)}" data-id="${esc(u.id)}">
     <button type="button" class="af-agent__line" tabindex="-1" aria-expanded="false" aria-label="${esc(ariaOf(u))}" title="${esc(u.name)}">
-      ${markOnly(u.role)}<span class="af-agent__tail">${esc(u.tail)}</span>
+      ${markOnly(u.role)}${idHtml(u.id, { codeOnly: true, cls: "af-agent__tail" })}
       <span class="af-agent__ttl"><span class="af-agent__work">${esc(u.work)}</span><span class="af-agent__sub"><span class="af-agent__now" data-now="${esc(u.id)}">${esc(nowLine(u))}</span>${hbHtml(u)}</span></span>
       <span class="af-agent__who">${personAvatar(u.owner)}<span>${esc(u.owner ? firstName(u.owner) : "hangar")}</span></span>
       <span class="af-agent__rig">${agentAvatar(u.harness, 22)}<span class="af-mono">${esc(u.model || u.harness || "")}</span></span>
@@ -287,7 +289,7 @@ function cardHtml(u) {
   const loud = u.role === "approval" || u.role === "failed" || u.role === "denied";
   return `<article class="${unitCls(u, "af-agent--card")}" data-id="${esc(u.id)}">
     <button type="button" class="af-agent__face" tabindex="-1" aria-expanded="false" aria-label="${esc(ariaOf(u))}" title="${esc(u.name)}">
-      <span class="af-agent__hd">${agentAvatar(u.harness, 22)}<span class="af-agent__tail">${esc(u.tail)}</span><span data-ring="${esc(u.id)}">${ringHtml(u)}</span></span>
+      <span class="af-agent__hd">${agentAvatar(u.harness, 22)}${idHtml(u.id, { codeOnly: true, cls: "af-agent__tail" })}<span data-ring="${esc(u.id)}">${ringHtml(u)}</span></span>
       <span class="af-agent__work">${esc(u.work)}</span><span class="af-agent__now" data-now="${esc(u.id)}">${esc(nowLine(u))}</span><span data-capsule="${esc(u.id)}">${capsuleHtml(u)}</span>
       <span class="af-agent__ft">${personAvatar(u.owner)}<span>${esc(u.owner ? firstName(u.owner) : "hangar")}</span>${loud ? stWord(u) : hbHtml(u)}</span>
     </button>${body(u)}
@@ -322,7 +324,7 @@ function pairs(list) {
   return xs.length ? `<div class="af-pairs">${xs.map(([k, v, mono]) => `<span><small>${esc(k)}</small>${mono ? `<span class="af-mono">${esc(v)}</span>` : esc(v)}</span>`).join("")}</div>` : "";
 }
 function reasonHtml(where, it, kind) {
-  const id = `${where}-r-${it.id}`, bad = fleet.invalid.has(it.id), back = unitOfItem(it)?.tail || it.job || it.session || "the agent";
+  const id = `${where}-r-${it.id}`, bad = fleet.invalid.has(it.id), back = tailOf(unitOfItem(it)?.id || it.job || it.session) || "the agent";
   const verb = kind === "job" ? "rejecting" : "denying";
   return `<div class="af-reason"><label for="${esc(id)}">Reason for ${verb} (required, goes back to ${esc(back)})</label>
     <div class="af-input af-input--area af-input--sans${bad ? " is-invalid" : ""}"><textarea id="${esc(id)}" rows="2" data-draft="${esc(DRAFT(where, it.id, "reason"))}" aria-invalid="${bad}" placeholder="What the agent should do instead">${esc(draftOf(where, it.id, "reason"))}</textarea></div>
@@ -374,11 +376,11 @@ function decisionBody(it, u, where) {
 function decisionCard(it, k, where) {
   const u = unitOfItem(it), role = roleOfItem(it), v = fleet.verdicts.get(it.id);
   const exp = DECIDE.has(it.kind) ? (it.expires_at || u?.ask_expires_at ? `${untilWords(it.expires_at || u.ask_expires_at)} left` : `asked ${since(it.since)} ago`) : `${since(it.since)} ago`;
-  const work = u?.work || it.title || it.job || it.session || "";
-  return `<article class="af-decision af-decision--${role}${v ? " af-decision--done" : ""}" data-k="${k}" data-item="${esc(it.id)}" aria-label="${esc(`${u?.tail || ""} ${wordOfItem(it)}: ${work}`)}"${k ? " inert" : ""}>
+  const work = u?.work || it.title || tailOf(it.job || it.session) || "";
+  return `<article class="af-decision af-decision--${role}${v ? " af-decision--done" : ""}" data-k="${k}" data-item="${esc(it.id)}" aria-label="${esc(`${u ? tailOf(u.id) : tailOf(it.job || it.session)} ${wordOfItem(it)}: ${work}`)}"${k ? " inert" : ""}>
     <div class="af-decision__hd">${status(role, wordOfItem(it))}<span class="af-decision__exp">${esc(exp)}</span></div>
-    <div class="af-decision__who">${u ? `<button type="button" class="af-decision__link" data-dk="jump" data-unit="${esc(u.id)}"><span class="af-id">${esc(u.tail)}</span>${esc(work)}</button>`
-      : `<span class="af-decision__link"><span class="af-id">${esc(it.job || it.session || "")}</span>${esc(work)}</span>`}
+    <div class="af-decision__who">${u ? `<button type="button" class="af-decision__link" data-dk="jump" data-unit="${esc(u.id)}">${idHtml(u.id)}${esc(work)}</button>`
+      : `<span class="af-decision__link">${tails.isRaw(it.job || it.session) ? idHtml(it.job || it.session) : `<span class="af-id">${esc(it.job || it.session || "")}</span>`}${esc(work)}</span>`}
       <span class="af-decision__by">${u ? `${agentAvatar(u.harness, 22)}${esc(u.harness || "agent")} for ${esc(u.owner ? firstName(u.owner) : "hangar")}` : esc(repoShort(it.repo))}</span></div>
     <div class="af-decision__bd">${decisionBody(it, u, where)}</div>
   </article>`;
@@ -393,7 +395,7 @@ function deckHtml(where) {
     : `<div class="af-empty af-empty--compact af-deck__empty">${ic("check")}<div class="af-empty__body"><h3 class="af-empty__title">Nothing waits on you.</h3>
         <p class="af-empty__text">${plural(running, "agent")} running, ${queued} queued. You will hear when one needs you.</p></div></div>`;
   const when = (it) => (DECIDE.has(it.kind) ? (it.expires_at || unitOfItem(it)?.ask_expires_at ? `${untilWords(it.expires_at || unitOfItem(it).ask_expires_at)} left` : `${since(it.since)} ago`) : wordOfItem(it));
-  const row = (it, attrs) => { const u = unitOfItem(it); return `<li><button type="button" ${attrs(u)}>${markOnly(roleOfItem(it))}<span class="af-id">${esc(u?.tail || "")}</span><span class="af-deck__what">${esc(u?.work || it.title || it.job || it.session || "")}</span><span class="af-deck__when">${esc(when(it))}</span></button></li>`; };
+  const row = (it, attrs) => { const u = unitOfItem(it); return `<li><button type="button" ${attrs(u)}>${markOnly(roleOfItem(it))}${idHtml(u?.id || it.job || it.session || "")}<span class="af-deck__what">${esc(u?.work || it.title || tailOf(it.job || it.session) || "")}</span><span class="af-deck__when">${esc(when(it))}</span></button></li>`; };
   // what stopped, under the decisions: its own list, never in the stack or up next; a row opens the agent, whose console
   // holds retry, start over and acknowledge
   const stoppedHtml = stopped.length ? `<h3 class="af-deck__subtitle">Stopped</h3>
@@ -626,8 +628,8 @@ function drawNeeds() {
   // (queued mark, tail, title and why, repo, the two links); waiting on others stays grey
   paint($("#needs-review"), review.length ? `<div class="fleet-title needs-review__title"><h2>Waiting for review</h2><span class="af-note">on GitHub, ${plural(review.length, "pull request")}</span></div>
     <ul class="needs-review__list">${review.map((i) => { const u = unitOfItem(i), pr = i.links?.pr || i.pr; return `<li class="af-agent needs-review__row">${markOnly("queued")}
-      <span class="af-agent__tail">${esc(u?.tail || "")}</span>
-      <span class="af-agent__ttl"><span class="af-agent__work">${esc(i.title || u?.work || i.job || "")}</span><span class="af-agent__sub"><span class="af-agent__now">${esc(i.reason || "")}</span></span></span>
+      ${u ? idHtml(u.id, { codeOnly: true, cls: "af-agent__tail" }) : `<span class="af-agent__tail"></span>`}
+      <span class="af-agent__ttl"><span class="af-agent__work">${esc(i.title || u?.work || tailOf(i.job) || "")}</span><span class="af-agent__sub"><span class="af-agent__now">${esc(i.reason || "")}</span></span></span>
       <span class="af-agent__rig">${i.repo ? `<span class="af-mono">${esc(repoShort(i.repo))}</span>` : ""}</span>
       <span class="needs-review__acts">${pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job ? sbtn("Open job", "ghost", { "data-go": `job:${i.job}` }) : ""}</span></li>`; }).join("")}</ul>` : "", "review");
 }
@@ -769,7 +771,7 @@ function act(dk, it, el, where) {
   if (dk === "retry") return decide(it, { ok: true, text: `Retrying in the same session: ${h} re-runs the check and fixes what failed.` },
     () => api("POST", `/api/jobs/${it.job || u.job}/retry`), running("re-running the failing check"));
   if (dk === "fresh") return decide(it, { ok: true, text: `Started over as a new job from the base branch; this one stays as it ended.` },
-    () => api("POST", `/api/jobs/${it.job || u.job}/retry?fresh=1`).then((r) => { const v = fleet.verdicts.get(it.id); if (v && r?.id) v.text = `Started over as ${r.id}, from the base branch; this one stays as it ended.`; }));
+    () => api("POST", `/api/jobs/${it.job || u.job}/retry?fresh=1`).then((r) => { const v = fleet.verdicts.get(it.id); if (v && r?.id) v.text = `Started over as ${tailOf(r.id)}, from the base branch; this one stays as it ended.`; }));
   if (dk === "ack") {
     fleet.done.add(it.id);
     api("POST", `/api/inbox/${encodeURIComponent(it.id)}/ack`).catch((e) => { if (e.status !== 404 && e.status !== 409) { fleet.done.delete(it.id); toast(e.message, true); draw(); } });
@@ -856,14 +858,14 @@ async function onClick(e) {
   if (a === "agent") return agentDialog(sb);
   if (a === "exec") return execDialog(sb);
   if (a === "fork") return forkDialog(sb);
-  if (a === "destroy" && !(await confirmAction(`Destroy ${u.name}?`, `Its filesystem is deleted unless you snapshot it first.${u.job || u.session
+  if (a === "destroy" && !(await confirmAction(`Destroy ${tailOf(u.id)}?`, `Its filesystem is deleted unless you snapshot it first.${u.job || u.session
     ? " The branch and the conversation are kept." : ""}`, "Destroy"))) return;
   await busy(b, async () => {
-    if (a === "destroy") { await api("DELETE", `/api/sandboxes/${u.id}`); toast(`Destroyed ${u.name}`); closeTerminalsFor(u.id); fleet.open = null; }
-    else if (a === "snapshot") { const s = await api("POST", `/api/sandboxes/${u.id}/snapshot`, { kind: "auto" }); toast(`Snapshot ${s.id} taken (${s.kind})`); }
-    else if (a === "pause") { await api("POST", `/api/sandboxes/${u.id}/pause`); toast(`Paused ${u.name}`); }
-    else if (a === "resume") { await api("POST", `/api/sandboxes/${u.id}/resume`); toast(`Resumed ${u.name}`); }
-    else if (a === "extend") { await api("POST", `/api/sandboxes/${u.id}/extend?minutes=60`); toast(`${u.name} extended by 1 hour`); }
+    if (a === "destroy") { await api("DELETE", `/api/sandboxes/${u.id}`); toast(`Destroyed ${tailOf(u.id)}`); closeTerminalsFor(u.id); fleet.open = null; }
+    else if (a === "snapshot") { const s = await api("POST", `/api/sandboxes/${u.id}/snapshot`, { kind: "auto" }); toast(`Snapshot ${tailOf(s.id)} taken (${s.kind})`); }
+    else if (a === "pause") { await api("POST", `/api/sandboxes/${u.id}/pause`); toast(`Paused ${tailOf(u.id)}`); }
+    else if (a === "resume") { await api("POST", `/api/sandboxes/${u.id}/resume`); toast(`Resumed ${tailOf(u.id)}`); }
+    else if (a === "extend") { await api("POST", `/api/sandboxes/${u.id}/extend?minutes=60`); toast(`${tailOf(u.id)} extended by 1 hour`); }
     await fetchFleet();
   });
 }

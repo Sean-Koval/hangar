@@ -8,6 +8,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const linkify = (text) => esc(text).replace(/\bhttps?:\/\/[^\s<]+?(?=[.,;:)]*(?:\s|$))/g, (u) =>
   `<a href="${u}" target="_blank" rel="noopener" class="af-mono">${u.replace(/^https?:\/\/(www\.)?/, "")}</a>`);
 
+// tail numbers (tails.js, KAN-114): a person reads HGR-7Q2K; the real ID stays in title, data attributes, URLs and the API
+const tailOf = (id) => tails.tail(id);
+const idHtml = (id, opts) => tails.html(id, opts);
+
 /* ---- Airframe (vendored in /ui/airframe/): the helpers and behaviours come from airframe.js (window.airframe, loaded
    before this script): status, icon, meta, btn, avatar, toast, confirm, drawer. The console adds only what it needs on
    top: a bare mark, a word-caser, a readout. ---- */
@@ -23,7 +27,13 @@ const word = (s) => String(s || "").replace(/_/g, " ").replace(/^./, (c) => c.to
 // keyed inline data (Airframe meta): keys are sentence-case words (theme-v12 retired the mono capitals), acronyms stay
 const KEY_CASE = { pr: "PR", cpu: "CPU", id: "ID", url: "URL" };
 const keyCase = (k) => (typeof k !== "string" || !k ? k : KEY_CASE[k] || k.charAt(0).toUpperCase() + k.slice(1));
-const meta = (items) => airframe.meta(items.filter((x) => x && x[1] !== "" && x[1] != null).map(([k, ...rest]) => [keyCase(k), ...rest]));
+// a value that is a hangar ID reads as its tail number, the real ID in its title (tails.js)
+const meta = (items) => {
+  const kept = items.filter((x) => x && x[1] !== "" && x[1] != null).map(([k, v, ...rest]) => [keyCase(k), v, ...rest]);
+  let html = airframe.meta(kept.map(([k, v, ...rest]) => [k, tails.isRaw(v) ? tails.tail(v) : v, ...rest]));
+  for (const [, v] of kept) if (tails.isRaw(v)) html = html.replace(`<span class="af-meta__val">${tails.tail(v)}</span>`, `<span class="af-meta__val af-id" title="${v}" data-raw-id="${v}">${tails.tail(v)}</span>`);
+  return html;
+};
 // an error line: the failed mark and the words, never a red fill (Airframe's field error)
 const errorLine = (text) => `<span class="af-field__error">${status("failed", text)}</span>`;
 // an empty state: what is not here and what to do about it (Airframe EmptyState); `compact` is the one-row form
@@ -108,7 +118,7 @@ function approvalHtml(a) {
     : a.sessionId ? btn("Open session", { kind: "ghost", sm: true, attrs: { "data-go": `session:${a.sessionId}` } }) : "";
   return `<article class="af-card af-card--lit af-approval" data-approval="${esc(a.id)}" data-kind="${esc(a.kind)}">
     <div class="af-card__top">
-      <span class="af-lbl">${ic("approval")}${label}<span class="af-lbl__sub">${esc(a.id)}</span></span>
+      <span class="af-lbl">${ic("approval")}${label}${idHtml(a.id, { cls: "af-lbl__sub af-id" })}</span>
       ${status("approval", "Needs approval", { lit: true })}
     </div>
     <div class="af-approval__subject">
@@ -116,7 +126,7 @@ function approvalHtml(a) {
       ${meta([["tool", a.tool && a.tool !== a.cmd ? a.tool : ""], ["taint", a.taint || ""], ["job", a.kind !== "job" ? a.job || "" : ""], ["session", a.job ? "" : a.session || ""]])}
     </div>
     <dl class="af-kv">
-      <dt>Requested by</dt><dd>${who.sandbox ? `<span class="af-who">${agentAvatar(who.harness, 22)}<span class="af-id">${esc(who.sandbox)}</span></span> ` : ""}<span class="af-muted">${esc(
+      <dt>Requested by</dt><dd>${who.sandbox ? `<span class="af-who">${agentAvatar(who.harness, 22)}${idHtml(who.sandbox)}</span> ` : ""}<span class="af-muted">${esc(
         who.sandbox ? harnessWord(who.harness) : who.requester || "someone")}${who.owner ? `, for ${esc(who.owner)}` : ""}${a.since ? `, ${ago(a.since)}` : ""}</span></dd>
       ${a.policy ? `<dt>Policy</dt><dd>${a.policy}</dd>` : ""}
       ${a.expires ? `<dt>Expires</dt><dd>in <span class="af-mono">${esc(untilWords(a.expires))}</span>, then ${consequence}</dd>` : ""}
@@ -131,7 +141,7 @@ function approvalHtml(a) {
 }
 // the reason block that takes the action row's place once Deny is pressed; the reason is required
 function denyReasonHtml(a) {
-  const back = a.who?.sandbox || a.job || a.session || "the requester";
+  const back = tailOf(a.who?.sandbox || a.job || a.session || "the requester");
   return `<div class="af-approval__reason" role="group" aria-labelledby="deny-lbl-${esc(a.id)}">
     <label class="af-field">
       <span class="af-field__label" id="deny-lbl-${esc(a.id)}">Reason for ${a.kind === "job" ? "rejecting" : "denying"} (required)</span>
@@ -401,7 +411,7 @@ function changesHtml(kind, id, hasWork) {
 function questionHtml({ id, who, turn, question, context = "", options = [], asked, meanwhile = "holding the turn" }) {
   return `<article class="af-card af-card--lit af-question" id="${esc(id)}">
     <div class="af-card__top">
-      <span class="af-lbl">${ic("agent")}Question<span class="af-lbl__sub">${esc(who)}</span>${turn ? `<span class="af-lbl__sub">turn ${turn}</span>` : ""}</span>
+      <span class="af-lbl">${ic("agent")}Question${tails.isRaw(who) ? idHtml(who, { cls: "af-lbl__sub af-id" }) : `<span class="af-lbl__sub">${esc(who)}</span>`}${turn ? `<span class="af-lbl__sub">turn ${turn}</span>` : ""}</span>
       ${status("approval", "Needs input", { lit: true })}
     </div>
     <p class="af-question__q">${esc(question)}</p>
@@ -479,9 +489,9 @@ async function api(method, path, body, { raw = false } = {}) {
 
 // Airframe's toast: bottom centre, held while a dialog or drawer is open or a field has focus (alert inhibition), the
 // failed mark for a bad outcome; `opts` adds an action ({label, onClick}) or `critical: true`.
-const toast = (msg, bad = false, opts = {}) => airframe.toast(msg, { tone: bad ? "bad" : "plain", ...opts });
+const toast = (msg, bad = false, opts = {}) => airframe.toast(tails.inPlain(msg), { tone: bad ? "bad" : "plain", ...opts });
 // Airframe's confirm on an af-dialog, in place of window.confirm(): the refusing button first, the verb last
-const confirmAction = (title, body, ok, { danger = true, cancel = "Keep it" } = {}) => airframe.confirm({ title, body, ok, cancel, danger });
+const confirmAction = (title, body, ok, { danger = true, cancel = "Keep it" } = {}) => airframe.confirm({ title: tails.inPlain(title), body: tails.inPlain(body), ok, cancel, danger });
 
 async function busy(btn, fn) {
   const label = btn?.innerHTML;  // buttons can carry an icon: keep the markup, not just the text
@@ -687,20 +697,20 @@ function agentDialog(sb) {
   const env = state.envs.find((e) => e.name === sb.environment);
   const hs = (env?.harnesses || []).filter((h) => h !== "git");
   if (!hs.length) return toast(`${sb.environment} has no agent harness installed. Add one to the environment.`, true);
-  dialog({ title: `Run an agent in <span class="af-mono">${esc(sb.name)}</span>`, ok: "Start agent", body:
+  dialog({ title: `Run an agent in ${idHtml(sb.id)}`, ok: "Start agent", body:
     field("Harness", `<select name="harness">${hs.map((h) => `<option>${esc(h)}</option>`).join("")}</select>`) +
     field("Task", inputWell(`<textarea name="prompt" rows="6" required placeholder="Fix the failing test in tests/test_api.py and commit the change."></textarea>`, { area: true, sans: true }),
       "Runs headless in its own terminal session. The terminal opens so you can watch it.") },
   async (fd) => {
     const r = await api("POST", `/api/sandboxes/${sb.id}/agent`, { prompt: fd.get("prompt"), harness: fd.get("harness") });
-    toast(`Agent ${r.harness} started (${r.run_id})`);
+    toast(`Agent ${r.harness} started (${tailOf(r.run_id)})`);
     openTerminal(sb, r.terminal_session);
     loadFleet();
   });
 }
 
 function execDialog(sb) {
-  dialog({ title: `Run a command in <span class="af-mono">${esc(sb.name)}</span>`, ok: "Run", cancel: "Close", body:
+  dialog({ title: `Run a command in ${idHtml(sb.id)}`, ok: "Run", cancel: "Close", body:
     field("Command", inputWell(`<input name="command" required placeholder="pytest -q">`)) + `<pre id="exec-out" class="log" hidden></pre>` },
   async (fd) => {
     const r = await api("POST", `/api/sandboxes/${sb.id}/exec`, { command: fd.get("command") });
@@ -712,7 +722,7 @@ function execDialog(sb) {
 }
 
 function forkDialog(sb) {
-  dialog({ title: `Fork <span class="af-mono">${esc(sb.name)}</span>`, ok: "Fork", body:
+  dialog({ title: `Fork ${idHtml(sb.id)}`, ok: "Fork", body:
     `<p>Snapshots this sandbox and starts copies with the same files, installed dependencies and repo state.
       Exclusive credentials stay with the original.</p>` +
     field("Copies", inputWell(`<input name="count" type="number" min="1" max="20" value="2">`)) +
@@ -755,7 +765,7 @@ function openTerminal(sb, session = null, initial = null) {
   const tab = document.createElement("button");
   tab.className = "tab";
   tab.setAttribute("role", "tab");
-  tab.innerHTML = `${esc(sb.name)}<span class="hint">${session ? esc(session) : "shell"}</span><span class="x" title="Close" aria-label="Close">${ic("close")}</span>`;
+  tab.innerHTML = `${idHtml(sb.id, { cls: "af-id" })}<span class="hint">${session ? esc(session) : "shell"}</span><span class="x" title="Close" aria-label="Close">${ic("close")}</span>`;
   tab.addEventListener("click", (e) => { if (e.target.closest(".x")) closeTerm(key); else activateTerm(key); });
   const extra = $("#drawer-tabs .tab-extra");
   $("#drawer-tabs").insertBefore(tab, extra);
@@ -797,7 +807,7 @@ async function connectTerm(entry) {
   ws.onclose = () => {
     if (got) { term.writeln("\r\n\x1b[90m[connection closed; press Enter to reconnect]\x1b[0m"); return; }
     entry.el.insertAdjacentHTML("beforeend", `<div class="term-empty">${emptyState({ kind: "after-action", compact: true, icon: "terminal",
-      title: "No terminal to attach to.", text: esc(why || `${session ? `Terminal session ${session} in ${sb.name}` : sb.name} did not answer; the session may have ended, or the sandbox has spun down.`),
+      title: "No terminal to attach to.", text: esc(why || `${session ? `Terminal session ${session} in ${tailOf(sb.id)}` : tailOf(sb.id)} did not answer; the session may have ended, or the sandbox has spun down.`),
       actions: btn("Try again", { kind: "secondary", sm: true, icon: "retry", attrs: { "data-term-retry": true } }) })}</div>`);
     $("[data-term-retry]", entry.el).addEventListener("click", () => connectTerm(entry));
   };
@@ -843,7 +853,7 @@ function closeTerminalsFor(id) { for (const k of [...terms.keys()]) if (k.starts
     if (!t) return;
     const sessions = await api("GET", `/api/sandboxes/${t.sb.id}/terminals`).catch((e) => (toast(e.message, true), []));
     if (!sessions.length) return toast("No terminal sessions in this sandbox yet.");
-    dialog({ title: `Attach to a session in <span class="af-mono">${esc(t.sb.name)}</span>`, ok: "Attach", body:
+    dialog({ title: `Attach to a session in ${idHtml(t.sb.id)}`, ok: "Attach", body:
       `<p>You and the agent share the same terminal: you see what it types and can type back.</p>` +
       field("Session", `<select name="s">${sessions.map((s) => `<option>${esc(s)}</option>`).join("")}</select>`) },
     async (fd) => openTerminal(t.sb, fd.get("s")));
@@ -892,12 +902,14 @@ function renderJobs() {
   const active = state.jobs.filter((j) => j.active);
   navCount("jobs", active.length);
   if (state.view !== "jobs") return;
+  tails.see(state.jobs.map((j) => j.id));
+  if (state.selectedJob) state.selectedJob = tails.resolve(state.selectedJob, state.jobs.map((j) => j.id));  // #jobs?job=HGR-JOB-…
   const f = $("#jobs-filter").value;
   const shown = state.jobs.filter((j) => !f || (f === "active" ? j.active : j.state === f));
   const hidden = state.jobs.length - shown.length;
   $("#job-list").innerHTML = shown.length ? shown.map((j) => `<li><button data-job="${esc(j.id)}"
       class="job-row ${j.id === state.selectedJob ? "active" : ""} ${jobRole(j) === "approval" ? "is-attention" : ""}" data-tone="${jobRole(j)}">
-      <span class="t">${esc(j.title)}</span>
+      <span class="t">${idHtml(j.id)} ${esc(j.title)}</span>
       <span class="d">${status(jobRole(j), jobWord(j))}${meta([
         j.reason ? ["reason", j.reason.replace(/_/g, " "), jobRole(j) === "failed" ? "failed" : ""] : null,
         ["source", j.source], ["created", ago(j.created_at)], j.result?.pr_number ? ["pr", `#${j.result.pr_number}`] : null])}</span></button></li>`).join("")
@@ -982,7 +994,7 @@ function renderJob(j) {
   const turnOver = `The agent's turn ended ${lastTurn?.finished_at ? ago(lastTurn.finished_at) : ago(j.updated_at) || "already"}.`;
   box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
   box.innerHTML = `
-    <div class="detail-head"><h3>${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
+    <div class="detail-head"><h3>${idHtml(j.id, { cls: "af-id detail-tail" })} ${esc(j.title)}</h3>${status(role, jobWord(j), { lit: true })}
       ${j.reason ? meta([["reason", j.reason.replace(/_/g, " "), role === "failed" ? "failed" : ""]]) : ""}</div>
     ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}
     <dl class="kv af-kv">
@@ -996,8 +1008,8 @@ function renderJob(j) {
       ${j.context?.length ? `<dt>Context</dt><dd>${j.context.map((c) => c.url
         ? `<div><a class="af-mono" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a></div>`
         : `<div><code>${esc(c.name)}</code><span class="sub-val">${c.size} B</span></div>`).join("")}</dd>` : ""}
-      <dt>Sandbox</dt><dd>${live ? `<code>${esc(j.sandbox_id)}</code>` : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
-      ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}" class="af-mono">${esc(j.session.name)}</a>
+      <dt>Sandbox</dt><dd>${live ? idHtml(j.sandbox_id) : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
+      ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}" class="af-mono">${tails.isRaw(j.session.name) ? idHtml(j.session.name) : esc(j.session.name)}</a>
         ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${plural(j.session.checkpoints, "checkpoint")}</span></dd>` : ""}
     </dl>
     <div class="env-bar">
@@ -1020,7 +1032,7 @@ function renderJob(j) {
     <h4>Timeline</h4>
     <ol class="timeline">${(j.events || []).slice().reverse().map((e) => `<li data-tone="${JOB_STATE[e.state] || "off"}"><i class="tl-dot" aria-hidden="true"></i>
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
-      <span class="what">${linkify(words(e.message))}</span></li>`).join("")}</ol>
+      <span class="what">${tails.inText(linkify(words(e.message)))}</span></li>`).join("")}</ol>
     ${turns.length > 1 ? `<h4>Turns</h4><ol class="turns">${turns.map((t, i) => `<li><b>${i + 1}. ${esc(t.kind.replace("_", "-"))}</b>
       ${meta([["by", t.requester || ""], ["exit", t.exit_code ?? ""]])}
       ${t.message ? `<div class="hint">${esc(t.message)}</div>` : ""}</li>`).join("")}</ol>` : ""}
@@ -1037,7 +1049,7 @@ function renderJob(j) {
   const followUp = async (message, plain = false) => {
     await api("POST", `/api/jobs/${j.id}/follow-up`, { message: plain ? message : withReview(message) });
     if (!plain) review.delete(rkey);
-    toast(`Sent; ${j.id} is running another turn`);
+    toast(`Sent; ${tailOf(j.id)} is running another turn`);
     await loadJobs();
   };
   const steer = async (text) => {
@@ -1069,8 +1081,8 @@ function renderJob(j) {
   });
   $("#job-cancel")?.addEventListener("click", async (e) => {
     const b = e.currentTarget;
-    if (!(await confirmAction(`Cancel ${j.id}?`, "The agent is stopped. Work committed so far stays in the sandbox and on the branch.", "Cancel job", { cancel: "Keep running" }))) return;
-    busy(b, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${j.id}`); loadJobs(); });
+    if (!(await confirmAction(`Cancel ${tailOf(j.id)}?`, "The agent is stopped. Work committed so far stays in the sandbox and on the branch.", "Cancel job", { cancel: "Keep running" }))) return;
+    busy(b, async () => { await api("POST", `/api/jobs/${j.id}/cancel`); toast(`Cancelling ${tailOf(j.id)}`); loadJobs(); });
   });
 }
 
@@ -1092,11 +1104,12 @@ async function loadSessions(quiet = false) {
 function renderSessions() {
   const showJobs = $("#ses-jobs").checked;
   const mine = state.sessions.filter((x) => showJobs || !x.job_id);
+  tails.see(state.sessions.flatMap((x) => [x.name, x.job_id, x.sandbox_id]));
   navCount("sessions", mine.filter((x) => ["idle", "running", "starting"].includes(x.state)).length);
   if (state.view !== "sessions") return;
   $("#session-list").innerHTML = mine.length ? mine.map((x) => `<li><button data-ses="${esc(x.id)}"
       class="job-row ${x.id === state.selectedSession ? "active" : ""} ${sesRole(x) === "approval" ? "is-attention" : ""}" data-tone="${sesRole(x)}">
-      <span class="t af-mono">${esc(x.name)}</span>
+      <span class="t af-mono">${tails.isRaw(x.name) ? idHtml(x.name) : esc(x.name)}</span>
       <span class="d">${status(sesRole(x), `${sesWord(x)}${x.busy && x.state !== "running" ? "…" : ""}`)}${meta([
         ["env", x.environment], ["active", ago(x.last_active_at)]])}</span></button></li>`).join("")
     : `<li>${emptyState({ icon: "session", title: "No sessions yet.", text: `Start one here, or from an MCP client with <code>new_session</code>.` })}</li>`;
@@ -1119,7 +1132,7 @@ $("#session-list").addEventListener("click", (e) => {
 function sesComposer(x) {
   const t = x.turns.at(-1);
   if (x.state === "archived") return { disabled: true, why: "This session is archived. Its conversation is kept; start a new session to continue the work." };
-  if (x.job_id) return { disabled: true, why: `This session carries job <span class="af-mono">${esc(x.job_id)}</span>; reply on the job, whose turns are verified and delivered.` };
+  if (x.job_id) return { disabled: true, why: `This session carries job ${idHtml(x.job_id)}; reply on the job, whose turns are verified and delivered.` };
   if (x.busy || x.state === "running") {
     if (t && t.run_id && !t.live && !t.finished_at) return { disabled: true,
       why: `${esc(x.harness || "These")} turns run one-shot and can't take a message mid-turn; wait for the turn to end.` };
@@ -1151,7 +1164,7 @@ function renderSession(x) {
   const verdicts = (x.turns.at(-1)?.approvals || []).filter((v) => v.status !== "pending").slice(-5).reverse();
   box.classList.remove("af-card--lit");  // the cards that wait on a person light themselves
   box.innerHTML = `
-    <div class="detail-head"><h3 class="af-mono">${esc(x.name)}</h3>${status(role, sesWord(x), { lit: true })}</div>
+    <div class="detail-head"><h3 class="af-mono">${tails.isRaw(x.name) ? idHtml(x.name) : esc(x.name)}</h3>${status(role, sesWord(x), { lit: true })}</div>
     ${x.reason ? (role === "failed" ? `<p class="detail-reason">${errorLine(x.reason)}</p>` : `<p class="hint">${esc(x.reason)}</p>`) : ""}
     ${cards.length ? `<div class="cards">${cards.map(approvalHtml).join("")}</div>` : ""}
     ${question ? questionHtml({ id: "ses-question", who: x.name, turn: x.turns.length, question: x.needs_input, asked: x.last_active_at,
@@ -1168,7 +1181,7 @@ function renderSession(x) {
         [120, "after 2 h"], [480, "after 8 h"], [0, "stay up until I suspend it"]].map(([v, t]) =>
         `<option value="${v}" ${v === keep ? "selected" : ""}>${t}</option>`).join("")}${[15, 30, 120, 480, 0].includes(keep)
         ? "" : `<option value="${keep}" selected>after ${keep} min</option>`}</select></dd>
-      ${x.job_id ? `<dt>Job</dt><dd><a href="#jobs" data-goto-job="${esc(x.job_id)}" class="af-mono">${esc(x.job_id)}</a></dd>` : ""}
+      ${x.job_id ? `<dt>Job</dt><dd><a href="#jobs" data-goto-job="${esc(x.job_id)}" >${idHtml(x.job_id)}</a></dd>` : ""}
     </dl>
     <div class="env-bar">
       ${live ? "" : (x.state === "archived" ? "" : `<button id="ses-open" type="button" class="af-btn ${form ? "af-btn--secondary" : "af-btn--primary"}">${ic("play")}${x.checkpoint_count ? "Resume" : "Open"}</button>`)}
@@ -1259,7 +1272,7 @@ function drawActivity(el, st) {
       <span class="when" title="${new Date(e.ts * 1000).toLocaleString()}">${ago(e.ts)}</span>
       <span class="what"><b>${esc(ACT_LABEL[e.kind] || e.kind)}</b>${block
         ? `<pre class="act-out af-mono${long ? " is-capped" : ""}">${esc(text)}</pre>${long ? btn("More", { kind: "ghost", sm: true, icon: "chevron-down", attrs: { "data-act-more": true, "aria-expanded": "false" } }) : ""}`
-        : ` ${linkify(words(text))}`}</span></li>`;
+        : ` ${tails.inText(linkify(words(text)))}`}</span></li>`;
   };
   el.innerHTML = shown.length ? shown.map(row).join("") + (all.length > shown.length
       ? `<li class="act-more">${btn(`Earlier (${all.length - shown.length})`, { kind: "ghost", sm: true, icon: "chevron-down", attrs: { "data-act-all": true } })}</li>` : "")
@@ -1366,7 +1379,7 @@ $("#job-form").addEventListener("submit", async (e) => {
     f.links.value.split(/\s+/).filter(Boolean).forEach((u, i) => context.push({ name: `link-${i + 1}`, kind: "url", url: u }));
     body.context = context;
     const j = await api("POST", "/api/jobs", body);
-    toast(`Queued ${j.id}`);
+    toast(`Queued ${tailOf(j.id)}`);
     f.hidden = true; f.reset();
     state.selectedJob = j.id;
     await loadJobs();
@@ -1553,9 +1566,10 @@ function showLoginBar(lg) {
 /* ------------------------------------------------------------------ snapshots */
 async function loadSnaps() {
   const snaps = await api("GET", "/api/snapshots");
+  tails.see(snaps.map((s) => s.id));
   $("#snap-table tbody").innerHTML = snaps.length ? snaps.map((s) => `<tr>
-      <td><span class="af-table__id">${esc(s.id)}</span>${s.label ? `<div class="muted">${esc(s.label)}</div>` : ""}</td>
-      <td class="af-table__mono">${esc(s.sandbox_id)}</td><td class="af-table__mono">${esc(s.environment)}</td>
+      <td>${idHtml(s.id, { cls: "af-table__id" })}${s.label ? `<div class="muted">${esc(s.label)}</div>` : ""}</td>
+      <td class="af-table__mono">${idHtml(s.sandbox_id)}</td><td class="af-table__mono">${esc(s.environment)}</td>
       <td><span class="af-tag">${esc(s.kind)}</span><span class="af-table__sub">${esc(s.provider)}</span></td>
       <td class="af-table__mono">${ago(s.created_at)}</td>
       <td class="act"><button type="button" class="af-btn af-btn--secondary af-btn--sm" data-fork="${esc(s.id)}">${ic("fork")}Start copy</button>
@@ -1604,7 +1618,7 @@ $("#connect-snippets").addEventListener("click", (e) => {
 });
 async function loadTokens() {
   const toks = await api("GET", "/api/tokens");
-  $("#token-table tbody").innerHTML = toks.map((t) => `<tr><td><span class="af-table__id">${esc(t.name)}</span><div class="muted af-mono">${esc(t.id)}</div></td>
+  $("#token-table tbody").innerHTML = toks.map((t) => `<tr><td><span class="af-table__id">${esc(t.name)}</span><div class="muted">${idHtml(t.id)}</div></td>
     <td class="muted">${t.last_used ? "used " + ago(t.last_used) : "never used"}</td>
     <td class="act"><button type="button" class="af-btn af-btn--ghost af-btn--sm" data-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("");
 }
@@ -1637,7 +1651,7 @@ function auditDetail(d) {
   const items = Object.entries(d || {}).map(([k, v]) => {
     const text = typeof v === "object" ? JSON.stringify(v) : String(v ?? "");
     const long = text.length > AUDIT_VAL;  // (Airframe's meta() markup by hand: a cut value keeps the whole in its title)
-    return `<span class="af-meta__item"><span class="af-meta__key">${esc(keyCase(k.replace(/_/g, " ")))}</span><span class="af-meta__val"${long ? ` title="${esc(text)}"` : ""}>${esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text)}</span></span>`;
+    return `<span class="af-meta__item"><span class="af-meta__key">${esc(keyCase(k.replace(/_/g, " ")))}</span><span class="af-meta__val"${long ? ` title="${esc(text)}"` : ""}>${tails.inText(esc(long ? `${text.slice(0, AUDIT_VAL - 1)}…` : text))}</span></span>`;
   });
   return items.length ? `<span class="af-meta">${items.join("")}</span>` : "";
 }
@@ -1656,7 +1670,7 @@ async function loadAudit() {
   $("#audit-table tbody").innerHTML = auditRows(ev).map((a) => `<tr>
     <td class="af-table__mono c-when" title="${new Date(a.ts * 1000).toLocaleString()}">${ago(a.ts)}${a.n > 1
       ? `<span class="af-table__sub">× ${a.n} in ${auditSpan(a.ts - a.first)}</span>` : ""}</td>
-    <td class="c-who">${esc(a.actor)}</td><td class="af-table__mono c-action">${esc(a.action)}</td><td class="af-table__mono c-target">${esc(a.target || "")}</td>
+    <td class="c-who">${tails.inText(esc(a.actor))}</td><td class="af-table__mono c-action">${esc(a.action)}</td><td class="af-table__mono c-target">${tails.inText(esc(a.target || ""))}</td>
     <td class="c-detail">${auditDetail(a.detail)}</td></tr>`).join("")
     || `<tr><td colspan="5">${emptyState({ compact: true, icon: "log", title: "Nothing recorded yet.", text: "Every action by a person or an MCP client lands here." })}</td></tr>`;
 }
@@ -1692,7 +1706,7 @@ async function loadUsage() {
     rows("#usage-repos", repos);
     rows("#usage-requesters", people);
     $("#usage-stops tbody").innerHTML = days.budget_stops.length ? days.budget_stops.map((b) => `<tr>
-      <td class="af-table__id">${esc(b.job || b.session || "")}</td><td class="af-table__mono">${esc(b.repo)}</td><td>${esc(b.requester || "")}</td>
+      <td class="af-table__id">${tails.isRaw(b.job || b.session) ? idHtml(b.job || b.session, { cls: "af-id" }) : esc(b.job || b.session || "")}</td><td class="af-table__mono">${esc(b.repo)}</td><td>${esc(b.requester || "")}</td>
       <td>${esc(b.reason || "")}</td>
       <td class="af-table__mono" title="${new Date(b.ts * 1000).toLocaleString()}">${ago(b.ts)}</td></tr>`).join("")
       : `<tr><td colspan="5">${emptyState({ compact: true, title: "No turn was stopped over its budget in this range." })}</td></tr>`;

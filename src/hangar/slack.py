@@ -29,6 +29,7 @@ from hangar import (  # --- teamcreds: linked Slack users; --- trust: commit aft
     people,
     redeliver,
     steer_class,  # --- #162: classifying follow-ups
+    tails,
 )
 from hangar.exchange import open_question
 from hangar.ext import NoSettings  # --- plugin host
@@ -263,14 +264,14 @@ def render(job: Job | None, body: str, kind: str) -> str:
     """Slack text for a job notification. `body` is GitHub-flavoured; the outcome report is rebuilt for Slack."""
     if job is not None and str(job.state) == "needs_input":
         q = open_question(job) or body  # --- interactions: the one place the question is read from
-        return (f"*Needs input*: hangar job `{job.id}` has a question.\n{_quote(escape(q), 2500)}\n"
+        return (f"*Needs input*: hangar job {tails.label(job.id)} has a question.\n{_quote(escape(q), 2500)}\n"
                 "Reply in this thread to answer; the agent picks up where it left off.")
     if job is None or kind != "final":
         return _clip(re.sub(r"\*\*(.+?)\*\*", r"*\1*", escape(body)))
     r = job.result
     state = str(job.state)
     head = {"succeeded": "Done", "failed": "Finished with problems", "cancelled": "Cancelled"}.get(state, state)
-    lines = [f"*{head}*: hangar job `{job.id}`" + (f" ({escape(job.reason)})" if job.reason else "")]
+    lines = [f"*{head}*: hangar job {tails.label(job.id)}" + (f" ({escape(job.reason)})" if job.reason else "")]
     if r.pr_url and _PR_URL.match(r.pr_url):
         lines.append(f"PR: <{r.pr_url}|{escape(_repo_name(job.repo))}#{r.pr_number or ''}>")
     elif r.pushed:
@@ -453,7 +454,7 @@ class SlackFrontDoor:
         if job is None or not self.jobs.repo_envs(job.repo):  # only jobs on repos Slack may use
             return f"No job `{escape(job_id[:80])}`." if job_id else "Usage: `/hangar status JOB`"
         why = f" ({escape(job.reason)})" if job.reason else ""
-        lines = [f"`{job.id}` *{escape(job.title)}* is *{job.state}*{why}",
+        lines = [f"{tails.label(job.id)} *{escape(job.title)}* is *{job.state}*{why}",
                  f"Repo: {escape(_repo_name(job.repo))} · requested by {escape(job.requester)} via {job.source}"]
         if job.result.pr_url and _PR_URL.match(job.result.pr_url):
             lines.append(f"PR: <{job.result.pr_url}>")
@@ -730,7 +731,8 @@ class SlackFrontDoor:
             await self._say(api, channel, thread_ts, escape(held_message(job)))
             return
         await self._say(api, channel, thread_ts,
-                        f"Queued as hangar job `{job.id}` in `{escape(job.environment)}`. I'll reply in this thread "
+                        f"Queued as hangar job {tails.label(job.id)} in `{escape(job.environment)}`. "
+                        "I'll reply in this thread "
                         "when the agent starts and when it's done."
                         + escape(fairness.queued_note(self.jobs, job)))  # --- review capacity (#159)
 
@@ -748,7 +750,7 @@ class SlackFrontDoor:
         except JobError as e:
             await self._say(api, channel, thread_ts, f"Can't continue yet: {escape(str(e))}")
             return
-        ack = f"Continuing hangar job `{job.id}` with your reply. I'll post here when it's done."
+        ack = f"Continuing hangar job {tails.label(job.id)} with your reply. I'll post here when it's done."
         turn = job.turns[-1]
         if turn.steer_class != "unclassified":
             await self._say(api, channel, thread_ts, f"{ack}\nClassified as *{steer_class.LABELS[turn.steer_class]}*.")
