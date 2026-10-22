@@ -15,9 +15,9 @@ hide:
 [Quickstart](guide.md#quickstart){ .md-button .md-button--primary } [The web console](console.md){ .md-button }
 </div>
 <figure class="af-hero__visual">
-<a href="assets/front/hangar-demo.mp4"><img src="assets/front/ui-hero.png#only-dark" alt="A delivered job: issue #42, CSV export drops non-ASCII characters, succeeded; its check passed, draft PR #43 is open and the agent's summary says what it changed" width="740" height="548"></a>
-<a href="assets/front/hangar-demo.mp4"><img src="assets/front/ui-hero-light.png#only-light" alt="A delivered job: issue #42, CSV export drops non-ASCII characters, succeeded; its check passed, draft PR #43 is open and the agent's summary says what it changed" width="740" height="548"></a>
-<figcaption>Issue #42, delivered: the check passed, draft PR #43 is open, and the agent says what it changed. <a href="assets/front/hangar-demo.mp4">Watch the ticket become this PR (16 s)</a>.</figcaption>
+<a href="assets/front/hangar-clip.mp4"><img src="assets/front/ui-hero.png#only-dark" alt="A delivered job: issue #42, CSV export drops non-ASCII characters, succeeded; its check passed, draft PR #43 is open and the agent's summary says what it changed" width="740" height="548"></a>
+<a href="assets/front/hangar-clip-light.mp4"><img src="assets/front/ui-hero-light.png#only-light" alt="A delivered job: issue #42, CSV export drops non-ASCII characters, succeeded; its check passed, draft PR #43 is open and the agent's summary says what it changed" width="740" height="548"></a>
+<figcaption>Issue #42, delivered: the check passed, draft PR #43 is open, and the agent says what it changed. Watch a ticket land (19 s): <a href="assets/front/hangar-clip.mp4">Night</a>, <a href="assets/front/hangar-clip-light.mp4">Day</a>.</figcaption>
 </figure>
 </div>
 

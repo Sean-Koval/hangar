@@ -135,11 +135,12 @@ def hexid(s: str, n: int = 8) -> str:
     return hashlib.sha1(s.encode()).hexdigest()[:n]
 
 
-def stub(now: float | None = None) -> dict:
-    """The afternoon as the console's API would return it, keyed by what each route serves."""
+def stub(now: float | None = None, rows: list | None = None) -> dict:
+    """The afternoon as the console's API would return it, keyed by what each route serves (`rows`: ROWS, or another
+    set in the same shape, such as the demo clip's)."""
     now = now or time.time()
     sandboxes, jobs, sessions, usage = [], [], [], []
-    for i, (name, env, owner, kind, harness, sb_state, phase, age, title, extra) in enumerate(ROWS):
+    for i, (name, env, owner, kind, harness, sb_state, phase, age, title, extra) in enumerate(rows or ROWS):
         repo = dict(ENVS)[env]
         created = now - age * 60
         sid = "sb-" + hexid(name)
@@ -162,7 +163,7 @@ def stub(now: float | None = None) -> dict:
             if extra.get(HELD):
                 tool, detail, taint = extra[HELD]
                 approvals.append({"id": "apr-" + hexid(name), "tool": tool, "detail": detail, "status": "pending",
-                                  "requested_at": now - 300, "expires_at": now + 3000, "taint": taint})
+                                  "requested_at": now - extra.get("asked", 300), "expires_at": now + 3000, "taint": taint})
             if extra.get("denied"):
                 tool, detail, msg = extra["denied"]
                 approvals.append({"id": "apr-" + hexid(name), "tool": tool, "detail": detail, "status": "denied", "by": "policy",
@@ -197,9 +198,10 @@ def stub(now: float | None = None) -> dict:
             if extra.get(HELD):
                 events.append({"ts": now - 300, "state": "running", "message": f"approval requested: {extra[HELD][1]}"})
             if phase == "succeeded":
-                result.update(summary="Orders are deduplicated on import by (shop, external_id); the importer logs what it dropped.",
-                              pr_url="https://github.com/acme/checkout-api/pull/418", pr_number=418, verify_exit_code=0)
-                events.append({"ts": now - 3600, "state": "succeeded", "message": "draft PR #418 opened"})
+                pr = extra.get("pr", 418)
+                result.update(summary=extra.get("summary") or "Orders are deduplicated on import by (shop, external_id); the importer logs what it dropped.",
+                              pr_url=f"https://github.com/acme/checkout-api/pull/{pr}", pr_number=pr, verify_exit_code=0)
+                events.append({"ts": now - 3600, "state": "succeeded", "message": extra.get("done") or f"draft PR #{pr} opened"})
             jobs.append({
                 "id": job_id, "title": title, "state": phase, "active": phase not in ("succeeded", "failed", "cancelled"),
                 "reason": "verify_failed" if phase == "failed" else None, "requester": extra.get("requester") or f"ui:{owner}",
@@ -244,12 +246,26 @@ def stub(now: float | None = None) -> dict:
 class Fixture:
     """The afternoon, served over the demo server; decisions and messages change it like the server would."""
 
-    def __init__(self) -> None:
-        self.data = stub()
+    def __init__(self, rows: list | None = None, live: dict | None = None) -> None:
+        self.rows, self.live = rows or ROWS, LIVE if live is None else live
+        self.lines: dict[str, str] = {}  # a now-line for an agent with no live line yet (a queued one), by ROWS name
+        self.data = stub(rows=self.rows)
         self.now = self.data["now"]
         self.sent: list[dict] = []  # what the recording sent to agents (comments, answers)
         self.acked: set[str] = set()  # inbox items put away (POST /api/inbox/{id}/ack)
         # each job's and session's usage is its agent's, as the Fleet shows it, so the detail panels say the same
+        by_sb = {u["id"]: u["usage"] for u in self.fleet()["units"]}
+        for rec in (*self.data["jobs"], *self.data["sessions"]):
+            rec["usage"] = by_sb.get(rec["sandbox_id"])
+
+    def restage(self, rows: list, live: dict) -> None:
+        """Move the afternoon on: the same routes serve `rows` and `live` from now (the demo clip's scenes). The data
+        changes in place, since wire() hands its routes this dict."""
+        self.rows, self.live = rows, live
+        fresh = stub(rows=rows)
+        self.data.clear()
+        self.data.update(fresh)
+        self.now = fresh["now"]
         by_sb = {u["id"]: u["usage"] for u in self.fleet()["units"]}
         for rec in (*self.data["jobs"], *self.data["sessions"]):
             rec["usage"] = by_sb.get(rec["sandbox_id"])
@@ -354,7 +370,7 @@ class Fixture:
 
     def row_of(self, sandbox_id: str) -> str:
         """The ROWS name a sandbox was made from."""
-        return next((r[0] for r in ROWS if "sb-" + hexid(r[0]) == sandbox_id), "")
+        return next((r[0] for r in self.rows if "sb-" + hexid(r[0]) == sandbox_id), "")
 
     # ---- GET /api/fleet, as fleet_api.FleetRead builds it from this data (docs/api/fleet.md)
     def fleet(self, owner: str | None = None, include_stopped: bool = False) -> dict:
@@ -401,7 +417,7 @@ class Fixture:
             elif job and job["state"] == "failed" and live_sb:
                 role, label = "failed", "Failed"
                 reason = {"title": "Failed", "text": "The check failed (exit 1): tests/test_report.py::test_totals, assert 41 == 38."}
-            lv = LIVE.get(row) if role not in ("off", "queued") else None
+            lv = self.live.get(row) if role not in ("off", "queued") else None
             age = now - sb["created_at"]
             stage = pct = est = None
             stages: list[dict] = []
@@ -438,7 +454,7 @@ class Fixture:
                 "work": (job["title"] if job else None) or (ses["title"] or ses["name"] if ses else None) or sb["name"],
                 "task": (job or {}).get("instructions") or "", "question": question if role == "approval" and label == "Needs input" else None,
                 "question_options": QUESTION_OPTIONS.get(row, []) if label == "Needs input" else [],
-                "now": now_line, "last_activity_at": now - quiet,
+                "now": now_line or self.lines.get(row), "last_activity_at": now - quiet,
                 "stage": stage, "stage_pct": pct, "stage_estimate": est, "stages": stages,
                 "files_changed": files, "commits": commits,
                 "usage": {"input_tokens": tokens, "output_tokens": tokens // 20, "cache_read_tokens": tokens * 6, "cache_write_tokens": tokens // 10,
