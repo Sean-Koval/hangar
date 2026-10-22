@@ -36,6 +36,14 @@ data:
   # webhooks need the gateway and get at least `allowlist` egress. "warn" for one release while you set the gateway
   # up (docs/upgrading.md); "off" is not recommended.
   HANGAR_INTAKE_POSTURE: "enforce"
+  # Tower, the Govern plane, runs beside hangar in namespace tower (docs/runbooks/tower.md; Tower's ADR 0018). hangar
+  # asks its Service in the cluster: no load balancer or certificate on the fail-closed path. Read once #172 wires the
+  # client; until then hangar ignores them. Shadow never changes an outcome: hangar's rules decide, Tower is asked a dry
+  # run, and a disagreement is audited. A kind goes to enforce only after a week without one (spec 0015 §14).
+  HANGAR_GOVERNANCE: "shadow"
+  HANGAR_GOVERNANCE_URL: "http://tower.tower.svc.cluster.local"
+  HANGAR_GOVERNANCE_CREDENTIAL: "tower"              # vault credential: Tower's AW_KEY_HANGAR (hangar cred add tower)
+  HANGAR_GOVERNANCE_WEBHOOK_SECRET: "tower-webhook"  # vault credential: Tower's AW_WEBHOOK_HANGAR_SECRET
   # --- heavy: the heavy tier (docs/environments.md#the-heavy-tier, docs/gke.md section 4a): Docker inside Kata
   # sandboxes on the sandboxes-heavy pool (enable_heavy_pool), and the large/xlarge profiles. Keep the other tiers.
   # HANGAR_TIERS: '{"fast": ["e2b"], "isolated": ["kubernetes"], "heavy": ["kubernetes"]}'

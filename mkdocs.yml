@@ -113,6 +113,7 @@ nav:
           - "Run capture: how runs are written": runbooks/outbox-writes.md
           - Governance break-glass: runbooks/break-glass.md
           - "Break-glass: once Tower decides": runbooks/break-glass-tower.md
+          - Tower beside hangar on GKE: runbooks/tower.md
   - Guides:
       - Work:
           - Jobs:
