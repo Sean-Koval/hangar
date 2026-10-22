@@ -1,4 +1,4 @@
-/* Airframe theme-v14 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
+/* Airframe theme-v15 for the docs sites. Generated from airframe/docs-site/airframe-docs.css by scripts/airframe.py; do not edit. Load after airframe.css. */
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap");
 
 /*
@@ -208,6 +208,11 @@ body { background: var(--af-canvas); }
 .md-nav__title { font-family: var(--af-font-sans); font-weight: 500; text-transform: none; letter-spacing: 0; font-size: .6rem; color: var(--af-fg-subtle); box-shadow: none !important; background: transparent !important; }
 .md-nav__link--active { color: var(--af-fg) !important; font-weight: 600; }
 .md-nav__item .md-nav__link--active { box-shadow: inset 2px 0 0 var(--af-product); padding-left: .5em; }
+/* a section with its own index page renders its link and its expand toggle as two active links in one container:
+   the container is the one shape, with the one marker, and the two parts inside it are clear */
+.md-nav__container:has(> .md-nav__link--active) { background: var(--af-selected); border-radius: var(--af-radius-control); box-shadow: inset 2px 0 0 var(--af-product); }
+.md-nav__container > .md-nav__link--active { background: transparent !important; box-shadow: none; border-radius: 0; }
+.md-nav__container > label.md-nav__link--active { padding-left: 0; }
 .md-search__form { border-radius: var(--af-radius-control); background: var(--af-raised); }
 /* inline code in the nav and the table of contents (a heading like "GET /api/fleet") is a quiet raised chip in both
    themes; the theme would paint it with the code-block colors, which are the black terminal in Day too */
@@ -283,6 +288,8 @@ body { background: var(--af-canvas); }
   .af-hero--visual::after { display: none; }
   .md-tabs__item--active { box-shadow: none; border-bottom: 2px solid Highlight; }
   .md-nav__item .md-nav__link--active { box-shadow: none; border-left: 2px solid Highlight; }
+  .md-nav__container:has(> .md-nav__link--active) { box-shadow: none; border-left: 2px solid Highlight; }
+  .md-nav__container > .md-nav__link--active { border-left: none; }
   .md-typeset .af-suite [aria-current] { box-shadow: none; border-bottom: 2px solid Highlight; }
   .md-typeset .af-suite__home[aria-current] { border-bottom: 2px solid Highlight; }
   .md-typeset .af-suite__home::before, .af-eyebrow::before { background: CanvasText; }

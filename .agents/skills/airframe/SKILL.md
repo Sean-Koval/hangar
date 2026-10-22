@@ -22,13 +22,18 @@ component contracts in `airframe/components/*.md` before writing markup.
 2. **Dark cockpit.** Night is the default theme (true black canvas) and Day must work; switch with
    `data-theme="light"` on `<html>` or any element. Running and queued are grey. Color appears only for
    *needs approval* (`status-approval`, orange diamond), *failed* (`status-failed`, red triangle) and *denied*
-   (`status-denied` placard). There is no green, no blue, no spinner, no pulse.
-3. **One hot color.** Signal yellow `brand` is for the one primary action per view, the focus ring and
-   selection. It is never a status.
-4. **Tonal, sharp, quiet.** Cards are `raised` on `canvas` with no border and no shadow; 2px controls, 4px
-   cards, 1px lines; no gloss, gradients or blur. Separate by tone and space.
-5. **Data first.** Real IDs as tail numbers (`HGR-7Q2K`, `FDK-EXP-0142`, `TWR-APR-0391`) in `af-id`, real
-   numbers in DM Mono with tabular figures. Sentence case everywhere; the CSS uppercases labels and buttons.
+   (`status-denied` placard). There is no green, no blue, no spinner, and a status never pulses (the heartbeat dot
+   beside a live agent breathes: it is recency, not status).
+3. **One hot color.** Signal yellow `brand` is for the one primary action per view and the focus ring. It is
+   never a status and never a selection: selection is neutral (`selected`, a `fg` ring or edge).
+4. **Tonal, soft, quiet.** Cards are `raised` on `canvas` with no border and no shadow; 8px controls, 12px
+   cards, an 18px sheet, 1px lines. What is open or on top is `lifted` with `shadow-2`. **Attention is edge, mark,
+   word**: a neutral ground, a 3px status edge on the leading side, the mark and the word; never a status color
+   mixed into a surface, never an outline ring. No gloss, blur or gradients; the one glow is a live rail head.
+5. **Data first.** Real IDs as tail numbers (`HGR-7Q2K`, `FDK-EXP-0142`, `TWR-APR-0391`) in `af-id` (a 4-character Crockford base32 hash of the real ID, longer only on a collision; the real ID on hover and copy; see guide/IDs.md), real
+   numbers in DM Mono with tabular figures. Sentence case everywhere, labels and buttons included: they are
+   sans, and mono is only for IDs, numbers and commands. Motion: `--af-dur` / `--af-dur-open` with
+   `--af-ease-open`, no springs; reduced motion zeroes them.
 
 ## How to use the classes
 
@@ -50,19 +55,19 @@ component contracts in `airframe/components/*.md` before writing markup.
 |---|---|---|
 | Avatar | Foundations | `af-avatar af-avatar--person\|agent\|firm` + `--22\|28\|44`: people round, agents hexagonal, firms square; `af-avatars` stacks; `af-who` beside a name. No hue, no photos. |
 | Button | Foundations | `af-btn af-btn--primary\|secondary\|ghost\|danger`, `af-btn--sm`, `af-btn--icon`; `af-btn--text` for sentence-case where people read. One primary per view; Deny is danger beside Approve. |
-| Icons | Foundations | 55 stroke glyphs on a 20px grid from the sprite; `af-ic`, `af-ic--14\|20\|24`. |
-| InlineData | Foundations | `af-meta` > `af-meta__item` > `af-meta__key` + `af-meta__val`: KEY value, never "a · b · c". |
-| Label | Foundations | `af-lbl` with optional `af-lbl__sub` and icon: small tracked mono capitals naming a card or section. |
+| Icons | Foundations | 57 stroke glyphs on a 20px grid from the sprite; `af-ic`, `af-ic--14\|20\|24`. |
+| InlineData | Foundations | `af-meta` > `af-meta__item` > `af-meta__key` + `af-meta__val`: a sentence-case sans key, then a mono value; never "a · b · c". |
+| Label | Foundations | `af-lbl` with optional `af-lbl__sub` and icon: small sentence-case sans naming a card or section. |
 | ObjectChip | Foundations | `af-obj` (`a` with `af-obj--link`, or `span`) > source icon, `af-obj__key`, `__title`, `__state`; `af-obj--restricted` shows the key only; the approval mark is the one color; `af-obj__trust` on hover. Never a pill. |
 | ProductMarks | Foundations | `af-mark af-hue--<product>`: outline tile with the product glyph; the hue's only other home is the nav marker. |
 | Readout | Foundations | `af-readout af-readout--s\|m\|l`: mono digits on unlit cells in a recessed window. |
 | Status | Foundations | `af-status af-status--running\|queued\|approval\|failed\|denied\|off` + `<i class="af-status__mark">` + word; `af-status--lit` colors the word. |
-| Card | Cards | `af-card` with `af-card__top`, `__body`, `__title`, `__desc`, `__foot`; `af-card--lit` only while a person is needed; `af-grid af-grid--2\|3\|4`. |
+| Card | Cards | `af-card` with `af-card__top`, `__body`, `__title`, `__desc`, `__foot`; `af-card--lit` (3px orange edge) only while a person is needed, `--failed`/`--denied` (red edge); `af-grid af-grid--2\|3\|4`. |
 | EnvironmentCard | Cards | An image a sandbox boots from: name, purpose, digest, harness; one failed build. |
-| SummaryCards | Cards | The four numbers at the top of a console: running, waiting on you, spend today, turn to PR. |
+| SummaryCards | Cards | The four numbers at the top of a console: running, waiting on you, spend today, turn to PR. `af-gauge` has a brand limit bug; `af-gauge--mini` (in a list) keeps it neutral. |
 | Composer | Controls | `af-composer` > `af-composer__queued` (Queued · applies after this tool call, with a take-back), `af-composer__box` (textarea, `af-chip` suggestions, one primary Send), `af-composer__why`; `is-disabled` says why. |
 | Controls | Controls | Switch, segmented control (`af-seg`), text input with key hint, select, `af-input--area` textarea, `af-chip` options; square and recessed. |
-| Navigation | Navigation | 56px app header with product switcher, mono tabs with the 2px product marker, search, avatar; breadcrumb row. |
+| Navigation | Navigation | 56px app header with product switcher, sentence-case tabs with the 2px product marker, `af-nav__badge` (the orange Needs-you count, never at zero), search, avatar; breadcrumb row. |
 | PageHeader | Patterns | `af-page-head` (`--s` for 24 px, `--rule`) > `__text` (`__title`, `__lede`, `__sum` with status + `af-meta` + `af-cap`) + `__actions`. Stacks below 760 px. |
 | EmptyState | Patterns | `af-empty[data-kind=no-data\|after-action\|error]`, `af-empty--clear` for "Nothing is waiting on you.", `af-empty--compact`; one primary, one link at most; errors: no icon, no second action. |
 | Toast | Patterns | `af-toasts[role=status]` > `af-toast` (`--bad` with the failed mark, `__msg`, one `__act`); bottom centre; held while a dialog, drawer or field is active. `toast()` in airframe.js. |
@@ -75,19 +80,29 @@ component contracts in `airframe/components/*.md` before writing markup.
 | FleetTable | Data | Dense 32px rows on a tonal panel: tail number, environment, harness and model, status, CPU, age, cost. |
 | Terminal | Data | Always dark in both themes; quiet ✓ lines, red ✗ lines, prompt and cursor in brand. |
 | TraceSpans | Data | One agent turn as a span tree on a timeline; the critical path in brand. |
+| DecisionDeck | Fleet | `af-deck` > `af-deck__stack` of `af-decision` sheets (`data-k` 0 on top, 1–2 peek) + `af-deck__side` (n of N over the decisions only, prev/next, skip, up-next, then `af-deck__subtitle` "Stopped" and `af-deck__stopped` for failed and denied); peek cards carry no status edge; inline approve, deny with a required reason (`af-reason`), answer with chips, retry, acknowledge; `af-verdict-line`; calm empty. `deck` in airframe.js. |
+| AgentRow | Fleet | `af-runway` > `af-agent` > `af-agent__line` (mark, tail, work + now-line + Heartbeat, owner, harness, StageRail, stage times, sparkline, cost, chevron) and `af-agent__body` > `af-console`; opens in place (`expand`). The **List** view. |
+| AgentCard | Fleet | `af-board` > `af-agent af-agent--card` > `af-agent__face` (avatar, tail, ring, work, now-line, capsule, owner); opens in place full width. The **Board** view. |
+| ActivityTimeline | Fleet | `af-timeline` > `af-timeline__ev` (`--stage`, `--hold`, `--fail`, `is-last` lit): wall-clock and relative time, the event. |
+| StageRail | Fleet | `af-rail` / `af-ring` / `af-capsule` with `--p`; grey while running, status color on the head when lit; solid only for a reported pct, `--est` dotted for an estimate; `--none` not started. |
+| Heartbeat | Fleet | `af-hb af-hb--live\|wait`: recency dot + time; breathes only for a live agent, still under reduced motion. |
+| FleetConsole | Fleet | The composed Fleet page: headline in words, DecisionDeck on top, List (AgentRow) or Board (AgentCard) below over one selection, the key. The reference for hangar's Fleet. |
 | FleetBays | Fleet | `af-bays` > `af-bay af-bay--<state>`: a box per sandbox with task, owner, `af-track` stage track, lease left, one action. |
 | FleetColumns | Fleet | `af-statecols`: one column per state, attention first, Running two wide. |
 | FleetOwners | Fleet | `af-owners`: people down, environments across, stand tiles in the cells, share of the per-person cap. |
-| FleetView | Fleet | Pools of `af-stand` tiles, switchable to session lanes; the whole fleet at a glance. |
+| FleetView | Fleet | Pools of `af-stand` tiles, switchable to session lanes; the whole fleet at a glance. hangar's default pair is List + Board (AgentRow, AgentCard); Bays, Columns, Owners and this view share the neutral tile and the 3px edge. |
 | SessionLanes | Fleet | One row per agent session over the last 60 minutes: stages, waits, outcomes. |
 | Hero | Marketing | Display headline, lede, two actions and a display-window panel over the dot field. |
+| Cover | Gallery | The gallery's 960×320 cover art, tokens only (tiles in brand, fg and the stage greys); not a part for product UI. |
 
 ## Helpers (airframe.js, optional)
 
 `theme/airframe.js` is one ES module with no dependencies: `status(role, word)`, `icon(name)`, `meta([[key, val]])`,
 `btn(label, {kind, sm, icon, text})`, `avatar(kind, initials, {size})`, `obj({source, key, title, state, href, restricted,
 approval, trust})`, `tag(text)` return markup matching the contracts with every value escaped; `toast(msg, {tone, action,
-timeout, critical})`, `await confirm({title, body, ok, cancel, danger})` and `drawer.open/close(el)` carry the behaviour,
+timeout, critical})`, `await confirm({title, body, ok, cancel, danger})`, `drawer.open/close(el)`,
+`expand.open/close(agent)` (a row or card opening in place), `deck.next/prev/go/leave` (the decision deck),
+`roving(root)` (arrow keys over rows and tiles) and `duration(name)` (0 under reduced motion) carry the behaviour,
 including alert inhibition (non-critical toasts wait while a dialog or drawer is open or a field has focus). Use it instead
 of writing your own `status()`/`btn()` builders; in a React app compose the same classes.
 
@@ -102,6 +117,11 @@ Failed, Denied, Spun down. A deny needs a reason; an approve may carry a note. D
 ## When something is missing
 
 Do not invent a color or a component. Say what Airframe lacks, build the minimum with tokens in the product's
-own CSS, and note it for agent-factory. The brand book (`airframe/guide/brand.md`, `Status.md`, `Data.md`,
-`Products.md`) has the detailed rules; the gallery renders every component in both themes:
+own CSS, and note it for agent-factory. The brand book has the detailed rules, one page per question in
+`airframe/guide/`: `brand.md` (the hub and the principles), `Writing.md` (voice, casing, words to avoid), `IDs.md`
+(tail numbers, units, ratios), `Color.md` (roles, Night and Day), `People.md` (who has the controls, avatars),
+`Type.md`, `Layout.md` (spacing, radius, borders, cards, texture), `Motion.md` (motion and focus), `Iconography.md`,
+`Consume.md` (loading the theme), plus `Status.md`, `Data.md` and `Products.md`. On the site they are
+https://sean-koval.github.io/agent-factory/airframe/guide/brand/ and its siblings (lowercase). The gallery renders
+every component in both themes:
 https://sean-koval.github.io/agent-factory/airframe/gallery/
