@@ -277,6 +277,79 @@ def test_rest_and_cli(settings, monkeypatch):
     assert CliRunner().invoke(cli.app, ["repo", "set", "acme/app"]).exit_code != 0
 
 
+def test_repo_set_naming_conventions_end_to_end(settings, monkeypatch):
+    """KAN-37: --branch-template, --require-ticket/--no-require-ticket and --title-template, through the real API."""
+    import contextlib
+    import json
+
+    settings.admin_token = "t0ken"
+    app = create_app(settings)
+    with TestClient(app) as c:
+        app.state.hangar.fleet.providers["docker"] = FakeProvider()
+        c.headers["Authorization"] = "Bearer t0ken"
+        sent: list[dict] = []
+        real = c.request
+
+        def request(method, path, **kw):
+            if method == "PUT":
+                sent.append(kw["json"])
+            return real(method, path, **kw)
+
+        monkeypatch.setattr(c, "request", request)
+        monkeypatch.setattr(cli, "_client", lambda: contextlib.nullcontext(c))
+
+        def run(*args):
+            return CliRunner().invoke(cli.app, ["repo", *args])
+
+        def get() -> dict:
+            r = run("get", "acme/app")
+            assert r.exit_code == 0, r.output
+            return json.loads(r.output)
+
+        r = run("set", "acme/app", "--verify", "make test")
+        assert r.exit_code == 0, r.output
+        r = run("set", "acme/app", "--branch-template", "feature/{ticket_key}-{job}", "--require-ticket",
+                "--title-template", "{ticket_key}: {title}")
+        assert r.exit_code == 0, r.output
+        assert sent[-1] == {"repo": "acme/app", "branch_template": "feature/{ticket_key}-{job}",
+                            "require_ticket": True, "title_template": "{ticket_key}: {title}"}
+        assert "branch: feature/{ticket_key}-{job}" in r.output and "ticket required" in r.output
+        assert "PR title: {ticket_key}: {title}" in r.output
+        p = get()
+        assert (p["branch_template"], p["require_ticket"], p["title_template"]) == (
+            "feature/{ticket_key}-{job}", True, "{ticket_key}: {title}")
+        assert p["verify"] == "make test"
+        # --no-require-ticket sets false; the flags left out keep their values
+        r = run("set", "acme/app", "--no-require-ticket")
+        assert r.exit_code == 0 and sent[-1] == {"repo": "acme/app", "require_ticket": False}, r.output
+        assert "ticket not required" in r.output
+        p = get()
+        assert p["require_ticket"] is False and p["branch_template"] == "feature/{ticket_key}-{job}"
+        assert p["title_template"] == "{ticket_key}: {title}"
+        # '' clears a template (an explicit null); the other one stays
+        r = run("set", "acme/app", "--branch-template", "")
+        assert r.exit_code == 0 and sent[-1] == {"repo": "acme/app", "branch_template": None}, r.output
+        assert "branch:" not in r.output
+        p = get()
+        assert p["branch_template"] is None and p["title_template"] == "{ticket_key}: {title}"
+        r = run("set", "acme/app", "--title-template", "")
+        assert r.exit_code == 0 and get()["title_template"] is None
+        # a branch template without {job}: the server's 400, and nothing changes
+        run("set", "acme/app", "--branch-template", "hangar/{job}")
+        r = run("set", "acme/app", "--branch-template", "feature/{ticket_key}", "--require-ticket")
+        assert r.exit_code == 1
+        assert "error 400" in r.output and "branch_template must contain {job}" in r.output, r.output
+        p = get()
+        assert p["branch_template"] == "hangar/{job}" and p["require_ticket"] is False
+        r = run("set", "acme/app", "--title-template", "{nope}: {title}")
+        assert r.exit_code == 1 and "unknown placeholder(s) {nope}" in r.output, r.output
+        # unset clears them too
+        r = run("unset", "acme/app", "branch_template", "require_ticket")
+        assert r.exit_code == 0, r.output
+        p = get()
+        assert p["branch_template"] is None and p["require_ticket"] is None
+
+
 # ====================================================================== B8: no stray HANDOFF.md
 def test_repo_conventions_no_longer_asks_for_handoff_md():
     text = (ROOT / "envs/skills/repo-conventions/SKILL.md").read_text()

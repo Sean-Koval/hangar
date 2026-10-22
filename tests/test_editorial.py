@@ -45,7 +45,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "api/traces.md": (1710, 31, CONTRACT),
     "api/trials.md": (953, 12, CONTRACT),
     "caches.md": (1784, 26, LATER + "what is cached, the store"),
-    "changesets.md": (1398, 21, LATER + "the profile, the apply"),
+    "changesets.md": (1397, 21, LATER + "the profile, the apply"),
     "ci.md": (1658, 10, LATER + "the pre-merge job, main's full run"),
     "cicd.md": (1625, 32, LATER + "the setup script, the pipeline"),
     "computer-use.md": (2263, 36, LATER + "the desktop, the screen, the tools"),
