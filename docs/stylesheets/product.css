@@ -20,6 +20,21 @@
 /* The docs home's hero: a still of a delivered job that links to the recording, in the page's theme */
 .md-typeset .af-hero__visual figcaption a { color: var(--af-fg-muted); }
 
+/* The docs home's features table on phones: each row stacks into a block (the feature, its status, then what it gives),
+   so the description gets the full width instead of a 100 px column. The header row goes; the status reads as a note. */
+@media (max-width: 599px) {
+  .md-typeset .hg-features table:not([class]), .md-typeset .hg-features tbody,
+  .md-typeset .hg-features tr, .md-typeset .hg-features table:not([class]) td { display: block; width: auto; }
+  .md-typeset .hg-features thead { display: none; }
+  .md-typeset .hg-features table:not([class]) tr { display: grid; grid-template-columns: 1fr auto; column-gap: .8rem; padding: .7rem 0; border-top: 1px solid var(--af-line-subtle); }
+  .md-typeset .hg-features table:not([class]) tr:hover { background: transparent; }
+  .md-typeset .hg-features table:not([class]) td { border: 0; padding: 0; }
+  .md-typeset .hg-features table:not([class]) td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .md-typeset .hg-features table:not([class]) td:nth-child(3) { grid-column: 2; grid-row: 1; color: var(--af-fg-muted); font-size: .64rem; text-align: right; }
+  .md-typeset .hg-features table:not([class]) td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; margin-top: .3rem; }
+}
+
 @media (forced-colors: active) {
+  .md-typeset .hg-features table:not([class]) tr { border-color: CanvasText; }
   .md-typeset figure.af-figure--lead > a > img { box-shadow: none; outline: 1px solid CanvasText; }
 }

@@ -19,6 +19,10 @@ It is a **deck**: one decision at a time, the soonest to expire on top, and the 
 "1 of 7", previous and next, and an up-next list to jump to any of them. Decisions (a person is needed now) come
 before what stopped.
 
+Under the decisions, **Stopped** lists every failed or denied agent the Fleet's headline counts, so "3 stopped" there
+is three rows here. An agent with nothing in the inbox, such as a sandbox whose image failed to build, is a row that
+opens it on the Fleet.
+
 Deciding happens on the card. A verdict line says what happened ("Approved by Sean; codex is running git push origin
 main"), and the agent's row on the Fleet flips at once. After a few seconds the card slides away and the next one
 rises. If someone else decided first, or the wait expired, the card says so and goes.

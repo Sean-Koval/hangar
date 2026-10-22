@@ -52,10 +52,15 @@ Many doors bring work in; hangar runs it in a sandbox and verifies it; the pull 
 
 The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to start and the agents' questions, decided in place. [The web console](console.md) walks through it, the Jobs and Sessions pages and the Fleet.
 
-![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs.png#only-dark)
-![Needs you: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decision peeking behind it](assets/front/ui-needs-light.png#only-light)
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-needs.png"><img src="assets/front/ui-needs.png#only-dark" alt="The Needs you page: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decisions and what stopped beside it"></a>
+<a href="assets/front/ui-needs-light.png"><img src="assets/front/ui-needs-light.png#only-light" alt="The Needs you page: the held push on top of the deck with its command, changes and expiry, Deny, Allow for this turn and Approve push; the next decisions and what stopped beside it"></a>
+<figcaption>The Needs you page: a held <code>git push</code> on top, with Deny and Approve push; the next decisions and what stopped beside it.</figcaption>
+</figure>
 
 ## Features
+
+<div class="hg-features" markdown>
 
 | Feature | What it gives your team | Status |
 | --- | --- | --- |
@@ -73,6 +78,8 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 | **Plugins and events out** | Doors, trackers, notifiers and deliverers are plugins: a package of your own adds a chat bot's door or a company tracker without changing hangar, and every job change goes out as a signed `hangar.event/v1` ([plugins](plugins.md)). | Shipped |
 | **Deploy on your company's cluster** | Kustomize base and components, a Terraform module that never creates a cluster, released images, secrets from your secret manager and admin configuration as reviewed files (`hangar apply`) ([company deploy](deploy-company.md)). | Shipped |
 | **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](clients/relay.md)). | Partial |
+
+</div>
 
 *Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
 
