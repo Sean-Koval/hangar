@@ -909,6 +909,18 @@ def broken(svc: JobService, cs: ChangeSet, why: str) -> None:
             svc.landing._note(p, f"change set {cs.id} is broken ({why}): nothing more of it lands")
 
 
+def parent_ended(svc: JobService, job: Job) -> None:
+    """A parent job that ended failed or cancelled before it delivered anything (KAN-36): its set is `broken`, so
+    it stops counting as active and gate() stops reasoning about it. A parent that delivered (the set is landing,
+    or has parts) and one that succeeded without changing a repo are left as they are."""
+    if not job.changeset or job.parent or job.state not in (JobState.FAILED, JobState.CANCELLED):
+        return
+    cs = of(svc).of(job)
+    if cs is None or cs.parent_job != job.id or cs.state != "working" or cs.parts:
+        return
+    broken(svc, cs, f"parent job {job.state.value} before delivery: {job.reason or job.state.value}")
+
+
 def all_ended(svc: JobService, job: Job) -> Job | None:
     """After a part's end: the parent job, when every part of the set has ended (its session can go now)."""
     cs = of(svc).of(job)

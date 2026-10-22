@@ -879,6 +879,8 @@ class JobService:
         job.events.append(JobEvent(state=job.state.value, message=self.broker.redact(message)[:2000]))
         del job.events[:-MAX_EVENTS]
         self._save(job)
+        if job.changeset and state in (JobState.FAILED, JobState.CANCELLED):  # --- change sets (KAN-36): a parent
+            changesets.parent_ended(self, job)  # that ends before delivering leaves its set broken, not working
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
