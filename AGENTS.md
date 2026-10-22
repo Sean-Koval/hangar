@@ -14,6 +14,7 @@
 
 - The site is `mkdocs.yml` and `docs/`, built with Zensical as `.github/workflows/docs.yml` does. Build it locally with `pip install zensical==0.0.71`, then `zensical build --strict` (into `site/`, which is not committed) or `zensical serve` (http://localhost:8000, rebuilt on save). `--strict` fails on a broken link or anchor, as CI does.
 - `tests/test_front_page.py` keeps README.md and `docs/index.md` honest: the security posture section in both, and one features table with a status per row.
+- Write for the site as agent-factory's AGENTS.md says ("Writing for the site"): a page answers one question for one reader; a paragraph is at most 60 words, a sentence at most 25 words (a semicolon ends one), and a page at most 700 words of prose, or it is split. `tests/test_editorial.py` measures `docs/` and README.md (`python tests/test_editorial.py` prints every page's numbers). A page written before the rule is listed there with a reason and ceilings that only go down; a new page keeps the whole rule. When you split a page, keep its old URL and anchors working: leave the page as the first question's answer, with a "Moved from this page" table whose cells carry the old anchors.
 
 ## Tracking
 

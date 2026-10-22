@@ -46,10 +46,11 @@ FULL = ["tests/conftest.py", "tests/__init__.py", "tests/fixtures/*", "pyproject
 
 # Non-Python paths, matched in order: the tests that read them, or a key of READS to find those by their source.
 PATHS: list[tuple[str, list[str] | str]] = [
-    ("README.md", ["tests/test_front_page.py"]),  # the front page's security posture and feature table (#151)
-    ("docs/index.md", ["tests/test_front_page.py"]),
-    ("docs/gke.md", ["tests/test_sweep_durability.py"]),
-    ("docs/*", []),
+    # the front page's security posture and feature table (#151), and the editorial rule (tests/test_editorial.py)
+    ("README.md", ["tests/test_front_page.py", "tests/test_editorial.py"]),
+    ("docs/index.md", ["tests/test_front_page.py", "tests/test_editorial.py"]),
+    ("docs/gke.md", ["tests/test_sweep_durability.py", "tests/test_editorial.py"]),
+    ("docs/*", ["tests/test_editorial.py"]),  # the editorial rule: every page, the nav
     ("*.md", []),
     ("LICENSE", []),
     ("bench/*", []),

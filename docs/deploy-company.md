@@ -114,7 +114,7 @@ missing fails the build, so nothing ships with a placeholder.
 
 Your settings go in the `hangar-site` ConfigMap. The Deployment reads it after the base's `hangar` ConfigMap, so its
 keys win. At the least, set `HANGAR_PUBLIC_URL`, `HANGAR_REGISTRY` (module output `registry`, or your own) and
-`HANGAR_SESSION_STORE` (`session_bucket_url`). Doors, egress and the rest are `HANGAR_*` settings ([Configuration](guide.md#configuration)).
+`HANGAR_SESSION_STORE` (`session_bucket_url`). Doors, egress and the rest are `HANGAR_*` settings ([Configuration](guide/configuration.md#configuration)).
 
 **Ingress.** `ingress-gce` is a GKE Ingress with a Google-managed certificate and a one-hour backend timeout for
 terminals and long MCP calls. `ingress-nginx` is the same for ingress-nginx: TLS from Secret `hangar-tls`, which you

@@ -94,7 +94,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 
 | Topic | Guide |
 | --- | --- |
-| First task, everyday commands, deployment and limits | [Getting started](docs/guide.md) · [Concepts](docs/concepts.md) |
+| First task, everyday commands, deployment and limits | [Getting started](docs/guide.md) · [Where it runs](docs/guide/where-it-runs.md) · [Concepts](docs/concepts.md) |
 | Environments and onboarding a team | [Environments](docs/environments.md) · [Onboarding runbook](docs/runbooks/onboarding.md) |
 | Clients, OAuth and MCP tools | [Connecting clients](docs/clients.md) · [Using MCP](docs/mcp.md) |
 | Jobs, sessions, steering, landing | [Jobs](docs/jobs/README.md) · [Sessions](docs/sessions.md) · [Steering](docs/steering.md) · [Landing](docs/landing.md) |
@@ -102,6 +102,6 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 | Security and design decisions | [Security model](docs/security/README.md) · [Specs](docs/specs/README.md) |
 | Release history | [Changelog](CHANGELOG.md) |
 
-**Developing hangar:** `uv sync --all-extras && uv run pytest -n 8 && uv run ruff check src tests`; see [development](docs/guide.md#development) and [CI](docs/ci.md). To re-render the images on this page after a console change, see [the front-page assets](docs/assets/README.md).
+**Developing hangar:** `uv sync --all-extras && uv run pytest -n 8 && uv run ruff check src tests`; see [development](docs/guide/configuration.md#development) and [CI](docs/ci.md). To re-render the images on this page after a console change, see [the front-page assets](docs/assets/README.md).
 
 Licensed under [Apache 2.0](LICENSE).
