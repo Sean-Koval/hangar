@@ -531,3 +531,24 @@ async def test_doctor(intake, settings, broker):  # noqa: F811
     unlinked = {c["name"]: c for c in teamcreds.doctor_checks(h)}["unlinked senders"]
     assert "jira:557058:eve (3 jobs)" in unlinked["detail"]
     assert "hangar person link PERSON jira 557058:eve" in unlinked["fix"]
+
+
+def test_towers_two_credentials_as_tower_sh_and_the_runbook_store_them(app_client):
+    """docs/runbooks/tower.md and Tower's deploy/gke/tower.sh bootstrap store Tower's service key and webhook secret as
+    team credentials only the control plane sees: harness `webhook`, kind `generic`. There is no `tower` harness, so
+    `--harness tower` has no slot for `generic` and is refused (KAN-32)."""
+    c = app_client
+    body = {"kind": "generic", "team": True, "exposure": "control_plane"}
+    r = c.post("/api/credentials", json={"name": "tower", "harness": "tower", "value": "a" * 64, **body},
+               headers=ADMIN_H)
+    assert r.status_code == 400 and "no slot for kind 'generic'" in r.json()["error"], r.text
+    for name in ("tower", "tower-webhook"):
+        r = c.post("/api/credentials", json={"name": name, "harness": "webhook", "value": "b" * 64, **body},
+                   headers=ADMIN_H)
+        assert r.status_code == 200, r.text
+        assert r.json()["person"] is None and r.json()["owner"] in ("team", "control-plane")
+    listed = {x["name"]: x for x in c.get("/api/credentials", headers=ADMIN_H).json()}
+    assert listed["tower"]["exposure"] == listed["tower-webhook"]["exposure"] == "control_plane"
+    # bootstrap again: the same call replaces the value, nothing else
+    assert c.post("/api/credentials", json={"name": "tower", "harness": "webhook", "value": "c" * 64, **body},
+                  headers=ADMIN_H).status_code == 200

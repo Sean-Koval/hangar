@@ -42,7 +42,7 @@ data:
   # run, and a disagreement is audited. A kind goes to enforce only after a week without one (spec 0015 §14).
   HANGAR_GOVERNANCE: "shadow"
   HANGAR_GOVERNANCE_URL: "http://tower.tower.svc.cluster.local"
-  HANGAR_GOVERNANCE_CREDENTIAL: "tower"              # vault credential: Tower's AW_KEY_HANGAR (hangar cred add tower)
+  HANGAR_GOVERNANCE_CREDENTIAL: "tower"              # vault credential: Tower's AW_KEY_HANGAR (Tower's tower.sh bootstrap)
   HANGAR_GOVERNANCE_WEBHOOK_SECRET: "tower-webhook"  # vault credential: Tower's AW_WEBHOOK_HANGAR_SECRET
   # --- heavy: the heavy tier (docs/environments.md#the-heavy-tier, docs/gke.md section 4a): Docker inside Kata
   # sandboxes on the sandboxes-heavy pool (enable_heavy_pool), and the large/xlarge profiles. Keep the other tiers.

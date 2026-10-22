@@ -4,7 +4,9 @@
 # SQLite store among them), images, the bucket, session checkpoints and the IP stay (docs/gke.md, section 6).
 #
 #   bash deploy/gke/power.sh down     # drain, checkpoint and suspend sessions, tell hangar, sandbox pools to 0 nodes;
-#                                     # hangar and the system pool stay up (GitHub, Slack, Jira events are queued)
+#                                     # hangar and the system pool stay up (GitHub, Slack, Jira events are queued).
+#                                     # Tower stays up too, unless it follows the schedule (Tower's `tower.sh
+#                                     # schedule on`: annotation hangar.dev/power=follow); then it goes to 0
 #   bash deploy/gke/power.sh up       # (from off: the system pool, then hangar, waiting until it's ready) sandbox
 #                                     # pools back to their ranges (the gVisor pool at its warm floor), images pulled
 #                                     # onto the floor node, tell hangar: queued jobs start. Ends a hold. Then, when
@@ -307,10 +309,16 @@ hangar_ready() { [ "$(kubectl -n "$NS" get deploy hangar -o jsonpath='{.status.r
 hangar_replicas() { kubectl -n "$NS" get deploy hangar -o jsonpath='{.spec.replicas}' 2>/dev/null || true; }
 
 # Tower (docs/runbooks/tower.md): optional. `off` stops it after hangar, since its database is on a volume on the
-# system node too; `up` starts it before hangar, which asks it before risky actions. `down` leaves it alone.
+# system node too; `up` starts it before hangar, which asks it before risky actions. `down` leaves it alone unless it
+# follows the schedule: Tower's deploy/gke/tower.sh sets the annotation hangar.dev/power=follow (`tower.sh schedule
+# on`; off by default). A Tower stopped by hand (`tower.sh down` sets tower.dev/stopped) stays stopped at `up`.
 tower_deployed() { [ -n "$(kubectl -n "$TOWER_NS" get deploy tower -o name 2>/dev/null || true)" ]; }
 tower_replicas() { kubectl -n "$TOWER_NS" get deploy tower -o jsonpath='{.spec.replicas}' 2>/dev/null || true; }
-stop_tower() {
+tower_note() {  # ANNOTATION (dots escaped for jsonpath): its value on Tower's Deployment, empty when unset
+  kubectl -n "$TOWER_NS" get deploy tower -o "jsonpath={.metadata.annotations.$1}" 2>/dev/null || true
+}
+tower_follows() { tower_deployed && [ "$(tower_note 'hangar\.dev/power')" = follow ]; }
+stop_tower() {  # [soft]: soft (down) logs a pod that won't stop instead of failing; off needs it gone
   tower_deployed || return 0
   if [ "$(tower_replicas)" != 0 ]; then
     log "stopping Tower (its data stays on the tower-data volume)"
@@ -318,6 +326,7 @@ stop_tower() {
   fi
   kubectl -n "$TOWER_NS" wait --for=delete pod -l app=tower --timeout=120s >/dev/null 2>&1 || true
   if ! running=$(kubectl -n "$TOWER_NS" get pods -l app=tower -o name) || [ -n "$running" ]; then
+    [ "${1:-}" != soft ] || { log "Tower's pod hasn't stopped after 2 minutes; it stops on its own"; return 0; }
     die "Tower's pod hasn't stopped after 2 minutes (or couldn't be listed), so the system pool stays up" \
       "(its database is on that node's volume). Run power.sh off again, or power.sh up to bring it all back."
   fi
@@ -325,6 +334,10 @@ stop_tower() {
 start_tower() {
   tower_deployed || return 0
   [ "$(tower_replicas)" = 0 ] || return 0
+  if [ -n "$(tower_note 'tower\.dev/stopped')" ]; then
+    log "Tower was stopped by hand (tower.sh down at $(tower_note 'tower\.dev/stopped')): leaving it stopped"
+    return 0
+  fi
   log "starting Tower (hangar asks it before risky actions)"
   kubectl -n "$TOWER_NS" scale deploy/tower --replicas=1 >/dev/null
   kubectl -n "$TOWER_NS" rollout status deploy/tower --timeout=600s ||
@@ -699,6 +712,7 @@ down)
   quiesce
   touch_lock
   pools_to_zero sandbox
+  if kube && tower_follows; then touch_lock; stop_tower soft; fi  # tower.sh schedule on; up starts it first
   if [ "$DOWN_STATE" = night ]; then
     lane_nodes 1
     log "night: the overnight lane's node stays up for overnight repos' jobs and evals"
@@ -846,6 +860,11 @@ status)
   if kube && hangar_ready; then
     hangar_api GET /api/admin/power | python3 -c 'import json,sys; print("hangar:", json.dumps(json.load(sys.stdin)["power"]))' ||
       true
+  fi
+  if kube && tower_deployed; then
+    echo "tower: $(tower_replicas) replica(s), $([ "$(tower_note 'hangar\.dev/power')" = follow ] &&
+      echo "follows the schedule" || echo "always on")$([ -z "$(tower_note 'tower\.dev/stopped')" ] ||
+      echo ", stopped by hand")"
   fi
   ;;
 state)
