@@ -69,6 +69,7 @@ from hangar import shadows as shadows  # --- #183: shadow runs of sampled real j
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar import testresults as testresults  # --- testresults: structured results of every check
 from hangar import turnlogin as turnlogin  # --- #293: a turn refused for want of a login
+from hangar import turnsummary as turnsummary  # --- KAN-137: a stopped turn's summary, from its events
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
 from hangar.github import GitHub, GitHubError, parse_repo
@@ -1210,7 +1211,6 @@ class JobService:
             self._event(job, f"the check failed {rounds} time(s) during the turn; each went back to the agent")
         if job.verify and verifyloop.max_rounds(self.settings, job):  # --- testresults: the gate's reports
             await testresults.in_turn(self, job, turn)
-        tail = _clip_tail(raw) if raw else ""
         if outcome in ("gone", "error") and self.fleet.power.resume_cut_off(self, job):  # --- ops: resumes at power-up
             if not self._sandbox_alive(job):
                 job.sandbox_id = None
@@ -1229,7 +1229,10 @@ class JobService:
         red = self.broker.redact
         summary = red(raw.decode(errors="replace").strip()[:8000]) if raw else ""
         turn.summary = summary or None
-        job.result.summary = summary or (red(_clip_tail(tail)[-3000:]) if tail else None)
+        # KAN-137: no RESULT.md: the session turn's final message, or for a stopped turn one built from its events
+        # (re-built with the check and the diffstat before delivery); never the harness's raw stream
+        job.result.summary = summary or (self._stopped_summary(job, turn) if turn.outcome in turnsummary.STOPPED
+                                         else st.summary)
         if outcome == "needs_input":  # workstream E: the agent asked a question; no delivery until it's answered
             await exchange.job_needs_input(self, job, turn, s)
             return
@@ -1288,6 +1291,8 @@ class JobService:
                 else:
                     job.result.verify_tail = ((job.result.verify_tail or "") + "\n" + (tail_ or ""))[-4000:]
         # --- frontdoor: on a red base only the failures this change added count ("unknown": can't tell them apart)
+        if not turn.summary and turn.outcome in turnsummary.STOPPED:  # KAN-137: now with the check's result
+            job.result.summary = self._stopped_summary(job, turn)
         verdict = baseline.verdict(job, job.result.verify_exit_code, job.result.new_failures)
         if roles_failed:  # --- change sets: a role's own check failed, whatever the primary's said
             verdict = "fail"
@@ -1380,6 +1385,9 @@ class JobService:
 
         names = await self._sh(job, f"git diff --name-status --no-renames -z {q(base)}..HEAD | head -c 400000")
         job.result.files, job.result.deleted = diff_files(names.stdout)
+        last = job.turns[-1] if job.turns else None
+        if last is not None and not last.summary and last.outcome in turnsummary.STOPPED and not job.attempts:
+            job.result.summary = self._stopped_summary(job, last)  # KAN-137: and the diffstat, for the PR body
         self._save(job)
         if job.deliver == "none" or not job.result.commits:
             return
@@ -1449,6 +1457,20 @@ class JobService:
             self._event(job, f"branch pushed; opening the PR failed: {e}")
         finally:
             await gh.close()
+
+    def _stopped_summary(self, job: Job, turn: Turn) -> str | None:
+        """A stopped turn's summary from the job's events (KAN-137): why it stopped, the agent's last messages,
+        the diffstat and the last check. Plain text; raw harness output stays in the run log."""
+        try:
+            evs = [e for e in self.events(job.id, tail=500) if not turn.run_id or e.get("run_id") == turn.run_id]
+        except Exception:  # noqa: BLE001 - a summary must not fail the turn
+            evs = []
+        ran = job.verify is not None and job.result.verify_exit_code is not None
+        out = turnsummary.build(outcome=turn.outcome, reason=turn.outcome_reason, started_at=turn.started_at,
+                                finished_at=turn.finished_at, said=turnsummary.messages(evs),
+                                diffstat=job.result.diffstat, files_known=bool(job.result.head_sha), verify=job.verify,
+                                verify_exit_code=job.result.verify_exit_code, verify_ran=ran)
+        return self.broker.redact(out)[:8000] if out else None
 
     def _pr_body(self, job: Job) -> str:
         # `___`, not `---`: git reads a `---` line as the end of a message, and the trailers below must parse (#137)

@@ -44,10 +44,11 @@ from hangar import slo as slo  # --- clouddoctor: turn-start and resume times fo
 from hangar import steer as steering  # workstream steer: live turns
 from hangar import taint as taint  # --- taint (#129): whether a turn has read untrusted content
 from hangar import turnlogin as turnlogin  # --- #293: a turn's harness must have a login
+from hangar import turnsummary as turnsummary  # --- KAN-137: a stopped turn's summary, from its events
 from hangar.checkpoints import CheckpointStore, make_store
 from hangar.ckpt import CKPT_DIR, CKPT_REF, PACK_READ_LIMIT, PARTS, RESTORE_DIR  # noqa: F401 - re-exported (strategies, exchange)
 from hangar.events import Activity, RunEvent, resolve_budget, total_usage
-from hangar.fleet import Fleet, FleetError, _clip_tail
+from hangar.fleet import Fleet, FleetError
 from hangar.harnesses import get_harness
 from hangar.models import (
     SESSION_LIVE,
@@ -102,8 +103,11 @@ class NewSession(BaseModel):
     harness_lock: str | None = Field(None, max_length=200)  # --- harness locks (#134): name, name@rN, name@sha256:...
 
 
-def extract_summary(harness: str | None, log_text: str) -> str | None:
-    """The agent's last message from a run log (best effort per harness; falls back to the output tail)."""
+def extract_summary(harness: str | None, log_text: str, *, outcome: str | None = None, reason: str | None = None,
+                    started_at: float | None = None, finished_at: float | None = None) -> str | None:
+    """The agent's last message from a run log (best effort per harness). Without one (a turn stopped over budget,
+    timed out, cancelled), a summary built from the log's events: why it stopped and what the agent said last,
+    never the harness's raw JSON stream (KAN-137)."""
     last: str | None = None
     for ln in log_text.splitlines():
         ln = ln.strip()
@@ -129,10 +133,10 @@ def extract_summary(harness: str | None, log_text: str) -> str | None:
                 last = text or last
         elif e.get("event") == "result" and isinstance(e.get("result"), dict):  # antigravity stream-json
             last = e["result"].get("response") or last
-    if last:
+    if last and outcome not in turnsummary.STOPPED:
         return last.strip()[:8000]
-    tail = _clip_tail(log_text)[-2000:].strip()
-    return tail or None
+    return turnsummary.from_log(harness, log_text, outcome=outcome, reason=reason, started_at=started_at,
+                                finished_at=finished_at)
 
 
 class SessionService:
@@ -1187,7 +1191,9 @@ class SessionService:
             await (isolation.sh(prov, sb, tail) if split else self._sh(sb, tail))
             raw = (await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000) or b"")[-2_000_000:].decode(
                 errors="replace")
-            turn.summary = self.fleet.broker.redact(extract_summary(turn.harness, raw) or "") or None
+            turn.summary = self.fleet.broker.redact(extract_summary(
+                turn.harness, raw, outcome=outcome, reason=turn.outcome_reason, started_at=turn.started_at,
+                finished_at=turn.finished_at) or "") or None  # KAN-137: a stopped turn's is built from its events
             await self._record_conversation(s, sb, turn, raw)
         except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log
             log.warning("session %s: could not read turn %s output: %s", s.id, turn.run_id, e)
