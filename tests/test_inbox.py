@@ -15,6 +15,7 @@ from hangar.auth import Principal
 from hangar.jobs import JobService
 from hangar.models import (
     Approval,
+    CredentialKind,
     Job,
     JobApproval,
     JobState,
@@ -167,6 +168,34 @@ def test_rest_and_cli(settings, monkeypatch):
     assert out.exit_code == 0 and "PR #7 waits for your review" in out.output and "review and approve" in out.output
     monkeypatch.setattr(cli, "_call", lambda method, path, **kw: {"items": [], "counts": {}})
     assert "Nothing needs you" in CliRunner().invoke(cli.app, ["inbox"]).output
+
+
+# ====================================================================== KAN-147: redacted, as the fleet read is
+SEKRIT = "ghp_sekrit12345678901234567890"
+
+
+async def test_item_text_is_redacted_on_rest_and_mcp(settings):
+    from hangar.app import create_app
+    from hangar.mcp_server import build_mcp
+
+    settings.admin_token, settings.public_url = "t0ken", "http://localhost:8787"
+    admin = {"Authorization": "Bearer t0ken"}
+    with TestClient(create_app(settings), base_url="http://localhost:8787") as c:
+        login = c.post("/api/people", json={"id": "alice"}, headers=admin).json()["login"]
+        alice = {"Authorization": f"Bearer {login['token']}"}
+        h = c.app.state.hangar
+        h.broker.put("gh", "git", CredentialKind.GIT_TOKEN, SEKRIT)
+        asked = _job(h.jobs, "alice", JobState.NEEDS_INPUT, title=f"push with {SEKRIT}")
+        asked.result.question = f"Should I push with {SEKRIT}?"
+        assert any(SEKRIT in json.dumps(x) for x in inbox.items(h.jobs, None))  # the raw items quote it
+        r = c.get("/api/inbox", headers=alice)
+        assert r.status_code == 200 and r.json()["counts"] == {"question": 1}
+        assert "sekrit" not in r.text
+        item_id = r.json()["items"][0]["id"]
+        assert item_id == inbox.items(h.jobs, None)[0]["id"]  # redaction leaves the id an ack names alone
+        async with Client(build_mcp(h.fleet, h.jobs, h.sessions)) as m:
+            got = (await m.read_resource("hangar://inbox")).contents[0].text
+        assert json.loads(got)["counts"] == {"question": 1} and "sekrit" not in got
 
 
 # ====================================================================== KAN-140: denied, and putting items away
