@@ -194,6 +194,9 @@ if a[:2] == ["-n", "tower"]:  # Tower beside hangar (docs/runbooks/tower.md), on
     if "scale" in a:
         t["replicas"] = int(next(x for x in a if x.startswith("--replicas=")).split("=")[1])
         save()
+    elif "annotations." in line:  # tower.sh's: hangar.dev/power=follow, tower.dev/stopped=<when>
+        key = line.split("annotations.", 1)[1].split("}")[0].replace("\\", "")
+        print((t.get("annotations") or {}).get(key, ""), end="")
     elif ".spec.replicas" in line:
         print(t["replicas"], end="")
     elif a[2:4] == ["get", "pods"]:
@@ -528,6 +531,33 @@ def test_off_stops_tower_after_hangar_and_up_starts_it_before_hangar(cluster):
              _at(calls, "-n tower scale deploy/tower --replicas=1"), _at(calls, "rollout status deploy/tower"),
              _at(calls, "scale deploy/hangar --replicas=1")]
     assert order == sorted(order), calls
+
+
+def test_down_and_up_take_tower_along_only_when_it_follows_the_schedule(cluster):
+    """Tower's `tower.sh schedule on` (KAN-32, docs/runbooks/tower.md) annotates its Deployment hangar.dev/power=follow:
+    then `down` stops it after the sandbox pools and `up` starts it before hangar. Off by default: Tower is small."""
+    cluster["set_hangar"]({"replicas": 1, "tower": {"replicas": 1, "annotations": {"hangar.dev/power": "follow"}}})
+    cluster["run"]("down")
+    assert cluster["hangar"]()["tower"]["replicas"] == 0 and cluster["hangar"]()["replicas"] == 1
+    calls = cluster["calls"]()
+    assert _at(calls, "resize c", "--node-pool sandboxes-gvisor --num-nodes 0") < \
+        _at(calls, "-n tower scale deploy/tower --replicas=0")
+    assert cluster["state"]()["pools"]["system"]["size"] == 1  # the system pool and hangar stay up
+    cluster["clear"]()
+    cluster["run"]("up")
+    assert cluster["hangar"]()["tower"]["replicas"] == 1
+    calls = cluster["calls"]()
+    assert _at(calls, "-n tower scale deploy/tower --replicas=1") < \
+        _at(calls, "resize c", "--node-pool sandboxes-gvisor --num-nodes 1")
+
+
+def test_up_leaves_a_tower_stopped_by_hand_stopped(cluster):
+    """`tower.sh down` scales Tower to 0 and annotates tower.dev/stopped: the morning's power-up mustn't undo it."""
+    stopped = {"tower.dev/stopped": "2026-10-22T20:00:00Z"}
+    cluster["set_hangar"]({"replicas": 1, "tower": {"replicas": 0, "annotations": stopped}})
+    out = cluster["run"]("up")
+    assert cluster["hangar"]()["tower"]["replicas"] == 0 and "stopped by hand" in out
+    assert not any("-n tower scale" in c for c in cluster["calls"]())
 
 
 def test_off_keeps_the_system_node_while_tower_is_still_stopping(cluster):
