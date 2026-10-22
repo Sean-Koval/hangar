@@ -186,7 +186,21 @@ if "exec" in a:
     sys.exit(0)
 log.write(line + "\n")
 calls.write("kubectl " + line + "\n")
-if "readyReplicas" in line:
+if a[:2] == ["-n", "tower"]:  # Tower beside hangar (docs/runbooks/tower.md), only when the state has one
+    t = st.get("tower")
+    if t is None:
+        sys.stderr.write('Error from server (NotFound): deployments.apps "tower" not found\n')
+        sys.exit(1)
+    if "scale" in a:
+        t["replicas"] = int(next(x for x in a if x.startswith("--replicas=")).split("=")[1])
+        save()
+    elif ".spec.replicas" in line:
+        print(t["replicas"], end="")
+    elif a[2:4] == ["get", "pods"]:
+        print("" if t["replicas"] == 0 else "pod/tower-1")
+    elif "-o name" in line:
+        print("deployment.apps/tower")
+elif "readyReplicas" in line:
     print("1" if st["replicas"] else "", end="")
 elif ".spec.replicas" in line:
     print(st["replicas"], end="")
@@ -490,6 +504,39 @@ def test_off_then_up_brings_everything_back_in_order(cluster):
              _at(calls, "exec POST /api/admin/power/state", last=True)]  # up: queued jobs start
     assert order == sorted(order), calls
     assert _summary(cluster)["summary"] == "up"
+
+
+def test_off_stops_tower_after_hangar_and_up_starts_it_before_hangar(cluster):
+    """Tower (docs/runbooks/tower.md) shares the system pool: its database goes down after hangar's and before the
+    node; it comes back before hangar, which asks it before risky actions. `down` never touches it."""
+    cluster["set_hangar"]({"replicas": 1, "tower": {"replicas": 1}})
+    cluster["run"]("down")
+    assert cluster["hangar"]()["tower"]["replicas"] == 1
+    assert not any("-n tower scale" in c for c in cluster["calls"]())
+    cluster["clear"]()
+    cluster["run"]("off", "--days", "2")
+    assert cluster["hangar"]()["tower"]["replicas"] == 0 and cluster["state"]()["pools"]["system"]["size"] == 0
+    calls = cluster["calls"]()
+    order = [_at(calls, "scale deploy/hangar --replicas=0"), _at(calls, "-n tower scale deploy/tower --replicas=0"),
+             _at(calls, "-n tower get pods -l app=tower"), _at(calls, "resize c", "--node-pool system --num-nodes 0")]
+    assert order == sorted(order), calls
+    cluster["clear"]()
+    cluster["run"]("up")
+    assert cluster["hangar"]()["tower"]["replicas"] == 1 and cluster["hangar"]()["replicas"] == 1
+    calls = cluster["calls"]()
+    order = [_at(calls, "resize c", "--node-pool system --num-nodes 1"),
+             _at(calls, "-n tower scale deploy/tower --replicas=1"), _at(calls, "rollout status deploy/tower"),
+             _at(calls, "scale deploy/hangar --replicas=1")]
+    assert order == sorted(order), calls
+
+
+def test_off_keeps_the_system_node_while_tower_is_still_stopping(cluster):
+    cluster["set_hangar"]({"replicas": 1, "tower": {"replicas": 1}})
+    kubectl = cluster["tmp"] / "bin" / "kubectl"
+    kubectl.write_text(kubectl.read_text().replace('print("" if t["replicas"] == 0 else "pod/tower-1")',
+                                                   'print("pod/tower-1")'))
+    out = cluster["run"]("off", ok=False)
+    assert "Tower's pod hasn't stopped" in out and cluster["state"]()["pools"]["system"]["size"] == 1
 
 
 def test_off_needs_kubectl_and_changes_nothing_without_it(cluster):

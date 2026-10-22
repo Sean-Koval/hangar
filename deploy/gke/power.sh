@@ -10,8 +10,9 @@
 #                                     # onto the floor node, tell hangar: queued jobs start. Ends a hold. Then, when
 #                                     # main is ahead of what hangar runs, starts deploy.yml (it waits for approval)
 #   bash deploy/gke/power.sh off [--days N | --until DATE]
-#                                     # everything to zero compute: `down`, then hangar to 0 and the system pool to 0
-#                                     # nodes; holds the schedule for N days (default 7) so it stays off
+#                                     # everything to zero compute: `down`, then hangar to 0, Tower to 0 (when it
+#                                     # runs here, docs/runbooks/tower.md) and the system pool to 0 nodes; holds the
+#                                     # schedule for N days (default 7) so it stays off
 #   bash deploy/gke/power.sh hold --days N | --until DATE
 #                                     # the scheduled power-ups and power-downs skip until then; the pools stay as
 #                                     # they are. DATE: 2026-10-22 (that day's 00:00) or 2026-10-22T09:00, local time
@@ -58,6 +59,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 NS=${NAMESPACE:-hangar}
+TOWER_NS=${TOWER_NAMESPACE:-tower}  # Tower, the Govern plane, on the system pool beside hangar (docs/runbooks/tower.md)
 POOLS_RE=${POWER_POOLS:-^sandboxes-}
 SCHEDULED=${POWER_SCHEDULED:-0}
 HOLD=hangar-power-hold HOLD_SET=hangar-power-hold-set OFF=hangar-power-off STARTING=hangar-power-starting
@@ -303,6 +305,31 @@ kube() {  # have_kubectl, once
 }
 hangar_ready() { [ "$(kubectl -n "$NS" get deploy hangar -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "1" ]; }
 hangar_replicas() { kubectl -n "$NS" get deploy hangar -o jsonpath='{.spec.replicas}' 2>/dev/null || true; }
+
+# Tower (docs/runbooks/tower.md): optional. `off` stops it after hangar, since its database is on a volume on the
+# system node too; `up` starts it before hangar, which asks it before risky actions. `down` leaves it alone.
+tower_deployed() { [ -n "$(kubectl -n "$TOWER_NS" get deploy tower -o name 2>/dev/null || true)" ]; }
+tower_replicas() { kubectl -n "$TOWER_NS" get deploy tower -o jsonpath='{.spec.replicas}' 2>/dev/null || true; }
+stop_tower() {
+  tower_deployed || return 0
+  if [ "$(tower_replicas)" != 0 ]; then
+    log "stopping Tower (its data stays on the tower-data volume)"
+    kubectl -n "$TOWER_NS" scale deploy/tower --replicas=0 >/dev/null
+  fi
+  kubectl -n "$TOWER_NS" wait --for=delete pod -l app=tower --timeout=120s >/dev/null 2>&1 || true
+  if ! running=$(kubectl -n "$TOWER_NS" get pods -l app=tower -o name) || [ -n "$running" ]; then
+    die "Tower's pod hasn't stopped after 2 minutes (or couldn't be listed), so the system pool stays up" \
+      "(its database is on that node's volume). Run power.sh off again, or power.sh up to bring it all back."
+  fi
+}
+start_tower() {
+  tower_deployed || return 0
+  [ "$(tower_replicas)" = 0 ] || return 0
+  log "starting Tower (hangar asks it before risky actions)"
+  kubectl -n "$TOWER_NS" scale deploy/tower --replicas=1 >/dev/null
+  kubectl -n "$TOWER_NS" rollout status deploy/tower --timeout=600s ||
+    log "Tower isn't ready yet: hangar fails closed for kinds in enforce until it is"
+}
 
 hangar_api() {  # METHOD PATH [JSON]: hangar's REST API from inside its pod, with its own admin token; prints the reply
   kubectl -n "$NS" exec -i deploy/hangar -- python3 - "$@" <<'PY'
@@ -704,6 +731,8 @@ off)
       "(hangar's database is on that node's volume). Run power.sh off again, or power.sh up to bring it all back."
   fi
   touch_lock
+  stop_tower
+  touch_lock
   pools_to_zero control
   set_labels "$OFF=$now"  # last: only an off that got here is "off"
   log "off until $(py fmt "$until"). Nothing was deleted. Bring it back with: bash deploy/gke/power.sh up"
@@ -745,6 +774,8 @@ up)
   restore_pools control
   if kube; then
     for f in ${FLOORS[@]+"${FLOORS[@]}"}; do wait_nodes "${f%%:*}" "${f##*:}" || true; done
+    touch_lock
+    start_tower
     touch_lock
     if [ "$(hangar_replicas)" = "0" ]; then
       log "starting hangar"
