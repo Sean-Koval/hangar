@@ -22,7 +22,7 @@ Writes, next to this file (or into --out):
   hangar-clip.mp4 / .png, hangar-clip-light.mp4 / .png   the demo clip and its posters, Night and Day (the docs
                                 home's hero and agent-factory link them): a ticket becomes work, its push to main
                                 waits in the deck, a person approves it and the PR lands; the fixture's console at
-                                680 px, 2x, about 19 s
+                                680 px, 2x, about 19 s, with a caption band under it
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
   ui-hero.png, ui-hero-light.png  the delivered job's panel, Night and Day (the docs home's hero, linking to the MP4)
   ui-fleet-board.png            the Fleet's Board with an agent open in place, from the demo run (docs/console.md)
@@ -608,8 +608,18 @@ CLIP_SCENES = {
                                            "summary": "CSV export keeps non-ASCII text; a regression test covers it."},
                ("pr", 100, None, "PR #43 landed on main", 2, 2, 1)),
 }
-CLIP_CSS = """#fp .cap { font-size: 15px; padding: 9px 14px; bottom: calc(var(--tabbar-h, 0px) + 14px); gap: 10px; white-space: normal; width: max-content;
-  max-width: calc(100vw - 48px); } #fp .cap b { font-size: 12px; }"""
+CLIP_BAND = 56  # the caption band under the console: captions never sit over the product
+CLIP_HOST = """<!doctype html><html data-theme="%THEME%"><head><meta charset="utf-8">
+<link rel="stylesheet" href="/ui/airframe/airframe.css"><link rel="stylesheet" href="%FONTS%"><style>
+html, body { margin: 0; background: var(--af-canvas); overflow: hidden; }
+#app { display: block; width: %W%px; height: %H%px; border: 0; }
+.band { box-sizing: border-box; height: %BAND%px; display: flex; align-items: center; gap: 10px; padding: 0 20px;
+  border-top: 1px solid var(--af-line); background: var(--af-canvas); color: var(--af-fg); font: 500 15px/1.35 var(--af-font-sans); }
+.band b { font: 500 12px var(--af-font-mono); color: var(--af-brand-text); letter-spacing: .08em; }
+</style></head><body><iframe id="app" src="/#fleet?view=list" title="hangar"></iframe>
+<div class="band" aria-live="polite"><b></b><span></span></div>
+<script>window.say = (n, t) => { document.querySelector('.band b').textContent = n; document.querySelector('.band span').textContent = t; };</script>
+</body></html>"""
 
 
 def clip_scene(fx: Fixture, scene: str) -> None:
@@ -625,35 +635,43 @@ def clip_scene(fx: Fixture, scene: str) -> None:
 
 
 async def clip(pw, out: Path, work: Path, theme: str) -> None:
-    """hangar-clip.mp4 (Night) and hangar-clip-light.mp4 (Day), each with its poster PNG: about 18 s at 2x."""
+    """hangar-clip.mp4 (Night) and hangar-clip-light.mp4 (Day), each with its poster PNG: about 19 s at 2x. The console
+    plays in a frame of CLIP's size, and the captions sit in a band under it, never over the product."""
     browser = await pw.chromium.launch()
     w, h = CLIP
-    ctx = await browser.new_context(viewport={"width": w, "height": h}, device_scale_factor=2, color_scheme=theme)
+    ctx = await browser.new_context(viewport={"width": w, "height": h + CLIP_BAND}, device_scale_factor=2, color_scheme=theme)
     await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
-    await ctx.add_init_script(OVERLAY)
     fx = Fixture()
     clip_scene(fx, "queued")
-    page = await _console_page(ctx, fx, "fleet?view=list")
-    await page.add_style_tag(content=CLIP_CSS)
-    hold = page.wait_for_timeout
+    page = await ctx.new_page()
+    await fx.wire(page)
+    host = (CLIP_HOST.replace("%THEME%", theme).replace("%FONTS%", FONTS).replace("%W%", str(w)).replace("%H%", str(h))
+            .replace("%BAND%", str(CLIP_BAND)))
+    await page.route(f"{demo.URL}/__clip", lambda r: r.fulfill(status=200, content_type="text/html", body=host))
+    await page.goto(f"{demo.URL}/__clip", wait_until="networkidle")
+    app = page.frame_locator("#app")
     story = f"#fleet-body .af-agent[data-id='sb-{fixture.hexid(CLIP_JOB)}']"
+    await app.locator(story).wait_for()
+    frame = next(f for f in page.frames if f != page.main_frame)
+    await frame.evaluate("document.fonts.ready")
+    hold = page.wait_for_timeout
+    say = lambda n, t: page.evaluate("([n, t]) => say(n, t)", [n, t])  # noqa: E731
 
     async def scene(name: str, ms: int, caption: tuple[str, str] | None = None) -> None:
         clip_scene(fx, name)
-        await page.evaluate("fetchFleet()")
+        await frame.evaluate("fetchFleet()")
         if caption:
-            await page.evaluate("([a, b]) => fp.caption(a, b)", list(caption))
+            await say(*caption)
         await hold(ms)
 
     async def show(selector: str, top: int = 8) -> None:
-        await page.evaluate("([s, t]) => { const r = document.querySelector(s).getBoundingClientRect();"
-                            " const bar = document.querySelector('.topbar').getBoundingClientRect().bottom;"
-                            " scrollTo({top: scrollY + r.top - bar - t, behavior: 'smooth'}); }", [selector, top])
+        await frame.evaluate("([s, t]) => { const r = document.querySelector(s).getBoundingClientRect();"
+                             " const bar = document.querySelector('.topbar').getBoundingClientRect().bottom;"
+                             " scrollTo({top: scrollY + r.top - bar - t, behavior: 'smooth'}); }", [selector, top])
 
-    await page.wait_for_selector(story)
-    await page.evaluate("scrollTo(0, 0)")
-    await page.evaluate("fp.caption('1', 'Issue #42 gets the hangar label, and a job starts')")
-    await hold(400)
+    await frame.evaluate("scrollTo(0, 0)")
+    await say("1", "Issue #42 gets the hangar label, and a job starts")
+    await hold(600)
     frames = Frames(page, work / theme)
     frames.start()
     await hold(2600)
@@ -661,25 +679,25 @@ async def clip(pw, out: Path, work: Path, theme: str) -> None:
     await scene("edit", 1500)
     await scene("test", 1500)
     await scene("held", 900, ("3", "It wants to push to main, so hangar holds the push for a person"))
-    await page.wait_for_selector("#fleet-deck .af-decision, .af-deck .af-decision")
+    await app.locator(".af-deck .af-decision").first.wait_for()
     await show(".af-deck", 12)
     await hold(2600)
-    approve = page.locator('.af-deck .af-decision[data-k="0"] [data-dk="allow"]').first
+    approve = app.locator('.af-deck .af-decision[data-k="0"] [data-dk="allow"]').first
     await approve.hover()
     await hold(600)
     await approve.click()
-    await page.evaluate("fp.caption('4', 'A person approves it, and the agent runs the push')")
+    await say("4", "A person approves it, and the agent runs the push")
     await hold(3000)
     clip_scene(fx, "landed")
     await hold(1200)  # the verdict leaves and the fleet reloads (fleet.js: VERDICT_MS)
-    await page.evaluate("fetchFleet()")
+    await frame.evaluate("fetchFleet()")
     await show(story, 60)
-    await page.evaluate("fp.caption('5', 'PR #43 lands on main')")
+    await say("5", "PR #43 lands on main")
     await hold(2800)
     await frames.stop()
     if not 15 <= frames.seconds() <= 25:
         raise RuntimeError(f"the clip runs {frames.seconds():.1f} s; it must run 15 to 25 s")
-    frames.encode(out, "hangar-clip" + ("-light" if theme == "light" else ""), size=(w * 2, h * 2), gif=False, crf=28)
+    frames.encode(out, "hangar-clip" + ("-light" if theme == "light" else ""), size=(w * 2, (h + CLIP_BAND) * 2), gif=False, crf=28)
     await browser.close()
 
 
