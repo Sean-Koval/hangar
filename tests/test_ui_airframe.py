@@ -326,7 +326,7 @@ def test_fleet_header_leads_with_what_needs_a_person():
     assert order, "fleet.js defines ATTENTION, the one attention order"
     assert re.findall(r'"([a-z]+)"', order.group(1)) == ["approval", "failed", "denied", "running", "queued", "off"]
     assert "ROLE_RANK = Object.fromEntries(ATTENTION" in js and "ROLE_RANK[a.role] - ROLE_RANK[b.role]" in js
-    assert "<em>${need} need${need === 1 ? \"s\" : \"\"} you</em>" in js, "the status as the subject, in digits"
+    assert "<em>${needYou(need)}</em>" in js, "the status as the subject, in digits"
     assert "NUMBERS" not in js, "KAN-155: numbers are digits throughout"
     assert "SEVERITY" not in js and "SEVERITY" not in (UI / "app.js").read_text(), "the old denied-first order is gone"
 

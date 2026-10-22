@@ -76,7 +76,8 @@ function index() {
   const listed = new Set((fleet.data?.inbox?.items || []).map((i) => i.id));
   for (const id of fleet.done) if (!listed.has(id) && !fleet.verdicts.has(id)) fleet.done.delete(id);
 }
-const unitOfItem = (it) => (fleet.data?.units || []).find((u) => (u.inbox || []).includes(it.id))
+const unitOfItem = (it) => (it.unit ? (fleet.data?.units || []).find((u) => u.id === it.unit) : null)
+  || (fleet.data?.units || []).find((u) => (u.inbox || []).includes(it.id))
   || (it.job ? (fleet.data?.units || []).find((u) => u.job === it.job) : null)
   || (it.session ? (fleet.data?.units || []).find((u) => u.session?.name === it.session) : null) || null;
 // what waits on a person: decisions by what expires first, then what stopped, newest first; decided ones stay while their
@@ -90,12 +91,21 @@ function queue() {
     || (DECIDE.has(a.kind) ? exp(a) - exp(b) || (a.since || 0) - (b.since || 0) : (b.since || 0) - (a.since || 0)));
 }
 
+// every failed or denied agent the headline counts that no inbox item speaks for (a sandbox whose image failed to
+// build has no job to report it), as a row that opens the agent: the deck's Stopped list and the headline's
+// "N stopped" count the same agents (KAN-162). A row only, never a card: its actions are in the agent's console.
+function strayStopped(q = queue()) {
+  const covered = new Set(q.map((i) => unitOfItem(i)?.id).filter(Boolean));
+  return units().filter((u) => (u.role === "failed" || u.role === "denied") && !covered.has(u.id))
+    .map((u) => ({ id: "unit:" + u.id, kind: u.role, unit: u.id, title: u.work, since: u.last_activity_at || u.created_at, stray: true }));
+}
 function deckSets() {
   const q = queue(), decide = q.filter((i) => DECIDE.has(i.kind)), stopped = q.filter((i) => !DECIDE.has(i.kind));
+  const stray = strayStopped(q);
   let stack = decide.length ? decide : stopped;
   const top = stack.findIndex((i) => i.id === fleet.deckTop);
   if (top > 0) stack = stack.slice(top).concat(stack.slice(0, top));
-  return { stack, stopped: decide.length ? stopped : [] };
+  return { stack, stopped: (decide.length ? stopped : []).concat(stray) };
 }
 
 /* ------------------------------------------------------------------ loading: the stream, else polling */
@@ -550,10 +560,13 @@ function toLatest(ol) {
 const ENV_ICON = (env) => ic(/gpu/i.test(env) ? "gpu" : "environment");
 // The headline, the note under it, the groups and the Fleet count in the nav all count the same agents (KAN-155):
 // "26 agents. 5 need you, 3 stopped." over "14 running, 1 queued, 3 off", whose parts add up to the 26.
+// the inbox's count line, suite-wide (KAN-162): "5 need you", "1 needs you", in digits; the headline, the Needs-you
+// summary and the nav badge's label all say it this way
+const needYou = (n) => `${n} need${n === 1 ? "s" : ""} you`;
 const roleCounts = (us) => Object.fromEntries(ATTENTION.map((r) => [r, us.filter((u) => u.role === r).length]));
 function headline(us) {
   const c = roleCounts(us), need = c.approval, stopped = c.failed + c.denied;
-  return `${plural(us.length, "agent")}. ${need ? `<em>${need} need${need === 1 ? "s" : ""} you</em>` : "Nobody is needed"}${stopped ? `, ${stopped} stopped` : ""}.`;
+  return `${plural(us.length, "agent")}. ${need ? `<em>${needYou(need)}</em>` : "Nobody is needed"}${stopped ? `, ${stopped} stopped` : ""}.`;
 }
 function draw() {
   if (!fleet.data) return;
@@ -569,7 +582,7 @@ function counts() {
   // the Needs-you count is Airframe's badge while someone is needed, in the top bar and the phone's tab bar alike
   for (const el of $$('[data-count="needs"]')) {
     el.classList.toggle("af-nav__badge", !!q); el.classList.toggle("af-nav__count", !q);
-    if (q) el.setAttribute("aria-label", `${q} need you`); else el.removeAttribute("aria-label");
+    if (q) el.setAttribute("aria-label", needYou(q)); else el.removeAttribute("aria-label");
   }
 }
 function drawFleet() {
@@ -585,11 +598,11 @@ function drawFleet() {
     <button type="button" class="af-chip" data-owner="" aria-pressed="${!fleet.owner}">Everyone</button>${owners.map((o) =>
       `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "hangar" : esc(o.name && o.name !== o.id ? o.name : actorParts(o.id).who)}<span class="af-note">${o.count}</span></button>`).join("")}</div>` : "", "owners");
   // the deck band: the same deck as Needs you, collapsible; gone when nothing waits
-  const q = queue();
+  const q = queue(), sets = deckSets();
   const band = $("#fleet-band");
-  band.hidden = !q.length;
-  if (q.length) {
-    const sq = deckSets().stack, lit = DECIDE.has(sq[0].kind), n = sq.length;
+  band.hidden = !q.length && !sets.stopped.length;
+  if (!band.hidden) {
+    const sq = sets.stack.length ? sets.stack : sets.stopped, lit = DECIDE.has(sq[0].kind), n = sq.length;
     paint(band, fleet.band ? deckHtml("band") : `<button type="button" class="fleet-band__bar" data-band="open" aria-expanded="false" aria-controls="fleet-band">${markOnly(roleOfItem(sq[0]))}
       <span class="fleet-band__what"><b>${lit ? "Needs you" : "Stopped"}</b> ${lit ? plural(n, "decision") : plural(n, "agent")}: ${esc(unitOfItem(sq[0])?.work || sq[0].title || "")}</span>${ic("chevron-down")}<span class="af-note">Show</span></button>`, `band:${fleet.band}`);
   }
@@ -629,8 +642,8 @@ function afterBodyPaint() {
 }
 function drawNeeds() {
   const items = fleet.data?.inbox?.items || [], q = queue();
-  const lit = q.filter((i) => DECIDE.has(i.kind)).length, stopped = q.length - lit;
-  $("#needs-sum").innerHTML = (lit ? status("approval", `${lit} waiting on you`, { lit: true }) : status("running", "Nothing is waiting on you"))
+  const lit = q.filter((i) => DECIDE.has(i.kind)).length, stopped = q.length - lit + strayStopped(q).length;
+  $("#needs-sum").innerHTML = (lit ? status("approval", needYou(lit), { lit: true }) : status("running", "Nobody is needed"))
     + meta([["stopped", stopped], ["review", items.filter((i) => i.kind === "review").length]]);
   paint($("#needs-deck"), deckHtml("page"), "needs");
   const review = items.filter((i) => i.kind === "review");
