@@ -6,8 +6,8 @@ Everything merged since the safe release, for a hangar that runs it: six enginee
 through Jira, the inbox in Slack, review load gating admission, every run captured for flightdeck, harnesses as locked
 directories (P2, #133–#171, #189, #221), and the frontier work that landed with it (P4: the MCP split #140, record and
 replay #177 and #179, trials and pin sets #178, the trial cache #180, the eval lane and budget #181 and #182, shadows
-and canaries #183 and #184, the overnight lane #186). Nothing here is tagged yet (release tags: #274), so this guide
-starts from the safe release: do [its procedure](safe-release.md) first if you haven't. It includes
+and canaries #183 and #184, the overnight lane #186). It ships in v0.2.0 with the safe release, and this guide
+starts from it: do [its procedure](safe-release.md) first if you haven't. It includes
 [the repo-conventions hand-off](#the-repo-conventions-hand-off-143) and [plugins from a seed](#claude-code-plugins-from-a-seed-136).
 
 Most of it is off until you turn it on. What changes by itself is the MCP endpoint your clients use, who may approve

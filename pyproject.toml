@@ -1,6 +1,6 @@
 [project]
 name = "hangar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Control plane for fleets of cloneable coding-agent sandboxes, exposed over MCP. Runs on a laptop (Docker), a single VM, or GKE (Agent Sandbox)."
 readme = "README.md"
 license = "Apache-2.0"

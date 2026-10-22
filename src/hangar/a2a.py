@@ -123,7 +123,7 @@ def _version() -> str:
     try:
         return package_version("hangar")
     except PackageNotFoundError:
-        return "0.1.0"
+        return "0.2.0"
 
 
 def _text(s: str) -> dict:

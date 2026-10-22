@@ -36,7 +36,7 @@ REWRITE = "under 700 words; its long sentences wait for a rewrite (KAN-160 phase
 
 # page -> (words of prose, long paragraphs and sentences, why it is over). Ceilings only go down.
 LONG_PAGES: dict[str, tuple[int, int, str]] = {
-    "README.md": (663, 12, "the repo's front page: the features table and the quickstart the docs home repeats"),
+    "README.md": (661, 9, "the repo's front page: the features table and the quickstart the docs home repeats"),
     "a2a.md": (1292, 10, LATER + "the agent card, the task lifecycle"),
     "acceptance.md": (2064, 48, LATER + "core checks, the rest"),
     "activity.md": (1067, 7, LATER + "usage, budgets"),
@@ -72,13 +72,11 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "model-gateway.md": (1160, 25, LATER + "the gateway, tapes"),
     "observability.md": (2533, 31, LATER + "events, metrics, traces"),
     "plugins.md": (737, 1, LATER + "plugins, events out"),
-    "releases/README.md": (106, 4, REWRITE),
     "releases/adopt-capture-procedure.md": (838, 12, "an upgrade procedure, followed step by step"),
-    "releases/adopt-capture.md": (533, 22, REWRITE),
+    "releases/adopt-capture.md": (531, 22, REWRITE),
     "releases/overnight-stack-defaults.md": (125, 23, "one list of changed defaults; half a list hides rows"),
     "releases/overnight-stack-procedure.md": (1273, 15, "an upgrade procedure, followed step by step"),
     "releases/overnight-stack.md": (789, 6, LATER + "to split by question"),
-    "releases/safe-release.md": (840, 23, LATER + "what changed, the steps"),
     "releases/team-release-changes.md": (36, 53, LATER + "to split by question"),
     "releases/team-release-operations.md": (1259, 25, "an upgrade procedure, followed step by step"),
     "releases/team-release-procedure.md": (1635, 33, "an upgrade procedure, followed step by step"),
