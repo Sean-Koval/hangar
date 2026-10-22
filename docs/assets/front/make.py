@@ -1,7 +1,7 @@
 """Render the front page's assets: two recordings, the console screenshots, the inbox and the diagram.
 
     uv run --with playwright==1.56.0 --with asciinema==2.4.0 --with imageio-ffmpeg==0.6.0 \\
-        python docs/assets/front/make.py [--out DIR] [--only diagram|ui|console]
+        python docs/assets/front/make.py [--out DIR] [--only diagram|ui|console|clip]
 
 It starts the demo hangar (demo.py: the real control plane on the fake provider, a scripted agent and a stand-in
 GitHub) on :8787, then drives the console in Chromium with Playwright while a ticket becomes a sandbox run and a
@@ -19,6 +19,10 @@ docked panel, the diff with a comment), at 2x, so they read at a README's width.
 Writes, next to this file (or into --out):
   hangar-demo.gif / .mp4        a ticket becomes a sandbox run and a draft PR (README: the GIF; docs: the MP4)
   hangar-review.gif / .mp4      the review loop: decide what is held, read the change, comment back to the agent
+  hangar-clip.mp4 / .png, hangar-clip-light.mp4 / .png   the demo clip and its posters, Night and Day (the docs
+                                home's hero and agent-factory link them): a ticket becomes work, its push to main
+                                waits in the deck, a person approves it and the PR lands; the fixture's console at
+                                680 px, 2x, about 19 s
   ui-jobs.png, ui-sessions.png  the console's Jobs and Sessions views, from the demo run
   ui-hero.png, ui-hero-light.png  the delivered job's panel, Night and Day (the docs home's hero, linking to the MP4)
   ui-fleet-board.png            the Fleet's Board with an agent open in place, from the demo run (docs/console.md)
@@ -48,6 +52,7 @@ sys.path.insert(0, str(HERE))
 
 import demo  # noqa: E402
 import diagram  # noqa: E402
+import fixture  # noqa: E402
 from fixture import Fixture  # noqa: E402
 
 W, H = 1440, 900  # the recordings' viewport; the demo run's stills are the same frame at 2x
@@ -237,9 +242,11 @@ class Frames:
     def seconds(self) -> float:
         return self.shots[-1][1] - self.shots[0][1]
 
-    def encode(self, out: Path, name: str = "hangar-demo") -> None:
+    def encode(self, out: Path, name: str = "hangar-demo", size: tuple[int, int] = VIDEO, gif: bool = True,
+               crf: int = 30) -> None:
         """MP4 (H.264) and an optimised GIF from the frames, each shown for as long as it was on screen; close-up
-        frames are scaled to the same size as the others."""
+        frames are scaled to the same size as the others. Without the GIF, the first frame is kept as `name`.png,
+        the clip's poster."""
         listing = self.folder / "frames.txt"
         lines = []
         for (p, t), (_, nxt) in zip(self.shots, self.shots[1:] + [(None, self.shots[-1][1] + 0.1)], strict=True):
@@ -252,15 +259,19 @@ class Frames:
         uniform = self.folder / "uniform.mkv"
         subprocess.run(
             [exe, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
-             "-vf", f"scale={VIDEO[0]}:{VIDEO[1]}:flags=lanczos,fps=15", "-c:v", "ffv1", str(uniform)],
+             "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos,fps=15", "-c:v", "ffv1", str(uniform)],
             check=True,
         )
         src = [exe, "-y", "-loglevel", "error", "-i", str(uniform)]
         subprocess.run(
-            [*src, "-vf", "format=yuv420p", "-c:v", "libx264", "-preset", "slow", "-crf", "30", "-movflags", "+faststart",
+            [*src, "-vf", "format=yuv420p", "-c:v", "libx264", "-preset", "slow", "-crf", str(crf), "-movflags", "+faststart",
              str(out / f"{name}.mp4")],
             check=True,
         )
+        if not gif:
+            shutil.copyfile(self.shots[0][0], out / f"{name}.png")
+            print("wrote", out / f"{name}.mp4", "and", out / f"{name}.png", f"({self.seconds():.1f} s, {len(self.shots)} frames)")
+            return
         subprocess.run(
             [
                 *src,
@@ -573,12 +584,112 @@ async def review(pw, out: Path, work: Path) -> None:
     await browser.close()
 
 
+# The demo clip (KAN-75): issue #42 becomes work, the agent works, its push to main waits in the deck, a person
+# approves it and the PR lands. The fixture's console, restaged scene by scene, so the run is the same every time.
+CLIP = (680, 640)  # the clip's viewport: the console's narrow layout (agents as one column), so it reads at a docs page's width and on a phone
+CLIP_JOB = "csv-export-42"
+CLIP_TITLE = "CSV export drops non-ASCII characters"
+CLIP_ROWS = [  # name, env, owner, kind, harness, sandbox state, phase, age (min), title, extra: as fixture.ROWS
+    ("embeddings-sweep", "research", "priya", "session", "claude-code", "running", "running", 58, "embeddings-sweep", {}),
+    ("nightly-notebooks", "research", None, "job", "codex", "running", "running", 9, "Re-run the nightly notebooks",
+     {"requester": "schedule:nightly"}),
+    ("simd-tokenizer", "rust-1.83-gpu", "omar", "job", "claude-code", "running", "verifying", 38, "Port the tokenizer to SIMD", {}),
+]
+# each scene: the story job's sandbox state, phase, age, extra, and its live line (stage, pct, estimate, now, files,
+# commits, quiet seconds); None: not running yet
+CLIP_SCENES = {
+    "queued": ("starting", "provisioning", 0, {}, None),
+    "plan": ("running", "running", 1, {}, ("plan", 60, None, "reading checkout/export.py", 0, 0, 1)),
+    "edit": ("running", "running", 2, {}, ("edit", 55, None, "editing checkout/export.py", 2, 1, 1)),
+    "test": ("running", "running", 3, {}, ("test", 80, None, "running python3 -m unittest -q: 2 passed", 2, 2, 1)),
+    "held": ("running", "running", 4, {fixture.HELD: ("Bash", "git push origin main", None), "asked": 5},
+             ("pr", 50, None, "PR #43 is open; pushing it to main", 2, 2, 5)),
+    "landed": ("running", "succeeded", 5, {"pr": 43, "done": "PR #43 landed on main",
+                                           "summary": "CSV export keeps non-ASCII text; a regression test covers it."},
+               ("pr", 100, None, "PR #43 landed on main", 2, 2, 1)),
+}
+CLIP_CSS = """#fp .cap { font-size: 15px; padding: 9px 14px; bottom: calc(var(--tabbar-h, 0px) + 14px); gap: 10px; white-space: normal; width: max-content;
+  max-width: calc(100vw - 48px); } #fp .cap b { font-size: 12px; }"""
+
+
+def clip_scene(fx: Fixture, scene: str) -> None:
+    sb_state, phase, age, extra, live = CLIP_SCENES[scene]
+    row = (CLIP_JOB, "checkout-python", "sean", "job", "claude-code", sb_state, phase, age, CLIP_TITLE,
+           {"requester": "github:sean", **extra})
+    lv = {k: v for k, v in fixture.LIVE.items() if k in {r[0] for r in CLIP_ROWS}}
+    if live:
+        lv[CLIP_JOB] = live
+    fx.restage([row, *CLIP_ROWS], lv)
+    fx.lines = {CLIP_JOB: "starting a sandbox for issue #42"}
+    fx.acked.update(f"inb-r-{j['id']}" for j in fx.data["jobs"])  # a landed PR is not a review waiting on anyone
+
+
+async def clip(pw, out: Path, work: Path, theme: str) -> None:
+    """hangar-clip.mp4 (Night) and hangar-clip-light.mp4 (Day), each with its poster PNG: about 18 s at 2x."""
+    browser = await pw.chromium.launch()
+    w, h = CLIP
+    ctx = await browser.new_context(viewport={"width": w, "height": h}, device_scale_factor=2, color_scheme=theme)
+    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
+    await ctx.add_init_script(OVERLAY)
+    fx = Fixture()
+    clip_scene(fx, "queued")
+    page = await _console_page(ctx, fx, "fleet?view=list")
+    await page.add_style_tag(content=CLIP_CSS)
+    hold = page.wait_for_timeout
+    story = f"#fleet-body .af-agent[data-id='sb-{fixture.hexid(CLIP_JOB)}']"
+
+    async def scene(name: str, ms: int, caption: tuple[str, str] | None = None) -> None:
+        clip_scene(fx, name)
+        await page.evaluate("fetchFleet()")
+        if caption:
+            await page.evaluate("([a, b]) => fp.caption(a, b)", list(caption))
+        await hold(ms)
+
+    async def show(selector: str, top: int = 8) -> None:
+        await page.evaluate("([s, t]) => { const r = document.querySelector(s).getBoundingClientRect();"
+                            " const bar = document.querySelector('.topbar').getBoundingClientRect().bottom;"
+                            " scrollTo({top: scrollY + r.top - bar - t, behavior: 'smooth'}); }", [selector, top])
+
+    await page.wait_for_selector(story)
+    await page.evaluate("scrollTo(0, 0)")
+    await page.evaluate("fp.caption('1', 'Issue #42 gets the hangar label, and a job starts')")
+    await hold(400)
+    frames = Frames(page, work / theme)
+    frames.start()
+    await hold(2600)
+    await scene("plan", 1500, ("2", "The agent works in its own sandbox: plan, edit, test"))
+    await scene("edit", 1500)
+    await scene("test", 1500)
+    await scene("held", 900, ("3", "It wants to push to main, so hangar holds the push for a person"))
+    await page.wait_for_selector("#fleet-deck .af-decision, .af-deck .af-decision")
+    await show(".af-deck", 12)
+    await hold(2600)
+    approve = page.locator('.af-deck .af-decision[data-k="0"] [data-dk="allow"]').first
+    await approve.hover()
+    await hold(600)
+    await approve.click()
+    await page.evaluate("fp.caption('4', 'A person approves it, and the agent runs the push')")
+    await hold(3000)
+    clip_scene(fx, "landed")
+    await hold(1200)  # the verdict leaves and the fleet reloads (fleet.js: VERDICT_MS)
+    await page.evaluate("fetchFleet()")
+    await show(story, 60)
+    await page.evaluate("fp.caption('5', 'PR #43 lands on main')")
+    await hold(2800)
+    await frames.stop()
+    if not 15 <= frames.seconds() <= 25:
+        raise RuntimeError(f"the clip runs {frames.seconds():.1f} s; it must run 15 to 25 s")
+    frames.encode(out, "hangar-clip" + ("-light" if theme == "light" else ""), size=(w * 2, h * 2), gif=False, crf=28)
+    await browser.close()
+
+
 def check(out: Path, only: str | None) -> None:
     names = {
         "diagram": ["hangar-suite.svg", "hangar-suite-stacked.svg", "hangar-suite-dark.png", "hangar-suite-light.png"],
         "ui": ["hangar-demo.gif", "hangar-demo.mp4", "ui-jobs.png", "ui-sessions.png", "inbox.png", "ui-hero.png",
                "ui-hero-light.png",
                *(f"ui-fleet-{v}.png" for v in sorted(FLEET_VIEWS))],
+        "clip": ["hangar-clip.mp4", "hangar-clip.png", "hangar-clip-light.mp4", "hangar-clip-light.png"],
         "console": ["ui-needs.png", "ui-needs-light.png", "ui-fleet.png", "ui-fleet-light.png", "ui-review.png",
                     "hangar-review.gif", "hangar-review.mp4"],
     }
@@ -601,7 +712,7 @@ async def main_async(out: Path, only: str | None) -> None:
         if only in (None, "diagram"):
             render_diagram(out)
             await diagram_pngs(pw, out)
-        if only in (None, "ui", "console"):
+        if only in (None, "ui", "console", "clip"):
             server = subprocess.Popen(
                 [sys.executable, str(HERE / "demo.py")],
                 cwd=ROOT,
@@ -623,6 +734,9 @@ async def main_async(out: Path, only: str | None) -> None:
                     if only in (None, "console"):
                         await console(pw, out)
                         await review(pw, out, Path(work) / "review")
+                    if only in (None, "clip"):
+                        for theme in ("dark", "light"):
+                            await clip(pw, out, Path(work) / "clip", theme)
             finally:
                 server.terminate()
                 server.wait(timeout=30)
@@ -631,8 +745,8 @@ async def main_async(out: Path, only: str | None) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", type=Path, default=HERE, help="where to write the assets (default: next to this file)")
-    ap.add_argument("--only", choices=["diagram", "ui", "console"],
-                    help="render only the diagram, only the demo run's recording and stills, or only the fixture's")
+    ap.add_argument("--only", choices=["diagram", "ui", "console", "clip"],
+                    help="render only the diagram, only the demo run's recording and stills, only the fixture's, or only the demo clip")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     asyncio.run(main_async(a.out, a.only))
