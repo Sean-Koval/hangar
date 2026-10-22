@@ -17,5 +17,5 @@ Docker has no setting that keeps containers off link-local addresses, so on a cl
 iptables -I DOCKER-USER -i hangar0 -d 169.254.0.0/16 -p tcp ! --dport 53 -j DROP
 ```
 
-A sandbox with [services](../environments.md#services) (Postgres, Redis) is also attached to a network of its own, `hangar-svc-<sandbox>`, which holds only its services. The network is `internal`: it has no route out, so the services can't reach the internet, the host or the metadata server, and nobody else's sandbox is on it. The services run as uid 1000, without capabilities, with `no-new-privileges`, under the sandbox's runtime. [Preview ports](../environments.md#preview-ports) go through hangar's authenticated proxy, owner-scoped, and are never published on the host.
+A sandbox with [services](../environments/services.md) (Postgres, Redis) is also attached to a network of its own, `hangar-svc-<sandbox>`, which holds only its services. The network is `internal`: it has no route out, so the services can't reach the internet, the host or the metadata server, and nobody else's sandbox is on it. The services run as uid 1000, without capabilities, with `no-new-privileges`, under the sandbox's runtime. [Preview ports](../environments/previews.md) go through hangar's authenticated proxy, owner-scoped, and are never published on the host.
 

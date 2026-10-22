@@ -122,7 +122,7 @@ Nothing to set: an environment opts in with `computer: true` (its image gets a l
 
 ### 10f. The heavy tier
 
-**Optional** (off until a `heavy` tier is configured; [environments.md](../environments.md#the-heavy-tier)). Docker inside a VM of the sandbox's own, and the `large` and `xlarge` profiles.
+**Optional** (off until a `heavy` tier is configured; [environments.md](../environments/heavy-tier.md)). Docker inside a VM of the sandbox's own, and the `large` and `xlarge` profiles.
 
 - **The admission policy (applied by step 5, whether you use the tier or not).** `kubectl apply -k deploy/k8s` now also applies `heavy-policy.yaml`: ValidatingAdmissionPolicies (Kubernetes 1.30 or later) that refuse, in `hangar-sandboxes`, privileged containers and added capabilities unless the pod runs under a Kata runtime class, and host namespaces, `hostPath` volumes and `hostPort` under any runtime; and, cluster-wide, a RuntimeClass named `kata*` whose handler isn't `kata*`. hangar's own sandbox pods use none of these (heavy ones are privileged under Kata), so nothing changes for them. If anything else runs pods in `hangar-sandboxes`, check them first with `kubectl apply --dry-run=server`.
 - **The tier (required for it):** the heavy pool from step 4, then Kata on it and the tier in `hangar-site` ([gke.md §4a](../gke.md#4a-the-heavy-tier-optional)), or E2B or Cube microVMs ([microvm.md](../microvm.md#the-heavy-tier-on-microvms)):
@@ -177,7 +177,7 @@ On **hangar's own repository**, not the repos agents work on ([harnesses.md](../
 
 ### 11c. Agent-led environment setup
 
-**Optional**, nothing to set. `hangar env setup acme/app [--wait | --drift | --every CRON]` (or `POST /api/env/setup`, or an issue labelled `hangar-env-setup` on GitHub, Jira or GitHub Projects) runs a goal agent and a setup agent on `balanced`, validates the `.hangar/environment.yaml` they write in a clean sandbox with no secrets, and opens a PR through the landing path ([environments.md](../environments.md#agent-led-setup)). Its budget is the job's, else the repo policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` ($30) and `_MAX_TURNS` (16); `HANGAR_ENV_SETUP_MODELS` pins a model or policy per harness.
+**Optional**, nothing to set. `hangar env setup acme/app [--wait | --drift | --every CRON]` (or `POST /api/env/setup`, or an issue labelled `hangar-env-setup` on GitHub, Jira or GitHub Projects) runs a goal agent and a setup agent on `balanced`, validates the `.hangar/environment.yaml` they write in a clean sandbox with no secrets, and opens a PR through the landing path ([environments.md](../environments/agent-led-setup.md)). Its budget is the job's, else the repo policy's, else `HANGAR_ENV_SETUP_MAX_COST_USD` ($30) and `_MAX_TURNS` (16); `HANGAR_ENV_SETUP_MODELS` pins a model or policy per harness.
 
 ### 11d. The sister tool's interfaces
 

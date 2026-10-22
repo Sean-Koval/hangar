@@ -120,7 +120,20 @@ nav:
           - A2A: a2a.md
           - Plugins and events out: plugins.md
       - Environments and agents:
-          - Environments: environments.md
+          - Environments:
+              - Writing an environment: environments.md
+              - The repo's own file: environments/repo-file.md
+              - Builds: environments/builds.md
+              - Build secrets and limits: environments/build-secrets.md
+              - Services: environments/services.md
+              - Preview ports: environments/previews.md
+              - The service supervisor: environments/supervisor.md
+              - The heavy tier: environments/heavy-tier.md
+              - Docker in the sandbox: environments/docker.md
+              - Heavy-tier isolation: environments/heavy-isolation.md
+              - Agent-led setup: environments/agent-led-setup.md
+              - "Agent-led setup: re-runs, budget and safety": environments/agent-led-setup-safety.md
+              - Root, plugins and MCP trust: environments/sudo-plugins-mcp.md
           - Harnesses: harnesses.md
           - Harness locks: harness-lock.md
           - Computer use: computer-use.md

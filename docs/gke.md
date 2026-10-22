@@ -205,7 +205,7 @@ hangar adds the matching nodeSelector and toleration to sandbox pods automatical
 ## 4a. The heavy tier (optional)
 
 Sandboxes with Docker inside, as Kata microVMs, and the `large` and `xlarge` profiles
-([environments.md](environments.md#the-heavy-tier)). Off until you turn it on:
+([environments.md](environments/heavy-tier.md)). Off until you turn it on:
 
 1. **The pool.** `enable_heavy_pool = true` in `terraform.tfvars` (and `heavy_machine_type`, `heavy_max_nodes`,
    `heavy_spot`, `heavy_disk_gb` if the defaults don't fit: [team-scale.md](team-scale.md#heavy-tier)), then apply.

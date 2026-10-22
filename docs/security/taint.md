@@ -10,7 +10,7 @@ Text hangar's caller didn't write is fenced in the prompt as untrusted ([front d
 | --- | --- | --- |
 | `context` | The turn starts with an untrusted context item (issue text from an untrusted author or any Jira issue, Slack thread context, CI logs and review comments in an auto-fix round), or its job's task was written by someone untrusted (`untrusted_source`) | the item, e.g. `issue text jira-ABC-12.md` |
 | `web` | A tool call of kind `web` ([normalized kinds](../api/traces.md#normalized-tool-kinds): WebFetch, WebSearch, Codex's `web_search`, Antigravity's `read_url_content`); a shell command that runs `curl` or `wget` on a host other than the sandbox itself | the host, or the tool's name |
-| `mcp` | A call to a tool of an MCP server whose `trust` is `untrusted` ([environments](../environments.md#mcp-servers-and-trust)): by default every remote (`url`) server, the built-in browser, and any server hangar didn't configure | the server |
+| `mcp` | A call to a tool of an MCP server whose `trust` is `untrusted` ([environments](../environments/sudo-plugins-mcp.md#mcp-servers-and-trust)): by default every remote (`url`) server, the built-in browser, and any server hangar didn't configure | the server |
 | `file` | A `Read` of a file hangar wrote from an untrusted context item | the file's name |
 
 **Sticky.** A session's taint is set by its first tainted turn and never cleared: every later turn starts tainted (`"inherited": true`), a fork carries its parent's, and a job mirrors its sessions (best-of-N attempts and the judge included). A job whose own input is untrusted is tainted when it is submitted. A turn keeps at most 20 sources.

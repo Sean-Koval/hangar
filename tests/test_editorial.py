@@ -56,7 +56,6 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "doctor.md": (1400, 31, LATER + "the checks, the fixes"),
     "e2b.md": (1847, 25, LATER + "the API, the SDKs"),
     "envd.md": (1971, 41, LATER + "the daemon, its API"),
-    "environments.md": (6250, 108, NEXT),
     "gke.md": (5761, 85, LATER + "install, images and packs, operations"),
     "harness-lock.md": (2528, 53, LATER + "the lock, the team harness repo"),
     "harnesses.md": (3114, 44, LATER + "packs, models, the canary"),
@@ -83,8 +82,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "releases/overnight-stack-procedure.md": (1273, 15, "an upgrade procedure, followed step by step"),
     "releases/overnight-stack.md": (789, 6, LATER + "to split by question"),
     "releases/safe-release.md": (840, 23, LATER + "what changed, the steps"),
-    "releases/team-release-changes.md": (
-        36, 53, "one table of 53 settings the team release changes; half a table hides rows"),
+    "releases/team-release-changes.md": (36, 53, LATER + "to split by question"),
     "releases/team-release-operations.md": (1259, 25, "an upgrade procedure, followed step by step"),
     "releases/team-release-procedure.md": (1635, 33, "an upgrade procedure, followed step by step"),
     "releases/team-release-sandboxes.md": (1970, 20, "an upgrade procedure, followed step by step"),
