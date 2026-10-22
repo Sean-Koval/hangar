@@ -215,6 +215,7 @@ nav:
           - "Harness lock, outbox and doors": releases/adopt-capture.md
           - "Harness lock, outbox and doors: the steps": releases/adopt-capture-procedure.md
           - "Secure intake and API keys": releases/safe-release.md
+          - "Secure intake: the extends merge rules": releases/safe-release-merge.md
           - "One hangar for a team": releases/team-release.md
           - "One hangar for a team: changed defaults": releases/team-release-changes.md
           - "One hangar for a team: backup to budgets": releases/team-release-procedure.md

@@ -86,7 +86,9 @@ To look around first without Docker or a key, run the demo hangar the recording 
 
 ## Security posture
 
-hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist (its environment's and repo policy's hosts and its model API), the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](docs/security/README.md) and [the safe-release upgrade](docs/releases/safe-release.md).
+hangar treats every sandbox as hostile. A job from an intake door (an issue, a ticket, Slack, a webhook) can fetch its repo but never push. hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login.
+
+Once an agent has read untrusted content, its PR opens as a draft, and a second person must approve it to land. In v0.2.0 only, two switches can turn the intake and login rules into warnings. See [the security model](docs/security/README.md) and [the safe-release upgrade](docs/releases/safe-release.md).
 
 For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating. To deploy from GitHub Actions with your approval instead of from a laptop, see [deploying from CI/CD](docs/cicd.md).
 
