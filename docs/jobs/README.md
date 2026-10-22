@@ -82,7 +82,7 @@ The first is the default. Admin tokens and MCP clients can submit against any re
 A job runs on an **API key** for its harness: its person's own, else the team's
 ([whose login a job uses](../team.md#whose-login-a-job-uses)). Subscription logins (Claude Pro or Max, a ChatGPT or
 Google sign-in) are for interactive sessions only. A job that would need one is refused at submit, with the
-`hangar cred add … --kind api_key` command to run ([subscription logins](../team.md#subscription-logins)).
+`hangar cred add … --kind api_key` command to run ([subscription logins](../team/subscription-logins.md)).
 
 Cap spend at the vendor (a workspace or project limit on the key) and in hangar (job budgets, daily caps).
 

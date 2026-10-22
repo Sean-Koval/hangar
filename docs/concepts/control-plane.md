@@ -39,7 +39,7 @@ on GKE (Agent Sandbox with gVisor or Kata). E2B is supported as a backend too.
     jobs, schedules, webhooks and experiments.
   - Subscription logins (Claude Pro or Max, a ChatGPT or Google sign-in) are for a person's own interactive sessions
     and sandboxes only, with a warning. Jobs and other automated work refuse them
-    ([subscription logins](../team.md#subscription-logins)). A sign-in runs inside a short-lived sandbox, and you
+    ([subscription logins](../team/subscription-logins.md)). A sign-in runs inside a short-lived sandbox, and you
     finish it in the dashboard terminal.
   - Credentials are encrypted at rest and injected into `~/.hangar/env` or their usual files at claim time.
   - Codex's rotating refresh token is *leased* to one sandbox at a time. It is written back when that sandbox stops,

@@ -116,7 +116,7 @@ prints the object `GET /api/repos/{owner}/{repo}/readiness` returns (admin token
 | `sudo ENV` | `sudo: false` | warn under `enforce` (Docker job sandboxes run with no-new-privileges), else fail |
 | `heavy ENV` | (shown for Docker on the heavy tier) the policy's `allow_heavy_for_intake` | fail under `enforce`: intake jobs are refused |
 | `egress ENV` | an egress mode other than `open` | warn under `enforce` (intake jobs get the allowlist floor, other jobs run open), else fail |
-| `credentials ENV` | the agent login a job no person owns would use is an API key | fail for a subscription login (`oauth_token`, `auth_file`) or none ([team.md](team.md#subscription-logins)) |
+| `credentials ENV` | the agent login a job no person owns would use is an API key | fail for a subscription login (`oauth_token`, `auth_file`) or none ([team.md](team/subscription-logins.md)) |
 | `jira`, `jira transitions KEY` | a Jira project maps to the repo, and its workflow has the trigger status and the `started`, `needs_input`, `delivered` and `failed` statuses | fail for a status the workflow lacks; warn for no project or an unset stage; ok when Jira intake is off |
 | `slack` | informational: the channels that start jobs on the repo | warn when Slack is on and no channel maps to it |
 

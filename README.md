@@ -57,7 +57,7 @@ uv run hangar doctor    # every check passes, or names its fix
 
 `hangar up` connects your MCP clients (`hangar connect <client>` does it later): `hangar` (`/mcp`) hands work off as jobs and sessions, and `hangar-sandbox` (`/mcp/sandbox`, added for Claude Code and Codex) drives sandboxes by hand ([two servers](docs/mcp.md#two-servers)).
 
-Open the dashboard at [localhost:8787](http://localhost:8787) and ask your MCP client: *"Use hangar to fix the failing test in https://github.com/YOU/REPO and open a draft PR."* Use an API key with a spend limit; subscription logins are for your own interactive sessions only ([why](docs/team.md#subscription-logins)).
+Open the dashboard at [localhost:8787](http://localhost:8787) and ask your MCP client: *"Use hangar to fix the failing test in https://github.com/YOU/REPO and open a draft PR."* Use an API key with a spend limit; subscription logins are for your own interactive sessions only ([why](docs/team/subscription-logins.md)).
 
 To look around first without Docker or a key, run the demo hangar the recording uses: `uv run python docs/assets/front/demo.py`, then `uv run python docs/assets/front/demo.py ticket` in another terminal.
 
@@ -80,7 +80,7 @@ To look around first without Docker or a key, run the demo hangar the recording 
 | **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00) for the intake jobs of repos that opt in and for evals, so evening tickets become PRs by morning; off until an admin turns it on ([the overnight lane](docs/gke.md#the-overnight-lane)). | Shipped |
 | **Plugins and events out** | Doors, trackers, notifiers and deliverers are plugins: a package of your own adds a chat bot's door or a company tracker without changing hangar, and every job change goes out as a signed `hangar.event/v1` ([plugins](docs/plugins.md)). | Shipped |
 | **Deploy on your company's cluster** | Kustomize base and components, a Terraform module that never creates a cluster, released images, secrets from your secret manager and admin configuration as reviewed files (`hangar apply`) ([company deploy](docs/deploy-company.md)). | Shipped |
-| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](docs/clients.md#bots-that-act-for-people-relay)). | Partial |
+| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](docs/clients/relay.md)). | Partial |
 
 *Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
 

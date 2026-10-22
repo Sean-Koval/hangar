@@ -55,7 +55,7 @@ key alone does not attach it to every sandbox.
 
 Jobs, schedules, webhooks and experiments run on API keys only. A personal subscription login (Claude Pro or Max, a
 ChatGPT sign-in) is for your own interactive sessions, with a warning: see
-[subscription logins](team.md#subscription-logins).
+[subscription logins](team/subscription-logins.md).
 
 ### Connect your client
 

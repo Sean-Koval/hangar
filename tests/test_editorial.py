@@ -33,7 +33,6 @@ SPEC = "design record, read as a whole"
 CONTRACT = "one versioned contract, read as a whole"
 LATER = "not split yet (KAN-160 phase 2): "
 REWRITE = "under 700 words; its long sentences wait for a rewrite (KAN-160 phase 2)"
-NEXT = "a Start here page, split in the next KAN-160 change"
 
 # page -> (words of prose, long paragraphs and sentences, why it is over). Ceilings only go down.
 LONG_PAGES: dict[str, tuple[int, int, str]] = {
@@ -49,7 +48,6 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "changesets.md": (1398, 21, LATER + "the profile, the apply"),
     "ci.md": (1658, 10, LATER + "the pre-merge job, main's full run"),
     "cicd.md": (1625, 32, LATER + "the setup script, the pipeline"),
-    "clients.md": (1539, 17, NEXT),
     "computer-use.md": (2263, 36, LATER + "the desktop, the screen, the tools"),
     "context-exchange.md": (741, 12, LATER + "patches in, patches out"),
     "deploy-company.md": (1370, 12, LATER + "the base, the components, the Terraform module"),
@@ -69,7 +67,6 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "jobs/working-with-the-agent.md": (1356, 26, LATER + "questions, steering"),
     "landing.md": (3793, 62, LATER + "the GitHub App, approvals, review rounds"),
     "local-microvms.md": (262, 2, REWRITE),
-    "mcp.md": (1751, 20, NEXT),
     "metrics.md": (526, 3, REWRITE),
     "microvm.md": (3221, 28, LATER + "by provider"),
     "model-gateway.md": (1160, 25, LATER + "the gateway, tapes"),
@@ -89,9 +86,6 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "releases/team-release.md": (92, 1, REWRITE),
     "repo-policy.md": (2628, 37, LATER + "the file, shadows, caps"),
     "research/ax.md": (1711, 21, "a research note, read as a whole"),
-    "runbooks/break-glass.md": (870, 17, NEXT),
-    "runbooks/onboarding.md": (1266, 15, NEXT),
-    "runbooks/outbox.md": (1078, 13, NEXT),
     "security/build-caches.md": (357, 10, REWRITE),
     "security/credentials.md": (1809, 22, LATER + "the mechanism, its settings, its limits"),
     "security/docker-network.md": (339, 7, REWRITE),
@@ -129,7 +123,6 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "steering.md": (4910, 62, LATER + "the turn, approvals, the uid split"),
     "streaming.md": (1095, 23, LATER + "the stream, the replay"),
     "team-scale.md": (4583, 86, LATER + "sizing, caps, the reconciler"),
-    "team.md": (2680, 44, NEXT),
     "templates/adr.md": (100, 1, "the ADR template: placeholder prose an author replaces"),
     "triggers.md": (1769, 30, LATER + "triggers, schedules"),
     "troubleshooting.md": (509, 5, "one entry per symptom, looked up, not read"),
