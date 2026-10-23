@@ -21,8 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -42,7 +42,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2  # the merge commit and its parents: HEAD^1 is the base it merges into
       # The list goes outside the checkout: an untracked file there would be a change, and select everything.
@@ -53,13 +53,13 @@ jobs:
           echo "count=$(grep -c . "$RUNNER_TEMP/selected.txt" || true)" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/selected.txt"
       - if: steps.select.outputs.count != '0'
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: hangar-envd from main's build, if envd/ is unchanged (its tests skip without it)
         if: steps.select.outputs.count != '0'
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: envd/dist
           key: envd-x86_64-${{ hashFiles('envd/**') }}
@@ -87,7 +87,7 @@ jobs:
       terraform: ${{ steps.paths.outputs.terraform }}
       e2e: ${{ steps.paths.outputs.e2e }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2
       - id: paths
@@ -105,8 +105,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -119,8 +119,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           workspaces: envd
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -128,7 +128,7 @@ jobs:
       - run: cargo test --locked
         working-directory: envd
       - run: ARCHES=x86_64 envd/build.sh
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -143,8 +143,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: hashicorp/setup-terraform@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e  # v4.0.1
       - run: |
           for d in deploy/terraform/gke deploy/terraform/single-vm; do
             terraform -chdir=$d init -backend=false && terraform -chdir=$d validate

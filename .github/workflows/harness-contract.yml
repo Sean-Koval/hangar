@@ -31,7 +31,7 @@ jobs:
     outputs:
       run: ${{ steps.paths.outputs.run }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
@@ -48,17 +48,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - uses: actions/setup-node@v7  # pi's recipe bundles this node (it needs >= 22.19), as the pack builder's does
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0; pi's recipe bundles this node (it needs >= 22.19), as the pack builder's does
         with:
           node-version: "22"
       # Keyed on what decides the installs; an older entry is restored when the lock moved, and `install` redoes only
       # the harnesses whose recipe or version changed (each install records its pack digest).
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/hangar-clis
           key: harness-clis-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/hangar/harnesses.lock.yaml', 'src/hangar/harnesses.py') }}
@@ -77,7 +77,7 @@ jobs:
           set -o pipefail
           uv run --locked python -m hangar.canary junit junit-contract.xml | tee -a "$GITHUB_STEP_SUMMARY"
       - if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: harness-contract
           path: junit-contract.xml

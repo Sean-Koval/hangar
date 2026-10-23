@@ -101,18 +101,18 @@ jobs:
       STATE_SA: ${{ secrets.GCP_STATE_SERVICE_ACCOUNT }}
       HANGAR_CLUSTER: ${{ secrets.HANGAR_CLUSTER }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           sparse-checkout: deploy/gke/power.sh
           sparse-checkout-cone-mode: false
-      - uses: google-github-actions/auth@v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         id: auth
         if: env.STATE_SA != '' && env.HANGAR_CLUSTER != ''
         continue-on-error: true  # unread, a merge skips (with a warning) rather than failing
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_STATE_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
         if: steps.auth.outcome == 'success'
       - name: Decide (a merge deploys only while the infra is up)
         id: decide
@@ -180,8 +180,8 @@ jobs:
     env:
       HANGAR_REGISTRY: ${{ secrets.HANGAR_REGISTRY }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         id: auth
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -190,13 +190,13 @@ jobs:
       - name: Registry host
         id: reg
         run: echo "host=${HANGAR_REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         with:
           registry: ${{ steps.reg.outputs.host }}
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         id: build
         with:
           context: .
@@ -241,19 +241,19 @@ jobs:
             echo "::error title=deploy: not set up::The production environment lacks: ${missing[*]} (DEPLOY_SA is GCP_DEPLOY_SERVICE_ACCOUNT, HANGAR_TOKEN is HANGAR_DEPLOY_TOKEN). They are environment secrets, not repository ones: docs/upgrading.md, \"Deploying with deploy.yml\"."
             exit 1
           fi
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Project (from the registry, <region>-docker.pkg.dev/<project>/hangar)
         id: project
         run: echo "id=$(cut -d/ -f2 <<<"$HANGAR_REGISTRY")" >> "$GITHUB_OUTPUT"
-      - uses: google-github-actions/auth@v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/get-gke-credentials@v3
+      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395  # v3.0.0
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER }}
           location: ${{ secrets.GKE_LOCATION }}
@@ -404,7 +404,7 @@ jobs:
           PY
       # The kubeconfig's token lasts an hour, which a long acceptance run can outlast: a fresh one for the rollback.
       # A cancelled run (by hand, or the job's timeout) rolls back too.
-      - uses: google-github-actions/get-gke-credentials@v3
+      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395  # v3.0.0
         if: (failure() || cancelled()) && steps.rollout.outputs.changed == 'true'
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER }}
