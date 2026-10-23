@@ -9,7 +9,8 @@ code path works for Docker, Agent Sandbox pods and E2B VMs.
 * File-style secrets (e.g. ~/.codex/auth.json) are written to their target path.
 * Exclusive credentials (rotating refresh tokens) are leased to one sandbox at a time and
   written back to the vault when the sandbox releases them, so the newest refresh token
-  is never lost and two sandboxes never race on the same token.
+  is never lost and two sandboxes never race on the same token. A changed file is stored only when it signs in to
+  the same account as the stored one (KAN-168, authident.py); otherwise it is refused and audited.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import hangar.identity as identity  # --- identity
 from hangar.harnesses import HARNESSES, slot_for
-from hangar.models import Credential, CredentialKind, now
+from hangar.models import AuditEvent, Credential, CredentialKind, now
 from hangar.store import Store
 from hangar.vault import REF_PREFIX, Vault
 
@@ -253,12 +254,37 @@ class Broker:
                     log.warning("not writing back credential %s: %s in sandbox %s names a mounted file", c.name,
                                 c.file_path, sandbox.id)
                     data = None
-                if data and data != self.vault.get(f"cred:{c.name}"):
+                stored = self.vault.get(f"cred:{c.name}")
+                if data and data != stored and (why := self._writeback_refusal(cur, stored, data)):
+                    # --- KAN-168: keep the stored login; the audit names the credential and sandbox, never content
+                    log.warning("not writing back credential %s from sandbox %s: %s", c.name, sandbox.id, why)
+                    self.store.audit(AuditEvent(actor=f"sandbox:{sandbox.id}", action="credential.writeback_refused",
+                                                target=c.name, detail={"sandbox": sandbox.id, "file": c.file_path,
+                                                                       "team": cur.person is None, "reason": why}))
+                    data = None
+                if data and data != stored:
                     self.vault.put(f"cred:{c.name}", data)
                     cur.updated_at = now()
                     self._secret_cache = None
                 cur.leased_to = None
                 self.store.put(cur)
+
+    @staticmethod
+    def _writeback_refusal(cred: Credential, stored: bytes | None, data: bytes) -> str | None:
+        """--- KAN-168: why a changed login file read back from a sandbox isn't stored, or None to store it.
+
+        The sandbox decides what the file holds. A team credential (no person) is what members without a login of
+        their own fall back to, so a file for another account would sign the next of them in to it. A changed file is
+        stored only when it names the same account as the stored one (authident); for a team credential, also
+        refused when either names no account. A person's own login whose account can't be told is still stored."""
+        from hangar.authident import account, same
+
+        verdict = same(account(stored), account(data))
+        if verdict is False:
+            return "it signs in to a different account than the stored login"
+        if verdict is None and cred.person is None:
+            return "team credential: the account it signs in to can't be compared with the stored login's"
+        return None
 
     def force_release(self, name: str) -> Credential:
         c = self.get(name)
