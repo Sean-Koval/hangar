@@ -465,7 +465,7 @@ If hangar can't start at all, stage the restore from a one-off pod with the same
 kubectl -n hangar scale deploy/hangar --replicas=0
 IMAGE=$(kubectl -n hangar get deploy/hangar -o jsonpath='{.spec.template.spec.containers[0].image}')
 kubectl -n hangar run hangar-restore --rm -i --restart=Never --image="$IMAGE" --overrides='{"spec": {
-  "serviceAccountName": "hangar", "enableServiceLinks": false, "securityContext": {"fsGroup": 1000},
+  "serviceAccountName": "hangar", "enableServiceLinks": false, "securityContext": {"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
   "containers": [{"name": "hangar-restore", "image": "'"$IMAGE"'",
     "command": ["hangar", "admin", "restore", "--local", "latest"],
     "envFrom": [{"configMapRef": {"name": "hangar"}}, {"configMapRef": {"name": "hangar-site", "optional": true}},
