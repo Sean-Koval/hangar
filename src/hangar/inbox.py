@@ -329,7 +329,9 @@ def summary(xs: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def view(svc: JobService) -> dict[str, Any]:
-    xs = items(svc)
+    """The caller's inbox for `GET /api/inbox` and `hangar://inbox`. Item text quotes agents and tools (a question,
+    a denied command), so it passes through the broker's redaction, as the fleet read does (KAN-147)."""
+    xs = svc.broker.redact(items(svc))
     p = identity.principal()
     return {"person": p.person if p else None, "counts": summary(xs), "items": xs}
 
