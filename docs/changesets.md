@@ -140,7 +140,7 @@ Three [repo policy](repo-policy.md) fields apply to every job, single-repo or no
 | `require_ticket` | `true` refuses a job with no `ticket`. |
 | `title_template` | The title of the job's PRs, e.g. `{ticket_key}: {title}`. Unset, or without a ticket: the job's title. |
 
-Placeholders: `{job}`, `{ticket}`, `{ticket_key}` (`PAY-412` for `jira:PAY-412`), `{title}` and `{role}`. Set them with `PUT /api/repos/policy` like any field.
+Placeholders: `{job}`, `{ticket}`, `{ticket_key}` (`PAY-412` for `jira:PAY-412`), `{title}` and `{role}`. Set them with `hangar repo set` or `PUT /api/repos/policy`.
 
 ## Limits in v1
 

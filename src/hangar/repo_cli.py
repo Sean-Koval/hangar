@@ -77,6 +77,12 @@ def _line(p: dict) -> str:
     if p.get("ai_review") and p["ai_review"] != "off":  # --- AI review (#161)
         bits.append(f"AI review: {p['ai_review']}" + (f" ({p['ai_review_harness']})" if p.get("ai_review_harness")
                                                      else ""))
+    if p.get("branch_template"):  # --- change sets (G7)
+        bits.append(f"branch: {p['branch_template']}")
+    if p.get("require_ticket") is not None:
+        bits.append("ticket required" if p["require_ticket"] else "ticket not required")
+    if p.get("title_template"):
+        bits.append(f"PR title: {p['title_template']}")
     return f"{p['repo']:40} " + "  ".join(bits)
 
 
@@ -149,6 +155,14 @@ def repo_set(
                                              "Replaces the list."),  # --- #156
     overnight: bool | None = typer.Option(None, "--overnight/--no-overnight", help="Its intake jobs run at night "
                                           "in the overnight lane (#186; hangar power overnight on)."),
+    # --- change sets (G7, KAN-37): the company's naming conventions
+    branch_template: str | None = typer.Option(None, "--branch-template", help="The repo's job branches, e.g. "
+                                               "'feature/{ticket_key}-{job}'; it must contain {job}. '' clears it "
+                                               "(hangar/<job>)."),
+    require_ticket: bool | None = typer.Option(None, "--require-ticket/--no-require-ticket",
+                                               help="Refuse a job for the repo that names no ticket."),
+    title_template: str | None = typer.Option(None, "--title-template", help="The title of the repo's agent PRs, "
+                                              "e.g. '{ticket_key}: {title}'. '' clears it."),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Set the repo's defaults; what you don't pass is kept. Jobs that set a field themselves still win.
@@ -170,9 +184,13 @@ def repo_set(
                 ("ai_review", ai_review), ("ai_review_harness", ai_review_harness),  # --- #161
                 ("ai_review_model", ai_review_model), ("ai_review_budget_usd", ai_review_budget),
                 ("verify_allowed", verify_allowed or None),  # --- #156
-                ("overnight", overnight)):  # --- #186
+                ("overnight", overnight),  # --- #186
+                ("require_ticket", require_ticket)):  # --- change sets (G7)
         if v is not None:
             body[k] = v
+    for k, t in (("branch_template", branch_template), ("title_template", title_template)):  # --- change sets
+        if t is not None:
+            body[k] = t or None  # '' clears it: an explicit null, as `hangar repo unset` would
     if egress_mode is not None or egress_allow:  # --- egress
         body["egress"] = {k: v for k, v in (("mode", egress_mode), ("allow", egress_allow)) if v}
     if len(body) == 1:
@@ -195,7 +213,8 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "max_open_agent_prs, self_approval, ai_review, "
                                                              "ai_review_harness, ai_review_model, "
                                                              "ai_review_budget_usd, verify_allowed, "
-                                                             "overnight). None: "
+                                                             "overnight, branch_template, require_ticket, "
+                                                             "title_template). None: "
                                                              "remove the repo's policy.")):
     """Clear fields of the repo's policy, or remove it."""
     r = _cli()._call("DELETE", "/api/repos/policy", params={"repo": repo, "field": fields or []})
