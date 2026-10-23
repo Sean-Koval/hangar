@@ -8,21 +8,27 @@ Kubernetes provider in the cluster.
 Auth follows the registry's own challenge (`WWW-Authenticate: Bearer realm=...`), anonymously or, for Google's
 registries (Artifact Registry, gcr.io), with a Google access token as the `oauth2accesstoken` password. The token
 comes from HANGAR_REGISTRY_TOKEN (CI), else Application Default Credentials (Workload Identity in the cluster), else
-one `gcloud auth print-access-token` per half hour. Tokens are never logged.
+one `gcloud auth print-access-token` per half hour. Any other registry (ghcr.io) uses the login `docker login` saved
+in $DOCKER_CONFIG/config.json (default ~/.docker), so a private package reads as present or missing, not unknown.
+Credential helpers aren't asked. Tokens are never logged.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import gzip
 import hashlib
 import io
+import json
 import logging
 import os
 import re
 import tarfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -140,6 +146,24 @@ class _GoogleToken:
         return out.decode().strip(), 1800.0
 
 
+def _docker_login(host: str) -> tuple[str, str] | None:
+    """The user and password `docker login <host>` saved inline in config.json, or None."""
+    path = Path(os.environ.get("DOCKER_CONFIG") or Path.home() / ".docker") / "config.json"
+    try:
+        auths = json.loads(path.read_text()).get("auths") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    for key in (host, f"https://{host}", f"https://{host}/v1/", f"https://{host}/v2/"):
+        entry = auths.get(key) if isinstance(auths, dict) else None
+        if isinstance(entry, dict) and entry.get("auth"):
+            try:
+                user, sep, pw = base64.b64decode(entry["auth"]).decode().partition(":")
+            except (binascii.Error, UnicodeDecodeError):
+                return None
+            return (user, pw) if sep and pw else None
+    return None
+
+
 class Registry:
     """One client for many questions; tokens are cached per repository. Close it (or use `async with`)."""
 
@@ -159,7 +183,7 @@ class Registry:
 
     # ------------------------------------------------------------------ auth
     async def _basic(self, host: str) -> tuple[str, str] | None:
-        return ("oauth2accesstoken", await self._google.get()) if _GOOGLE.match(host) else None
+        return ("oauth2accesstoken", await self._google.get()) if _GOOGLE.match(host) else _docker_login(host)
 
     async def _bearer(self, ref: ImageRef, challenge: str) -> str:
         params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))

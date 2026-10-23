@@ -260,6 +260,37 @@ async def test_registry_unknown_is_not_missing(monkeypatch):
     await r.close()
 
 
+async def test_other_registries_use_the_docker_login(monkeypatch, tmp_path):
+    """ghcr.io: a private package answers with the `docker login` credentials, not as unknown (v0.2.0's packs job)."""
+    import base64
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
+    seen: list[str | None] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/token":
+            seen.append(req.headers.get("authorization"))
+            ok = req.headers.get("authorization") == "Basic " + base64.b64encode(b"ci:ghs_tok").decode()
+            return httpx.Response(200, json={"token": "pull"}) if ok else httpx.Response(403)
+        if req.headers.get("authorization") != "Bearer pull":
+            return httpx.Response(401, headers={"www-authenticate": 'Bearer realm="https://ghcr.io/token"'})
+        return httpx.Response(404)
+
+    tag = "ghcr.io/sean-koval/hangar-packs/harness-pi:1.1.0-abc"
+    r = Registry(transport=httpx.MockTransport(handler))
+    with pytest.raises(RegistryError, match="refused a pull token"):  # no login: anonymous, refused
+        await r.digest(tag)
+    assert seen == [None]
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"auths": {"ghcr.io": {"auth": base64.b64encode(b"ci:ghs_tok").decode()}}}))
+    assert await r.digest(tag) is None  # logged in: the tag is missing, so build it
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"auths": {"https://ghcr.io": {"auth": base64.b64encode(b"ci:ghs_tok").decode()}}}))
+    r2 = Registry(transport=httpx.MockTransport(handler))
+    assert await r2.digest(tag) is None
+    await r.close()
+    await r2.close()
+
+
 async def test_google_credentials_never_go_to_a_realm_on_another_host(monkeypatch):
     monkeypatch.setenv("HANGAR_REGISTRY_TOKEN", "goog-tok")
     seen: list[httpx.Request] = []
