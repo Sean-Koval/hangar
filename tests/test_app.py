@@ -118,6 +118,23 @@ def test_jobs_scope_and_ownership(client):
     assert client.get("/api/jobs", headers={"Authorization": f"Bearer {twin_raw}"}).json() == []
 
 
+def test_owner_name_repos_become_clone_urls_and_junk_is_refused(client):
+    """KAN-136: `owner/name` is stored as the GitHub clone URL (the policy lookups and the push see it); a repo
+    hangar can't resolve is a 400 naming the accepted forms, and no job is created."""
+    h = client.app.state.hangar
+    h.settings.github_repos = {"acme/app": "plain"}
+    base = {"instructions": "write notes", "deliver": "none"}
+    for given in ["acme/app", "github.com/acme/app", "https://github.com/acme/app.git"]:
+        r = client.post("/api/jobs", json={**base, "repo": given})
+        assert r.status_code == 200, r.text
+        assert r.json()["repo"] == "https://github.com/acme/app.git" and r.json()["environment"] == "plain", given
+    before = len(client.get("/api/jobs").json())
+    for bad in ["just-a-name", "acme/app/extra", "not a repo"]:
+        r = client.post("/api/jobs", json={**base, "repo": bad})
+        assert r.status_code == 400 and "owner/name" in r.json()["error"] and "git@" in r.json()["error"], bad
+    assert len(client.get("/api/jobs").json()) == before
+
+
 def test_github_webhook_signature(client):
     import hashlib
     import hmac as _hmac

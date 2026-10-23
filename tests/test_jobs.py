@@ -318,6 +318,42 @@ async def test_submit_validation(jobs, world, broker):
     assert "callback_secret" not in view and view["context"] == []
 
 
+def test_clone_url_forms():
+    """KAN-136: the forms a job's `repo` may take, and what each becomes."""
+    from hangar.github import clone_url
+
+    gh = "https://github.com/Sean-Koval/hangar.git"
+    for short in ["Sean-Koval/hangar", "Sean-Koval/hangar.git", " Sean-Koval/hangar ", "github.com/Sean-Koval/hangar",
+                  "github.com/Sean-Koval/hangar.git/", "www.github.com/Sean-Koval/hangar"]:
+        assert clone_url(short) == gh, short
+    for kept in ["https://github.com/Sean-Koval/hangar.git", "https://github.com/Sean-Koval/hangar",
+                 "git@github.com:Sean-Koval/hangar.git", "ssh://git@github.com/Sean-Koval/hangar.git",
+                 "https://gitlab.com/acme/widgets.git", "git@gitlab.com:acme/widgets.git", "file:///srv/app.git",
+                 "/srv/app.git"]:
+        assert clone_url(kept) == kept, kept
+    assert clone_url(None) is None and clone_url("  ") is None
+    for bad in ["hangar", "a/b/c", "../x", "owner/..", "has space/x", "gitlab.com/acme/widgets"]:
+        with pytest.raises(ValueError, match="owner/name, github.com/owner/name"):
+            clone_url(bad)
+
+
+async def test_owner_name_repo_is_submitted_as_its_clone_url(jobs, world, broker):
+    """KAN-136: submit_job(repo="o/r") runs like the full URL: the stored job (which the clone, the push and the PR
+    read) has https://github.com/o/r.git, and the repo's environment mapping is found. Junk creates no job."""
+    _gh_settings(jobs, broker)
+    for given in ["o/r", "github.com/o/r", "https://github.com/o/r.git"]:
+        job = jobs.submit(SubmitJob(instructions="x", repo=given, deliver="none"), Caller("svc", "svc"))
+        assert job.repo == "https://github.com/o/r.git" and job.environment == "jobenv", given
+        jobs.cancel(job.id, "svc")  # it would clone github.com: the stored form is the point here
+    url = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", deliver="none"),
+                      Caller("svc", "svc"))
+    assert url.repo == world["url"]  # full URLs (and other hosts) as given
+    count = len(jobs.where(owner="svc"))
+    with pytest.raises(JobError, match="is not a repo hangar can clone"):
+        jobs.submit(SubmitJob(instructions="x", repo="hangar", environment="jobenv"), Caller("svc", "svc"))
+    assert len(jobs.where(owner="svc")) == count
+
+
 # ---------------------------------------------------------------------------- GitHub
 def _gh_settings(svc: JobService, broker) -> None:
     broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_x")

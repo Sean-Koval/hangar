@@ -72,7 +72,7 @@ from hangar import turnlogin as turnlogin  # --- #293: a turn refused for want o
 from hangar import turnsummary as turnsummary  # --- KAN-137: a stopped turn's summary, from its events
 from hangar.events import resolve_budget, total_usage, usage_line
 from hangar.fleet import Fleet, FleetError, PoweredDown, _clip_tail  # --- ops: PoweredDown
-from hangar.github import GitHub, GitHubError, parse_repo
+from hangar.github import GitHub, GitHubError, clone_url, parse_repo
 from hangar.models import (
     JOB_TERMINAL,
     Budget,
@@ -168,6 +168,17 @@ class SubmitJob(BaseModel):
     # changed repo, landed in order, then the deploy step), and the ticket the work is for ("jira:PAY-412")
     changeset: str | None = Field(None, max_length=63)
     ticket: str | None = Field(None, max_length=240)
+
+
+def normalize_repo(req: SubmitJob) -> SubmitJob:
+    """`req` with its `repo` as a clone URL (KAN-136), so the stored job, the policy lookups, the branch push and
+    the PR all see one form: `owner/name` becomes https://github.com/owner/name.git; full URLs are kept. A value
+    that names no repo is a JobError (a 400) here, not a failed sandbox later."""
+    try:
+        url = clone_url(req.repo)
+    except ValueError as e:
+        raise JobError(str(e)) from e
+    return req if url == req.repo else req.model_copy(update={"repo": url})
 
 
 def _safe_name(name: str, taken: set[str]) -> str:
@@ -417,6 +428,7 @@ class JobService:
 
     def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
                 approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
+        req = normalize_repo(req)  # --- KAN-136: owner/name is a GitHub clone URL; refused here if unresolvable
         requester = caller.requester
         if req.idempotency_key:  # --- durable: the store's index, so a retry months later still finds its job
             for j in self.where(idempotency_key=req.idempotency_key, owner=caller.owner):

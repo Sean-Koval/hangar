@@ -35,6 +35,27 @@ def parse_repo(url: str | None) -> str | None:
     return None
 
 
+_SHORT_RE = re.compile(r"^(?:(?:www\.)?github\.com/)?([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.IGNORECASE)
+_SCP_RE = re.compile(r"^[\w.-]+@[\w.-]+:\S+$")  # git@host:path
+REPO_FORMS = ("owner/name, github.com/owner/name, a clone URL (https://github.com/owner/name.git) "
+              "or an ssh address (git@github.com:owner/name.git)")
+
+
+def clone_url(repo: str | None) -> str | None:
+    """The clone URL a job's `repo` stands for (KAN-136): `owner/name` and `github.com/owner/name` become
+    https://github.com/owner/name.git; a URL (any scheme), an ssh address or an absolute path is kept as given.
+    None (or blank) stays None. Raises ValueError, naming the accepted forms, for anything else."""
+    if repo is None or not repo.strip():
+        return None
+    r = repo.strip()
+    if "://" in r or _SCP_RE.match(r) or r.startswith("/"):
+        return r
+    m = _SHORT_RE.match(r)
+    if m and m.group(1) not in (".", "..") and m.group(2) not in (".", ".."):
+        return f"https://github.com/{m.group(1)}/{m.group(2)}.git"
+    raise ValueError(f"repo '{r[:200]}' is not a repo hangar can clone; use {REPO_FORMS}")
+
+
 def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
     if not header or not header.startswith("sha256="):
         return False
