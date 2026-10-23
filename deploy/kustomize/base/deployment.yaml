@@ -29,7 +29,10 @@ spec:
       # with hangar's own settings.
       enableServiceLinks: false
       terminationGracePeriodSeconds: 45
-      securityContext:
+      securityContext:  # the image's user (KAN-170); the rest of the hardening is KAN-174
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
         fsGroup: 1000
       containers:
         - name: hangar

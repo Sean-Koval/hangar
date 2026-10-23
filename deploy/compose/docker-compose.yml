@@ -25,6 +25,9 @@ services:
       # (docs/security/git-gateway.md), or set HANGAR_INTAKE_POSTURE=warn and accept the risk.
       HANGAR_INTAKE_POSTURE: ${HANGAR_INTAKE_POSTURE:-enforce}
       # HANGAR_GATEWAY_URL: http://host.docker.internal:8788
+    # The image runs as uid 1000 (KAN-170). Here it needs the host's Docker socket, which only root can open:
+    # that socket is root on the host already, so root in this container adds nothing to it.
+    user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # sandboxes run as sibling containers
       - hangar-data:/data
