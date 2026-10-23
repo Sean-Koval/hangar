@@ -53,14 +53,14 @@ jobs:
       changes: ${{ steps.resolve.outputs.changes }}
       ok: ${{ steps.packet.outputs.ok }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - uses: actions/setup-node@v7  # the recipes' npm installs, and `npm audit signatures` in resolve
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0; the recipes' npm installs, and `npm audit signatures` in resolve
         with:
           node-version: "22"
       - run: uv sync --all-extras --locked
@@ -84,7 +84,7 @@ jobs:
       # The locked installs from the contract workflow's cache, read only: `install` keeps the unchanged ones and
       # reinstalls only the harnesses the candidate moves.
       - if: steps.resolve.outputs.run == 'true'
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/hangar-clis
           key: harness-clis-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/hangar/harnesses.lock.yaml', 'src/hangar/harnesses.py') }}
@@ -120,7 +120,7 @@ jobs:
           echo "ok=$([ "$status" -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           [ "$status" -eq 0 ] || [ "$status" -eq 2 ]  # 2: the canary failed, which the issue reports
       - if: always() && steps.resolve.outputs.run == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: harness-canary
           path: canary/
@@ -139,15 +139,15 @@ jobs:
       pull-requests: write
       issues: write  # the failure issue
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false  # the push below uses the App's token, not a header for the workflow's
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         continue-on-error: true  # a run that failed before its upload still files the issue
         with:
           name: harness-canary
@@ -160,7 +160,7 @@ jobs:
         run: echo "ready=$([ -n "$CLIENT_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - if: steps.app.outputs.ready == 'true'
         id: token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         with:
           client-id: ${{ secrets.CANARY_APP_CLIENT_ID }}
           private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}

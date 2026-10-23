@@ -34,10 +34,10 @@ jobs:
       contents: write  # merge an already mergeable PR
       pull-requests: write  # arm auto-merge
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -49,7 +49,7 @@ jobs:
         run: echo "ready=$([ -n "$CLIENT_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - if: steps.app.outputs.ready == 'true'
         id: token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         with:
           client-id: ${{ secrets.CANARY_APP_CLIENT_ID }}
           private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
