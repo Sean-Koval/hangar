@@ -43,6 +43,12 @@ case "$mode" in
   code-only)
     echo "print('only')" > only.py && git add -A && git commit -qm "code only"
     echo "Code only" > "$HANGAR_JOB_DIR/RESULT.md" ;;
+  fail)
+    echo "Gave up" > "$HANGAR_JOB_DIR/RESULT.md"; exit 1 ;;
+  nothing)
+    echo "Nothing to change" > "$HANGAR_JOB_DIR/RESULT.md" ;;
+  slow)
+    sleep 60 ;;
 esac
 """
 
@@ -404,6 +410,63 @@ async def test_follow_up_on_a_part_goes_to_the_parent(cjobs, multi):
     assert job.state == JobState.SUCCEEDED
     code = cjobs.get(cs.parts["code"])
     assert code.result.head_sha == cjobs.gh.head("acme/code", code.branch) and len(code.result.commits) == 2
+
+
+# ============================================================================ a parent that ends before delivery
+async def test_a_parent_that_fails_before_delivery_breaks_its_set(cjobs, multi):
+    multi["mode"].write_text("fail")
+    job, cs = await deliver_three(cjobs)
+    assert job.state == JobState.FAILED and job.reason == "agent_failed", [e.message for e in job.events]
+    assert cs.state == "broken" and cs.reason == "parent job failed before delivery: agent_failed"
+    assert cs.state not in changesets.ACTIVE and not cs.parts
+    assert cs.id not in {c.id for c in changesets.of(cjobs).list() if c.state in changesets.ACTIVE}
+    assert any(e.message.startswith("changeset.broken: parent job failed") for e in job.events)
+    assert any(a.action == "changeset.broken" and a.target == cs.id for a in cjobs.fleet.store.audit_tail(200))
+
+
+async def test_a_parent_cancelled_before_delivery_breaks_its_set(cjobs, multi):
+    multi["mode"].write_text("slow")
+    job = cjobs.submit(SubmitJob(instructions="Add the pay endpoint", changeset="payments-bot", deliver="pr",
+                                 ticket="jira:PAY-412"), Caller("sean", "sean"))
+    await _until(cjobs, job.id, {JobState.RUNNING}, timeout=60)
+    cjobs.cancel(job.id, "sean")
+    job = await _until(cjobs, job.id, DONE, timeout=60)
+    assert job.state == JobState.CANCELLED, [e.message for e in job.events]
+    cs = changesets.of(cjobs).of(job)
+    assert cs.state == "broken" and cs.reason == "parent job cancelled before delivery: cancelled"
+
+
+async def test_a_parent_cancelled_while_queued_breaks_its_set(cjobs, multi):
+    await cjobs.stop()  # nothing picks the job up: it is cancelled while queued
+    job = cjobs.submit(SubmitJob(instructions="Add the pay endpoint", changeset="payments-bot", deliver="pr",
+                                 ticket="jira:PAY-412"), Caller("sean", "sean"))
+    assert changesets.of(cjobs).of(job).state == "working"
+    cjobs.cancel(job.id, "sean")
+    cs = changesets.of(cjobs).of(cjobs.get(job.id))
+    assert cs.state == "broken" and cs.reason == "parent job cancelled before delivery: cancelled"
+    await cjobs.start()
+
+
+async def test_a_delivered_or_unchanged_parent_keeps_its_set(cjobs, multi):
+    job, cs = await deliver_three(cjobs)
+    assert job.state == JobState.SUCCEEDED and cs.state == "landing" and cs.reason is None
+    multi["mode"].write_text("nothing")
+    job, cs = await deliver_three(cjobs)
+    assert job.state == JobState.SUCCEEDED and job.reason == "no_changes", [e.message for e in job.events]
+    assert cs.state == "working" and not cs.parts  # nothing to land yet, but nothing failed either
+
+
+async def test_a_parent_failing_after_delivery_leaves_a_landing_or_settled_set(cjobs, multi):
+    job, cs = await deliver_three(cjobs)
+    assert cs.state == "landing"
+    cjobs._event(job, "failed later", JobState.FAILED, reason="error")  # e.g. a follow-up turn that broke
+    assert changesets.of(cjobs).get(cs.id).state == "landing"
+    for state in ("done", "broken"):
+        cs = changesets.of(cjobs).get(cs.id)
+        cs.state, cs.parts = state, {}
+        changesets.of(cjobs).save(cs)
+        cjobs._event(job, "failed again", JobState.FAILED, reason="error")
+        assert changesets.of(cjobs).get(cs.id).state == state and changesets.of(cjobs).get(cs.id).reason is None
 
 
 # ============================================================================ the parent's sandbox and its grants
