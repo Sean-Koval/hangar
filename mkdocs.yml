@@ -176,6 +176,7 @@ nav:
           - Running hangar safely: security/operations.md
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
+          - Gaps found in the 1.0 review: security/review-1.0.md
           - The git credential gateway: security/git-gateway.md
           - Egress allowlists: security/egress.md
           - Package mirrors: security/package-mirrors.md

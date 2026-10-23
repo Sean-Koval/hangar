@@ -59,6 +59,7 @@ command output and idle connections.
 | [Running hangar safely](operations.md) | Operational advice: a private control plane, a token per client, the vault key |
 | [A compromised sandbox: the threat model](threat-model.md) | Every goal an attacker inside a sandbox could have, what stops it and the test |
 | [What is not covered](not-covered.md) | The gaps, stated plainly |
+| [Gaps found in the 1.0 review](review-1.0.md) | What the independent review found, until each fix lands |
 | [The git credential gateway](git-gateway.md) | Grants, turning it on, fetch-only jobs and hangar's delivery push, the GitHub App, what it doesn't cover |
 | [Egress allowlists](egress.md) | Hostname allowlists, the proxy, what egress doesn't stop |
 | [Package mirrors](package-mirrors.md) | Read-only PyPI, npm and Go through the gateway |
