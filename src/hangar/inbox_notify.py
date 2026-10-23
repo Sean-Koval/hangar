@@ -18,7 +18,8 @@ Nobody runs `hangar inbox` to find out an agent is blocked on them. So:
   `questions` (the default) their own agents' questions and approvals, `all` also the team's (the work nobody in
   particular owns, which the inbox gives admins), so not every admin is paged for every team question. `quiet`
   ("20:00-08:00" in their tz) holds DMs, except approvals that would expire before it ends.
-* **Text.** Agent-written: escaped for Slack (`slack.escape`) and redacted (`broker.redact`), as thread posts are.
+* **Text.** Agent-written: redacted (`broker.redact`) before it is escaped for Slack (`slack.escape`), and the
+  finished message again, as thread posts are.
 """
 
 from __future__ import annotations
@@ -202,6 +203,13 @@ async def _permalinks(svc: JobService, api: SlackAPI, xs: list[dict[str, Any]]) 
         x.setdefault("links", {})["thread"] = inbox.thread_url(svc.store, ref)
 
 
+def _items(svc: JobService, p: Person) -> list[dict[str, Any]]:
+    """A person's inbox items with their text redacted (KAN-164), as `GET /api/inbox` and the fleet read serve them.
+    Before escaping: `send_dm` redacts the finished text too, but a secret with `&`, `<` or `>` in it no longer
+    reads as itself once escaped. Ids are digests of the raw items, so sent-markers and acks still match."""
+    return svc.broker.redact(inbox.items(svc, principal_for(p)))
+
+
 async def send_dm(svc: JobService, user: str, text: str, api: SlackAPI | None = None) -> bool:
     """conversations.open, then chat.postMessage. False when Slack isn't configured or refused."""
     from hangar.slack import SlackError, client_for
@@ -349,8 +357,7 @@ class Notifier:
         user = slack_user(p)
         if p.notify == "off" or user is None:
             return 0
-        xs = [x for x in inbox.items(self.svc, principal_for(p))
-              if x["kind"] in DM_KINDS and not self._sent(p.id, x["id"], t)]
+        xs = [x for x in _items(self.svc, p) if x["kind"] in DM_KINDS and not self._sent(p.id, x["id"], t)]
         if (end := quiet_until(p, t)) is not None:  # only what can't wait for the morning
             xs = [x for x in xs if x["kind"] == "approval" and x.get("expires_at") and x["expires_at"] < end]
         if not xs:
@@ -436,7 +443,7 @@ async def digest(svc: JobService, p: Person, since: float | None = None, t: floa
 
     t = t if t is not None else time.time()
     since = since if since is not None else t - 86400
-    xs = inbox.items(svc, principal_for(p))
+    xs = _items(svc, p)
     questions = sorted((x for x in xs if x["kind"] == "question"), key=lambda x: x.get("since") or 0)
     approvals = sorted((x for x in xs if x["kind"] == "approval"), key=lambda x: x.get("since") or 0)
     failed = [x for x in xs if x["kind"] == "failed" and (x.get("since") or 0) > since]
