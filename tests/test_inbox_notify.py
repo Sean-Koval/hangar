@@ -246,6 +246,27 @@ async def test_dm_text_is_escaped_and_redacted(svc, fake, notifier, broker):
     assert "s3cr3t-value-123456" not in text
 
 
+# KAN-164: redacted before escaping, so a secret with Slack's control characters in it can't slip through
+AMP = "p&ss<w0rd>-sekrit-123456"
+ESCAPED = AMP.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def test_dm_and_digest_text_redact_before_escaping(svc, fake, broker):
+    broker.put("prod-db", "webhook", CredentialKind.GENERIC, AMP)
+    j = _ask(svc, "alice", f"Connect with {AMP}?", title=f"rotate {AMP}")
+    p = people.get(svc.store, "alice")
+    ids = {x["id"] for x in inbox.items(svc, inbox_notify.principal_for(p))}
+    assert await Notifier(svc).deliver(None) == {"alice": 1}
+    dm = fake.to("UALICE")[0]
+    text = await digest(svc, p)
+    assert text is not None and j.id in dm and "Connect with" in text
+    for out in (dm, text):
+        assert AMP not in out and ESCAPED not in out and "sekrit" not in out
+    # the item keeps its id: it is marked sent under it, and the inbox's ids are unchanged
+    assert all(svc.store.kv_get(f"{inbox_notify.SENT_PREFIX}alice:{i}") for i in ids)
+    assert {x["id"] for x in inbox.items(svc, inbox_notify.principal_for(p))} == ids
+
+
 async def test_quiet_window_holds_all_but_expiring_approvals(svc, fake):
     set_delivery(svc.store, "alice", quiet="20:00-08:00")
     n = Notifier(svc)
