@@ -180,10 +180,12 @@ async def test_a_destroy_orphaned_by_a_restart_is_finished_with_the_auth_file_wr
     prov = Blocking()
     prov.block_next = False
     fleet.providers["docker"] = prov
-    cred = broker.put("codex", "codex", CredentialKind.AUTH_FILE, "{}")
+    # a team login is written back only for the same account (KAN-168)
+    cred = broker.put("codex", "codex", CredentialKind.AUTH_FILE, '{"tokens": {"account_id": "acct-1"}}')
     sb = await fleet.create("plain", credentials=["codex"])
     path = cred.file_path or broker.get("codex").file_path
-    (prov.boxes[sb.provider_ref] / "home/agent" / path.removeprefix("~/")).write_text('{"rotated": 1}')
+    rotated = '{"tokens": {"account_id": "acct-1", "refresh_token": "r2"}}'
+    (prov.boxes[sb.provider_ref] / "home/agent" / path.removeprefix("~/")).write_text(rotated)
     row = store.get(Sandbox, sb.id)
     row.state = S.STOPPING  # the process died in the middle of destroying it
     store.put(row)
@@ -191,7 +193,7 @@ async def test_a_destroy_orphaned_by_a_restart_is_finished_with_the_auth_file_wr
     row = store.get(Sandbox, sb.id)
     assert row.state == S.STOPPED and row.info["cause"] == "orphaned_by_restart"
     assert sb.provider_ref not in prov.boxes and broker.get("codex").leased_to is None
-    assert broker.vault.get("cred:codex") == b'{"rotated": 1}'
+    assert broker.vault.get("cred:codex") == rotated.encode()
 
 
 # ====================================================================== replaced pods (B3)
