@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -197,6 +198,23 @@ async def test_a_best_of_n_winner_stopped_over_budget_is_a_draft_that_says_why(j
     assert job.turns[0].outcome_reason.startswith("used 900,000 tokens")
     await asyncio.sleep(0.1)
     assert any("Stopped over budget (used 900,000 tokens" in c for c in jobs.hooks.comments())
+
+
+async def test_an_over_budget_turns_summary_and_pr_body_are_built_from_its_events(jobs, world):
+    """KAN-137: no RESULT.md and no final message: the summary says why it stopped, what the agent said last, the
+    files it changed and the last check, and no stream-json reaches it or the draft PR."""
+    world["mode"].write_text("burnall")
+    job = github(jobs, SubmitJob(instructions="make fix.txt say good", repo=world["url"], environment="seamenv",
+                                 verify="grep -q good fix.txt", budget=Budget(max_tokens=100_000)))
+    job = await until(jobs, job.id, DONE)
+    assert job.reason == "over_budget" and job.result.pushed, [e.message for e in job.events]
+    out = job.result.summary or ""
+    assert re.match(r"Stopped over budget after \d+ s \(used 900,000 tokens; the budget is 100,000\)\.", out), out
+    assert "> step 900000" in out and "fix.txt" in out, out
+    assert "Last check `grep -q good fix.txt`: passed." in out, out
+    assert '{"type"' not in out and "usage" not in out, out
+    body = jobs._pr_body(job)
+    assert body.startswith(out) and '{"type"' not in body  # the draft PR's body
 
 
 async def test_the_judge_turn_is_capped_counted_once_and_in_the_job_stream(jobs, world):
