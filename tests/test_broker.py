@@ -71,7 +71,8 @@ def _codex(account: str, user: str, refresh: str) -> bytes:
     import json
 
     auth = {"chatgpt_account_id": account, "chatgpt_user_id": user}
-    claims = {"iss": "https://auth.openai.com", "sub": user, "https://api.openai.com/auth": auth}
+    claims = {"iss": "https://auth.openai.com", "sub": user, "https://api.openai.com/auth": auth,
+              "jti": f"issued-with-{refresh}"}  # a refresh issues new id and access tokens with the new refresh token
     return json.dumps({"tokens": {"id_token": _jwt(claims), "access_token": _jwt(claims), "refresh_token": refresh,
                                   "account_id": account}}).encode()
 
@@ -91,7 +92,7 @@ async def _release_after(broker, stored: bytes, read_back: bytes, person: str | 
 
 async def test_writeback_same_account_refresh_is_stored(broker):
     old, new = _codex("acct-team", "user-1", "rt-old"), _codex("acct-team", "user-1", "rt-new")
-    _, refused = await _release_after(broker, old, new)
+    _, refused = await _release_after(broker, old, new, person="alice")
     assert broker.vault.get("cred:codex") == new
     assert refused == []
 
@@ -115,12 +116,12 @@ async def test_writeback_file_mixing_two_accounts_is_refused(broker):
     old = _codex("acct-team", "user-1", "rt-old")
     mixed = json.loads(old)
     mixed["tokens"]["access_token"] = json.loads(_codex("acct-attacker", "user-9", "x"))["tokens"]["access_token"]
-    _, refused = await _release_after(broker, old, json.dumps(mixed).encode())
+    _, refused = await _release_after(broker, old, json.dumps(mixed).encode(), person="alice")
     assert broker.vault.get("cred:codex") == old and len(refused) == 1
     # the other way round: an attacker's id token, the stored file's access token
     mixed = json.loads(old)
     mixed["tokens"]["id_token"] = json.loads(_codex("acct-attacker", "user-9", "x"))["tokens"]["id_token"]
-    _, refused = await _release_after(broker, old, json.dumps(mixed).encode())
+    _, refused = await _release_after(broker, old, json.dumps(mixed).encode(), person="alice")
     assert broker.vault.get("cred:codex") == old and len(refused) == 2
 
 
@@ -130,7 +131,7 @@ async def test_writeback_unparseable_team_login_is_refused(broker):
         _, refused = await _release_after(broker, old, bad)
         assert broker.vault.get("cred:codex") == old
     assert len(refused) == 2
-    assert all("can't be compared" in e.detail["reason"] for e in refused)
+    assert all(e.detail["reason"].startswith("team credential") for e in refused)
     # nor is one that keeps the stored account_id but drops the tokens that say whose it is
     dropped = b'{"tokens": {"refresh_token": "rt-evil", "account_id": "acct-team"}}'
     _, refused = await _release_after(broker, old, dropped)
@@ -152,3 +153,45 @@ def test_account_of_gemini_and_unknown_files():
     assert same(g, {**g, "openai.user_id": "u"}) is True  # a refresh may add a claim
     assert same(g, {"email": "a@x.com"}) is False  # but not drop one
     assert same(g, {**g, "email": "b@x.com"}) is False
+
+
+# --- KAN-168 follow-up: the copy-and-swap a sandbox can do with unverified claims
+def _swap(stored: bytes, refresh: str) -> bytes:
+    import json
+
+    d = json.loads(stored)
+    d["tokens"]["refresh_token"] = refresh
+    return json.dumps(d).encode()
+
+
+async def test_a_team_login_is_never_written_back_even_naming_the_same_account(broker):
+    """The bypass found on #366: the stored id and access tokens copied, another account's refresh token swapped in.
+    For a team login nothing a sandbox returns is stored, so this can't move members to another account."""
+    old = _codex("acct-team", "user-1", "rt-old")
+    for back in (_swap(old, "rt-attacker"), _codex("acct-team", "user-1", "rt-new")):
+        sb, refused = await _release_after(broker, old, back)
+        assert broker.vault.get("cred:codex") == old
+        newest = refused[0]  # audit_tail is newest first
+        assert newest.detail["team"] is True and newest.detail["sandbox"] == sb.id
+        assert newest.detail["reason"].startswith("team credential")
+    assert len(refused) == 2
+
+
+async def test_a_persons_login_with_only_its_refresh_token_swapped_is_refused(broker):
+    old = _codex("acct-1", "user-1", "rt-old")
+    _, refused = await _release_after(broker, old, _swap(old, "rt-attacker"), person="alice")
+    assert broker.vault.get("cred:codex") == old and len(refused) == 1
+    assert "refresh token changed" in refused[0].detail["reason"] and "rt-" not in repr(refused[0].model_dump())
+    # a real refresh (new access and id tokens with the new refresh token) is still stored
+    new = _codex("acct-1", "user-1", "rt-new")
+    _, refused = await _release_after(broker, old, new, person="alice")
+    assert broker.vault.get("cred:codex") == new and len(refused) == 1  # only the swap's, from above
+
+def test_swapped():
+    from hangar.authident import swapped
+
+    old = b'{"tokens": {"access_token": "a1", "id_token": "i1", "refresh_token": "r1"}}'
+    assert swapped(old, b'{"tokens": {"access_token": "a1", "id_token": "i1", "refresh_token": "r2"}}')
+    assert not swapped(old, b'{"tokens": {"access_token": "a2", "id_token": "i2", "refresh_token": "r2"}}')
+    assert not swapped(old, old)  # unchanged
+    assert not swapped(old, b"not json") and not swapped(b'{"refresh": "r1"}', b'{"refresh": "r2"}')  # no access
