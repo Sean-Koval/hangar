@@ -8,7 +8,7 @@ The review read hangar at `01c136c` as an attacker would. It found one High, fiv
 
 On GKE and E2B there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent can allow itself or answer its own approval.
 
-By default (`HANGAR_UID_SPLIT=auto`) hangar only warns. `required` refuses those turns instead. The gateway, the egress proxy and the landing checks still hold. Tracked in KAN-165, with the sidecar fix in KAN-83.
+Elsewhere the default (`HANGAR_UID_SPLIT=auto`) only warns. The Kubernetes manifests now set `required`, which refuses those turns instead; `auto` turns are unaffected. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
 
 ## Codex rules in hardened turns (Medium)
 

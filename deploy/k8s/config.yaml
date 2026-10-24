@@ -36,6 +36,10 @@ data:
   # webhooks need the gateway and get at least `allowlist` egress. "warn" for one release while you set the gateway
   # up (docs/upgrading.md); "off" is not recommended.
   HANGAR_INTAKE_POSTURE: "enforce"
+  # No uid split on GKE (KAN-165): the driver would run as the agent's own user, which could then allow its own tool
+  # calls. `required` refuses an `ask` or `deny-risky` turn instead of running it unbound; `auto` turns are unaffected.
+  # Until the driver sidecar lands (KAN-83), keep it (docs/security/review-1.0.md).
+  HANGAR_UID_SPLIT: "required"
   # Tower, the Govern plane, runs beside hangar in namespace tower (docs/runbooks/tower.md; Tower's ADR 0018). hangar
   # asks its Service in the cluster: no load balancer or certificate on the fail-closed path. Read once #172 wires the
   # client; until then hangar ignores them. Shadow never changes an outcome: hangar's rules decide, Tower is asked a dry
