@@ -311,6 +311,9 @@ class Settings(BaseSettings):
     # control plane. 0 = serve /git on the main port instead.
     gateway_port: int = 8788
     gateway_host: str | None = None  # bind address; default HANGAR_HOST
+    # --- KAN-174: open connections one peer (a sandbox's address) may hold on the gateway, idle ones included; the
+    # next is closed at once. 0 turns it off. Git, the mirrors and the model gateway use a few each.
+    gateway_max_connections_per_peer: int = Field(256, ge=0)
     # --- #177: the model gateway (modelgw.py) on the same port, /model/{provider}/...: where it sends each provider's
     # calls ({"anthropic": "https://api.anthropic.com"}; unset: the provider's own API), and how long local tapes stay
     model_gateway_upstreams: dict[str, str] = Field(default_factory=dict)

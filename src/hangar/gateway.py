@@ -444,10 +444,47 @@ class AppTokens:
 
 
 # ============================================================================ the gateway
+def capped_protocol(per_peer: int) -> type:
+    """uvicorn's HTTP protocol, closing a connection at once when its peer already holds `per_peer` (KAN-174, known
+    gap 10). Counted per connection, idle ones included, so one sandbox holding sockets open runs out of its own
+    share, not everyone's. uvicorn's `limit_concurrency` can't do this: it is one count for all peers, and answers
+    everyone 503 once idle sockets fill it."""
+    from collections import Counter
+
+    from uvicorn.protocols.http.auto import AutoHTTPProtocol
+
+    peers: Counter[str] = Counter()
+
+    class Capped(AutoHTTPProtocol):  # type: ignore[misc, valid-type]
+        peers_open = peers  # tests read it
+        _peer: str | None = None
+
+        def connection_made(self, transport) -> None:  # type: ignore[override]
+            name = transport.get_extra_info("peername")
+            peer = str(name[0]) if isinstance(name, tuple) and name else "?"
+            if peers[peer] >= per_peer:
+                log.warning("git gateway: %s already has %d connections open; closing a new one", peer, per_peer)
+                transport.close()  # uvicorn never sees it: nothing of its own to clean up
+                return
+            self._peer = peer
+            peers[peer] += 1
+            super().connection_made(transport)
+
+        def connection_lost(self, exc) -> None:  # type: ignore[override]
+            if self._peer is None:
+                return  # refused above
+            peers[self._peer] -= 1
+            if peers[self._peer] <= 0:
+                del peers[self._peer]
+            super().connection_lost(exc)
+
+    return Capped
+
+
 class _Server:
     """A second uvicorn listener in the control plane's event loop. The main server owns the signals."""
 
-    def __init__(self, app, host: str, port: int):
+    def __init__(self, app, host: str, port: int, per_peer: int = 0):
         import uvicorn
 
         class Quiet(uvicorn.Server):
@@ -455,10 +492,12 @@ class _Server:
             def capture_signals(self):
                 yield
 
-        self.server = Quiet(uvicorn.Config(app, host=host, port=port, lifespan="off", log_level="warning",
-                                           access_log=False))
         # No limit_concurrency: uvicorn counts idle connections against it (there is no header timeout) and then
-        # answers everyone 503, so one sandbox holding sockets open would lock all the others out.
+        # answers everyone 503, so one sandbox holding sockets open would lock all the others out. A cap per peer
+        # instead (capped_protocol), so it locks out only itself.
+        http: Any = capped_protocol(per_peer) if per_peer > 0 else "auto"
+        self.server = Quiet(uvicorn.Config(app, host=host, port=port, lifespan="off", log_level="warning",
+                                           access_log=False, http=http))
         self.task: asyncio.Task | None = None
 
     async def _run(self) -> None:
@@ -609,7 +648,8 @@ class Gateway:
         s = self.settings
         self.narrow()  # --- least-privilege
         if s.gateway_url and s.gateway_port:
-            self._server = _Server(self.asgi_app(), s.gateway_host or s.host, s.gateway_port)
+            self._server = _Server(self.asgi_app(), s.gateway_host or s.host, s.gateway_port,
+                                   per_peer=s.gateway_max_connections_per_peer)  # --- KAN-174
             self._server.start()
         await self.fleet.egress.start()  # --- egress: the proxy's listeners live and die with the gateway's
 
