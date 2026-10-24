@@ -54,7 +54,10 @@ spec:
                      240.0.0.0/4]
         - ipBlock:
             cidr: ::/0
-            except: ["fc00::/7", "fe80::/10", "::1/128"]
+            # and the IPv6 ranges that carry an IPv4 address to wherever a translator exists (KAN-174 Q-2):
+            # NAT64 (64:ff9b::/96 and its local-use 64:ff9b:1::/48), IPv4-mapped and -translated, 6to4
+            except: ["fc00::/7", "fe80::/10", "::1/128", "64:ff9b::/96", "64:ff9b:1::/48", "::ffff:0:0/96",
+                     "::ffff:0:0:0/96", "2002::/16", "::/96"]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
