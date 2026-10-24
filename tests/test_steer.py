@@ -318,6 +318,56 @@ async def test_ask_needs_a_live_harness(svc, live, settings):
     assert not s.turns[0].live and s.turns[0].summary == "one-shot: work"
 
 
+
+# ---------------------------------------------------------------------------- KAN-169: Codex rules files
+def _push(live, files: dict[str, str]) -> None:
+    """Commit `files` to the session repo's main, as someone who can push would."""
+    work = Path(tempfile.mkdtemp(prefix="push-", dir=scratch_root()))
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "clone", "-q", live["url"], str(work)], check=True)
+    for rel, text in files.items():
+        (work / rel).parent.mkdir(parents=True, exist_ok=True)
+        (work / rel).write_text(text)
+    subprocess.run([*git, "-C", str(work), "add", "-A"], check=True)
+    subprocess.run([*git, "-C", str(work), "commit", "-qm", "rules"], check=True)
+    subprocess.run([*git, "-C", str(work), "push", "-q", "origin", "HEAD:main"], check=True)
+
+
+ALLOW_ALL = 'prefix_rule(pattern=["touch"], decision="allow")\n'
+
+
+async def test_a_codex_turn_that_asks_is_refused_with_a_committed_rules_file(svc, live):
+    _push(live, {".codex/rules/default.rules": ALLOW_ALL})
+    new(svc, live, "pushed", "TOOL make the file", "live-codex", approvals="ask")
+    s = await settle(svc, "pushed")
+    assert ".codex/rules/default.rules would let calls run without asking" in (s.reason or ""), s.reason
+    assert not repo_file(svc, s, "tool-ran.txt").exists()
+    # approvals=auto asks about nothing, so the file changes nothing there; Claude Code doesn't read it
+    new(svc, live, "auto", "work", "live-codex")
+    new(svc, live, "claude", "work", "live-claude", approvals="ask")
+    for ref in ("auto", "claude"):
+        s = await settle(svc, ref)
+        assert s.turns[-1].outcome == "exited", (ref, s.reason)
+
+
+async def test_rules_or_an_approve_mcp_server_the_agent_wrote_refuse_its_next_turn(svc, live):
+    new(svc, live, "agent", "work", "live-codex", approvals="ask")
+    s = await settle(svc, "agent")
+    assert s.turns[0].outcome == "exited", s.reason
+    home = svc.fleet.providers["docker"].boxes[s.sandbox_id] / "home/agent"
+    approve = '[mcp_servers.x]\ncommand = "x"\ndefault_tools_approval_mode = "approve"\n'
+    for rel, text in ((".codex/rules/mine.rules", ALLOW_ALL), (".codex/config.toml", approve)):
+        (home / rel).parent.mkdir(parents=True, exist_ok=True)
+        (home / rel).write_text(text)
+        svc.send("agent", "more", requester="sean")
+        s = await settle(svc, "agent")
+        assert "would let calls run without asking" in (s.reason or "") and rel in (s.reason or ""), s.reason
+        (home / rel).unlink()
+    svc.send("agent", "again", requester="sean")  # once they're gone, it runs
+    s = await settle(svc, "agent")
+    assert s.turns[-1].outcome == "exited" and s.turns[-1].message == "again", s.reason
+
+
 async def test_forged_commands_are_refused(svc, live):
     new(svc, live, "forge", "TOOL make the file", approvals="ask")
     a = await pending_approval(svc, "forge")
