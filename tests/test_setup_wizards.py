@@ -118,6 +118,8 @@ def test_unreachable():
     assert unreachable("http://localhost:8787")
     assert unreachable("http://10.1.2.3/x") and unreachable("http://hangar.hangar.svc:8787")
     assert unreachable("https://34.8.98.95.sslip.io") is None and unreachable("https://8.8.8.8") is None
+    assert unreachable("http://[64:ff9b::a9fe:a9fe]/") and unreachable("http://[2002:a00:1::1]/")  # KAN-174 Q-3
+    assert unreachable("http://[64:ff9b::808:808]/") is None  # NAT64 to a public address is public
 
 
 def test_setup_github_end_to_end(client):

@@ -196,9 +196,12 @@ def _safe_name(name: str, taken: set[str]) -> str:
 
 
 def _internal(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
-    return not ip.is_global or ip.is_multicast
+    """Not a public address, judged as the egress proxy judges one (KAN-174 Q-3): an IPv6 address carrying an IPv4
+    one (mapped, NAT64, 6to4, translated, compatible) by the IPv4 address it reaches. Python calls NAT64's
+    64:ff9b::a9fe:a9fe global, though a translator takes it to the metadata server."""
+    from hangar.egress_proxy import public
+
+    return not public(ip)
 
 
 async def _resolve(host: str) -> list[str]:

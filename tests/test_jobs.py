@@ -304,6 +304,9 @@ async def test_submit_validation(jobs, world, broker):
                 dict(callback_url="http://example.com/cb"), dict(callback_url="https://10.0.0.5/cb"),
                 dict(callback_url="https://169.254.169.254/latest"), dict(callback_url="https://localhost/cb"),
                 dict(callback_url="https://[::ffff:10.0.0.1]/cb"), dict(callback_url="https://100.64.1.1/cb"),
+                # KAN-174 Q-3: IPv4 inside IPv6, which Python calls global: NAT64 to the metadata server, 6to4
+                dict(callback_url="https://[64:ff9b::a9fe:a9fe]/cb"), dict(callback_url="https://[64:ff9b::7f00:1]/cb"),
+                dict(callback_url="https://[2002:a00:1::1]/cb"),
                 dict(branch="feature/x"), dict(callback_url="https://metadata.google.internal/x"),
                 dict(environment="plain", harness="codex"),
                 dict(callback_secret="nope")]:

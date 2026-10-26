@@ -66,7 +66,9 @@ def unreachable(url: str) -> str | None:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return None
-    return None if ip.is_global else f"{host} is not a public address"
+    from hangar.egress_proxy import public  # --- KAN-174 Q-3: NAT64 and the like, by the IPv4 address they reach
+
+    return None if public(ip) else f"{host} is not a public address"
 
 
 def hook_url(h, override: str | None = None) -> str:
