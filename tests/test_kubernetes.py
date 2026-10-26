@@ -280,6 +280,12 @@ async def test_cloud_build_runs_as_configured_service_account(monkeypatch, tmp_p
     await p._cloud_build(render(spec()), "r.example/x/py:1", None)
     assert "--service-account=projects/-/serviceAccounts/hangar@p.iam.gserviceaccount.com" in seen["args"]
     assert "CLOUD_LOGGING_ONLY" in seen["yaml"]
+    assert not [x for x in seen["args"] if x.startswith("--gcs-source-staging-dir")]  # unset: Cloud Build's default
+    # KAN-172: hangar's own staging bucket, so it needs no project-wide storage role
+    p = provider(registry="r.example/x", k8s_build_service_account="hangar@p.iam.gserviceaccount.com",
+                 build_staging="gs://p-hangar-build-src/")
+    await p._cloud_build(render(spec()), "r.example/x/py:1", None)
+    assert "--gcs-source-staging-dir=gs://p-hangar-build-src/source" in seen["args"]
 
 
 def test_pending_events_are_explained():

@@ -233,7 +233,8 @@ class KubernetesProvider(Provider):
         return tag
 
     async def _cloud_build(self, ctx: BuildContext, tag: str, log: LogFn | None) -> None:
-        await cloud_build(ctx, tag, log, self.settings.k8s_build_service_account)  # --- images: shared with the CLI
+        await cloud_build(ctx, tag, log, self.settings.k8s_build_service_account,  # --- images: shared with the CLI
+                          staging=self.settings.build_staging)  # --- KAN-172
 
     def _pod_template(self, spec: EnvSpec, image: str, dns: dict | None = None) -> dict:
         s = self.settings

@@ -177,16 +177,48 @@ resource "google_service_account" "hangar" {
   display_name = "hangar control plane"
 }
 
+# KAN-172: nothing storage- or registry-wide. Writing images is scoped to the `hangar` repository below, and Cloud
+# Build stages source in a bucket of hangar's own (build_staging), so code running in the control plane can't push
+# over another repository's images (Tower's) or reach buckets it doesn't use.
 resource "google_project_iam_member" "hangar" {
   for_each = toset([
-    "roles/artifactregistry.writer",
     "roles/cloudbuild.builds.editor",
-    "roles/storage.admin", # Cloud Build source staging bucket
     "roles/logging.logWriter",
   ])
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "hangar_writer" {
+  location   = google_artifact_registry_repository.hangar.location
+  repository = google_artifact_registry_repository.hangar.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+# Cloud Build's source staging (HANGAR_BUILD_STAGING; up.sh sets it): hangar's alone, emptied after a day.
+resource "google_storage_bucket" "build_staging" {
+  name                        = "${var.project_id}-hangar-build-src"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = true
+  lifecycle_rule {
+    condition {
+      age = 1
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+# Admin on this bucket only: `gcloud builds submit` reads the bucket's metadata and writes the source archive.
+resource "google_storage_bucket_iam_member" "build_staging" {
+  bucket = google_storage_bucket.build_staging.name
+  role   = "roles/storage.admin"
+  member = "serviceAccount:${local.sa_email}"
 }
 
 resource "google_service_account_iam_member" "workload_identity" {

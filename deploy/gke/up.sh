@@ -87,11 +87,20 @@ OUTBOX=${OUTBOX_WAS:-$RUNS}
 if [[ "$OUTBOX" == gs://* ]]; then
   sed -i "s|^  # HANGAR_OUTBOX_URL: .*|  HANGAR_OUTBOX_URL: \"$OUTBOX\"|" "$OUT/config.yaml"
 fi
+# --- KAN-172: Cloud Build stages sources in hangar's own bucket; without it, builds need a project-wide storage role
+# hangar no longer has. A value already in the `hangar` config map is kept, and hangar-site still wins.
+STAGING_WAS=$(kubectl -n hangar get configmap hangar -o jsonpath='{.data.HANGAR_BUILD_STAGING}' 2>/dev/null || true)
+STAGING=${STAGING_WAS:-$(tfo build_staging 2>/dev/null || true)}
+if [[ "$STAGING" == gs://* ]]; then
+  sed -i "s|^  # HANGAR_BUILD_STAGING: .*|  HANGAR_BUILD_STAGING: \"$STAGING\"|" "$OUT/config.yaml"
+fi
 RUNNING=$(kubectl -n hangar get deployment hangar -o jsonpath='{.spec.template.spec.containers[0].image}' \
   2>/dev/null || true)
 kubectl apply -k "$OUT"
 # The outbox reads its URL when hangar starts: a new image restarts the pod anyway, the same image doesn't.
-if [[ "$OUTBOX" == gs://* && "$OUTBOX" != "$OUTBOX_WAS" && "$RUNNING" == "$IMAGE" ]]; then
+# So does the build staging bucket (KAN-172).
+if [[ "$RUNNING" == "$IMAGE" ]] && { [[ "$OUTBOX" == gs://* && "$OUTBOX" != "$OUTBOX_WAS" ]] ||
+                                     [[ "$STAGING" == gs://* && "$STAGING" != "$STAGING_WAS" ]]; }; then
   kubectl -n hangar rollout restart deploy/hangar
 fi
 kubectl -n hangar rollout status deploy/hangar --timeout=10m

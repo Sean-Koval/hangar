@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # Service account Cloud Build runs as for in-cluster builds (the control plane's own GSA). Without it
     # Cloud Build uses the project's default SA, which the control plane usually may not act as.
     k8s_build_service_account: str | None = None
+    # --- KAN-172: gs://bucket[/dir] Cloud Build stages a build's source in (`gcloud builds submit
+    # --gcs-source-staging-dir`). The GKE terraform makes one hangar may use alone (terraform output build_staging),
+    # so hangar needs no project-wide storage role. Unset: Cloud Build's default `<project>_cloudbuild` bucket.
+    build_staging: str | None = None
     # Mount harness packs as OCI image volumes (Kubernetes >= 1.35, stable in 1.36). Off: bake into images.
     k8s_image_volumes: bool = True
     k8s_stream_uploads: bool = True  # one exec with stdin per file upload; falls back to 96 KB chunks

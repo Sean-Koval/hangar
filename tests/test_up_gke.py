@@ -77,7 +77,7 @@ def gke(tmp_path, monkeypatch):
     cfg = {"changes": [["google_container_cluster.hangar", ["create"]]], "outputs": {
         "registry": "us-central1-docker.pkg.dev/p/hangar", "service_account": "hangar@p.iam.gserviceaccount.com",
         "static_ip": "34.1.2.3", "get_credentials": "true", "session_bucket": "gs://p-hangar-sessions",
-        "run_bucket": "gs://p-hangar-runs"}}
+        "run_bucket": "gs://p-hangar-runs", "build_staging": "gs://p-hangar-build-src"}}
     monkeypatch.setenv("PATH", f"{bin_}:{Path(sys.executable).parent}:/usr/bin:/bin")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HANGAR_DATA_DIR", str(tmp_path / "home" / ".hangar"))
@@ -189,7 +189,8 @@ def test_up_sh_turns_the_outbox_on_for_a_running_hangar(gke):
     assert 'HANGAR_OUTBOX_URL: "gs://p-hangar-runs"' in gke.config()
     assert ["kubectl", "-n", "hangar", "rollout", "restart", "deploy/hangar"] in gke.calls()
     n = len(gke.calls())  # on already: kept as it is, and no restart
-    gke.set(live={"hangar": {"HANGAR_OUTBOX_URL": "gs://p-hangar-runs/team"}})
+    gke.set(live={"hangar": {"HANGAR_OUTBOX_URL": "gs://p-hangar-runs/team",
+                             "HANGAR_BUILD_STAGING": "gs://p-hangar-build-src"}})
     assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
     assert 'HANGAR_OUTBOX_URL: "gs://p-hangar-runs/team"' in gke.config()
     assert not [c for c in gke.calls()[n:] if "restart" in c]
@@ -200,6 +201,46 @@ def test_up_sh_turns_the_outbox_on_for_a_running_hangar(gke):
     gke.set(outputs=gke.outputs(run_bucket=None))  # enable_run_bucket=false: no bucket, the outbox stays off
     assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
     assert "# HANGAR_OUTBOX_URL:" in gke.config()
+
+
+
+def test_up_sh_points_cloud_build_at_hangars_own_staging_bucket(gke):
+    """KAN-172: hangar has no project-wide storage role, so Cloud Build stages in the bucket terraform made for it. A
+    running hangar gets it too, with a restart when the image is the same (settings are read at startup); a value
+    already set is kept."""
+    image = "us-central1-docker.pkg.dev/p/hangar/control-plane:" + subprocess.run(
+        ["git", "-C", str(setup_gke.checkout()), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+        check=True).stdout.strip()
+    gke.set(changes=[], deployed=True, image=image,
+            live={"hangar": {"HANGAR_OUTBOX_URL": "gs://p-hangar-runs"}})
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert 'HANGAR_BUILD_STAGING: "gs://p-hangar-build-src"' in gke.config()
+    assert ["kubectl", "-n", "hangar", "rollout", "restart", "deploy/hangar"] in gke.calls()
+    n = len(gke.calls())
+    gke.set(live={"hangar": {"HANGAR_OUTBOX_URL": "gs://p-hangar-runs", "HANGAR_BUILD_STAGING": "gs://mine/x"}})
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert 'HANGAR_BUILD_STAGING: "gs://mine/x"' in gke.config()
+    assert not [c for c in gke.calls()[n:] if "restart" in c]
+
+
+def test_terraform_scopes_hangars_roles():
+    """KAN-172: no project-wide storage or registry role for hangar's service account; the registry writer is on the
+    hangar repository and storage admin on its staging bucket only."""
+    import re
+
+    main = (REPO / "deploy/terraform/gke/main.tf").read_text()
+    project = re.search(r'resource "google_project_iam_member" "hangar" \{(.*?)\n\}', main, re.S).group(1)
+    roles = set(re.findall(r'"(roles/[^"]+)"', project))
+    assert roles == {"roles/cloudbuild.builds.editor", "roles/logging.logWriter"}, roles
+    writer = re.search(r'resource "google_artifact_registry_repository_iam_member" "hangar_writer" \{(.*?)\n\}',
+                       main, re.S).group(1)
+    assert "google_artifact_registry_repository.hangar.name" in writer and "artifactregistry.writer" in writer
+    staging = re.search(r'resource "google_storage_bucket_iam_member" "build_staging" \{(.*?)\n\}', main, re.S)
+    assert "google_storage_bucket.build_staging.name" in staging.group(1)
+    for tf in (REPO / "deploy/terraform").rglob("*.tf"):
+        for block in re.findall(r'resource "google_project_iam_member"[^{]*\{(.*?)\n\}', tf.read_text(), re.S):
+            if "sa_email" in block:
+                assert "storage.admin" not in block and "artifactregistry.writer" not in block, tf
 
 
 def test_gke_needs_its_tools_and_tfvars(gke, monkeypatch, tmp_path):

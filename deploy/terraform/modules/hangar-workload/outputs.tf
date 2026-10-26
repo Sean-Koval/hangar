@@ -33,6 +33,11 @@ output "build_service_account" {
   value       = var.enable_cloud_build ? local.sa_email : null
 }
 
+output "build_staging" {
+  description = "HANGAR_BUILD_STAGING for hangar-site, when enable_cloud_build is on (KAN-172)."
+  value       = var.enable_cloud_build ? "gs://${google_storage_bucket.build_staging[0].name}" : null
+}
+
 output "power_up_job" {
   description = "HANGAR_POWER_UP_JOB for hangar-site, when the power schedule is on."
   value       = var.power_schedule == null ? null : "projects/${var.project_id}/locations/${var.region}/jobs/${google_cloud_run_v2_job.power["up"].name}"

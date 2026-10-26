@@ -104,7 +104,7 @@ async def docker_build(ctx: BuildContext, tag: str, log: LogFn | None = None, pl
 
 
 async def cloud_build(ctx: BuildContext, tag: str, log: LogFn | None = None, service_account: str | None = None,
-                      project: str | None = None) -> str:
+                      project: str | None = None, staging: str | None = None) -> str:
     """Build and push `tag` with Cloud Build (`gcloud builds submit`). --- images: shared by the Kubernetes provider
     and `hangar images build`."""
     with tempfile.TemporaryDirectory() as d:
@@ -125,5 +125,7 @@ async def cloud_build(ctx: BuildContext, tag: str, log: LogFn | None = None, ser
             args.append(f"--service-account=projects/-/serviceAccounts/{service_account}")
         if project:
             args.append(f"--project={project}")
+        if staging:  # --- KAN-172: a staging bucket of hangar's own, not the project's default one
+            args.append(f"--gcs-source-staging-dir={staging.rstrip('/')}/source")
         await run_cli([*args, str(root)], log=log)
     return tag

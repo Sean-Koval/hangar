@@ -32,3 +32,8 @@ output "pod_snapshot_bucket" {
 output "session_bucket" {
   value = var.enable_session_bucket ? "gs://${google_storage_bucket.sessions[0].name}" : null
 }
+
+output "build_staging" {
+  description = "HANGAR_BUILD_STAGING: where Cloud Build stages hangar's build sources (KAN-172)"
+  value       = "gs://${google_storage_bucket.build_staging.name}"
+}
