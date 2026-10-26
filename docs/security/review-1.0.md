@@ -12,7 +12,11 @@ By default (`HANGAR_UID_SPLIT=auto`) hangar only warns. `required` refuses those
 
 ## Codex rules in hardened turns (Medium)
 
-Codex reads `~/.codex/rules`, a repository's `.codex/rules` and MCP servers set to `approve`. The agent can write the first and last, and anyone who pushes can write the second. Any of them lets a call in an `ask` turn run unasked. This holds on Docker with the split too. Tracked in KAN-169.
+Codex reads `~/.codex/rules`, a repository's `.codex/rules` and MCP servers set to `approve`. The agent can write the first and last, and anyone who pushes can write the second. Any of them lets a call in an `ask` turn run unasked. This holds on Docker with the split too.
+
+Fixed for files there when a turn starts. A Codex turn that asks won't start while either rules directory holds a `.rules` file. Nor will it while `~/.codex/config.toml` sets an MCP tool to `approve`.
+
+Open: a file the agent writes during the turn. Codex has no switch to ignore rules, so closing it means giving Codex a home directory hangar owns. Tracked in KAN-169.
 
 ## Login files written back from a sandbox (Medium)
 

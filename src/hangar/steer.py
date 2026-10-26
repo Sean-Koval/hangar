@@ -127,6 +127,17 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
         hard = None
     elif hard is not None:
         turn.warnings.extend(hard.warnings)
+    if guarded and h.live == "codex":  # --- KAN-169: rules and `approve` MCP servers Codex would obey unasked
+        try:
+            found = await harden.codex_overrides(prov, sb, wd, f"/home/{svc.settings.sandbox_user}")
+        except Exception as e:  # noqa: BLE001 - can't look: don't start a turn that might not ask
+            raise SteerError(f"approvals={pol} with Codex: hangar couldn't check for Codex rules files ({e}); "
+                             "try again (docs/steering.md#hangar-owned-harness-settings)") from e
+        if found:
+            raise SteerError(f"approvals={pol} with Codex: {', '.join(found[:5])} would let calls run without asking "
+                             "(a Codex rules file, or an MCP server set to `approve`), and Codex can't be told to "
+                             "ignore them. Remove them, or run with approvals=auto "
+                             "(docs/steering.md#hangar-owned-harness-settings)")
     if split:
         driver = isolation.DRIVER
         await asyncio.gather(

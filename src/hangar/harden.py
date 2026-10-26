@@ -25,7 +25,9 @@ sandbox, hangar decides all of that itself:
 * **Codex** (0.162.1): `--disable hooks` (a command-line override outranks config.toml) and `approvalsReviewer: user`
   on the thread (the driver). Codex still loads `.rules` files from ~/.codex/rules and the repository's .codex/rules,
   even for an untrusted project, and has no switch to turn them off: a rule can let a command run without asking.
-  So can an MCP server the agent adds to ~/.codex/config.toml with its tools set to `approve`. The turn says so.
+  So can an MCP server the agent adds to ~/.codex/config.toml with its tools set to `approve`. A turn that asks is
+  refused when any of them is there as it starts (codex_overrides, KAN-169); one written during the turn isn't
+  checked, and the turn says so.
 
 Managed settings outrank all of this (verified: a managed `permissions.allow` or `disableAllHooks` wins over
 `--setting-sources ''` and `--settings`). They are root's: without sudo, which the split requires, the agent can't write
@@ -53,9 +55,26 @@ if TYPE_CHECKING:
 
 VAULT = "harness:"  # + sandbox id: what hangar set the harness up with (its env, its MCP servers)
 CODEX_RULES = ("Codex reads command rules from ~/.codex/rules and the repository's .codex/rules, and MCP servers from "
-               "~/.codex/config.toml, all of which the agent can write, and has no switch to turn them off: a rule, or "
-               "an MCP server whose tools are set to `approve`, can let a call run without asking "
+               "~/.codex/config.toml, and has no switch to turn them off. hangar refuses the turn when any of them "
+               "would let a call run unasked as it starts (KAN-169); one written during this turn isn't checked "
                "(docs/steering.md#hangar-owned-harness-settings)")
+# --- KAN-169: what a Codex turn that asks refuses to start with. hangar's approvals never write a rules file
+# ("allow always" is Codex's acceptForSession), and no environment sets an MCP tool to `approve`, so each of these was
+# written by the agent in an earlier turn or committed by someone who can push. A fixed PATH: not the agent's.
+CODEX_PROBE = (
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin; for d in "$1/.codex/rules" "$2/.codex/rules"; do '
+    '[ -d "$d" ] && find "$d" -type f -name "*.rules" -print -quit; done; '
+    'grep -lE \'approval_mode[[:space:]]*=[[:space:]]*"approve"\' "$2/.codex/config.toml" 2>/dev/null; true')
+
+
+async def codex_overrides(prov: Provider, sb: Sandbox, wd: str, home: str) -> list[str]:
+    """The Codex rules files and `approve` MCP settings in the checkout (`wd`) and the agent's ~/.codex (`home`) that
+    would let a call in a turn that asks run without asking (KAN-169). Raises RuntimeError when it can't look."""
+    r = await prov.exec(sb, f"sh -c {shlex.quote(CODEX_PROBE)} probe {shlex.quote(wd)} {shlex.quote(home)}",
+                        timeout=30)
+    if r.exit_code != 0:
+        raise RuntimeError(f"exit {r.exit_code}")
+    return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
 # review(#69): Claude Code loads an enabled plugin (its hooks, skills, MCP servers) from what ~/.claude/plugins says,
 # which the agent can write; verified with 2.1.296, a plugin's PreToolUse hook then allows every call. --- #136: so a
 # hardened turn reads no ~/.claude/plugins at all (CLAUDE_CODE_PLUGIN_CACHE_DIR, a new one), and loads only the seed's.
