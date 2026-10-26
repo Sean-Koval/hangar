@@ -16,7 +16,13 @@ Codex reads `~/.codex/rules`, a repository's `.codex/rules` and MCP servers set 
 
 ## Login files written back from a sandbox (Medium)
 
-When a sandbox releases a login file, hangar stores the file the sandbox returns, so a refreshed token survives. A sandbox holding a team login can return another account's file instead. Members who fall back to the team login would then work in that account. Tracked in KAN-168.
+When a sandbox releases a login file, hangar can store the file the sandbox returns, so a refreshed token survives. The sandbox writes that file, and the identity in it isn't verified.
+
+Fixed for team logins: hangar never stores a file a sandbox returns for one. Members who fall back to it can't be moved to another account. Subscription logins can't be team credentials, so none needs its rotation kept.
+
+Open for a person's own login. hangar stores a returned file only when it names the same account and its access tokens changed with its refresh token. A sandbox that refreshes the stored login first, then swaps in another account's refresh token, still passes. Only that person's later sandboxes would be affected.
+
+Closing it means hangar refreshing the login itself and checking the identity it gets back. Tracked in KAN-168.
 
 ## The control plane's image and identity (Medium)
 

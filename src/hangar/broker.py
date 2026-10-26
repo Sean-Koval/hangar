@@ -9,8 +9,9 @@ code path works for Docker, Agent Sandbox pods and E2B VMs.
 * File-style secrets (e.g. ~/.codex/auth.json) are written to their target path.
 * Exclusive credentials (rotating refresh tokens) are leased to one sandbox at a time and
   written back to the vault when the sandbox releases them, so the newest refresh token
-  is never lost and two sandboxes never race on the same token. A changed file is stored only when it signs in to
-  the same account as the stored one (KAN-168, authident.py); otherwise it is refused and audited.
+  is never lost and two sandboxes never race on the same token. A team credential's file is never written back, and
+  a person's own only when it signs in to the same account as the stored one (KAN-168, authident.py); a refused file
+  is audited.
 """
 
 from __future__ import annotations
@@ -273,17 +274,24 @@ class Broker:
     def _writeback_refusal(cred: Credential, stored: bytes | None, data: bytes) -> str | None:
         """--- KAN-168: why a changed login file read back from a sandbox isn't stored, or None to store it.
 
-        The sandbox decides what the file holds. A team credential (no person) is what members without a login of
-        their own fall back to, so a file for another account would sign the next of them in to it. A changed file is
-        stored only when it names the same account as the stored one (authident); for a team credential, also
-        refused when either names no account. A person's own login whose account can't be told is still stored."""
-        from hangar.authident import account, same
+        The sandbox decides what the file holds, and the identity it names is unverified: a sandbox can copy the
+        stored file's id and access tokens and swap in another account's refresh token. So:
 
+        * **A team credential** (no person) is never written back. Members without a login of their own fall back to
+          it, so a swapped file would sign the next of them in to another account. Subscription logins can't be team
+          credentials (teamcreds.check_team), so no team login needs its rotation kept; an admin re-puts one.
+        * **A person's own login** is written back so a rotated refresh token survives, only when it names the same
+          account as the stored one (authident.same) and isn't the stored tokens with a new refresh token
+          (authident.swapped). What stays open is in docs/security/review-1.0.md."""
+        from hangar.authident import account, same, swapped
+
+        if cred.person is None:
+            return "team credential: hangar doesn't store a login file a sandbox returns (an admin re-puts it)"
         verdict = same(account(stored), account(data))
         if verdict is False:
             return "it signs in to a different account than the stored login"
-        if verdict is None and cred.person is None:
-            return "team credential: the account it signs in to can't be compared with the stored login's"
+        if swapped(stored, data):
+            return "its refresh token changed but its access and id tokens are the stored ones, which no refresh does"
         return None
 
     def force_release(self, name: str) -> Credential:

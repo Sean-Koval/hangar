@@ -180,9 +180,10 @@ async def test_a_destroy_orphaned_by_a_restart_is_finished_with_the_auth_file_wr
     prov = Blocking()
     prov.block_next = False
     fleet.providers["docker"] = prov
-    # a team login is written back only for the same account (KAN-168)
-    cred = broker.put("codex", "codex", CredentialKind.AUTH_FILE, '{"tokens": {"account_id": "acct-1"}}')
-    sb = await fleet.create("plain", credentials=["codex"])
+    # a person's own login is written back for the same account; a team one never is (KAN-168)
+    cred = broker.put("codex", "codex", CredentialKind.AUTH_FILE, '{"tokens": {"account_id": "acct-1"}}',
+                      person="alice")
+    sb = await fleet.create("plain", credentials=["codex"], person="alice")
     path = cred.file_path or broker.get("codex").file_path
     rotated = '{"tokens": {"account_id": "acct-1", "refresh_token": "r2"}}'
     (prov.boxes[sb.provider_ref] / "home/agent" / path.removeprefix("~/")).write_text(rotated)

@@ -99,3 +99,37 @@ def same(stored: dict[str, str] | None, new: dict[str, str] | None) -> bool | No
     if any(new.get(k, v) != v for k, v in stored.items()):
         return False
     return all(k in new for k in stored)
+
+
+_ACCESS_FIELDS = ("id_token", "idToken", "access_token", "accessToken", "access")
+_REFRESH_FIELDS = ("refresh_token", "refreshToken", "refresh")
+
+
+def _values(obj: Any, fields: tuple[str, ...], out: dict[str, str], path: str = "", depth: int = 0) -> dict[str, str]:
+    if depth > _MAX_DEPTH:
+        return out
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            key = f"{path}.{k}" if path else str(k)
+            if k in fields and isinstance(v, str) and v:
+                out[key] = v
+            else:
+                _values(v, fields, out, key, depth + 1)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            _values(v, fields, out, f"{path}[{i}]", depth + 1)
+    return out
+
+
+def swapped(stored: bytes | str | None, new: bytes | str | None) -> bool:
+    """True when `new` keeps every access and id token of `stored` byte for byte but carries a different refresh
+    token (KAN-168). A real refresh issues a new access token with the new refresh token; a file that only swapped
+    the refresh token is the copy-and-swap a sandbox would return to move the login to another account. This catches
+    that copy, not a sandbox that refreshes the stored login first: see docs/security/review-1.0.md."""
+    try:
+        a, b = json.loads(stored or ""), json.loads(new or "")
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return False
+    access_a, access_b = _values(a, _ACCESS_FIELDS, {}), _values(b, _ACCESS_FIELDS, {})
+    refresh_a, refresh_b = _values(a, _REFRESH_FIELDS, {}), _values(b, _REFRESH_FIELDS, {})
+    return bool(access_a) and access_a == access_b and bool(refresh_b) and refresh_a != refresh_b
