@@ -186,6 +186,7 @@ nav:
           - What is not covered: security/not-covered.md
           - Gaps found in the 1.0 review: security/review-1.0.md
           - The git credential gateway: security/git-gateway.md
+          - Who may continue a custom session branch: security/branch-creators.md
           - Egress allowlists: security/egress.md
           - Package mirrors: security/package-mirrors.md
           - Sandbox networking on Docker: security/docker-network.md
