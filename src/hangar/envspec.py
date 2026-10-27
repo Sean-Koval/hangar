@@ -311,8 +311,8 @@ class EnvSpec(BaseModel):
     # only (claude-code, codex); a subscription login is refused. Unset or `off`: the harness calls its provider.
     model_gateway: Literal["off", "record"] | None = None
     # --- workstream steer: how agents' tool permission prompts are answered in this environment's sessions and
-    # jobs (auto | ask | deny-risky; docs/steering.md). Unset: HANGAR_APPROVALS.
-    approvals: Literal["auto", "ask", "deny-risky"] | None = None
+    # jobs (auto | ask | deny-risky | governed; docs/steering.md). Unset: HANGAR_APPROVALS.
+    approvals: Literal["auto", "ask", "deny-risky", "governed"] | None = None
     # --- overnight/cache: prompt-cache TTL for this environment's sessions and jobs (auto | 5m | 1h | off; cache.py).
     # Unset: HANGAR_CACHE.
     cache: Literal["auto", "5m", "1h", "off"] | None = None

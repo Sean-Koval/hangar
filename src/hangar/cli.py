@@ -1002,7 +1002,8 @@ def session_new(
                                     "its unpushed commits and uncommitted changes (and default --repo/--base)."),
     schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
     approvals: str | None = typer.Option(None, "--approvals", help="Tool approvals: ask (you answer, see `hangar "
-                                         "session approvals`), deny-risky, or auto (default: the environment's)."),
+                                         "session approvals`), deny-risky, governed (Tower decides risky calls), "
+                                         "or auto (default: the environment's)."),
 ):
     """Start a session. Example:  hangar session new csv-fix "fix unicode in CSV export" -e hangar-jobs -w
 

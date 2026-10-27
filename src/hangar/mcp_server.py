@@ -590,7 +590,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             """Start a resumable stream of work: a sandbox of `environment` on branch hangar/session/<name>; with
             `message` the agent starts at once. Checkpointed after every turn and when idle, so send_to_session
             picks it up days later. `context`, `output_schema`, `budget`: as for submit_job. `approvals`: ask |
-            deny-risky | auto. `cache`: auto | 5m | 1h | off. Then wait_for_turn(name)."""
+            deny-risky | governed | auto. `cache`: auto | 5m | 1h | off. Then wait_for_turn(name)."""
             who = current_actor.get()
             req = NewSession(name=name, environment=environment, repo=repo, message=message, harness=harness,
                              model=model, base_branch=base_branch, idle_minutes=idle_minutes,

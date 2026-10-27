@@ -30,6 +30,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   `interactive`.
 - **The refusal names the key to add**: an OpenAI API key for Codex, an Anthropic one for Claude Code, a Gemini one
   for Antigravity, each with its `hangar cred add` command. So does the doctor's **subscription logins** check.
+- **`approvals: governed` asks Tower** (KAN-79, [docs/governed-approvals.md](docs/governed-approvals.md)). The calls
+  the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
+  requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
+  answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
 
 ## v0.2.0: the safe release
 

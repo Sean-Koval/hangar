@@ -133,6 +133,7 @@ nav:
               - "Reference: labels, outcomes, settings": jobs/reference.md
           - Sessions: sessions.md
           - Steering: steering.md
+          - Governed approvals: governed-approvals.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
           - Landing: landing.md

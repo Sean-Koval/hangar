@@ -139,6 +139,9 @@ class Metrics:
                                    buckets=_SLOW, registry=r)
         self.fail_closed = Counter("hangar_governance_fail_closed", "Decisions hangar answered itself because Tower "
                                    "didn't (never an allow)", ["kind", "failure"], registry=r)
+        self.governance_disagreements = Counter(  # --- KAN-79: shadow mode, spec 0015 §7
+            "hangar_governance_disagreements", "Shadow decisions where Tower would have answered otherwise",
+            ["kind"], registry=r)
         self.jobs_stuck = Gauge("hangar_jobs_stuck", "Live jobs that look stuck (slolog.stuck_jobs)", registry=r)
         # --- #181: the eval queue: each provider's observed token rate and the eval budget; eval jobs held, by why
         self.eval_tpm = Gauge("hangar_eval_observed_tpm", "Tokens per minute observed per provider (rolling 60 s)",
