@@ -63,6 +63,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          # KAN-185: every release run rebuilds the apt layer (security updates), whatever the build cache holds
+          build-args: APT_REFRESH=${{ env.TAG }}-${{ github.run_id }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ env.TAG }}

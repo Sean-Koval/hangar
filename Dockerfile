@@ -16,20 +16,31 @@ FROM ${BASE_IMAGE}
 
 ARG INSTALL_GCLOUD=1
 ARG INSTALL_DOCKER_CLI=1
+# The apt packages hangar ships, pinned so a bump reads in a diff (KAN-185). scripts/ci/apt_versions.py --write bumps
+# them to the latest in each repo; the weekly apt-versions workflow opens an issue when they fall behind. The Docker
+# versions name the Debian release, which must match the base image's.
+ARG DOCKER_CLI_VERSION=5:29.9.2-1~debian.13~trixie
+ARG DOCKER_BUILDX_VERSION=0.38.1-1~debian.13~trixie
+ARG GCLOUD_VERSION=590.0.1-0
+# The build cache would keep this layer, and its Debian security updates, forever. Each release run passes its tag and
+# run id, and main's builds the ISO week, so the layer rebuilds at least weekly; a build passing nothing stays cached.
+ARG APT_REFRESH=cached
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 UV_SYSTEM_PYTHON=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
+RUN echo "apt refresh: $APT_REFRESH" \
+ && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
  && if [ "$INSTALL_DOCKER_CLI" = 1 ]; then \
       install -m 0755 -d /etc/apt/keyrings && \
       curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-      echo "deb [signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+      echo "deb [signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
         > /etc/apt/sources.list.d/docker.list && \
-      apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin; fi \
+      apt-get update && apt-get install -y --no-install-recommends \
+        "docker-ce-cli=$DOCKER_CLI_VERSION" "docker-buildx-plugin=$DOCKER_BUILDX_VERSION"; fi \
  && if [ "$INSTALL_GCLOUD" = 1 ]; then \
       curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
       echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
         > /etc/apt/sources.list.d/google-cloud-sdk.list && \
-      apt-get update && apt-get install -y --no-install-recommends google-cloud-cli; fi \
+      apt-get update && apt-get install -y --no-install-recommends "google-cloud-cli=$GCLOUD_VERSION"; fi \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /usr/local/bin/uv
