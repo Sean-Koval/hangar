@@ -167,8 +167,7 @@ hangar scans jobs changed in the last minute for new facts and writes each once.
 
 - **Write-once.** Every upload is a create with `ifGenerationMatch=0`; a `412` means the object is already there and
   counts as done. hangar's service account has `roles/storage.objectCreator` on the bucket and nothing else there,
-  and an IAM deny policy takes `objects.delete` and `objects.update` away from it (its project-wide `storage.admin`
-  is for Cloud Build): it can't delete or overwrite a run. Readers get `roles/storage.objectViewer`.
+  and an IAM deny policy takes `objects.delete` and `objects.update` away from it (a backstop): it can't delete or overwrite a run. Readers get `roles/storage.objectViewer`.
 - **Redacted.** Every object passes the broker's redaction (stored credentials, verbatim and in common encodings) and
   secretscan's masking (token formats: GitHub, cloud keys, ...) before it is staged, on top of the redaction the
   manifest and trace already apply. The redacted text is then scanned again; an object that still holds a secret is

@@ -65,8 +65,7 @@ image didn't, because the outbox reads the URL at startup. By hand, uncomment th
 While it's off, `hangar doctor` on GKE warns `run capture (outbox)`. The bucket has uniform access
 and no public access; hangar's service account gets `roles/storage.objectCreator` on it only, and an IAM deny policy
 (`hangar-runs-write-once`, matching the bucket's `hangar-write-once=runs` tag) takes `objects.delete` and
-`objects.update` away from it, because its project-wide `roles/storage.admin` (Cloud Build's staging bucket) would
-otherwise allow them: hangar can create runs, never delete or overwrite one. Applying the deny policy needs
+`objects.update` away from it, as a backstop: hangar can create runs, never delete or overwrite one. Applying the deny policy needs
 `roles/iam.denyAdmin` on the project. Readers go in `run_bucket_readers` and get `roles/storage.objectViewer`.
 flightdeck's nightly compactor is the one reader: its `deploy/compactor/setup.sh` creates the service account
 `flightdeck-compactor@<project>.iam.gserviceaccount.com` and grants it that role on the bucket itself; listing it in

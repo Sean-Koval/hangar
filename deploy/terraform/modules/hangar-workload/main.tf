@@ -72,10 +72,37 @@ resource "google_artifact_registry_repository_iam_member" "hangar" {
 
 # --------------------------------------------------------------------------- Cloud Build (opt-in)
 resource "google_project_iam_member" "cloud_build" {
-  for_each = var.enable_cloud_build ? toset(["roles/cloudbuild.builds.editor", "roles/storage.admin"]) : toset([])
-  project  = var.project_id
-  role     = each.value
-  member   = "serviceAccount:${local.sa_email}"
+  count   = var.enable_cloud_build ? 1 : 0
+  project = var.project_id
+  role    = "roles/cloudbuild.builds.editor"
+  member  = "serviceAccount:${local.sa_email}"
+}
+
+# KAN-172: Cloud Build stages sources in a bucket of hangar's own (HANGAR_BUILD_STAGING, output build_staging), so
+# hangar needs no project-wide storage role.
+resource "google_storage_bucket" "build_staging" {
+  count                       = var.enable_cloud_build ? 1 : 0
+  project                     = var.project_id
+  name                        = "${var.project_id}-${var.name}-build-src"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = true
+  lifecycle_rule {
+    condition {
+      age = 1
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "build_staging" {
+  count  = var.enable_cloud_build ? 1 : 0
+  bucket = google_storage_bucket.build_staging[0].name
+  role   = "roles/storage.admin"
+  member = "serviceAccount:${local.sa_email}"
 }
 
 # Cloud Build runs as hangar's own service account, which needs actAs on itself.
@@ -158,4 +185,10 @@ resource "google_compute_global_address" "hangar" {
   project    = var.project_id
   name       = "${var.name}-ip"
   depends_on = [google_project_service.apis]
+}
+
+# KAN-172: storage.admin left the project roles, so the Cloud Build role is a single binding now.
+moved {
+  from = google_project_iam_member.cloud_build["roles/cloudbuild.builds.editor"]
+  to   = google_project_iam_member.cloud_build[0]
 }

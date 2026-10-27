@@ -581,7 +581,7 @@ def test_durations():
 # ====================================================================== terraform: write-once IAM
 def test_terraform_gives_hangar_create_only_on_the_run_bucket():
     """Hangar's service account creates objects in the run bucket and nothing else: objectCreator there, and a deny
-    policy takes delete and update away from it (its project-wide storage.admin is for Cloud Build)."""
+    policy takes delete and update away from it (kept since KAN-172 dropped its project-wide storage.admin)."""
     import re
 
     tf = (ROOT / "deploy/terraform/gke/outbox.tf").read_text()

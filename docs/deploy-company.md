@@ -63,7 +63,7 @@ module "hangar" {
 | `namespace`, `kubernetes_service_account` | `hangar`, `hangar` | Bound with `roles/iam.workloadIdentityUser` |
 | `workload_identity_pool` | `<project_id>.svc.id.goog` | Set it when the cluster lives in another project |
 | `registry` | `null` | `create = true` makes an Artifact Registry repository; `false` grants writer on yours. `null` grants nothing |
-| `enable_cloud_build` | `false` | Lets hangar build environment images with Cloud Build: `roles/cloudbuild.builds.editor` and `roles/storage.admin` on the project. Off: build in CI and let hangar only pull |
+| `enable_cloud_build` | `false` | Lets hangar build environment images with Cloud Build: `roles/cloudbuild.builds.editor` on the project, and a staging bucket of its own (output `build_staging`, set as `HANGAR_BUILD_STAGING`). Off: build in CI and let hangar only pull |
 | `enable_session_bucket`, `enable_run_bucket` | `true` | Session checkpoints (objectAdmin) and run capture (objectCreator only) |
 | `create_static_ip` | `false` | A global address for GKE Ingress |
 | `enable_apis` | `true` | Turn it off where the platform team manages project services |

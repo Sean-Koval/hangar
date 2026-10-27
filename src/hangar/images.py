@@ -217,7 +217,7 @@ async def build_missing(items: list[Item], settings: Settings, provider: str, bu
                 out(f"building {item.tag} ({builder})")
                 if builder == "cloudbuild":
                     await cloud_build(item.ctx, item.tag, out, settings.k8s_build_service_account,
-                                      project=_ar_project(item.tag))
+                                      project=_ar_project(item.tag), staging=settings.build_staging)
                 else:
                     await docker_build(item.ctx, item.tag, log=out, platform="linux/amd64" if push else None,
                                        push=push)
