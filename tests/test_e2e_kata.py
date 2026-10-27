@@ -11,7 +11,8 @@ import pytest
 
 from tests.test_e2e_docker import data
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E_KATA") != "1", reason="set HANGAR_E2E_KATA=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E_KATA") != "1", reason="set HANGAR_E2E_KATA=1 to run"),
+              pytest.mark.needs("kvm")]
 
 
 async def test_microvm_fleet_over_mcp(tmp_path):

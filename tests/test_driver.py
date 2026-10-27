@@ -212,9 +212,9 @@ print(json.dumps({"type": "result", "subtype": "success", "result": "; ".join(se
 """
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux") or not os.path.exists("/usr/bin/python3")
-                    or (os.geteuid() == 0 and not shutil.which("setpriv")),
-                    reason="Linux /proc, a system python3, and setpriv when run as root")
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not os.path.exists("/usr/bin/python3"),
+                    reason="Linux /proc and a system python3")
+@pytest.mark.needs("uid_split")  # --- KAN-138: as root, it drops to nobody, who must reach the scratch root
 def test_the_agent_cannot_read_the_run_key_out_of_the_driver(tmp_path):
     """The agent runs as the driver's uid, and same-uid processes may read each other's memory (Docker leaves
     ptrace to the kernel's Yama setting, often 0 or absent). The driver makes itself non-dumpable before it reads

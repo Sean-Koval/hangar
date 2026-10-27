@@ -26,7 +26,8 @@ import pytest
 
 from tests.conftest import free_port as _free_port
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 AGENT = r"""set -e
 cd "${HANGAR_REPO:-$PWD}"

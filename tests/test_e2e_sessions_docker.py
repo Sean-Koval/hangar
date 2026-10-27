@@ -17,7 +17,8 @@ import pytest
 
 from tests.test_e2e_jobs_docker import remote  # noqa: F401 - fixture: bare repo served over git://
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 AGENT = r"""set -e
 conv="$HOME/.fake/sessions"; mkdir -p "$conv"

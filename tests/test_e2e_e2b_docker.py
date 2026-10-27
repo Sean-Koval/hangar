@@ -17,7 +17,8 @@ import pytest
 from hangar.envd import find_binaries
 from tests.test_mcp_modern import AppThread
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 e2b = pytest.importorskip("e2b")
 
 ROOT = Path(__file__).parents[1]
