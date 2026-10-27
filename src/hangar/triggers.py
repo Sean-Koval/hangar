@@ -207,8 +207,12 @@ async def github_decision(jobs: JobService, ref: str, sender: str, trusted: bool
     job = next((j for j in jobs.list(state=JobState.AWAITING_APPROVAL.value, limit=500) if j.source_ref == ref), None)
     if job is None:
         return {"ignored": f"no job is waiting for approval on {ref}"}
+    from hangar.govrelease import ApprovalPending
+
     try:
         await approvals.decide(jobs, job.id, approvals.from_github(sender, person, trusted), decision)
+    except ApprovalPending as e:  # --- KAN-33: Tower took it, and the job still waits (said on the issue already)
+        return {"ok": True, "waiting": job.id, "reason": str(e)}
     except approvals.ApprovalRefused as e:  # audited by decide; say why on the issue
         jobs._spawn(jobs._comment(job, ref, f"@{sender} can't {decision} hangar job `{job.id}`: {e}"))
         return {"ignored": str(e)}

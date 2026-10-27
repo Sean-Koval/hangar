@@ -622,6 +622,9 @@ class Landing:
                 self.svc._event(job, f"{why}: not landing")
                 self._unapprove(st)
                 return self._note(job, why)
+            gate = getattr(svc, "release_gate", None)  # --- KAN-33: Tower decides whether this approval lands it
+            if gate is not None and (why := await gate.landing(job)):
+                return self._note(job, why)
             # Nothing the agent left running can push past the approval once armed: its sandbox (and with it the
             # gateway grant) goes first. A follow-up resumes from the checkpoint, and disarms before it starts.
             if not await self._release(job, "approved: the sandbox goes before auto-merge is armed"):
@@ -1245,6 +1248,9 @@ class Landing:
         elif aireview.wanted(svc, job) is not None:
             out.append("- **AI review:** pending")
         out.append(self.landing_rule(job, policy))  # --- self-approval (#160)
+        if st.receipt and st.receipt_sha:  # --- KAN-33 (spec 0015 §11): Tower's receipt for landing this head
+            out.append(f"  - Tower allowed landing {_short(st.receipt_sha)}: receipt `{st.receipt}`"
+                       + (f" (approval `{st.workspace_approval}`)" if st.workspace_approval else ""))
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")

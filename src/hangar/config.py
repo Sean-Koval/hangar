@@ -492,6 +492,12 @@ class Settings(BaseSettings):
     governance_credential: str | None = None
     governance_webhook_secret: str | None = None
     governance_suspend_after_seconds: int = Field(60, ge=5, le=3600)
+    # --- KAN-33 (#174, spec 0015 §9): how the control plane proves itself to Tower. key: the service key in
+    # `governance_credential` (phase 1). passport: a token hangar mints itself (`sub: hangar:control-plane`, from its
+    # OIDC issuer) exchanged at Tower's token endpoint (default `<governance_url>/oauth/token`) for a passport,
+    # checked against Tower's JWKS before use (phase 2: no stored key).
+    governance_auth: Literal["key", "passport"] = "key"
+    governance_token_url: str | None = None
     # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
     # neither the session nor its environment says: auto (1h when the session waits on people for more than
     # 5 min, else 5m), 5m, 1h or off. And how long best-of-N attempts and forks started together hold back for the

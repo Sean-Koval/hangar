@@ -40,8 +40,8 @@ Entry points, for callers and for what builds on this (#130's taint gates, part 
   first (`with_logins`) when `approvers` should count.
 * `Approver` is who is deciding: `from_principal` (MCP, REST), `from_github`, `from_jira`, `in_process`.
 
-Part B (#172) swaps the decision source behind `can_decide` for Tower's policy decision point,
-without touching callers.
+Part B (#172, KAN-33): with `job.release` in `shadow` or `enforce`, `decide` also asks Tower's decision point
+(govrelease.py), after `check` has run this rule; callers don't change.
 """
 
 from __future__ import annotations
@@ -250,15 +250,21 @@ def people_repo(repo: str | None) -> str:
 async def decide(jobs: JobService, job_id: str, approver: Approver,
                  decision: Literal["approve", "reject"], reason: str | None = None) -> Job:
     """Approve or reject a job waiting for approval: `with_logins`, then `decide_now`. `reason` is the decider's
-    words: kept on the decision and told to the requester."""
+    words: kept on the decision and told to the requester. --- KAN-33: with `job.release` in `shadow` or `enforce`
+    (HANGAR_GOVERNANCE) Tower is asked too (govrelease.Releases.decide); the local rule always runs first."""
     job = jobs.get(job_id)
-    return decide_now(jobs, job.id, await with_logins(jobs, approver, job.repo), decision, reason)
+    approver = await with_logins(jobs, approver, job.repo)
+    gate = getattr(jobs, "release_gate", None)
+    if gate is not None and gate.mode("job.release") != "off":
+        return await gate.decide(job.id, approver, decision, reason)
+    return decide_now(jobs, job.id, approver, decision, reason)
 
 
-def decide_now(jobs: JobService, job_id: str, approver: Approver, decision: Literal["approve", "reject"],
-               reason: str | None = None) -> Job:
-    """Raises JobNotFound for a job the principal may not see, JobError when it isn't waiting, ApprovalRefused
-    (audited as `job.<decision>.refused`) when the rule says no."""
+def check(jobs: JobService, job_id: str, approver: Approver, decision: Literal["approve", "reject"]
+          ) -> tuple[Job, Decision]:
+    """The local rule, before anything is recorded (or Tower asked). Raises JobNotFound for a job the principal may
+    not see, JobError when it isn't waiting, ApprovalRefused (audited as `job.<decision>.refused`) when the rule
+    says no."""
     from hangar.jobs import JobError, JobNotFound
     from hangar.models import JobState
 
@@ -272,6 +278,13 @@ def decide_now(jobs: JobService, job_id: str, approver: Approver, decision: Lite
         jobs.admission.refused(f"owner:{approver.actor}", approver.actor, f"job.{decision}.refused", job.id,
                                why=d.why, decided_person=approver.person, self_approved=d.self_approved)
         raise ApprovalRefused(d.why)
+    return job, d
+
+
+def decide_now(jobs: JobService, job_id: str, approver: Approver, decision: Literal["approve", "reject"],
+               reason: str | None = None) -> Job:
+    """`check`, then record the decision: hangar's own rule decides."""
+    job, d = check(jobs, job_id, approver, decision)
     _record(jobs, job, approver, decision, d, (reason or "").strip() or None)
     return job
 
@@ -285,7 +298,8 @@ def _sees(jobs: JobService, approver: Approver, job: Job) -> bool:
 
 
 def _record(jobs: JobService, job: Job, approver: Approver, decision: str, d: Decision,
-            reason: str | None = None) -> None:
+            reason: str | None = None, tower: str | None = None) -> None:
+    """`tower`: Tower's part in it (govrelease), said after the decider's words: "Tower A-123, receipt RC-104"."""
     from hangar.models import JobApproval, JobState, now
     from hangar.triggers import _drop, _github_ref
 
@@ -299,7 +313,7 @@ def _record(jobs: JobService, job: Job, approver: Approver, decision: str, d: De
               "rule": d.rule}
     if reason:
         detail["reason"] = reason[:300]
-    said = f": {reason}" if reason else ""
+    said = (f": {reason}" if reason else "") + (f" ({tower})" if tower else "")
     if decision == "approve":
         jobs._event(job, f"approved by {who}" + (" (self-approved: HANGAR_SELF_APPROVAL=allow_solo)"
                                                   if d.self_approved else "") + said, JobState.QUEUED, reason=None)

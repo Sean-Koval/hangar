@@ -1062,8 +1062,12 @@ class JiraFrontDoor:
 
         if job is None or job.state != JobState.AWAITING_APPROVAL:
             return {"ignored": f"no job is waiting for approval on {ref}"}
+        from hangar.govrelease import ApprovalPending
+
         try:  # --- approvals (#121): never the job's own person or requester
             await approvals.decide(self.jobs, job.id, approvals.from_jira(account, person), word)  # type: ignore[arg-type]
+        except ApprovalPending as e:  # --- KAN-33: Tower took it, and the job still waits (said on the ticket already)
+            return {"ok": True, "waiting": job.id, "reason": str(e)}
         except approvals.ApprovalRefused as e:  # audited by decide; say why on the issue
             self.jobs._spawn(notify(self.jobs, job, ref, f"{person} can't {word} hangar job `{job.id}`: {e}", "note"))
             return {"ignored": str(e)}
