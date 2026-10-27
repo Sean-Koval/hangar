@@ -83,6 +83,11 @@ class EnvRequest(BaseModel):
     decided_at: float | None = None
     note: str | None = None  # the person's note to the agent
     message: str | None = None  # what applying the decision said (egress)
+    # --- KAN-79 (governed.py, spec 0015 §11): Tower's approval it waits on, the receipt of Tower's allow, and what
+    # was asked and answered (mode, Tower's and hangar's answers)
+    workspace_approval: str | None = None
+    receipt: str | None = None
+    governance: dict[str, Any] | None = None
 
     @property
     def target(self) -> str:
@@ -154,6 +159,7 @@ class EnvRequests:
         self._later: set[asyncio.Task] = set()  # status refreshes after a decision (not tied to the request)
         # Called with each new request (an inbox, a Slack DM, ...); must not raise.
         self.listeners: list[Callable[[EnvRequest], None]] = []
+        self.governed: Any = None  # --- KAN-79: governed.Governed, wired by the app; asks Tower per kind
         sessions.env_requests = self
 
     # ------------------------------------------------------------------ reading
@@ -277,6 +283,8 @@ class EnvRequests:
                 self._announce(s, r)
             except Exception:  # noqa: BLE001 - the row is recorded; one failed notice must not drop the others
                 log.warning("could not announce request %s", r.id, exc_info=True)
+            if self.governed is not None:  # --- KAN-79: Tower, per HANGAR_GOVERNANCE for egress / secret.request
+                self.governed.filed(r)
         if new:
             from hangar import envdoctor
 
@@ -338,7 +346,6 @@ class EnvRequests:
         """A person's answer. Only someone who may see the work (its owner, or an admin) answers it; widening an
         egress approval to the whole environment needs egressapi.may_widen."""
         from hangar import identity
-        from hangar.events import RunEvent
 
         r = self.get(rid)  # KeyError for anything this caller may not see
         if r.state != "pending":
@@ -360,8 +367,23 @@ class EnvRequests:
             if not egressapi.may_widen(identity.current.get(), spec):
                 raise identity.Forbidden("approving for the whole environment needs an admin or the environment's "
                                          "owner")
+        if self.governed is not None:  # --- KAN-79: in enforce, a person's approval is a signature Tower judges
+            await self.governed.sign_request(r, approve, actor)
+        return await self.apply(r, approve, actor, note, scope)
+
+    async def apply(self, r: EnvRequest, approve: bool, actor: str, note: str | None = None,
+                    scope: Literal["session", "environment"] | None = None, *, receipt: str | None = None,
+                    approval: str | None = None) -> EnvRequest:
+        """Record a decision already allowed (a person through `decide`, or Tower: governed.py) and apply it."""
+        from hangar.events import RunEvent
+
+        scope = scope or "session"
         r.state, r.scope = ("approved" if approve else "denied"), scope
         r.decided_by, r.decided_at, r.note = actor, now(), note
+        if receipt:  # --- KAN-79
+            r.receipt = receipt
+        if approval:
+            r.workspace_approval = approval
         if r.kind == "egress":
             try:
                 r.message = egressapi.on_decided(r.egress(), self.fleet)
@@ -369,7 +391,8 @@ class EnvRequests:
                 log.warning("egress decision on %s could not be applied", r.id, exc_info=True)
                 r.message = f"the decision is recorded, but applying it failed: {e}"
         self.store.put(r)
-        self.fleet.audit(actor, f"env.request.{r.state}", r.id, kind=r.kind, what=r.target, scope=scope)
+        self.fleet.audit(actor, f"env.request.{r.state}", r.id, kind=r.kind, what=r.target, scope=scope,
+                         **({"receipt": r.receipt} if r.receipt else {}))
         s = self._session(r)
         if s is not None:
             text = f"{actor} {r.state} the request for {r.target}" + (f": {note}" if note else "")

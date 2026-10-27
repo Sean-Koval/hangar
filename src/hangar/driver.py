@@ -13,7 +13,9 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   over, `in/` is renamed away first and `<ctl>/done` written, so a command that comes too late fails to land
   instead of being lost; one that landed before is still carried out (a late steer continues the turn).
 * Tool approvals follow `--approvals`: `auto` runs without prompts (today's behaviour), `ask` waits for hangar's
-  answer and denies after `--approval-timeout` seconds, `deny-risky` answers at once from the rules in `risky()`.
+  answer and denies after `--approval-timeout` seconds, `deny-risky` answers at once from the rules in `risky()`,
+  `governed` (KAN-79) waits like `ask` for the calls `risky()` or the taint gate flag (hangar asks Tower) and allows
+  the rest at once.
 * Pre-cleared calls (KAN-77, spec 0015 §5): a turn that resumes after Tower signed the call it was suspended on
   starts with `--preclear`: `<ctl>/preclear`, signed with the run's key, read and deleted at start, lists
   `(tool, args_hash, receipt)`. The first request whose tool and input hash match is allowed once, by "tower",
@@ -690,8 +692,11 @@ class Driver:
         sink = taint_sink(tool, data, self.write_tools) if self.tainted and policy != "auto" else None
         gate = {"taint": f"{sink}, after reading untrusted content"} if sink else {}
         digest = args_hash(data)  # --- KAN-77: what Tower's receipt and the pre-clear match on
+        # --- KAN-79: under `governed`, the calls hangar's rules flag wait for hangar, which asks Tower; the rest run
+        flag = (risky(tool, data, self.cwd()) or (f"{sink}, after reading untrusted content" if sink else None)
+                if policy == "governed" else None)
         self._approval("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
-                       expires_at=round(expires), args_hash=digest, **gate)
+                       expires_at=round(expires), args_hash=digest, **gate, **({"risky": flag} if flag else {}))
         a = Approval(aid, key, tool, answer, expires)
         if policy != "auto" and own_command(tool, data):  # --- #292: hangar's own hand-back, not the agent's
             return self._answer(a, "allow", "", "policy")
@@ -701,9 +706,11 @@ class Driver:
                 self.preclear.remove(hit)
                 return self._answer(a, "allow", "", "tower", receipt=str(hit.get("receipt") or ""),
                                     approval=str(hit.get("approval") or ""))
-        if policy == "ask":
+        if policy == "ask" or (policy == "governed" and flag):
             self.pending[aid] = a
             return
+        if policy == "governed":  # --- KAN-79: nothing flags it, so Tower isn't asked
+            return self._answer(a, "allow", "", "policy")
         why = risky(tool, data, self.cwd()) if policy == "deny-risky" else None
         if why is None and sink:
             why = f"{sink} after reading untrusted content (a person must allow it: approvals=ask)"
@@ -1603,7 +1610,7 @@ def main(argv: list | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run one agent turn for hangar (see the module docstring).")
     ap.add_argument("--harness", choices=("claude", "codex"), required=True)
     ap.add_argument("--ctl", required=True, help="the run's control directory")
-    ap.add_argument("--approvals", choices=("auto", "ask", "deny-risky"), default="auto")
+    ap.add_argument("--approvals", choices=("auto", "ask", "deny-risky", "governed"), default="auto")
     ap.add_argument("--approval-timeout", type=int, default=600)
     # --- isolation: the uid split
     ap.add_argument("--as", dest="as_user", help="start the harness as this user (the driver runs as hangar's own)")

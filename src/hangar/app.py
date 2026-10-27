@@ -88,6 +88,9 @@ class Hangar:
         from hangar.govevents import Receiver  # --- KAN-77: Tower's events (approvals, run.stop)
 
         self.governance_events = Receiver(self.sessions)
+        from hangar.governed import Governed  # --- KAN-79: approvals=governed, egress and secret requests ask Tower
+
+        self.governed = Governed(self.sessions, self.governance_events, self.env_requests)
         from hangar.backup import Backups, backup_store  # --- overnight/sweep: database backups
 
         self.backups = Backups(self.settings, self.vault, backup_store(self.settings, self.sessions.blobs))

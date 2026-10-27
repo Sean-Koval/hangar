@@ -103,7 +103,8 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     _, prov = svc.fleet._running(sb.id)
     # --- isolation: a driver of its own user where the sandbox allows it; `ask` says so, or refuses, where not
     split = await isolation.ensure(svc.fleet, prov, sb)
-    # --- harden: `required` covers deny-risky too: its rules answer prompts, and the agent could switch those off
+    # --- harden: `required` covers deny-risky too: its rules answer prompts, and the agent could switch those off.
+    # --- KAN-79: and governed: Tower deciding doesn't stop an agent sharing the driver's user forging its answer
     guarded = pol != "auto"
     required = svc.settings.uid_split == "required"
     if guarded and not split:
@@ -485,12 +486,14 @@ def track(turn: SessionTurn, events: list[RunEvent], on_gate: Any = None) -> boo
                 detail = ev.data.get("detail")
                 gate = ev.data.get("taint")  # --- taint (#130)
                 digest = ev.data.get("args_hash")  # --- KAN-77
+                flag = ev.data.get("risky")  # --- KAN-79: why hangar's rules flag it (governed asks Tower)
                 turn.approvals.append(Approval(id=aid, tool=str(ev.data.get("tool") or ""),
                                                detail=detail if isinstance(detail, str) else ev.text.split(": ", 1)[-1],
                                                requested_at=ev.ts,
                                                expires_at=float(exp) if isinstance(exp, int | float) else None,
                                                taint=gate if isinstance(gate, str) else None,
-                                               args_hash=digest if isinstance(digest, str) else None))
+                                               args_hash=digest if isinstance(digest, str) else None,
+                                               risky=flag[:300] if isinstance(flag, str) else None))
                 changed = True
         elif a is not None and a.status == "pending" and ev.data.get("status") in (
                 "allowed", "allowed_always", "denied", "cancelled"):
@@ -551,6 +554,9 @@ async def answer(svc: SessionService, s: Session, approval_id: str, decision: st
         raise KeyError(f"no approval '{approval_id}' in the running turn of session {s.name}")
     if a.status != "pending":
         raise SteerError(f"approval {a.id} was already answered ({a.status} by {a.by})")
+    gov = getattr(svc, "governed", None)  # --- KAN-79: under governed + enforce, Tower judges a person's allow
+    if gov is not None and requester != "tower":
+        await gov.sign_tool(s, t, a, requester, decision)
     ack = await command(svc, s, t, "approve", request=a.id, decision=decision, message=message or "", by=requester)
     if not ack.get("ok"):
         raise SteerError(f"approval {a.id} is no longer open: {ack.get('error')}")

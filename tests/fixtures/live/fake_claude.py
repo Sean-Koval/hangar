@@ -140,12 +140,16 @@ def turn(msg, first):
             end = time.time() + 30
             while not os.path.exists(go) and time.time() < end:
                 wait_for(lambda o: False, 0.1, steers)
-        if "TOOL" in text or "TAINTPUSH" in text:
+        if "TOOL" in text or "TAINTPUSH" in text or "FORCEPUSH" in text or "READFILE" in text:
             tid = f"toolu_{uuid.uuid4().hex[:8]}"
-            cmd = "git push origin HEAD" if "TAINTPUSH" in text else "touch tool-ran.txt"
+            cmd = ("git push origin HEAD" if "TAINTPUSH" in text else "git push --force origin HEAD"
+                   if "FORCEPUSH" in text else "touch tool-ran.txt")
+            # KAN-79: FORCEPUSH is a call hangar's rules flag; READFILE a Read they don't (either: tool-ran.txt)
+            name, tool_input = (("Read", {"file_path": "README.md"}) if "READFILE" in text
+                                else ("Bash", {"command": cmd}))
             emit({"type": "assistant", "session_id": sid, "message": {
                 "id": f"msg_{uuid.uuid4().hex[:8]}", "model": "claude-sonnet-5-5", "role": "assistant",
-                "content": [{"type": "tool_use", "id": tid, "name": "Bash", "input": {"command": cmd}}],
+                "content": [{"type": "tool_use", "id": tid, "name": name, "input": tool_input}],
                 "usage": {"input_tokens": 50, "output_tokens": 10}}})
             usage["in"] += 50
             usage["out"] += 10
@@ -153,7 +157,7 @@ def turn(msg, first):
             if asking:
                 rid = str(uuid.uuid4())
                 emit({"type": "control_request", "request_id": rid, "request": {
-                    "subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": cmd}, "tool_use_id": tid,
+                    "subtype": "can_use_tool", "tool_name": name, "input": tool_input, "tool_use_id": tid,
                     "permission_suggestions": [{"type": "addRules", "rules": [{"toolName": "Bash",
                                                                                "ruleContent": "touch:*"}],
                                                 "behavior": "allow", "destination": "localSettings"}]}})

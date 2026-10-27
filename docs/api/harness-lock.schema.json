@@ -77,7 +77,7 @@
           "properties": {"event": {"type": "string"}, "source": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}}
         }},
         "permissions": {"type": "object", "additionalProperties": false,
-                        "properties": {"approvals": {"type": ["string", "null"], "description": "auto | ask | deny-risky"}}}
+                        "properties": {"approvals": {"type": ["string", "null"], "description": "auto | ask | deny-risky | governed"}}}
       }
     },
     "plugins": {"type": "object", "required": ["autoUpdate"], "additionalProperties": false,

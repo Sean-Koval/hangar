@@ -126,6 +126,7 @@ class Receiver:
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.Task | None = None
         self._pruned = 0.0
+        self.governed: Any = None  # --- KAN-79: governed.Governed: egress and secret requests waiting on Tower
 
     # ================================================================== configuration
     def enabled(self) -> bool:
@@ -220,6 +221,10 @@ class Receiver:
     async def hint(self, aid: str, by: Any = None) -> dict[str, Any]:
         """Something about approval `aid` changed (an event, or the poll): re-read it from Tower and act on that."""
         sid = self.store.kv_get(WAIT + aid)
+        if sid is None and self.governed is not None:  # --- KAN-79: an egress or secret request waits on it?
+            async with self._locks[aid]:
+                if (out := await self.governed.hint(aid)) is not None:
+                    return out
         if sid is None:
             self.store.kv_set(EARLY + aid, repr(self.clock()))
             return {"ignored": f"nothing in hangar waits on {aid} (yet)"}
@@ -471,6 +476,11 @@ class Receiver:
                 log.info("governance: %s: %s", aid, e)
             except Exception:  # noqa: BLE001 - one wait must not stop the others
                 log.exception("governance: following %s failed", aid)
+        if self.governed is not None:  # --- KAN-79: requests waiting on Tower, and ones it couldn't answer
+            try:
+                await self.governed.tick_requests(t)
+            except Exception:  # noqa: BLE001
+                log.exception("governance: following requests failed")
         if t - self._pruned > 600:
             self._pruned = t
             self.seen.prune()
@@ -525,6 +535,8 @@ class Receiver:
                 await task
         self._tasks.clear()
         self._loop = None
+        if self.governed is not None:  # --- KAN-79
+            await self.governed.stop()
         if isinstance(self._tower, HttpDecisionPoint):
             await self._tower.close()
 

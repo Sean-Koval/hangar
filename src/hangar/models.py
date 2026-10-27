@@ -711,8 +711,9 @@ SESSION_LIVE = {SessionState.STARTING, SessionState.IDLE, SessionState.RUNNING}
 
 # --- workstream steer: live turns. How tool permission prompts are answered: auto = no prompts (the harness runs
 # with its permission checks off, as before), ask = a person answers (denied after HANGAR_APPROVAL_TIMEOUT_SECONDS),
-# deny-risky = hangar answers at once, refusing what its rules call risky (driver.risky).
-ApprovalPolicy = Literal["auto", "ask", "deny-risky"]
+# deny-risky = hangar answers at once, refusing what its rules call risky (driver.risky). --- KAN-79: governed = the
+# calls hangar's rules flag (driver.risky, taint_sink) ask Tower (governed.py, spec 0015), the rest run at once.
+ApprovalPolicy = Literal["auto", "ask", "deny-risky", "governed"]
 CachePolicy = Literal["auto", "5m", "1h", "off"]  # --- overnight/cache (cache.py)
 
 
@@ -734,6 +735,10 @@ class Approval(BaseModel):
     args_hash: str | None = None
     workspace_approval: str | None = None
     receipt: str | None = None
+    # --- KAN-79: under `governed`, why hangar's rules flag the call (driver.risky / taint_sink), and what was asked:
+    # {mode, decided_by, outcome, reason, rule, failure, local: {...}, tower: {...}} (governed.record)
+    risky: str | None = None
+    governance: dict[str, Any] | None = None
 
 
 class Steer(BaseModel):

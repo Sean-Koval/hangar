@@ -49,12 +49,13 @@ The policy is set per session (`approvals` on `new_session`, `--approvals`), per
 | `auto` (default) | Nothing is asked. The harness runs with its permission checks off, as before. |
 | `ask` | The agent waits. The request shows as `pending_approvals` on the session and its job, and as an `approval_request` event. Anyone with access answers `allow`, `deny` or `allow_always`. Unanswered after `HANGAR_APPROVAL_TIMEOUT_SECONDS` (default 600), it is denied. |
 | `deny-risky` | hangar answers at once. It denies force-pushes and remote branch deletion, `sudo`/`su`, piping a download into a shell, recursive deletes of the working tree or anything outside it, system commands (`mkfs`, `dd of=/dev/…`, `shutdown`), reading or writing credentials and hangar's files (`~/.ssh`, `.git-credentials`, `~/.hangar`, `/proc/*/environ` and `mem`) except the turn's own `$HANGAR_IO`, and file writes outside the repository and `$HANGAR_IO`. It allows everything else. The rules are a guard rail against mistakes, not a sandbox: paths are resolved against the turn's directory, so `cd /elsewhere && rm -r x` gets past them. |
+| `governed` | The `deny-risky` rules and the taint gate sort the calls. What they flag waits while [Tower decides](governed-approvals.md); the rest runs at once. |
 
 - **Deny:** the agent sees the denial, with your message if you gave one, and carries on: the turn does not fail.
 - **`allow_always`:** also allows calls like this one for the rest of the turn. For Claude Code these are the CLI's own suggestions with destination `session`; for Codex it is `acceptForSession`. Both live in the agent's running process: nothing is written to the repository's or the user's settings, and the next turn asks again (verified with both CLIs).
-- **hangar's own hand-back commands are not asked about:** under `ask` and `deny-risky`, a shell call that is exactly `hangar-agent done`, `progress`, `ask` or `result '<json>'` (one simple command: nothing chained with `;`, `&&` or `|`, no redirection, no `$(...)` or backquotes) is allowed by the policy at once, recorded as an approval resolved `by: policy`. These only write the turn's files under `$HANGAR_IO`. `hangar-agent artifact`, `result @FILE`, `env`, `svc` and the computer commands, and anything chained to an allowed one (`hangar-agent done ok; rm -rf ~`), still ask.
+- **hangar's own hand-back commands are not asked about:** under every policy but `auto`, a shell call that is exactly `hangar-agent done`, `progress`, `ask` or `result '<json>'` (one simple command: nothing chained with `;`, `&&` or `|`, no redirection, no `$(...)` or backquotes) is allowed by the policy at once, recorded as an approval resolved `by: policy`. These only write the turn's files under `$HANGAR_IO`. `hangar-agent artifact`, `result @FILE`, `env`, `svc` and the computer commands, and anything chained to an allowed one (`hangar-agent done ok; rm -rf ~`), still ask.
 - **What you are shown** is the whole command, up to 2,000 characters. A longer one shows both ends with the cut marked ("[…N characters not shown…]"); deny what you can't see.
-- **No prompts:** `ask` and `deny-risky` need a live turn. A session on pi or Antigravity with one of these policies fails its turn with a clear message rather than run with checks off. So does a sandbox without `python3` (3.8 or later, with `ctypes`), which the driver needs. The one repair run that asks for a missing structured result is skipped under these policies, for the same reason.
+- **No prompts:** every policy but `auto` needs a live turn. A session on pi or Antigravity with one fails its turn rather than run with checks off. So does a sandbox without `python3` (3.8 or later, with `ctypes`), which the driver needs. The one repair run that asks for a missing structured result is skipped under these policies, for the same reason.
 
 ### Answering from an MCP client
 
@@ -126,7 +127,7 @@ The turn still runs in tmux, so `hangar sb attach` and the run log work as befor
   - The driver writes the stream to the run log unchanged, except that each `result` carries the process's token totals, as its cost already does.
 - **Codex:** `codex app-server`, JSON-RPC over stdio.
   - The driver runs `thread/start`, `thread/resume` or `thread/fork` and `turn/start`; steers use `turn/steer`, interrupts `turn/interrupt`.
-  - `approvalPolicy` is `untrusted` under `ask` and `deny-risky`, `never` under `auto`. The sandbox mode is `danger-full-access`, as before.
+  - `approvalPolicy` is `untrusted`, or `never` under `auto`. The sandbox mode is `danger-full-access`, as before.
   - The driver translates notifications into `codex exec --json` lines, so event parsing, usage and conversation capture work as they did.
 
 **Commands.** hangar writes each command to `~/.hangar/runs/<run>.ctl/`, moves it into `in/` and reads the driver's answer from `acks`. Each command, and each answer, is signed (HMAC-SHA256) with a key made for that run. hangar keeps the key encrypted in its database. The driver reads its copy and deletes it before the agent starts. Unsigned, replayed and malformed commands are refused, and hangar ignores answers the driver didn't sign. The driver runs with `python3 -I` (nothing the agent can write, such as a module beside the driver or `PYTHONPATH`, is loaded into it), and makes itself non-dumpable before it reads the key: the agent runs as the same user, and without that it could read the key out of `/proc/<driver>/mem` (it could, in this repo's Docker sandboxes, which have no Yama ptrace restriction).
@@ -222,9 +223,9 @@ Nothing is built into images, so existing environments get the split without a r
 - **E2B.** Its envd can run commands as another user, but this isn't wired up.
 - **`HANGAR_UID_SPLIT=off`.**
 
-An `ask` or `deny-risky` turn in a single-user sandbox carries a warning on the turn. The warning says what isn't protected: code the person allows can change the harness's settings, environment and binary so later turns don't ask, and can fake the run log, approval requests and exit status hangar reads. With `HANGAR_UID_SPLIT=required` the turn fails instead, saying why. The same applies when the sandbox is split but hangar can't own the harness's settings there.
+A turn under any policy but `auto` in a single-user sandbox carries a warning. The warning says what isn't protected: code the person allows can change the harness's settings, environment and binary so later turns don't ask, and can fake the run log, approval requests and exit status hangar reads. With `HANGAR_UID_SPLIT=required` the turn fails instead, saying why. The same applies when the sandbox is split but hangar can't own the harness's settings there.
 
-`required` covers `deny-risky` as well as `ask`. Its rules answer the harness's prompts, so an agent that can switch the prompts off, or answer for the driver, gets past them just as it would get past a person. `auto` turns have no approvals to protect and run either way.
+`required` covers `deny-risky` and `governed` as well as `ask`. An agent that can switch the prompts off, or answer for the driver, gets past rules and Tower as it would get past a person. `auto` turns run either way.
 
 **What the split doesn't cover.**
 
