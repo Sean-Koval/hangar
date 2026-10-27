@@ -30,10 +30,12 @@ if ((${#py[@]})); then
 fi
 
 if ((full)); then
-  mapfile -t tests < <(python3 scripts/ci/select_tests.py --all)
+  select=(--all)
 else
-  mapfile -t tests < <(python3 scripts/ci/select_tests.py --base "$base" --budget "${VERIFY_BUDGET:-600}")
+  select=(--base "$base" --budget "${VERIFY_BUDGET:-600}")
 fi
+# Only non-empty lines: one empty path would send pytest the whole suite.
+mapfile -t tests < <(python3 scripts/ci/select_tests.py "${select[@]}" | grep . || true)
 if ((${#tests[@]} == 0)); then
   echo "verify: no tests selected for this change"
   exit 0

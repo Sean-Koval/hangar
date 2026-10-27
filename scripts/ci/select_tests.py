@@ -369,7 +369,8 @@ def main(argv: list[str] | None = None) -> int:
         durations = json.loads(DURATIONS.read_text()) if DURATIONS.exists() else {}
         files = shard(files, int(index), int(count), durations)
     print(f"{len(files)} of {len(graph.tests)} test files selected", file=sys.stderr)
-    print("\n".join(files))
+    if files:  # --- KAN-138: nothing, not an empty line, which `mapfile` reads as one empty path (the whole suite)
+        print("\n".join(files))
     return 0
 
 
