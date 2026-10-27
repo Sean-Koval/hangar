@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # --- scale: the share of an environment's `cpus` a sandbox pod requests; its limit stays `cpus`. 1 = Guaranteed
     # (each sandbox reserves every core it may use); 0.5 packs twice as many mostly-idle agents per node.
     k8s_cpu_request_fraction: float = Field(0.5, gt=0, le=1)
+    # --- KAN-83: a prototype. Adds a `hangar-driver` container to each sandbox pod, as a uid of its own, in a PID
+    # namespace of its own, with a control volume the agent's container doesn't mount (docs/security/driver-sidecar.md).
+    # Turns don't use it yet: HANGAR_UID_SPLIT=required still refuses `ask` and `deny-risky` turns on Kubernetes.
+    k8s_driver_sidecar: bool = False
 
     # e2b
     e2b_api_key: str | None = None

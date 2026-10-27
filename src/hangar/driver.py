@@ -23,6 +23,9 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   or trace it. Approval requests and answers also go to `<ctl>/approvals`, which only hangar's user can write: hangar
   reads a split turn's approvals from there, not from the log the harness writes into (--- harden). `--base-env`
   replaces the agent's ~/.hangar/env with hangar's own copy (hangar/harden.py).
+* With `--relay` (the driver sidecar on Kubernetes, KAN-83; a prototype) the driver runs in a container of its own and
+  the harness in the agent's, started by relay.py, which connects back on the pod's loopback with the run's token
+  (`Relay`, `RemoteProc`; docs/security/driver-sidecar.md). The verify gate doesn't run there yet.
 
 * Trees (#165): at the turn's start and end, and after each edit or shell tool result, the driver writes the working
   tree's git tree id as a `hangar.tree` line (only when it changed since the last one): `git add -A` and
@@ -36,6 +39,7 @@ Exit status: the harness's own, 1 when its last turn failed, 130 after an interr
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -47,6 +51,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -224,12 +229,17 @@ LAUNCH = ('if [ -n "${HANGAR_ENV_FD:-}" ]; then __hangar_env=; IFS= read -r -d "
           'set +a; unset HANGAR_AGENT_PATH __hangar_env; cd -- "$2" || exit 1; shift 2; exec "$@"')
 
 
+def agent_launch(user: str, home: str, run_env: str, cwd: str, argv: list) -> list:
+    """`argv` in `user`'s environment (home `home`), from `cwd`: what runs once the process is the agent's."""
+    return ["env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}", "bash", "-c", LAUNCH, "hangar-agent", run_env,
+            cwd, *argv]
+
+
 def as_agent(user: str, home: str, run_env: str, cwd: str, argv: list) -> list:
     """`argv` run as `user` (home `home`), with no capabilities, from `cwd`, in that user's environment. Also used,
     joined, for the one-shot command in the turn's script."""
     return ["setpriv", f"--reuid={user}", f"--regid={user}", "--init-groups", "--inh-caps=-all", "--ambient-caps=-all",
-            "--no-new-privs", "--", "env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}", "bash", "-c", LAUNCH,
-            "hangar-agent", run_env, cwd, *argv]
+            "--no-new-privs", "--", *agent_launch(user, home, run_env, cwd, argv)]
 
 
 BASE_ENV: bytes | None = None  # --- harden: --base-env, read once at start and deleted (like the key)
@@ -610,6 +620,7 @@ class Driver:
         self.args, self.out, self.ctl = args, out, ctl
         self.pending: dict = {}
         self.harness: Harness | None = None
+        self.relay: Relay | None = None  # --- KAN-83: the driver sidecar
         self.unanswered: set = set()  # commands taken whose outcome isn't known yet
         self.tainted = bool(getattr(args, "tainted", False))  # --- taint (#130): only ever set
         self.write_tools = list(getattr(args, "write_tool", None) or [])
@@ -734,16 +745,194 @@ class Driver:
         h.interrupt(text or None, interrupted)
 
 
+# ====================================================================== the driver sidecar (--- KAN-83)
+# On Kubernetes the agent's container can't hold a second user, so the driver runs in a container of its own
+# (docs/security/driver-sidecar.md): its own uid, its own PID namespace, its control files on a volume the agent's
+# container doesn't mount. It can't start the harness there itself. Hangar starts relay.py in the agent's container,
+# as the agent, with a one-run token on its stdin; the relay connects back on the pod's loopback, twice (`io`, the
+# harness's stdin and stdout; `ctl`, its stderr, exit status and signals), and starts what the driver sends it.
+RELAY_HELLO = "hangar-relay"
+RELAY_WAIT = 60.0  # seconds the driver waits for the relay to connect
+RELAY_LOST = 1  # the harness's exit status when its relay went away without reporting one
+
+
+class RelayError(RuntimeError):
+    pass
+
+
+class _SockWriter:
+    """The harness's stdin, as Harness uses a pipe's: closing it is end of input (a half-close)."""
+
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+
+    def write(self, data: bytes) -> None:
+        self.sock.sendall(data)
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        with contextlib.suppress(OSError):
+            self.sock.shutdown(socket.SHUT_WR)
+
+
+class _SockReader:
+    def __init__(self, sock: socket.socket):
+        self.sock = sock
+
+    def fileno(self) -> int:
+        return self.sock.fileno()
+
+
+class RemoteProc:
+    """The harness behind its relay, with the parts of Popen that Harness uses."""
+
+    def __init__(self, io: socket.socket, ctl: socket.socket):
+        self.io, self.ctl = io, ctl
+        self.stdin, self.stdout = _SockWriter(io), _SockReader(io)
+        self.returncode: int | None = None
+        self.buf = b""
+
+    def _pump(self, timeout: float) -> None:
+        """Read what the relay said within `timeout`, then whatever else is already there."""
+        while self.returncode is None:
+            ready, _, _ = select.select([self.ctl], [], [], timeout)
+            if not ready:
+                return
+            timeout = 0
+            try:
+                data = self.ctl.recv(1 << 16)
+            except OSError:
+                data = b""
+            if not data:
+                sys.stderr.write("hangar: the harness's relay went away without its exit status\n")
+                self.returncode = RELAY_LOST
+                return
+            self.buf += data
+            while b"\n" in self.buf and self.returncode is None:
+                line, self.buf = self.buf.split(b"\n", 1)
+                word, _, rest = line.partition(b" ")
+                if word == b"err":
+                    with contextlib.suppress(ValueError, OSError):
+                        sys.stderr.buffer.write(base64.b64decode(rest))
+                        sys.stderr.flush()
+                elif word == b"exit":
+                    try:
+                        self.returncode = int(rest)
+                    except ValueError:
+                        self.returncode = RELAY_LOST
+
+    def poll(self) -> int | None:
+        self._pump(0)
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        end = None if timeout is None else time.time() + timeout
+        while self.returncode is None:
+            left = 1.0 if end is None else end - time.time()
+            if left <= 0:
+                raise subprocess.TimeoutExpired("harness", timeout or 0)
+            self._pump(min(left, 1.0))
+        return self.returncode
+
+    def _say(self, word: str) -> None:
+        with contextlib.suppress(OSError):
+            self.ctl.sendall(word.encode() + b"\n")
+
+    def terminate(self) -> None:
+        self._say("term")
+
+    def kill(self) -> None:
+        self._say("kill")
+
+
+class Relay:
+    """The driver's end: a listener on 127.0.0.1, its port in a file the relay reads. The first `io` and `ctl`
+    connections that say the run's token are the harness's; then the listener closes. Anything else that connects
+    (the agent can reach the pod's loopback) is dropped: without the token it can't pass as the harness."""
+
+    def __init__(self, portfile: str, token: bytes):
+        self.portfile, self.token = portfile, token
+        self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.lsock.bind(("127.0.0.1", 0))
+        self.lsock.listen(8)
+        tmp = f"{portfile}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            f.write(f"{self.lsock.getsockname()[1]}\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, portfile)
+
+    def _hello(self, conn: socket.socket) -> str | None:
+        conn.settimeout(5)
+        line = b""
+        try:
+            while b"\n" not in line and len(line) < 256:
+                chunk = conn.recv(256 - len(line))
+                if not chunk:
+                    return None
+                line += chunk
+        except OSError:
+            return None
+        words = line.split(b"\n", 1)[0].decode(errors="replace").split()
+        if len(words) != 3 or words[0] != RELAY_HELLO or words[1] not in ("io", "ctl"):
+            return None
+        if not hmac.compare_digest(words[2].encode(), self.token):
+            return None
+        conn.settimeout(None)
+        return words[1]
+
+    def close(self) -> None:
+        with contextlib.suppress(OSError):
+            self.lsock.close()
+        with contextlib.suppress(OSError):
+            os.unlink(self.portfile)
+
+    def start(self, argv: list, base_env: bytes | None, wait: float = RELAY_WAIT) -> RemoteProc:
+        """Wait for the relay, hand it what to start, and return the harness."""
+        conns: dict = {}
+        deadline = time.time() + wait
+        try:
+            while len(conns) < 2:
+                left = deadline - time.time()
+                if left <= 0:
+                    raise RelayError(f"the harness's relay didn't connect within {int(wait)} s")
+                ready, _, _ = select.select([self.lsock], [], [], left)
+                if not ready:
+                    continue
+                conn, _ = self.lsock.accept()
+                role = self._hello(conn)
+                if role is None or role in conns:
+                    conn.close()
+                    continue
+                conns[role] = conn
+            spec = {"argv": argv, "base_env": base64.b64encode(base_env).decode() if base_env is not None else None}
+            conns["ctl"].sendall(json.dumps(spec).encode() + b"\n")
+        except BaseException:
+            for c in conns.values():
+                c.close()
+            raise
+        finally:
+            self.close()
+        return RemoteProc(conns["io"], conns["ctl"])
+
+
 # ====================================================================== harnesses
 class Harness:
     """A harness process speaking JSON lines on stdin/stdout. Adapters implement the protocol."""
 
     def __init__(self, drv: Driver, argv: list):
         self.drv, self.out = drv, drv.out
-        if user := getattr(drv.args, "as_user", None):  # --- isolation
-            argv = as_agent(user, pwd.getpwnam(user).pw_dir, drv.args.run_env, drv.cwd(), argv)
-        with agent_env() as kw:  # --- harden
-            self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, **kw)
+        self.proc: subprocess.Popen | RemoteProc
+        if drv.relay is not None:  # --- KAN-83: the driver sidecar: the harness starts in the agent's container
+            a = drv.args
+            argv = agent_launch(a.agent, a.agent_home or f"/home/{a.agent}", a.run_env, drv.cwd(), argv)
+            self.proc = drv.relay.start(argv, BASE_ENV)
+        else:
+            if user := getattr(drv.args, "as_user", None):  # --- isolation
+                argv = as_agent(user, pwd.getpwnam(user).pw_dir, drv.args.run_env, drv.cwd(), argv)
+            with agent_env() as kw:  # --- harden
+                self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, **kw)
         self.buf = b""
         self.stop_after_interrupt = False  # an interrupt without a new message: exit 130 once the turn stops
 
@@ -1381,6 +1570,12 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--tainted", action="store_true", help="the turn starts having read untrusted content (#130)")
     ap.add_argument("--write-tool", action="append", default=[],
                     help="an MCP tool (fnmatch pattern) that writes: needs a person once tainted (#130)")
+    # --- KAN-83: the driver sidecar
+    ap.add_argument("--relay", help="the harness starts in the agent's container through relay.py, which connects to "
+                                    "the port this file is given; its token is <ctl>/relay-token, read and deleted "
+                                    "at start")
+    ap.add_argument("--agent", help="with --relay: the agent's user")
+    ap.add_argument("--agent-home", help="with --relay: the agent's home (default /home/<agent>)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="-- the harness command")
     args = ap.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -1388,13 +1583,16 @@ def main(argv: list | None = None) -> int:
         ap.error("the harness command is missing")
     if args.as_user and not args.run_env:  # --- isolation
         ap.error("--as needs --run-env")
-    if args.base_env and not args.as_user:  # --- harden
-        ap.error("--base-env needs --as")
+    if args.relay and (args.as_user or not args.run_env or not args.agent):  # --- KAN-83
+        ap.error("--relay needs --agent and --run-env, and not --as (the harness starts in another container)")
+    if args.base_env and not (args.as_user or args.relay):  # --- harden
+        ap.error("--base-env needs --as or --relay")
+    token_file = os.path.join(args.ctl, "relay-token")
     why = private()  # before the key is read
     if why and args.approvals != "auto":  # deny by default: the agent could answer its own approvals
         sys.stderr.write(f"hangar: approvals={args.approvals} needs the turn driver to keep its key from the agent, "
                          f"and it could not (prctl PR_SET_DUMPABLE: {why})\n")
-        for path in (os.path.join(args.ctl, "key"), args.base_env):
+        for path in (os.path.join(args.ctl, "key"), token_file, args.base_env):
             try:
                 os.unlink(path or "")
             except OSError:
@@ -1412,7 +1610,24 @@ def main(argv: list | None = None) -> int:
         prompt = f.read()
     out, ctl = Out(), Control(args.ctl)
     drv = Driver(args, out, ctl)
-    h: Harness = (Claude if args.harness == "claude" else Codex)(drv, command)
+    if args.relay:  # --- KAN-83: like the key, the relay's token is in memory only from here on
+        try:
+            with open(token_file, "rb") as f:
+                token = f.read().strip()
+            os.unlink(token_file)
+        except OSError:
+            token = b""
+        if not token:
+            sys.stderr.write("hangar: --relay needs the relay's token in <ctl>/relay-token\n")
+            ctl.finish()
+            return 1
+        drv.relay = Relay(args.relay, token)
+    try:
+        h: Harness = (Claude if args.harness == "claude" else Codex)(drv, command)
+    except RelayError as e:
+        sys.stderr.write(f"hangar: {e}\n")
+        ctl.finish()
+        return 1
     drv.harness = h
 
     def stop(signum: int, _frame: object) -> None:
@@ -1424,6 +1639,10 @@ def main(argv: list | None = None) -> int:
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, stop)
     gate = Gate.load(out, args)  # --- overnight/autofix
+    if gate is not None and args.relay:  # --- KAN-83: the check is the agent's code; it would run as the driver's uid
+        sys.stderr.write("hangar: the verify gate doesn't run under the driver sidecar yet; hangar's verify still "
+                         "runs after the turn\n")
+        gate = None
     drv.trees.point("start")  # --- #165: the harness is up but has no prompt yet: nothing has changed the tree
     h.start(prompt)
     alive = True

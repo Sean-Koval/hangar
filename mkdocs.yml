@@ -199,6 +199,7 @@ nav:
           - Front-door security: security/front-doors.md
           - People and OAuth connectors: security/people.md
           - Sealed graders: security/graders.md
+          - The driver sidecar on GKE: security/driver-sidecar.md
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md
