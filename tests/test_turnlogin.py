@@ -144,3 +144,38 @@ def test_the_login_question_answers_before_a_session_starts(settings):
         assert ask(harness="codex")["login"] is False
         assert c.get("/api/credentials/login", params={"environment": "nope"}, headers=ADMIN_H).status_code == 404
         assert c.get("/api/credentials/login", params={"environment": "agent"}).status_code == 401
+
+
+# ---------------------------------------------------------------------------- --- KAN-178: a login the vendor refused
+async def test_a_job_whose_login_the_vendor_refused_fails_as_a_credential_to_renew(jobs, world, broker,  # noqa: F811
+                                                                                     monkeypatch):
+    """job-7339173d: codex couldn't refresh its ChatGPT login and failed the turn with a 401, recorded as the
+    agent's failure while the credential's health said ok."""
+    from hangar import credhealth
+    from hangar.models import Credential
+
+    _needs_key(monkeypatch)
+    script = world["root"] / "refused.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        "echo 'ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed."
+        " Please log out and sign in again.' >&2\n"
+        "echo '{\"type\": \"turn.failed\", \"error\": {\"message\": \"workspace routing discovery unauthorized "
+        "(401)\"}}'\n"
+        "exit 1\n")
+    monkeypatch.setitem(HARNESSES, "xagent", HARNESSES["xagent"].model_copy(update={"run": f"bash {script}"}))
+    broker.put("xlogin", "xagent", CredentialKind.API_KEY, "xk-0123456789abcdef", team=True)
+    (world["envs"] / "xenv.yaml").write_text("name: xenv\nharnesses: [xagent]\ncredentials: [xlogin]\n")
+    jobs.fleet.catalog.reload()
+    job = jobs.submit(SubmitJob(instructions="hello", repo=world["url"], environment="xenv", deliver="none"),
+                      Caller("admin", "admin"))
+    job = await _until(jobs, job.id, {JobState.FAILED, JobState.SUCCEEDED})
+    while job.id in jobs._active:
+        await asyncio.sleep(0.05)
+    job = jobs.get(job.id)
+    assert job.state == JobState.FAILED and job.reason == "login_rejected", [e.message for e in job.events]
+    assert job.result.outcome_class == "infra_error" and job.result.infra_reason == "login_rejected"
+    assert any(e.message.startswith(credhealth.REFUSED_PREFIXES) and "xlogin needs renewing" in e.message
+               for e in job.events)
+    c = jobs.store.get(Credential, "xlogin")
+    assert c.health["status"] == "fail" and c.health["method"] == credhealth.REFUSED_METHOD

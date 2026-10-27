@@ -63,3 +63,12 @@ instead.
 A job's sandbox keeps its login while it is kept for follow-ups (`keep_minutes`, 120 by default). So a login stays busy
 for up to that long after each job. `keep_minutes: 0` releases it when the turn ends; follow-ups still resume from the
 checkpoint. To run many Codex jobs in parallel, use an OpenAI API key, which has no lease.
+
+### When a Codex login stops working
+
+Each refresh rotates the refresh token. So store a login nothing else uses: a copy of your laptop's
+`~/.codex/auth.json` dies when Codex on the laptop refreshes it.
+
+A turn whose refresh OpenAI refuses fails as `infra_error` / `login_rejected`. The job names the credential, and its
+health stays failed until it is stored again. Sign in again from the console's Credentials page, under the same
+name. Storing it ends any lease on the old login, so the old file is never written back.

@@ -9,11 +9,17 @@ session that just stops. So each credential an agent uses gets a check that cost
 * **Codex, ChatGPT logins** (`auth_file`): `codex login status`, which "exits with 0 when credentials are present"
   (learn.chatgpt.com/docs/developer-commands, codex login). It runs in the login's own sandbox when one is captured;
   where hangar runs no codex binary, the same question is answered from the file: an API key, or ChatGPT tokens with
-  a refresh token. Codex refreshes those itself while it is used, so there is no fixed expiry to record.
+  a refresh token. Codex refreshes those itself while it is used, so there is no fixed expiry to record. The file
+  can't say whether OpenAI still takes its refresh token (each refresh rotates it, so a copy of a login used
+  elsewhere dies silently): a run whose refresh OpenAI refuses marks the login failed (`login_rejected`, below).
 * **Google service-account keys** (Vertex AI for pi and Antigravity, `generic` key files): gcloud, in a config
   directory of its own: `gcloud auth activate-service-account --key-file`, then `gcloud auth print-access-token`
   (Google refuses a deleted or disabled key; the token is thrown away), then, where the key may see it,
   `gcloud iam service-accounts keys list` for the key's `validBeforeTime`.
+
+--- KAN-178: a turn the vendor refused the login of (outcomes.login_rejected: Codex couldn't refresh, a 401) marks
+the sandbox's login for that harness failed, with how to log in again (`login_rejected`). No file check turns that
+back to ok: only storing the credential again (or a sandbox writing a refreshed login back) does.
 
 Each check records `health`, `last_ok` and `expires_at` on the credential. Checks run when a login is captured,
 every night (the ops loop), and from `hangar status`. Anything that stops working, or expires within WARN_DAYS, is
@@ -79,6 +85,10 @@ def _by_expiry(ok: str, expires_at: float | None, renew: str, method: str) -> Re
         return Result("warn", f"expires on {_day(expires_at)}, in {max(1, int(-(-left // 86400)))} day(s). {renew}",
                       expires_at, method)
     return Result("ok", f"{ok}; good until {_day(expires_at)}", expires_at, method)
+
+
+REFUSED_METHOD = "a run's login, refused by the vendor"  # --- KAN-178
+REFUSED_PREFIXES = ("login refused by the vendor", "the vendor refused")  # how refused_line's lines start
 
 
 def has_check(c: Credential) -> bool:
@@ -266,6 +276,8 @@ async def check_all(fleet: Fleet, by: str, max_age: float | None = None, names: 
             cur = fleet.store.get(Credential, c.name)  # --- review: as it is when its value is read
             if cur is None:
                 return None
+            if (kept := refused(cur)) is not None:  # --- KAN-178: the vendor said no; the file can't say otherwise
+                return {"name": c.name, **kept._asdict()}
             value = await asyncio.to_thread(fleet.broker.vault.get, f"cred:{c.name}")
             res = await check(cur, value, gcloud)
         if res is None:
@@ -298,6 +310,61 @@ async def on_capture(fleet: Fleet, cred: Credential, sandbox_id: str) -> None:
             record(fleet.store, cred.name, res, "capture")
     except Exception:  # noqa: BLE001 - the login is stored either way; the nightly check looks again
         log.warning("checking the captured login %s failed", cred.name, exc_info=True)
+
+
+# ====================================================================== --- KAN-178: refused by the vendor
+def refused(c: Credential) -> Result | None:
+    """The run's refusal recorded on `c`, while its value is still the one refused; None otherwise."""
+    h = c.health or {}
+    if h.get("status") != "fail" or h.get("method") != REFUSED_METHOD:
+        return None
+    if float(h.get("checked_at") or 0) < (c.updated_at or 0):  # stored again (or written back) since
+        return None
+    return Result("fail", str(h.get("detail") or ""), c.expires_at, REFUSED_METHOD)
+
+
+def renew(c: Credential) -> str:
+    """What to do about a login the vendor refused: its first sentence names the credential and the fix."""
+    if c.harness == "codex" and c.kind == CredentialKind.AUTH_FILE:
+        return (f"{c.name} needs a fresh `codex login`; re-store the credential. Sign in again from the console's "
+                f"Credentials page (Sign in to Codex, saved as {c.name}), or run `codex login --device-auth` with a "
+                f"CODEX_HOME of its own and store that file: hangar cred add {c.name} --harness codex --kind "
+                "auth_file --file $CODEX_HOME/auth.json. Don't keep using that auth.json anywhere else: each "
+                "refresh rotates its refresh token, and the other copy stops working.")
+    if c.harness == "claude-code" and c.kind == CredentialKind.OAUTH_TOKEN:
+        return (f"{c.name} needs a new token; re-store the credential: claude setup-token | hangar cred add "
+                f"{c.name} --harness claude-code --kind oauth_token")
+    return (f"{c.name} needs renewing; re-store the credential: hangar cred add {c.name} --harness {c.harness} "
+            f"--kind {c.kind.value} --file <file>")
+
+
+def _for(store: Store, names: list[str], harness: str | None) -> list[Credential]:
+    out = []
+    for n in names:
+        c = store.get(Credential, n)
+        if c is not None and harness and c.harness == harness and c.kind in (
+                CredentialKind.AUTH_FILE, CredentialKind.OAUTH_TOKEN, CredentialKind.API_KEY):
+            out.append(c)
+    return out
+
+
+def login_rejected(store: Store, names: list[str], harness: str | None, run_id: str | None) -> str:
+    """A turn's harness had its login refused (outcomes.login_rejected): mark the sandbox's login(s) for it failed,
+    and return the line a job or session shows. `names`: the sandbox's credentials."""
+    when = datetime.fromtimestamp(now(), UTC).strftime("%Y-%m-%d %H:%M UTC")
+    for c in _for(store, names, harness):
+        detail = f"the vendor refused this login in run {run_id or '?'} ({when}). {renew(c)}"
+        record(store, c.name, Result("fail", detail[:1000], None, REFUSED_METHOD), f"run:{run_id or '?'}")
+    return refused_line(store, names, harness)
+
+
+def refused_line(store: Store, names: list[str], harness: str | None) -> str:
+    """The line for a turn whose login was refused: the credential and how to renew it."""
+    creds = _for(store, names, harness)
+    if not creds:
+        return (f"the vendor refused {harness or 'the harness'}'s login (not the agent's failure): log in again "
+                "and store the credential again")
+    return "login refused by the vendor (not the agent's failure): " + " ".join(renew(c) for c in creds)
 
 
 # ====================================================================== what needs someone

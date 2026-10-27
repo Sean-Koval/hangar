@@ -284,7 +284,8 @@ class JobEvent(BaseModel):
 OutcomeClass = Literal["agent", "infra_error", "cancelled", "human"]
 InfraReason = Literal["preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint",
                       "control_plane_restart", "drift",  # --- #178: drift: a trial's turn 1 didn't run its pin set
-                      "no_login"]  # --- #293: the turn's harness had no login, so hangar didn't start it
+                      "no_login",  # --- #293: the turn's harness had no login, so hangar didn't start it
+                      "login_rejected"]  # --- KAN-178: the vendor refused the turn's login (credhealth.login_rejected)
 
 
 # --- #162: what a person's steer was, so a harness is judged only on the steers it made necessary. `correction`:

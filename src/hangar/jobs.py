@@ -49,6 +49,7 @@ from hangar import canaries as canaries  # --- #184: injection canaries in shado
 from hangar import changesets as changesets  # --- change sets: one ticket across several repos (changesets.py)
 from hangar import clouddoctor as clouddoctor  # --- clouddoctor: its own jobs report back; its fixes are fenced
 from hangar import computer as computer  # --- computer
+from hangar import credhealth as credhealth  # --- KAN-178: a turn whose login the vendor refused
 from hangar import delivery as delivery  # --- least-privilege: hangar pushes a job's work
 from hangar import envbuilds as envbuilds  # --- envbuilds
 from hangar import envdoctor as envdoctor  # --- computer
@@ -1283,6 +1284,8 @@ class JobService:
                          + (f", exit {turn.exit_code}" if turn.exit_code is not None else ""))
         if outcome == "over_budget":
             self._event(job, f"stopped over budget: {turn.outcome_reason}; delivering what it did as a draft")
+        if turn.infra_reason == "login_rejected":  # --- KAN-178: whose login, and how to log in again
+            self._event(job, credhealth.refused_line(self.store, list(prov_sb.credentials), job.harness))
         repo_path = prov_sb.info.get("repo_path")
         if job.verify and repo_path:
             self._event(job, f"verifying: {job.verify}", JobState.VERIFYING)
@@ -1355,6 +1358,8 @@ class JobService:
             state, reason = JobState.FAILED, "timed_out"
         elif outcome == "over_budget":
             state, reason = JobState.FAILED, "over_budget"
+        elif turn.infra_reason == "login_rejected" and not commits:  # --- KAN-178: a login to renew, not the agent
+            state, reason = JobState.FAILED, "login_rejected"
         elif not clean and not commits:
             state, reason = JobState.FAILED, "agent_failed"
         elif verdict == "fail":  # --- frontdoor
@@ -1561,10 +1566,12 @@ class JobService:
                 lines.append(red)
         if job.state == JobState.FAILED and job.reason in ("error", "interrupted", "sandbox_gone", "bad_branch",
                                                            "push_failed", "agent_failed", "timed_out",
-                                                           "secret_found"):  # --- egress
-            # Say what went wrong: the last event that isn't the outcome line itself.
-            cause = next((e.message for e in reversed(job.events)
-                          if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
+                                                           "secret_found", "login_rejected"):  # --- egress
+            # Say what went wrong: the last event that isn't the outcome line itself (KAN-178: or the login's).
+            cause = next((e.message for e in reversed(job.events) if job.reason == "login_rejected"
+                          and e.message.startswith(credhealth.REFUSED_PREFIXES)), None) or \
+                next((e.message for e in reversed(job.events)
+                      if not e.message.startswith(("failed", "succeeded", "cancelled"))), None)
             if cause:
                 lines += ["", f"What went wrong: {cause[:1500]}"]
         if job.reason == "over_budget":  # workstream C

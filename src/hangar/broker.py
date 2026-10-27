@@ -154,6 +154,9 @@ class Broker:
                 + "; pass env_var or file_path to define a custom mapping"
             )
         existing = self.store.get(Credential, name)
+        leased = existing.leased_to if existing else None
+        if leased:  # --- KAN-178: a new value while a sandbox holds the old one (see _drop_lease)
+            leased = self._drop_lease(name, leased, value)
         cred = Credential(
             name=name,
             harness=harness,
@@ -163,7 +166,7 @@ class Broker:
             env_var=env_var or (slot.env_var if slot else None),
             file_path=file_path or (slot.file_path if slot else None),
             created_at=existing.created_at if existing else now(),
-            leased_to=existing.leased_to if existing else None,
+            leased_to=leased,
             exposure=exposure or (existing.exposure if existing else None),  # --- identity
             person=None if team else person or (existing.person if existing else None),  # --- identity, teamcreds
         )
@@ -172,6 +175,22 @@ class Broker:
         self.store.put(cred)
         self._secret_cache = None
         return cred
+
+    def _drop_lease(self, name: str, sandbox_id: str, value: str | bytes) -> str | None:
+        """--- KAN-178: storing a credential anew while a sandbox holds its lease ends that lease, so the sandbox's
+        release never writes its old login back over the new one. Otherwise a fresh `codex login`, stored to
+        replace a dead one while a job's sandbox kept for follow-ups still holds the dead file, is overwritten by
+        that file when the sandbox ends (same account, new access token: nothing refuses it). The sandbox keeps
+        running with what it has; the next one gets the new value. The same value stored again (an owner or
+        exposure change) keeps the lease."""
+        data = value.encode() if isinstance(value, str) else value
+        if self.vault.get(f"cred:{name}") == data:
+            return sandbox_id
+        log.warning("credential %s stored anew while sandbox %s held it: its lease ends and it won't be written "
+                    "back", name, sandbox_id)
+        self.store.audit(AuditEvent(actor="system", action="credential.lease_dropped", target=name,
+                                    detail={"sandbox": sandbox_id, "reason": "stored anew while leased"}))
+        return None
 
     def list(self) -> list[Credential]:
         return sorted(self.store.list(Credential), key=lambda c: c.name)

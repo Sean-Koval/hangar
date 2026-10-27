@@ -961,6 +961,9 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
     elif t.outcome_class == "infra_error" and t.infra_reason == "no_login":  # --- #293: a retry would find none either
         t.excluded, t.state = True, "done"
         st.notes.append(f"trial {t.ref}: no login for its harness (no_login): excluded, not retried")
+    elif t.outcome_class == "infra_error" and t.infra_reason == "login_rejected":  # --- KAN-178: nor a dead login
+        t.excluded, t.state = True, "done"
+        st.notes.append(f"trial {t.ref}: the vendor refused its login (login_rejected): excluded, not retried")
     elif t.outcome_class == "infra_error":  # --- #166: not the agent's result: left out, and run again
         t.excluded, t.state = True, "done"
         retry = _retry(jobs, st, spec, t)

@@ -61,7 +61,8 @@ BLOB_PREFIX = "records/"
 TRANSIENT = frozenset({"model_api", "power_down", "restart", "pod_replaced", "sandbox_gone", "network"})
 CAUSES = ("model_api", "power_down", "restart", "pod_replaced", "sandbox_gone", "network", "provision",
           "image_build", "install", "missing_tool", "egress", "secret", "blocked", "verify_failed", "timed_out",
-          "over_budget", "agent_failed", "push_failed", "secret_found", "bad_request", "slow", "error")
+          "over_budget", "login_rejected", "agent_failed", "push_failed", "secret_found", "bad_request", "slow",
+          "error")  # --- KAN-178: login_rejected: the vendor refused the turn's login
 
 _API = re.compile(
     r"overloaded_error|rate_limit_error|\"type\"\s*:\s*\"api_error\"|API Error:? (?:429|5\d\d)\b|"
@@ -176,7 +177,8 @@ def classify(*, texts: list[str], reason: str | None, outcome: str | None, sandb
         return "sandbox_gone", failed_stage
     if reason == "push_failed" and _NETWORK.search(blob):
         return "network", None
-    if reason in ("verify_failed", "timed_out", "over_budget", "agent_failed", "push_failed", "secret_found"):
+    if reason in ("verify_failed", "timed_out", "over_budget", "login_rejected", "agent_failed", "push_failed",
+                  "secret_found"):
         return reason, None
     if reason == "bad_branch":
         return "bad_request", None
