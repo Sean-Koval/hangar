@@ -492,6 +492,13 @@ class Settings(BaseSettings):
     governance_credential: str | None = None
     governance_webhook_secret: str | None = None
     governance_suspend_after_seconds: int = Field(60, ge=5, le=3600)
+    # --- KAN-78: the managed Tower hook (govhook.py, docs/governance-hook.md). `required`: every Claude Code turn runs
+    # with hangar's PreToolUse hook asking Tower's /hooks/claude-code, failing closed, or is refused where hangar can't
+    # own the hook; an environment's `governance.hook` can require it too. The vault credential of the coding agent's
+    # key in Tower the hook sends, and how long the hook waits for a person to sign before it denies.
+    governance_hook: Literal["off", "required"] = "off"
+    governance_hook_credential: str | None = None
+    governance_hook_wait_seconds: int = Field(300, ge=0, le=540)
     # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
     # neither the session nor its environment says: auto (1h when the session waits on people for more than
     # 5 min, else 5m), 5m, 1h or off. And how long best-of-N attempts and forks started together hold back for the

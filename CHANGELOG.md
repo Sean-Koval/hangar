@@ -34,6 +34,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
+  in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
+  own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps
+  only its `deny-risky` rules, so a call never raises two approvals. The script's digest is checked at each turn's
+  start and kept in the manifest. Turns are refused where the agent could remove the hook: GKE, E2B, Docker without
+  the uid split, and Codex.
 
 ## v0.2.0: the safe release
 

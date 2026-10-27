@@ -63,7 +63,8 @@ LINKED = ("log", "exit", "pid", "sh")  # what the agent's ~/.hangar/runs points 
 # a sandbox whose answer was cached under another version is probed again
 VERSION = 2
 # --- harden: a hardened turn's harness files hold its environment and MCP servers' secrets: only while it runs
-CLEANUP = "rm -rf {r}.agent-env {r}.settings.json {r}.mcp.json {r}.memory"
+# --- KAN-78: and the Tower hook's key (govhook.py)
+CLEANUP = "rm -rf {r}.agent-env {r}.settings.json {r}.mcp.json {r}.memory {r}.tower-key"
 
 # Run as root in the sandbox. Exit 3 with a reason: this sandbox stays single-user.
 SETUP = r"""u={user}

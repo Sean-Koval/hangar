@@ -111,6 +111,9 @@ def keep(fleet: Any, prov: Provider, sb: Sandbox, h: Harness, servers: dict[str,
 def forget(fleet: Any, sandbox_id: str) -> None:
     with contextlib.suppress(Exception):
         fleet.broker.vault.delete(VAULT + sandbox_id)
+    from hangar import govhook  # --- KAN-78: the digest of the Tower hook hangar installed there
+
+    govhook.forget(fleet, sandbox_id)
 
 
 def claude_settings(spec: EnvSpec, user: str, gate: str | None) -> dict[str, Any]:

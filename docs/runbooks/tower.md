@@ -36,7 +36,7 @@ Leave every kind in `shadow` for a week. Move a kind to `enforce` only when `han
 
 ## The other paths
 
-- **Sandboxes' hooks** call Tower's agents' name, `https://agents.<domain>`, with an agent key. Sandboxes can't reach pod addresses, and Tower's network policy admits only hangar's control plane. An environment with `allowlist` egress needs that host on its list.
+- **Sandboxes' hooks** call Tower's agents' name, `https://agents.<domain>`, with an agent key. Sandboxes can't reach pod addresses, and Tower's network policy admits only hangar's control plane. An environment with `allowlist` egress needs that host on its list. [The Tower hook](../governance-hook.md) is refused on GKE until the driver sidecar is wired.
 - **Tower's events** come to hangar's public URL, `/api/governance/events`. Tower sends webhooks over https only. [Tower's events](../api/governance-events.md) is the contract.
 
 ## Power
