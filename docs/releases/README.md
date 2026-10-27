@@ -7,6 +7,7 @@ and when to deploy, is on [upgrading.md](../upgrading.md). What each PR added is
 
 | Release | Tag | Pages |
 | --- | --- | --- |
+| **Enforced intake and API keys**<br>KAN-74 (#223) | next, unreleased | [What breaks, the steps before you deploy and rollback](enforce.md) |
 | **Adopt & capture and frontier**<br>#133–#189, with #140 and #177–#186 | v0.2.0 | [What it adds and what you configure](adopt-capture.md) · [the procedure and rollback](adopt-capture-procedure.md) |
 | **The safe release**<br>#120–#132 | v0.2.0 | [What it adds, the procedure and rollback](safe-release.md) · [the `extends` merge rules](safe-release-merge.md) |
 | **The team release**<br>#75–#117 | v0.2.0 | [What it adds](team-release.md) · [changed defaults](team-release-changes.md) · [steps 1–8](team-release-procedure.md) · [steps 9–11](team-release-sandboxes.md) · [steps 12–14 and rollback](team-release-operations.md) |

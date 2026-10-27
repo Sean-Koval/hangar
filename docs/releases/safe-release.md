@@ -15,8 +15,8 @@ The owner decided on 2026-10-17 that the security changes #123–#125 warn for o
   you upgrade before the gateway, the egress proxy and everyone's API keys are ready.
 - **Under a switch** the work runs as before and says so: a `posture.warn` event, audit entry and review-packet line,
   or a warning on the manifest. `hangar doctor` reports it.
-- **The next release** removes both switches (#223). It refuses intake jobs without the gateway, and jobs with only a
-  subscription login. Unset the switches as soon as the steps below are done.
+- **The next release** removes both switches (#223). It refuses to start with either set, so unset them once the
+  steps below are done ([enforced intake and API keys](enforce.md)).
 
 `sudo: false` (#124) has no switch. An environment whose people need root at runtime sets `sudo: true`.
 
@@ -37,10 +37,10 @@ hangar doctor                                                                   
 | Setting | Values (default first) | What it does | Step |
 | --- | --- | --- | --- |
 | API-key credentials: a person's own (`hangar cred add NAME --harness H --kind api_key`) or the team's (`--team`) | — | **Required** for every job, schedule, webhook, experiment and replay. They never use a subscription login (`oauth_token`, `auth_file`) | [1](#1-add-api-key-credentials) |
-| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive`, `any` | `interactive`: subscription logins only in a person's own sessions and sandboxes, with a warning. `any`: jobs use them too, with a warning, and `hangar doctor` fails. **This release only** (#125). Trials and graders never get one | [1](#1-add-api-key-credentials) |
+| `HANGAR_SUBSCRIPTION_LOGINS` | `interactive`, `any` | `interactive`: subscription logins only in a person's own sessions and sandboxes, with a warning. `any`: jobs use them too, with a warning, and `hangar doctor` fails. **v0.2.0 only**: the next release refuses it (#125, #223). Trials and graders never get one | [1](#1-add-api-key-credentials) |
 | `HANGAR_GATEWAY_URL` | unset | The git gateway: job sandboxes fetch only, and hangar pushes. **Required** for intake jobs under `enforce` (#123), and for build caches and private repo builds. `deploy/k8s/config.yaml` sets it on GKE | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
 | `HANGAR_EGRESS_URL` | unset | The egress proxy for `allowlist` and `none` environments and for intake jobs' sandboxes. **Required** on GKE for the intake jobs' allowlist floor. `deploy/k8s/config.yaml` sets it | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
-| `HANGAR_INTAKE_POSTURE` | `enforce`, `warn`, `off` | `enforce`: an intake job without the gateway is refused at submit, with a message on its issue, ticket or thread. Its sandbox gets at least `allowlist` egress and cold-starts; on Docker it runs with `no-new-privileges`. A heavy environment needs the repo policy's `allow_heavy_for_intake`. `warn`: **this release only** (#123, #124). `off`: [not recommended](../security/front-doors.md#intake-posture) | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
+| `HANGAR_INTAKE_POSTURE` | `enforce`, `warn`, `off` | `enforce`: an intake job without the gateway is refused at submit, with a message on its issue, ticket or thread. Its sandbox gets at least `allowlist` egress and cold-starts; on Docker it runs with `no-new-privileges`. A heavy environment needs the repo policy's `allow_heavy_for_intake`. `warn` and `off`: **v0.2.0 only**; the next release refuses them (#123, #124, #223) | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
 | `HANGAR_SELF_APPROVAL` | `deny`, `allow_solo` | `deny`: nobody approves their own job, landing or egress request. `allow_solo` lets a self-approval through while exactly one person exists, audited as `self_approved: true` (#121) | [6](#6-hangar-doctor) |
 | `sudo:` on an environment | `false` | `false`: the agent isn't root, and on Docker the [uid split](../steering.md#the-uid-split) applies. Set `true` only for an environment whose people need runtime root (#124) | [4](#4-prebuild-images) |
 
@@ -72,8 +72,8 @@ hangar cred add codex-team --team --harness codex --kind api_key --file openai-k
 hangar cred ls                       # kind and owner of each: who still holds only an oauth_token or auth_file
 ```
 
-If some people can't have a key by the rollout, set `HANGAR_SUBSCRIPTION_LOGINS=any` for this release
-([subscription logins](../team/subscription-logins.md)). Unset it once they have one.
+If some people can't have a key by the rollout, set `HANGAR_SUBSCRIPTION_LOGINS=any` on v0.2.0
+([subscription logins](../team/subscription-logins.md)). Unset it before the next release, which refuses it.
 
 ## 2. Turn on the gateway and the egress proxy
 
@@ -81,7 +81,7 @@ On GKE, `deploy/k8s/config.yaml` sets `HANGAR_GATEWAY_URL`, `HANGAR_EGRESS_URL` 
 Check that your `hangar-site` doesn't override them. On Docker, [turn on the gateway](../security/git-gateway.md#turning-it-on)
 (on a laptop, `http://host.docker.internal:8788`). Set up the proxy as in
 [step 10a of the team release](team-release-sandboxes.md#10a-egress-allowlists). If either isn't ready on the day,
-set `HANGAR_INTAKE_POSTURE=warn` for this release, and unset it once both work.
+set `HANGAR_INTAKE_POSTURE=warn` on v0.2.0, and unset it before the next release, which refuses it.
 
 ## 3. Run the merge dry run
 
@@ -135,8 +135,9 @@ timeline has no `posture.warn` event.
 
 ## Rolling back
 
-Redeploy the image you recorded, as for [the team release](team-release-operations.md#rolling-back-this-release). A
-warn switch is the lighter way back for one control: `HANGAR_INTAKE_POSTURE=warn` or `HANGAR_SUBSCRIPTION_LOGINS=any`.
+Redeploy the image you recorded, as for [the team release](team-release-operations.md#rolling-back-this-release). On
+v0.2.0 a warn switch is the lighter way back for one control: `HANGAR_INTAKE_POSTURE=warn` or
+`HANGAR_SUBSCRIPTION_LOGINS=any`. Later releases have neither.
 
 ## The `extends` merge rules (#132)
 

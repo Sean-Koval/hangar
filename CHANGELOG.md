@@ -2,7 +2,34 @@
 
 ## Unreleased
 
-Nothing yet since v0.2.0.
+### Before you upgrade
+
+**This release enforces #123–#125 with no way back** (KAN-74, #223). The safe release's warn switches are gone, and
+`HANGAR_INTAKE_POSTURE=off` with them. A hangar that still sets one breaks on deploy
+([the steps](docs/releases/enforce.md#before-you-upgrade)):
+
+1. **Store an API key for every harness jobs use**, e.g. `hangar cred add codex-api --harness codex --kind api_key
+   --file openai-key.txt` (`--team` for work no person owns). A job on a subscription login (a ChatGPT sign-in, Claude
+   Pro or Max) is refused, naming the key to add.
+2. **Turn on the git gateway and the egress proxy**, if `HANGAR_INTAKE_POSTURE=warn` is set.
+3. **Remove `HANGAR_SUBSCRIPTION_LOGINS` and `HANGAR_INTAKE_POSTURE`** from `hangar-site`, `.env` and
+   `hangar config` (`hangar config unset ...`), then run `hangar doctor` on v0.2.0 until it is green.
+
+| Removed | Set in the environment | Stored with `hangar config` |
+| --- | --- | --- |
+| `HANGAR_INTAKE_POSTURE=warn`, `off` | hangar refuses to start, naming the switch and the fix | not applied (hangar enforces); `hangar doctor` fails with the same words |
+| `HANGAR_SUBSCRIPTION_LOGINS=any` | the same | the same |
+
+People's own interactive sessions and sandboxes keep using their own subscription logins, with a warning, as before.
+
+### Changed
+
+- **No setting relaxes the intake posture or interactive-only subscription logins** (KAN-74). `posture.py` and
+  `teamcreds.py` drop the `warn`, `off` and `any` paths, with the `posture.warn` event, audit entry and review-packet
+  line. `hangar config set` refuses the removed values. A job's sandbox is automated even when its caller names
+  `interactive`.
+- **The refusal names the key to add**: an OpenAI API key for Codex, an Anthropic one for Claude Code, a Gemini one
+  for Antigravity, each with its `hangar cred add` command. So does the doctor's **subscription logins** check.
 
 ## v0.2.0: the safe release
 

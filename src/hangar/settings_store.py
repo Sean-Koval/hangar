@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from hangar.config import Settings
+from hangar.config import Settings, removed_switch
 from hangar.store import Store
 
 log = logging.getLogger("hangar.settings")
@@ -84,6 +84,14 @@ def _adapter(name: str) -> TypeAdapter:
 def parse(name: str, raw: Any) -> Any:
     """Validate a value for a field. Strings are read the way the environment is: JSON first (lists, maps, numbers,
     booleans), then as a plain string."""
+    raw_v = raw
+    if isinstance(raw, str):
+        try:
+            raw_v = json.loads(raw)
+        except ValueError:
+            pass
+    if msg := removed_switch(name, raw_v):  # --- KAN-74: HANGAR_INTAKE_POSTURE=warn|off, HANGAR_SUBSCRIPTION_LOGINS=any
+        raise SettingError(msg)
     ad = _adapter(name)
     if isinstance(raw, str):
         try:
@@ -140,7 +148,14 @@ class SettingsStore:
             try:
                 setattr(self.settings, name, parse(name, value))
             except SettingError as e:
-                log.warning("ignoring stored setting: %s", e)
+                # --- KAN-74: a removed switch stored before the upgrade isn't applied (hangar enforces), and
+                # `hangar doctor` fails on it (removed_stored) until it is unset
+                log.log(logging.ERROR if removed_switch(name, value) else logging.WARNING,
+                        "ignoring stored setting: %s", e)
+
+    def removed(self) -> list[tuple[str, str]]:
+        """--- KAN-74: stored settings whose value no longer exists, as (HANGAR_NAME, what to do instead)."""
+        return [(env_var(n), m) for n, v in self.stored().items() if (m := removed_switch(n, v))]
 
     def describe(self, name: str) -> dict[str, Any]:
         stored = self.stored()

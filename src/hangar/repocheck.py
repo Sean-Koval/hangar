@@ -334,12 +334,7 @@ async def _gateway(s: Any, repo: str, transport: httpx.AsyncBaseTransport | None
     from hangar import posture
 
     out: list[dict[str, Any]] = []
-    p = posture.mode(s)
-    out.append(_c("intake posture", {"enforce": "ok", "warn": "warn"}.get(p, "fail"),
-                  {"enforce": "enforce: intake jobs need the gateway and get at least an allowlist egress",
-                   "warn": "warn: intake jobs run as before, and their events say what enforce would change"}.get(
-                      p, "off: intake jobs run with a GitHub token when there is no gateway, and on open egress"),
-                  f"HANGAR_INTAKE_POSTURE=enforce ({posture.DOC})"))
+    out.append(_c("intake posture", "ok", "enforce: intake jobs need the gateway and get at least an allowlist egress"))
     url = f"https://github.com/{repo}.git"
     if not posture.gateway_serves(s, url):
         out.append(_c("git gateway", "fail", posture.gateway_problem(s, url) or "the gateway doesn't serve the repo",
@@ -371,7 +366,6 @@ def _environment(h: Any, svc: JobService, repo: str, policy: RepoPolicy | None, 
         return [_c(f"environment {env}", "fail", f"mapped for {repo} but doesn't load: {str(e)[:200]}",
                    "add envs/<name>.yaml or create it with create_environment, or fix the mapping")]
     out: list[dict[str, Any]] = []
-    p = posture.mode(s)
     url = f"https://github.com/{repo}.git"
     serves = posture.gateway_serves(s, url)
     # credential mode: with the gateway serving the repo, jobs are fetch-only through it whatever the spec says
@@ -389,30 +383,25 @@ def _environment(h: Any, svc: JobService, repo: str, policy: RepoPolicy | None, 
                       "set HANGAR_GATEWAY_URL (docs/security/git-gateway.md)"))
     docker = svc._runs_docker(spec, url)
     if spec.sudo and not docker:
-        out.append(_c(f"sudo {env}", "warn" if p == "enforce" else "fail",
-                      "sudo: true" + (" (job sandboxes on Docker run with no-new-privileges under enforce, so it fails "
-                                      "there)" if p == "enforce" else ": the agent can become root in its sandbox"),
+        out.append(_c(f"sudo {env}", "warn",
+                      "sudo: true (job sandboxes on Docker run with no-new-privileges, so it fails there)",
                       f"set sudo: false on {env} and install at build time (tools.apt, setup); docs/environments.md"))
     else:
         out.append(_c(f"sudo {env}", "ok", "sudo: false" if not spec.sudo else
                       "sudo: true for Docker on the heavy tier (dockerd runs as root in the sandbox's VM)"))
     if docker:
         allowed = bool(policy and policy.allow_heavy_for_intake)
-        out.append(_c(f"heavy {env}", "ok" if allowed else ("fail" if p == "enforce" else "warn"),
+        out.append(_c(f"heavy {env}", "ok" if allowed else "fail",
                       "runs Docker on the heavy tier; the repo policy allows it for intake jobs" if allowed else
                       posture.heavy_problem(env, True, False) or "", f"hangar repo set {repo} --allow-heavy-for-intake"
                       "   (or a non-heavy environment)"))
     m = egress.env_mode(s, spec)
     if m != "open":
         out.append(_c(f"egress {env}", "ok", f"egress {m}: its sandboxes are on the proxy-only network"))
-    elif p == "enforce":
+    else:
         out.append(_c(f"egress {env}", "warn", "egress open: intake jobs get the allowlist floor, but jobs from MCP, "
                       "REST and schedules on this repo reach the whole internet",
                       f"set egress.mode: allowlist on {env} (docs/security/egress.md)"))
-    else:
-        out.append(_c(f"egress {env}", "fail", f"egress open and HANGAR_INTAKE_POSTURE={p}: an agent steered by a "
-                      "ticket's text can send the repo anywhere",
-                      f"set egress.mode: allowlist on {env}, or HANGAR_INTAKE_POSTURE=enforce"))
     out.append(_credentials(h, repo, policy, env, spec))
     return out
 

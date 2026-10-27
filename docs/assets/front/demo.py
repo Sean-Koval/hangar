@@ -268,7 +268,11 @@ def build(root: Path):
     """The app, wired to the stand-ins. Returns (app, hangar, fake GitHub)."""
     import httpx
 
-    os.environ.setdefault("HANGAR_INTAKE_POSTURE", "off")  # enforce needs the git gateway and an egress proxy
+    from hangar import posture
+
+    # enforce needs the git gateway and an egress proxy, which the demo's stand-ins don't run; no setting turns it
+    # off since KAN-74, so the demo does what the unit tests do (tests/conftest.py)
+    posture.mode = lambda settings: posture.OFF
     from hangar.app import create_app
     from hangar.config import Settings
     from hangar.harnesses import HARNESSES, Harness

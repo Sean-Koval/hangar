@@ -24,10 +24,18 @@ bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / 
 
 | Release | PRs | What it is |
 | --- | --- | --- |
+| [Enforced intake and API keys](releases/enforce.md) (next, unreleased) | KAN-74 (#223) | The safe release's warn switches are gone: intake jobs always need the git gateway, and automated work always needs an API key. **Breaks** a hangar that still sets one ([removed switches](#removed-switches)) |
 | [Adopt & capture and frontier](releases/adopt-capture.md) | #133–#189, with #140 and #177–#186 | The MCP split, the review rules, Slack DMs, run capture, harness locks, trials and the eval lane; includes [the repo-conventions hand-off](releases/adopt-capture.md#the-repo-conventions-hand-off-143) (#143) and [plugins from a seed](releases/adopt-capture.md#claude-code-plugins-from-a-seed-136) (#136) |
 | [The safe release](releases/safe-release.md) | #120–#132 | Secure defaults for intake jobs, API keys for automated work, one approval rule, sealed graders, taint gates, new manifest fields and [the `extends` merge rules](releases/safe-release.md#the-extends-merge-rules-132) (#132: one dry run before upgrading) |
 | [The team release](releases/team-release.md) | #75–#117 | One hangar for a team of six: people, credentials, front doors, egress, the console, the Cloud Doctor, caches and test results, in four waves |
 | [The overnight stack](releases/overnight-stack.md) | #48–#69 | For a hangar older than that: do its backup and read its defaults first, then follow the team release's procedure (its prebuild also covers the overnight guide's "republish the Codex pack" step) |
+
+## Removed switches
+
+| Setting | Refused since | What happens if it is set | Do this first |
+| --- | --- | --- | --- |
+| `HANGAR_INTAKE_POSTURE=warn` or `off` | the release after v0.2.0 (KAN-74) | In the environment (`hangar-site`, `.env`): hangar refuses to start and logs the fix. Stored with `hangar config`: it isn't applied, and `hangar doctor` fails | Set `HANGAR_GATEWAY_URL` (and `HANGAR_EGRESS_URL` on GKE), then remove the setting ([the steps](releases/enforce.md#before-you-upgrade)) |
+| `HANGAR_SUBSCRIPTION_LOGINS=any` | the release after v0.2.0 (KAN-74) | The same. Jobs on a subscription login (a ChatGPT sign-in, Claude Pro or Max) are refused, naming the API key to add | Store an API key for each harness jobs use, e.g. `hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt`, then remove the setting ([the steps](releases/enforce.md#before-you-upgrade)) |
 
 ## When to deploy
 

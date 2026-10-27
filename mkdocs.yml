@@ -222,6 +222,7 @@ nav:
       - Upgrading: upgrading.md
       - Release notes:
           - releases/README.md
+          - "Enforced intake and API keys": releases/enforce.md
           - "Harness lock, outbox and doors": releases/adopt-capture.md
           - "Harness lock, outbox and doors: the steps": releases/adopt-capture-procedure.md
           - "Secure intake and API keys": releases/safe-release.md

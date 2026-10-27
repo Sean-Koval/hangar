@@ -61,15 +61,13 @@ A board mover is trusted when linked to a person or listed in `HANGAR_GITHUB_TRU
 
 ### 10a. Egress allowlists
 
-Egress stays `open` for people's own work until you say otherwise; intake-triggered jobs get at least `allowlist` under the default posture (below). To proxy an environment's sandboxes ([security/egress.md](../security/egress.md)):
+Egress stays `open` for people's own work until you say otherwise; intake jobs get at least `allowlist` (below). To proxy an environment's sandboxes ([security/egress.md](../security/egress.md)):
 
-- **Intake posture (#123).** `deploy/k8s/config.yaml` now sets `HANGAR_GATEWAY_URL`, `HANGAR_EGRESS_URL` and `HANGAR_INTAKE_POSTURE: "enforce"`. If your `hangar-site` or database settings leave the gateway off, GitHub, Slack, Jira, Projects and webhook jobs are refused until it is on. To roll out first and turn it on after, for one release:
+- **Intake posture (#123).** `deploy/k8s/config.yaml` now sets `HANGAR_GATEWAY_URL`, `HANGAR_EGRESS_URL` and `HANGAR_INTAKE_POSTURE: "enforce"`. If your `hangar-site` or database settings leave the gateway off, GitHub, Slack, Jira, Projects and webhook jobs are refused until it is on. Turn it on before you upgrade; the `warn` switch is [gone](../upgrading.md#removed-switches):
   ```bash
-  hangar config set HANGAR_INTAKE_POSTURE warn     # runs intake jobs as before, says what enforce would change
   hangar doctor | grep -i intake                   # the gateway, the egress proxy, each intake environment's mode
-  hangar config set HANGAR_INTAKE_POSTURE enforce  # once the doctor is green
   ```
-  Intake jobs in an `open` environment cold-start (warm sandboxes there are on the open network). For warm starts, map intake repos to an environment with `egress: {mode: allowlist}` and its own `warm_pool` ([security/front-doors.md](../security/front-doors.md#intake-posture)). On a laptop with Docker Desktop, proxied sandboxes can't start, so keep `warn` there.
+  Intake jobs in an `open` environment cold-start (warm sandboxes there are on the open network). For warm starts, map intake repos to an environment with `egress: {mode: allowlist}` and its own `warm_pool` ([security/front-doors.md](../security/front-doors.md#intake-posture)). On a laptop with Docker Desktop, proxied sandboxes can't start, so intake work needs Linux or GKE.
 
 - **GKE: `HANGAR_EGRESS_URL` (required** before any environment uses `allowlist` or `none`; without it such sandboxes fail to start, saying so). Step 5 already applied the Service port and the NetworkPolicies:
   ```bash

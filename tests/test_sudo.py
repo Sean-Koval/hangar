@@ -87,8 +87,6 @@ def test_no_new_privs_for_job_sandboxes_under_enforce():
     # dockerd needs root inside its VM
     assert not posture.no_new_privs(s, _sb({"hangar.job": "job-1"}, heavy={"docker": True, "vm": True}))
     assert posture.no_new_privs(s, _sb({"hangar.job": "job-1"}, heavy={"docker": False, "profile": "large"}))
-    for p in ("warn", "off"):
-        assert not posture.no_new_privs(Settings(intake_posture=p), _sb({"hangar.job": "job-1"}))
 
 
 class _Containers:
@@ -173,11 +171,6 @@ def test_the_repo_policy_allows_heavy_for_intake(svc):
     job = svc.submit(SubmitJob(instructions="x", repo=REPO, environment="dind"), Caller("x", "x"),
                      source="github", source_ref="github:o/r#2")
     assert job.labels[posture.INTAKE_LABEL] == "source:github"
-    svc.settings.intake_posture = "warn"
-    update(svc, PolicyUpdate(repo="o/r", allow_heavy_for_intake=False), "admin")
-    job = svc.submit(SubmitJob(instructions="x", repo=REPO, environment="dind"), Caller("x", "x"),
-                     source="github", source_ref="github:o/r#3")
-    assert any("allow-heavy-for-intake" in e.message for e in job.events)  # warn: runs, says so
 
 
 def test_the_doctor_lists_environments_with_sudo(fleet, tmp_path):

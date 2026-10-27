@@ -1,8 +1,8 @@
 """Subscription logins are interactive-only (#125; docs/team.md#subscription-logins).
 
 Jobs (every front door), schedules, webhooks, experiment trials and graders never get an `oauth_token` or
-`auth_file` login; a person's own sessions and sandboxes still may, with a warning. HANGAR_SUBSCRIPTION_LOGINS=any
-lets jobs use them (warned, and the doctor fails), except trials and graders.
+`auth_file` login; a person's own sessions and sandboxes still may, with a warning. HANGAR_SUBSCRIPTION_LOGINS=any,
+which let jobs use them for the safe release only, was removed (KAN-74): it is refused wherever it is set.
 """
 
 from __future__ import annotations
@@ -75,15 +75,11 @@ def test_automated_resolutions_never_get_a_subscription_login(store, broker, set
     # a person with no login at all is not this refusal (the team-credentials rules apply as before)
     broker.delete("claude-team")
     assert r("bob").names == []
-    # any: jobs use it, warned; trials and graders still never do
-    settings.subscription_logins = "any"
+    # trials and graders never do either
     broker.delete("claude-alice-api")
-    got = r("alice")
-    assert got.names == ["claude-alice"] and got.warnings == [teamcreds.ANY_WARNING]
     with pytest.raises(teamcreds.SubscriptionRefused):
         r("alice", strict=True)
     # people.credentials_for passes the purpose through
-    settings.subscription_logins = "interactive"
     with pytest.raises(teamcreds.SubscriptionRefused):
         people.credentials_for(store, [], "alice", "claude-code", False, is_agent, purpose="automated",
                                settings=settings)
@@ -93,6 +89,8 @@ def test_automated_resolutions_never_get_a_subscription_login(store, broker, set
 def test_a_sandboxs_purpose():
     assert teamcreds.purpose_of(None, None) == ("interactive", False)
     assert teamcreds.purpose_of(None, {"hangar.job": "job-1"}) == ("automated", False)  # attempts, forks of one
+    # --- KAN-74: a job's sandbox is automated even when its caller says interactive
+    assert teamcreds.purpose_of("interactive", {"hangar.job": "job-1"}) == ("automated", False)
     assert teamcreds.purpose_of(None, {EXP_LABEL: "job-1"}) == ("automated", True)
     assert teamcreds.purpose_of("interactive", {GRADER_LABEL: "job-1"}) == ("automated", True)
     assert teamcreds.purpose_of(None, {teamcreds.PURPOSE_LABEL: "automated"}) == ("automated", False)  # replays
@@ -109,16 +107,14 @@ async def test_trials_and_graders_never_receive_one_whatever_the_environment_lis
     monkeypatch.setattr(fleet, "_setup_repo", no_clone)
     _setup_token(broker, "claude-alice", "alice")
     fleet.catalog._raw["variant"] = ({"name": "variant", "extends": "agent", "credentials": ["claude-alice"]}, ENVS)
-    for policy in ("interactive", "any"):
-        settings.subscription_logins = policy
-        for labels in ({EXP_LABEL: "job-x"}, {GRADER_LABEL: "job-x"}):
-            with pytest.raises(teamcreds.SubscriptionRefused):
-                await fleet.create("variant", harness="claude-code", person="alice", labels=labels)
-            with pytest.raises(teamcreds.SubscriptionRefused):
-                await fleet.create("variant", harness="claude-code", person="alice", labels=labels,
-                                   credentials=["claude-alice"])
-        with pytest.raises(teamcreds.SubscriptionRefused, match="interactive-only"):  # a trial's submit
-            teamcreds.check_job(fleet, "variant", "claude-code", "alice", None, strict=True)
+    for labels in ({EXP_LABEL: "job-x"}, {GRADER_LABEL: "job-x"}):
+        with pytest.raises(teamcreds.SubscriptionRefused):
+            await fleet.create("variant", harness="claude-code", person="alice", labels=labels)
+        with pytest.raises(teamcreds.SubscriptionRefused):
+            await fleet.create("variant", harness="claude-code", person="alice", labels=labels,
+                               credentials=["claude-alice"])
+    with pytest.raises(teamcreds.SubscriptionRefused, match="interactive-only"):  # a trial's submit
+        teamcreds.check_job(fleet, "variant", "claude-code", "alice", None, strict=True)
     broker.put("claude-team", "claude-code", CredentialKind.API_KEY, "sk-ant-api03-team-0123456789", team=True)
     sb = await fleet.create("variant", harness="claude-code", person="alice", labels={EXP_LABEL: "job-x"})
     env = (await fleet.read_file(sb.id, "/home/agent/.hangar/env") or b"").decode()
@@ -142,9 +138,9 @@ async def test_a_persons_own_sandbox_warns_and_a_jobs_does_not_take_it(fleet, br
         await fleet.create("cc", harness="claude-code", person="alice", labels={"hangar.job": "job-1"})
     with pytest.raises(FleetError, match="interactive-only"):  # a replay or fork sandbox (part B)
         await fleet.fork(sb.id, 1, labels={teamcreds.PURPOSE_LABEL: "automated"})
-    settings.subscription_logins = "any"
-    sb = await fleet.create("cc", harness="claude-code", person="alice", labels={"hangar.job": "job-1"})
-    assert sb.credentials == ["claude-alice"] and sb.info["credential_warnings"] == [teamcreds.ANY_WARNING]
+    with pytest.raises(teamcreds.SubscriptionRefused):  # --- KAN-74: naming `interactive` doesn't get it either
+        await fleet.create("cc", harness="claude-code", person="alice", labels={"hangar.job": "job-1"},
+                           purpose="interactive")
 
 
 # ====================================================================== front doors
@@ -202,18 +198,38 @@ async def test_api_and_schedule_jobs_are_refused_at_submit(intake, broker):  # n
                           Caller("alice", "alice", person="alice"), source=source)
 
 
-async def test_with_any_a_job_runs_on_it_and_says_so(jobs, world, broker, settings):  # noqa: F811
-    _setup_token(broker, "scripted-alice", "alice", harness="scripted", env_var="SCRIPTED_KEY")
-    settings.subscription_logins = "any"
-    job = jobs.submit(SubmitJob(instructions="Add fix.txt", repo=world["url"], environment="jobenv"),
-                      Caller("alice", "alice", person="alice"))
-    job = await _until(jobs, job.id, DONE)
-    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
-    assert any(e.message == f"warning: {teamcreds.ANY_WARNING}" for e in job.events)
-    # the job resolved at claim too: a policy flipped back before a follow-up's new sandbox refuses it
-    settings.subscription_logins = "interactive"
-    with pytest.raises(teamcreds.SubscriptionRefused):
-        teamcreds.check_job(jobs.fleet, "jobenv", None, "alice", world["url"])
+def test_the_codex_refusal_names_the_openai_key_to_add():
+    """--- KAN-74: a Codex job on a ChatGPT login says what to store instead, as a command."""
+    msg = teamcreds.refusal("codex")
+    assert msg.startswith(REFUSED.format(h="codex"))
+    assert ("add an OpenAI API key: hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt"
+            in msg)
+
+
+def test_any_is_refused_wherever_it_is_set(monkeypatch, tmp_path, store):
+    """--- KAN-74: HANGAR_SUBSCRIPTION_LOGINS=any is gone. In the environment hangar doesn't start; `hangar config set`
+    refuses it; stored before the upgrade it isn't applied and the doctor fails on it."""
+    from pydantic import ValidationError
+
+    from hangar.config import Settings
+    from hangar.settings_store import SettingError, SettingsStore
+
+    monkeypatch.setenv("HANGAR_SUBSCRIPTION_LOGINS", "any")
+    with pytest.raises(ValidationError) as e:
+        Settings(data_dir=tmp_path)
+    assert "HANGAR_SUBSCRIPTION_LOGINS=any was removed" in str(e.value) and "--kind api_key" in str(e.value)
+    monkeypatch.delenv("HANGAR_SUBSCRIPTION_LOGINS")
+    s = Settings(data_dir=tmp_path)
+    cfg = SettingsStore(store, s)
+    with pytest.raises(SettingError, match="HANGAR_SUBSCRIPTION_LOGINS=any was removed"):
+        cfg.set("HANGAR_SUBSCRIPTION_LOGINS", "any")
+    store.kv_set("setting:subscription_logins", json.dumps("any"))  # stored by v0.2.0
+    cfg.apply()
+    assert s.subscription_logins == "interactive"
+    h = SimpleNamespace(settings=s, store=store, config=cfg)
+    got = teamcreds._subscription_check(h, [])
+    assert got["status"] == "fail" and "hangar cred add codex-api --harness codex --kind api_key" in got["detail"]
+    assert got["fix"] == "hangar config unset HANGAR_SUBSCRIPTION_LOGINS"
 
 
 # ====================================================================== sessions
@@ -260,6 +276,3 @@ def test_doctor(intake, settings, broker):  # noqa: F811
     broker.put("scripted-alice-api", "scripted", CredentialKind.API_KEY, "sk-0123456789", person="alice",
                env_var="SCRIPTED_KEY")
     assert check()["status"] == "ok"
-    settings.subscription_logins = "any"
-    got = check()
-    assert got["status"] == "fail" and "scripted-alice" in got["detail"]

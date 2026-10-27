@@ -2,10 +2,10 @@
 
 Jobs started from GitHub, GitHub Projects, Jira, Slack or an inbound webhook carry text that anyone with edit rights on
 the ticket, issue or thread can write. Hangar fences that text as untrusted in the prompt (triggers.untrusted_note),
-but a prompt is not a boundary. `HANGAR_INTAKE_POSTURE` adds two that are, for every *intake job*:
+but a prompt is not a boundary. The intake posture adds two that are, for every *intake job*:
 
 * **The git gateway.** The sandbox holds a fetch-only grant and hangar pushes (delivery.py), so no GitHub token is in
-  reach of an injected prompt. Under `enforce` an intake job whose repo the gateway doesn't serve (no
+  reach of an injected prompt. An intake job whose repo the gateway doesn't serve (no
   HANGAR_GATEWAY_URL, or a host outside HANGAR_GATEWAY_UPSTREAMS) is refused at submit, with a message the front door
   relays to the ticket or thread.
 * **An egress floor.** Its sandboxes get at least `allowlist`, even in an `open` environment: the label
@@ -14,9 +14,10 @@ but a prompt is not a boundary. `HANGAR_INTAKE_POSTURE` adds two that are, for e
   Docker, the NetworkPolicy on GKE). The allowlist is the environment's presets and hosts, the repo policy's, and the
   harness's API hosts. A warm sandbox of an `open` environment is never claimed for it: it cold-starts.
 
-`warn` runs such a job as before and says what `enforce` would have done (a job event, an audit entry `posture.warn`
-and a line in the review packet); `off` does neither. The default is `enforce`; `warn` is the one-release transition
-for an install that doesn't run the gateway yet (docs/upgrading.md).
+Both always apply (KAN-74): `HANGAR_INTAKE_POSTURE=enforce` is the only value. `warn`, the safe release's one-release
+transition, and `off` were removed after v0.2.0, and config.REMOVED_SWITCHES refuses them. `mode()` still answers
+`off` for unit tests and the docs demo, which run without a gateway or an egress proxy and replace it
+(tests/conftest.py); no setting reaches that.
 
 An intake job is one from those sources, one with an untrusted author (`untrusted_source`), or one with an untrusted
 context item: auto-fix rounds (CI logs, review comments) and env setup started from an issue are covered that way.
@@ -41,8 +42,12 @@ FLOORS = ("allowlist", "none")
 DOC = "docs/security/front-doors.md#intake-posture"
 
 
+OFF = "off"  # only unit tests and the docs demo, by replacing mode(): no setting reaches it
+
+
 def mode(settings: Settings) -> str:
-    return getattr(settings, "intake_posture", "enforce") or "enforce"
+    """`enforce`, always (KAN-74)."""
+    return "enforce"
 
 
 def is_intake_req(source: str | None, untrusted_source: str | None, context: Iterable[ContextItem] = (),
@@ -120,8 +125,8 @@ class Assessment:
         return self.posture == "enforce" and bool(self.problems)
 
     def message(self) -> str:
-        fix = ("set HANGAR_GATEWAY_URL (and HANGAR_GATEWAY_UPSTREAMS for the repo's host), or "
-               "HANGAR_INTAKE_POSTURE=warn while you set it up") if any("gateway" in p for p in self.problems) else \
+        fix = "set HANGAR_GATEWAY_URL (and HANGAR_GATEWAY_UPSTREAMS for the repo's host)" \
+            if any("gateway" in p for p in self.problems) else \
             "the repo policy's allow_heavy_for_intake, or a non-heavy environment"
         return f"{'; '.join(self.problems)}. Fix: {fix} ({DOC})"
 
@@ -129,20 +134,18 @@ class Assessment:
 def assess(settings: Settings, spec: EnvSpec, repo: str | None, source: str | None, untrusted_source: str | None,
            context: Iterable[ContextItem] = (), labels: Mapping[str, str] | None = None,
            docker: bool = False, allow_heavy: bool | None = None) -> Assessment | None:
-    """None for a job that isn't an intake job, or with the posture off. `docker`: its sandboxes run Docker on the
-    heavy tier; `allow_heavy`: the repo policy's `allow_heavy_for_intake` (#124)."""
+    """None for a job that isn't an intake job (or in a unit test that turns the posture off). `docker`: its
+    sandboxes run Docker on the heavy tier; `allow_heavy`: the repo policy's `allow_heavy_for_intake` (#124)."""
     context = list(context)
     p = mode(settings)
-    if p == "off" or not is_intake_req(source, untrusted_source, context, labels):
+    if p == OFF or not is_intake_req(source, untrusted_source, context, labels):
         return None
     problems = [x for x in (gateway_problem(settings, repo), heavy_problem(spec.name, docker, allow_heavy)) if x]
-    if p == "warn" and (note := env_note(settings, spec)):
-        problems.append(f"{note}, so the sandbox reaches the whole internet (enforce gives it at least allowlist)")
-    return Assessment(p, why_intake(source, untrusted_source, context, labels), problems, floor=p == "enforce")
+    return Assessment(p, why_intake(source, untrusted_source, context, labels), problems, floor=True)
 
 
 def mark(labels: dict[str, str], a: Assessment) -> dict[str, str]:
-    """The job's labels with its posture: why it is intake, and (enforce) the egress floor its sandboxes get."""
+    """The job's labels with its posture: why it is intake, and the egress floor its sandboxes get."""
     out = {**labels, INTAKE_LABEL: a.reason[:100]}
     if a.floor and floor_of(out) is None:
         out[FLOOR_LABEL] = FLOOR
@@ -163,11 +166,11 @@ JOB_LABELS = ("hangar.job", "hangar.experiment.grader")  # a job's session (best
 
 def no_new_privs(settings: Settings, sb: Sandbox) -> bool:
     """--- #124: whether a Docker sandbox runs with `no-new-privileges`, so sudo (or any setuid program) fails there as
-    it does on GKE, even in an environment whose image has sudo: a job's sandbox under `enforce`. With `warn` or `off`
-    jobs run as before. The uid split switches users with `docker exec --user` and setpriv's capabilities, no setuid
-    binary, so it keeps working. A heavy sandbox with Docker is left alone: dockerd runs as root (through sudo) inside
-    its own VM. A repo build's sandbox isn't a job's."""
-    if mode(settings) != "enforce" or (sb.info.get("heavy") or {}).get("docker"):
+    it does on GKE, even in an environment whose image has sudo: every job's sandbox. The uid split switches users
+    with `docker exec --user` and setpriv's capabilities, no setuid binary, so it keeps working. A heavy sandbox with
+    Docker is left alone: dockerd runs as root (through sudo) inside its own VM. A repo build's sandbox isn't a
+    job's."""
+    if mode(settings) == OFF or (sb.info.get("heavy") or {}).get("docker"):
         return False
     return any(k in sb.labels for k in JOB_LABELS)
 
@@ -206,16 +209,10 @@ def provider_spec(settings: Settings, spec: EnvSpec, sb: Sandbox) -> EnvSpec:
 
 # ====================================================================== review packet, doctor
 def packet_lines(settings: Settings, job: Job, spec: EnvSpec | None = None) -> list[str]:
-    """--- landing: the review packet's posture line: the floor the job's sandboxes had, or (warn) what enforce would
-    have changed."""
+    """--- landing: the review packet's posture line: the floor the job's sandboxes had."""
     if floor := floor_of(job.labels):
         return [f"- **Egress:** {floor} (intake floor)"]
-    if mode(settings) != "warn" or not is_intake(job):
-        return []
-    problems = [x for x in (gateway_problem(settings, job.repo),) if x]
-    if spec is not None and (note := env_note(settings, spec)):
-        problems.append(f"{note}, and enforce would give this job at least {FLOOR}")
-    return [f"- **Intake posture (warn):** {'; '.join(problems)}"] if problems else []
+    return []
 
 
 def intake_environments(settings: Settings) -> list[str]:
@@ -262,27 +259,20 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
 
     s, fleet = h.settings, h.fleet
     p = mode(s)
-    out: list[dict[str, Any]] = []
-    if p == "off":
-        return [_check("intake posture", None, "HANGAR_INTAKE_POSTURE=off: intake-triggered jobs run with a GitHub "
-                       "token when there is no gateway, and on open egress",
-                       f"HANGAR_INTAKE_POSTURE=enforce ({DOC})")]
+    out: list[dict[str, Any]] = removed_checks(h, "intake_posture")
+    if p == OFF:
+        return out
     gw = bool(s.gateway_url)
-    if p == "enforce":
-        doors = intake_doors(s)  # --- #236: refusing intake jobs only matters once something can send one
-        if gw:
-            out.append(_check("intake posture: gateway", True, f"enforce; HANGAR_GATEWAY_URL={s.gateway_url}"))
-        elif doors:
-            out.append(_check("intake posture: gateway", False, f"enforce, and HANGAR_GATEWAY_URL is not set: every "
-                              f"job from {', '.join(doors)} is refused", gateway_fix(s, fleet)))
-        else:
-            out.append(_check("intake posture: gateway", None, "enforce; no intake front door is configured (GitHub, "
-                              "Slack, Jira, GitHub Projects, webhooks), so nothing is refused yet. Once one is, its "
-                              "jobs need the git gateway, which isn't set up", gateway_fix(s, fleet)))
+    doors = intake_doors(s)  # --- #236: refusing intake jobs only matters once something can send one
+    if gw:
+        out.append(_check("intake posture: gateway", True, f"enforce; HANGAR_GATEWAY_URL={s.gateway_url}"))
+    elif doors:
+        out.append(_check("intake posture: gateway", False, f"enforce, and HANGAR_GATEWAY_URL is not set: every "
+                          f"job from {', '.join(doors)} is refused", gateway_fix(s, fleet)))
     else:
-        out.append(_check("intake posture: gateway", True if gw else None, "warn" + (
-            f"; HANGAR_GATEWAY_URL={s.gateway_url}" if gw else ": HANGAR_GATEWAY_URL is not set, so intake jobs hold "
-            "a GitHub token"), "set HANGAR_GATEWAY_URL, then HANGAR_INTAKE_POSTURE=enforce (docs/upgrading.md)"))
+        out.append(_check("intake posture: gateway", None, "enforce; no intake front door is configured (GitHub, "
+                          "Slack, Jira, GitHub Projects, webhooks), so nothing is refused yet. Once one is, its "
+                          "jobs need the git gateway, which isn't set up", gateway_fix(s, fleet)))
     # the egress proxy each provider needs for a floored sandbox
     provs = list(fleet.providers)
     if "kubernetes" in provs:
@@ -298,9 +288,10 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
                           "gateway): under enforce, intake jobs in open environments fail to start here" if local else
                           (f"hangar's proxy on the egress network's gateway, port {s.egress_port}" if s.egress_port
                            else "HANGAR_EGRESS_PORT is 0: proxied sandboxes can't start"),
-                          "HANGAR_INTAKE_POSTURE=warn for local use (docs/security/front-doors.md#intake-posture)"))
+                          "run intake work (GitHub, Slack, Jira, webhooks) on a Linux Docker host or GKE "
+                          "(docs/security/front-doors.md#intake-posture)"))
     others = [n for n in provs if n not in ("docker", "kubernetes")]
-    if others and p == "enforce":
+    if others:
         out.append(_check("intake posture: other providers", None, f"{', '.join(others)} can't keep a sandbox off the "
                           "internet: an intake job in an open environment fails to start there",
                           "run intake environments on docker or kubernetes, or give them egress.mode: allowlist"))
@@ -314,8 +305,7 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
             continue
     if sudo:
         used = [n for n in sudo if n in intake]
-        nnp = "Docker job sandboxes run with no-new-privileges, so sudo fails there" if p == "enforce" else \
-            "sudo works in their sandboxes"
+        nnp = "Docker job sandboxes run with no-new-privileges, so sudo fails there"
         out.append(_check("environments with sudo", None, f"{', '.join(sudo)} set sudo: true"
                           + (f"; intake jobs run in {', '.join(used)}" if used else "") + f" ({nnp})",
                           "set sudo: false and install at build time (tools.apt, setup), or keep sudo: true only for "
@@ -326,7 +316,18 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
         except KeyError:
             continue  # the landing and front-door checks report a missing environment
         m = egress.env_mode(s, spec)
-        eff = m if m != "open" else (f"{FLOOR} (intake floor)" if p == "enforce" else "open")
-        out.append(_check(f"intake environment {name}", eff != "open" or None, f"egress {m}; intake jobs get {eff}",
-                          "HANGAR_INTAKE_POSTURE=enforce, or egress.mode: allowlist on the environment"))
+        eff = m if m != "open" else f"{FLOOR} (intake floor)"
+        out.append(_check(f"intake environment {name}", True, f"egress {m}; intake jobs get {eff}"))
     return out
+
+
+def removed_checks(h: Any, field: str) -> list[dict[str, Any]]:
+    """--- KAN-74: a removed switch stored with `hangar config` before the upgrade (one in the environment stops
+    hangar from starting). It isn't applied, so hangar enforces, but the doctor fails on it until it is unset."""
+    from hangar.doctor import _check
+
+    cfg = getattr(h, "config", None)
+    if cfg is None or not hasattr(cfg, "removed"):
+        return []
+    return [_check(f"removed setting {key}", False, msg, f"hangar config unset {key}")
+            for key, msg in cfg.removed() if key == "HANGAR_" + field.upper()]
