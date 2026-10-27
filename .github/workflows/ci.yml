@@ -132,7 +132,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --all-extras --locked
-      - run: uv run pytest -q -m needs tests/test_modelgw.py
+      - run: uv run pytest -q -m needs tests/test_modelgw.py tests/test_fleet_api.py
 
   e2e:
     name: e2e (${{ matrix.suite }})
