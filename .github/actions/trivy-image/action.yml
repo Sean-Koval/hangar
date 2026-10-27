@@ -60,6 +60,15 @@ runs:
           cat trivy.txt 2>/dev/null || echo "(no table)"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+    # The raw results, for triage and as evidence for a security review
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      with:
+        name: ${{ inputs.category }}
+        path: |
+          trivy.sarif
+          trivy.txt
+        if-no-files-found: ignore
+        retention-days: 30
     # A fork's pull request gets a read-only token, which can't upload; its findings stay in the summary.
     - if: ${{ !github.event.pull_request.head.repo.fork }}
       uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
