@@ -10,8 +10,8 @@ tests, and when it goes red, hands the bisect and the repair to a hangar job. Tw
 | `.github/workflows/harness-contract.yml` | every PR (the `contract` job is skipped, and passes, unless the PR touches harness, driver or isolation code); every push to main | the real agent CLIs at the locked versions, offline, and the recorded protocols ([harnesses.md](harnesses.md#the-contract-tests)) | about 1 min with the CLIs cached |
 | `.github/workflows/harness-canary.yml` | nightly | the newest upstream CLIs against the same tests; a lock-bump PR or an issue ([harnesses.md](harnesses.md#the-canary)) | a few minutes |
 
-Before this, one job ran the 734 unit tests one after another (5 min 24 s), one of the 12 Docker suites ran, and envd
-wasn't built or tested at all. Both PRs and main took about 5.5 minutes.
+A hangar job's own check, `scripts/ci/verify.sh`, runs a capped selection and counts only new failures
+([ci-verify.md](ci-verify.md)).
 
 ## Pre-merge (`pr.yml`)
 

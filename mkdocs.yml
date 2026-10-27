@@ -207,6 +207,7 @@ nav:
           - How the control-plane pod is locked down: security/control-plane-pod.md
           - Where the audit log is kept: security/audit.md
       - CI: ci.md
+      - Verify in a job: ci-verify.md
   - Design notes:
       - specs/README.md
       - Cross-spec decisions: specs/decisions.md

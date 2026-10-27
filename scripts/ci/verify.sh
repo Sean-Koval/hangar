@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The check hangar jobs on this repo run (`verify:` in .hangar/environment.yaml): ruff on the Python files the branch
-# changed, then the tests those changes can break (select_tests.py), capped to fit a job (docs/ci.md#verify-in-a-job).
+# changed, then the tests those changes can break (select_tests.py), capped to fit a job (docs/ci-verify.md).
 # It exits 0 when nothing is selected; an empty list must never reach pytest, which would run the whole suite.
 #
 # Tests that need what the machine lacks (Docker, KVM, a uid split) skip with a "capability:" reason. A test that
@@ -32,7 +32,7 @@ fi
 if ((full)); then
   mapfile -t tests < <(python3 scripts/ci/select_tests.py --all)
 else
-  mapfile -t tests < <(python3 scripts/ci/select_tests.py --base "$base" --budget "${VERIFY_BUDGET:-240}")
+  mapfile -t tests < <(python3 scripts/ci/select_tests.py --base "$base" --budget "${VERIFY_BUDGET:-600}")
 fi
 if ((${#tests[@]} == 0)); then
   echo "verify: no tests selected for this change"

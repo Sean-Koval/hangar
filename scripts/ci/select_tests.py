@@ -13,6 +13,7 @@ after the merge, so this only has to catch most breakage, fast.
     scripts/ci/select_tests.py --base origin/main --shard 2/4   # this shard's share of them
     scripts/ci/select_tests.py --files src/hangar/slack.py      # for given paths instead of a git diff
     scripts/ci/select_tests.py --base origin/main --e2e         # the Docker e2e suites to run, as a JSON list
+    scripts/ci/select_tests.py --base origin/main --budget 600  # verify.sh's: capped to 600 s of CI time
     scripts/ci/select_tests.py --record-durations junit/*.xml > scripts/ci/durations.json   # from a full run
 
 Why it chose what it did goes to stderr; stdout is only the answer.
