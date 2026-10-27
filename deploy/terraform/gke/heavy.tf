@@ -116,8 +116,18 @@ resource "google_container_node_pool" "heavy" {
       threads_per_core             = 0
       enable_nested_virtualization = true
     }
+    shielded_instance_config { # KAN-180; secure boot forces a new pool on an existing cluster (hardening.tf)
+      enable_secure_boot          = var.shielded_secure_boot
+      enable_integrity_monitoring = true
+    }
     workload_metadata_config {
       mode = "GKE_METADATA"
+    }
+  }
+  dynamic "network_config" { # KAN-180: private nodes on existing pools too (in place, a rolling node update)
+    for_each = var.private_nodes ? [1] : []
+    content {
+      enable_private_nodes = true
     }
   }
   depends_on = [google_project_iam_member.heavy_nodes, google_artifact_registry_repository_iam_member.heavy_nodes_pull]

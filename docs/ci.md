@@ -43,9 +43,9 @@ There are no reruns before the merge: a test that fails, fails the PR.
 - **Tests that read every module's source** (they build `"src" / "hangar"`, like `test_sweep_caps.py`) run for any
   hangar change. That includes `test_scope_parity.py`, so a change to `mcp_server.py`, `app.py` or any module that
   mounts routes runs the REST/MCP scope check ([security/front-doors.md](security/front-doors.md#scopes)).
-- **Non-Python paths** map to the tests that read them, through a table in the script: `envs/`, `envd/`,
-  `scripts/acceptance/`, `deploy/`, `docs/gke.md`, and `README.md` and `docs/index.md` (`tests/test_front_page.py`).
-  Other docs, `*.md`, the Dockerfile and terraform select no tests.
+- **Non-Python paths** map to the tests that read them: `envs/`, `envd/`, `scripts/acceptance/`, `deploy/`, the
+  Dockerfile, `docs/gke.md`, and `README.md` and `docs/index.md` (`tests/test_front_page.py`). Other docs, `*.md` and
+  terraform select no tests.
 - **The whole suite runs** for any of these:
   - a core module: anything `tests/conftest.py` imports (`fleet`, `models`, `config`, `store`, …), plus the hubs listed
     in `CORE`;
@@ -116,16 +116,17 @@ counts at the median duration until then.
   automatically. `test_e2e_kata.py` needs a KVM host with Kata, so it isn't included.
 - **`rust`** runs `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked`, with
   `Swatinem/rust-cache`.
-- **`image`** builds the control-plane image with buildx and the GHA layer cache, and doesn't push it. A cold build is
-  about 9 minutes (envd for two CPUs with fat LTO, gcloud). A warm one takes 20 s, plus the Python layer when `src/`
-  changes.
+- **`image`** builds the control-plane image with buildx and the GHA layer cache, without pushing it: about 9 minutes
+  cold, 20 s warm. Main's builds pass the ISO week as `APT_REFRESH`, and releases their tag, so the apt layer and its
+  security updates rebuild weekly. `apt-versions.yml` reports stale apt pins weekly.
 - **`terraform`** validates both stacks.
 - **`report`** merges the per-job reports, uploads the `flakes` and `durations` artifacts, and runs the bisect hook
   when anything failed.
 
 One full run goes at a time, and none is cancelled. Pushes that land during a run wait, and only the newest of them
-runs next. The bisect range from the last green run covers the commits in between. A full run uses up to 22 jobs at
-once. On a plan with 20 concurrent jobs, a PR opened during one waits for runners. To leave room, set `max-parallel`
+runs next. The bisect range from the last green run covers the commits in between.
+
+A full run uses up to 22 jobs at once. On a plan with 20 concurrent jobs, a PR opened during one waits for runners. To leave room, set `max-parallel`
 on the e2e matrix, at the cost of main's time.
 
 `workflow_dispatch` runs the same on any branch. There, the bisect hook only prints what it would do.

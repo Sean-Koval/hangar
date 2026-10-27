@@ -182,10 +182,16 @@ nav:
           - security/README.md
           - What a compromised sandbox does not get: security/compromised-sandbox.md
           - Running hangar safely: security/operations.md
+          - How the GKE cluster is hardened: security/gke-cluster.md
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
           - Gaps found in the 1.0 review: security/review-1.0.md
+          - Reviewing hangar for production:
+              - security/review/index.md
+              - Controls and evidence: security/review/controls.md
+              - Open findings and accepted risks: security/review/risks.md
           - The git credential gateway: security/git-gateway.md
+          - Who may continue a custom session branch: security/branch-creators.md
           - Egress allowlists: security/egress.md
           - Package mirrors: security/package-mirrors.md
           - Sandbox networking on Docker: security/docker-network.md
@@ -198,6 +204,7 @@ nav:
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md
+          - Where the audit log is kept: security/audit.md
       - CI: ci.md
   - Design notes:
       - specs/README.md

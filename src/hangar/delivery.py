@@ -156,6 +156,17 @@ def clone_hint(sb: Sandbox) -> str:
     return ""
 
 
+def _record(fleet: Fleet, sb: Sandbox, url: str | None, ref: str, res: ExecResult) -> None:
+    """--- KAN-174 (known gap 8): a direct-mode delivery records its job's person as the branch's creator, unless a
+    record is there already, so a session of another person's refuses the job's branch as it does in gateway mode."""
+    from hangar import branchowners
+    from hangar.gateway import parse_remote
+
+    remote = parse_remote(url, fleet.gateway.hosts) if res.exit_code == 0 else None
+    if remote is not None:
+        branchowners.record(fleet.store, remote[1], ref, sb, via="delivery", replace=False)
+
+
 async def push(fleet: Fleet, sandbox_id: str, branch: str, sha: str, actor: str, timeout: int = 300,
                repo: str | None = None, cwd: str | None = None) -> ExecResult:
     """Push `sha` to `branch` of the sandbox's origin, as hangar: in gateway mode with a delivery grant pinned to that
@@ -168,7 +179,9 @@ async def push(fleet: Fleet, sandbox_id: str, branch: str, sha: str, actor: str,
     sb, prov = fleet._running(sandbox_id)
     git = sb.info.get("git") or {}
     if git.get("mode") != "gateway" or not git.get("repo"):
-        return await fleet.exec(sandbox_id, cmd, cwd=cwd, timeout=timeout, actor=actor)
+        res = await fleet.exec(sandbox_id, cmd, cwd=cwd, timeout=timeout, actor=actor)
+        _record(fleet, sb, repo or sb.repo, ref, res)  # --- KAN-174: the gateway records its own pushes
+        return res
     from hangar.gateway import GatewayError, parse_remote
 
     gw = fleet.gateway

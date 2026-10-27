@@ -15,6 +15,7 @@ terraform init && terraform apply
 This creates:
 
 - **A Standard cluster** on the RAPID channel, since Agent Sandbox needs GKE 1.35.2-gke.1210000 or later. It uses Workload Identity and Dataplane V2.
+- **Cluster hardening:** see [the CIS mapping](security/gke-cluster.md).
 - **A system pool**, plus a gVisor sandbox pool (Spot by default) that autoscales from 0 to N nodes.
 - **The Agent Sandbox add-on**, enabled through `gcloud`, and optionally Pod snapshots.
 - **Supporting resources:** an Artifact Registry repo, a `hangar` Google service account bound to the pod's KSA, and a global static IP.
@@ -540,9 +541,9 @@ Long streams (a command's output, a terminal) end after the backend timeout (one
 
 ## Notes
 
-- **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents can reach GitHub and package registries but not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
+- **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents reach GitHub and registries, not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
 - **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. `config.yaml` sets `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788`, which keeps GitHub tokens out of sandboxes ([security/git-gateway.md](security/git-gateway.md)); intake-triggered jobs need it.
-- **Intake posture.** `config.yaml` sets `HANGAR_INTAKE_POSTURE: "enforce"`: jobs from GitHub, Slack, Jira, GitHub Projects and webhooks need the gateway and get at least `allowlist` egress, even in an `open` environment ([security/front-doors.md](security/front-doors.md#intake-posture)). No other value is accepted ([removed switches](upgrading.md#removed-switches)).
+- **Intake posture.** `config.yaml` sets `HANGAR_INTAKE_POSTURE: "enforce"`: intake jobs (GitHub, Slack, Jira, webhooks) need the gateway and get at least `allowlist` egress, even in `open` environments ([security/front-doors.md](security/front-doors.md#intake-posture)). Nothing else is accepted ([removed switches](upgrading.md#removed-switches)).
 - **Egress allowlists.** The same Service serves hangar's egress proxy on 3128. `config.yaml` sets `HANGAR_EGRESS_URL=http://hangar-gateway.hangar.svc:3128`. Pods of environments with `egress.mode: allowlist` or `none` are then labelled `dev.hangar/egress=proxied` and reach only the gateway and the proxy, with no DNS (hangar's Service names are in their /etc/hosts). Their SandboxTemplate carries that policy as its `networkPolicy`, in place of Agent Sandbox's default policy, which allows the internet; the template stays `Managed` ([security/egress.md](security/egress.md)).
 - **Expiry.** Each claim gets `lifecycle.shutdownTime` (sandbox TTL plus 5 minutes) as a backstop to hangar's reaper.
 - **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. It backs itself up to the bucket; PD snapshots are the alternative (§7).

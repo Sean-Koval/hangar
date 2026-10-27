@@ -1,0 +1,36 @@
+# Trivy: control-plane image findings left on purpose (KAN-179, docs/security/operations.md#vulnerability-management).
+# One id per line, under a comment saying why. Each carries exp: its triage deadline (High 30 days, Medium 90, Low
+# the next release, taken as 90), after which it is reported again. Findings with no fixed version aren't reported
+# at all (--ignore-unfixed).
+#
+# First scan, 2026-10-26: 7 High, 12 Medium, 2 Low, none in hangar's own dependencies (uv.lock is clean). Every one
+# is in a tool the image bundles, fixed only by its vendor's next release:
+
+# docker-buildx-plugin (Docker's apt repository): 0.38.1, the latest, still vendors go-archive 0.2.0 and x/net 0.59.0
+CVE-2026-17106 exp:2026-11-25
+CVE-2026-78669 exp:2026-11-25
+CVE-2026-33997 exp:2027-01-24
+CVE-2026-78659 exp:2027-01-24
+CVE-2026-78660 exp:2027-01-24
+CVE-2026-78663 exp:2027-01-24
+CVE-2026-97032 exp:2027-01-24
+
+# google-cloud-cli (Google's apt repository): its bundled Python (urllib3 2.7.0, msgpack 1.1.2, setuptools 70.3.0) and
+# gcloud-crc32c (Go 1.27.2). Check a fresh, uncached build against gcloud's latest release before the deadline.
+CVE-2026-111943 exp:2026-11-25
+CVE-2026-97687 exp:2026-11-25
+CVE-2026-97689 exp:2026-11-25
+GHSA-6v7p-g79w-8964 exp:2026-11-25
+CVE-2025-47273 exp:2026-11-25
+CVE-2026-97688 exp:2027-01-24
+CVE-2026-59890 exp:2027-01-24
+GHSA-xmj3-9gf7-h52w exp:2027-01-24
+
+# pip 25.0.1 in the python:3.12-slim base image. The control plane installs with uv and never runs pip; check a newer
+# base image digest for a newer pip before the deadline.
+CVE-2025-8869 exp:2027-01-24
+CVE-2026-13346 exp:2027-01-24
+CVE-2026-3219 exp:2027-01-24
+CVE-2026-6357 exp:2027-01-24
+CVE-2026-8643 exp:2027-01-24
+CVE-2026-1703 exp:2027-01-24

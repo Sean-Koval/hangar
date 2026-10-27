@@ -1,0 +1,57 @@
+# The weekly apt pin check (KAN-185, docs/cicd.md). The control-plane Dockerfile pins docker-ce-cli,
+# docker-buildx-plugin and google-cloud-cli, and Dependabot can't bump apt. scripts/ci/apt_versions.py reads each apt
+# repository's index (it downloads nothing else and runs nothing from them):
+# - a pin is behind (or gone from its repo): it opens, or comments on, one issue labelled `apt-versions`;
+# - every pin is current: it closes that issue, if one is open.
+# The fix is `python scripts/ci/apt_versions.py --write` and a PR. It never talks to the cluster.
+name: apt-versions
+on:
+  schedule:
+    - cron: "41 6 * * 2"  # weekly, Tuesdays
+  workflow_dispatch:
+
+concurrency:
+  group: apt-versions
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write  # the one `apt-versions` issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the pins
+        id: check
+        run: |
+          status=0
+          python3 scripts/ci/apt_versions.py --markdown report.md || status=$?
+          [ "$status" -eq 0 ] || [ "$status" -eq 3 ]  # 3: a pin is behind, which the issue reports
+          echo "behind=$([ "$status" -eq 3 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEHIND: ${{ steps.check.outputs.behind }}
+        run: |
+          issue=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=apt-versions" \
+            --jq '[.[] | select(.pull_request == null)][0].number // empty')
+          if [ "$BEHIND" = true ]; then
+            if [ -n "$issue" ]; then
+              gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" -F body=@report.md >/dev/null
+            else
+              issue=$(gh api "repos/$GITHUB_REPOSITORY/issues" -f title="Control-plane image: newer apt packages" \
+                -F body=@report.md -f "labels[]=apt-versions" --jq .number)
+            fi
+            echo "Issue: #$issue" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$issue" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" -f body="Every apt pin is current again." >/dev/null
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$issue" -f state=closed >/dev/null
+          fi
