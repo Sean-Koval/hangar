@@ -1,0 +1,16 @@
+{
+  "_about": "Signed by Tower's own aw.webhooks.sign (tower@56be4ad, server/aw/webhooks.py) with the test secret below, headers and body exactly as Outbox._post sends them. Regenerate there, never by hand.",
+  "secret": "whsec-test-not-a-real-secret",
+  "t": 1792940531,
+  "events": [
+    {
+      "headers": {
+        "content-type": "application/json",
+        "x-aw-event-id": "ev-0c1d6b0f1e2a4b7c9d8e7f6a5b4c3d2e",
+        "x-aw-signature": "t=1792940531,v1=c1e9f59b4c6217b79a02bd52b89ae0978694a0f2d5bfb52c6018666050d68bdb",
+        "user-agent": "agent-workspace/1"
+      },
+      "body": "{\"approval\":{\"decided_by\":\"dana@acme.test\",\"expires_at\":\"2026-10-23T15:10:00.000Z\",\"id\":\"A-123\",\"idempotency_key\":\"hangar:session:ses-77:tool:ap-1a2b3c4d5e6f\",\"kind\":\"hangar.tool.call\",\"receipt\":\"RC-104\",\"rule\":\"risky-shell\",\"status\":\"approved\"},\"at\":\"2026-10-23T15:02:11.000Z\",\"corr\":{\"job\":null,\"run\":\"run-5d1\",\"session\":\"ses-77\",\"source\":\"hangar\",\"tool_call_id\":\"toolu_01ABC\",\"turn\":3},\"id\":\"ev-0c1d6b0f1e2a4b7c9d8e7f6a5b4c3d2e\",\"kind\":\"approval.decided\"}"
+    }
+  ]
+}

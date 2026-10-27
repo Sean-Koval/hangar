@@ -85,6 +85,9 @@ class Hangar:
 
         self.env_requests = EnvRequests(self.fleet, self.sessions, self.jobs)
         self.triggers = Triggers(self.jobs)  # workstream A: approvals, inbound webhooks, schedules
+        from hangar.govevents import Receiver  # --- KAN-77: Tower's events (approvals, run.stop)
+
+        self.governance_events = Receiver(self.sessions)
         from hangar.backup import Backups, backup_store  # --- overnight/sweep: database backups
 
         self.backups = Backups(self.settings, self.vault, backup_store(self.settings, self.sessions.blobs))
@@ -440,6 +443,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.sessions.start()  # first: jobs look up their sessions
         await h.jobs.start()
         await h.triggers.start()  # after jobs: it expires approvals and submits scheduled jobs
+        h.governance_events.start()  # --- KAN-77: after sessions: re-reads what waits on Tower, then follows it
         if a2a:
             await a2a.start()
         pre = h.settings.prebuild_environments
@@ -483,6 +487,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if prebuild:
             prebuild.cancel()
         await h.triggers.stop()
+        await h.governance_events.stop_loop()  # --- KAN-77
         if a2a:
             await a2a.stop()
         await h.jobs.stop()
@@ -1260,6 +1265,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     inbox.mount(app, h, U)
     fleet_api.mount(app, h, U)  # KAN-140: GET /api/fleet, the Fleet page's one read
+    from hangar import govevents  # --- KAN-77: POST /api/governance/events, signed by Tower (no token)
+
+    govevents.mount(app, h)
     inbox_notify.mount(app, h, U)  # --- inbox delivery (#157, #158): PUT /api/people/{id}/delivery
     inbox_notify.register(h)  # the digests ride the ops loop
     from hangar import slolog  # --- KAN-144: the stuck-jobs gauge and log line ride it too

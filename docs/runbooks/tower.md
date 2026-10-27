@@ -13,7 +13,7 @@ Tower, the Govern plane, runs on hangar's GKE cluster in its own namespace, `tow
 | `HANGAR_GOVERNANCE_CREDENTIAL` | `tower` | The vault credential holding Tower's service key |
 | `HANGAR_GOVERNANCE_WEBHOOK_SECRET` | `tower-webhook` | The vault credential holding the secret Tower signs its events with |
 
-hangar reads these once [#172](https://github.com/Sean-Koval/hangar/issues/172) wires its client. Until then it ignores them, and its own rules decide as before.
+[Tower's events](../api/governance-events.md) use these settings now. Approval paths read them once [#172](https://github.com/Sean-Koval/hangar/issues/172) wires the client. Until then hangar's own rules decide, as before.
 
 ## In order
 
@@ -37,7 +37,7 @@ Leave every kind in `shadow` for a week. Move a kind to `enforce` only when `han
 ## The other paths
 
 - **Sandboxes' hooks** call Tower's agents' name, `https://agents.<domain>`, with an agent key. Sandboxes can't reach pod addresses, and Tower's network policy admits only hangar's control plane. An environment with `allowlist` egress needs that host on its list.
-- **Tower's events** come to hangar's public URL, `/api/governance/events`. Tower sends webhooks over https only.
+- **Tower's events** come to hangar's public URL, `/api/governance/events`. Tower sends webhooks over https only. [Tower's events](../api/governance-events.md) is the contract.
 
 ## Power
 

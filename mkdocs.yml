@@ -177,6 +177,7 @@ nav:
           - Trace export (hangar.trace/v1): api/traces.md
           - Run capture (hangar.run/v1): api/outbox.md
           - Trials and pin sets (hangar.pinset/v1): api/trials.md
+          - Tower's events (POST /api/governance/events): api/governance-events.md
           - Model gateway and tapes: model-gateway.md
       - Security model:
           - security/README.md

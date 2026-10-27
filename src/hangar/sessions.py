@@ -457,10 +457,11 @@ class SessionService:
         return s
 
     def start_turn(self, s: Session, message: str, requester: str, context: list[ContextItem] | None = None,
-                   output_schema: dict[str, Any] | None = None) -> None:
-        """Begin a turn now; the caller has checked that the session can take one."""
+                   output_schema: dict[str, Any] | None = None, preclear: list[dict[str, str]] | None = None) -> None:
+        """Begin a turn now; the caller has checked that the session can take one. `preclear` (KAN-77): calls
+        Tower signed, which the turn's driver allows once each (govevents.py)."""
         s.turns.append(SessionTurn(message=message, requester=requester, context=context or [],
-                                   output_schema=output_schema))
+                                   output_schema=output_schema, preclear=preclear or []))
         s.needs_input = None  # this message answers the agent's question, if it had one
         s.question_options = []
         s.last_active_at = now()

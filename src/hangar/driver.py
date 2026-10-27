@@ -14,6 +14,10 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   instead of being lost; one that landed before is still carried out (a late steer continues the turn).
 * Tool approvals follow `--approvals`: `auto` runs without prompts (today's behaviour), `ask` waits for hangar's
   answer and denies after `--approval-timeout` seconds, `deny-risky` answers at once from the rules in `risky()`.
+* Pre-cleared calls (KAN-77, spec 0015 §5): a turn that resumes after Tower signed the call it was suspended on
+  starts with `--preclear`: `<ctl>/preclear`, signed with the run's key, read and deleted at start, lists
+  `(tool, args_hash, receipt)`. The first request whose tool and input hash match is allowed once, by "tower",
+  with the receipt on its answer; anything else asks as usual.
 * Taint (#130): once the turn has read untrusted content (`--tainted` when it starts that way, hangar's signed
   `taint` command, or a web tool call the driver sees in the stream), pushes, PR opening, fetches to a host and the
   environment's MCP write tools are risky too (`taint_risky()`): denied under `deny-risky`, flagged to the person
@@ -79,6 +83,37 @@ def canonical(obj: object) -> bytes:
 def sign(key: bytes, cmd: dict) -> str:
     """The MAC of a command: HMAC-SHA256 over its canonical JSON without the `mac` field (hangar signs the same)."""
     return hmac.new(key, canonical({k: v for k, v in cmd.items() if k != "mac"}), hashlib.sha256).hexdigest()
+
+
+def args_hash(data: object) -> str:
+    """--- KAN-77: lowercase hex SHA-256 of the tool's input as canonical JSON (spec 0015 §10; governance.args_hash)."""
+    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def load_preclear(ctl: str, key: bytes) -> list:
+    """--- KAN-77: `<ctl>/preclear`, deleted once read. Only a file signed with the run's key counts (the agent can
+    write into ~/.hangar/runs without the uid split); anything else clears nothing."""
+    path = os.path.join(ctl, "preclear")
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(MAX_COMMAND + 1)
+    except OSError:
+        return []
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return []
+    mac = doc.get("mac") if isinstance(doc, dict) else None
+    if not key or not isinstance(mac, str) or not hmac.compare_digest(mac, sign(key, doc)):
+        sys.stderr.write("hangar: the pre-cleared calls are not signed by hangar; ignoring them\n")
+        return []
+    return [c for c in doc.get("calls") or [] if isinstance(c, dict) and isinstance(c.get("tool"), str)
+            and isinstance(c.get("args_hash"), str)]
 
 
 def clip(s: object, n: int) -> str:
@@ -624,6 +659,7 @@ class Driver:
         self.unanswered: set = set()  # commands taken whose outcome isn't known yet
         self.tainted = bool(getattr(args, "tainted", False))  # --- taint (#130): only ever set
         self.write_tools = list(getattr(args, "write_tool", None) or [])
+        self.preclear: list = []  # --- KAN-77: calls Tower signed, each allowed once
         ctl_dir = getattr(args, "ctl", None)
         self.trees = Trees(out, self.cwd(), os.path.join(ctl_dir, "tree") if ctl_dir else None)  # --- #165
 
@@ -653,11 +689,18 @@ class Driver:
         # --- taint (#130): after an untrusted read, a push, a PR, a fetch to a host and MCP writes need a person
         sink = taint_sink(tool, data, self.write_tools) if self.tainted and policy != "auto" else None
         gate = {"taint": f"{sink}, after reading untrusted content"} if sink else {}
+        digest = args_hash(data)  # --- KAN-77: what Tower's receipt and the pre-clear match on
         self._approval("approval_request", id=aid, tool=tool, detail=shown(what), policy=policy,
-                       expires_at=round(expires), **gate)
+                       expires_at=round(expires), args_hash=digest, **gate)
         a = Approval(aid, key, tool, answer, expires)
         if policy != "auto" and own_command(tool, data):  # --- #292: hangar's own hand-back, not the agent's
             return self._answer(a, "allow", "", "policy")
+        if policy != "auto":  # --- KAN-77: the call Tower signed while the session was suspended, once
+            hit = next((c for c in self.preclear if c["tool"] == tool and c["args_hash"] == digest), None)
+            if hit is not None:
+                self.preclear.remove(hit)
+                return self._answer(a, "allow", "", "tower", receipt=str(hit.get("receipt") or ""),
+                                    approval=str(hit.get("approval") or ""))
         if policy == "ask":
             self.pending[aid] = a
             return
@@ -691,9 +734,10 @@ class Driver:
             del self.pending[aid]
             self._approval("approval_resolved", id=aid, decision="cancelled", by="harness")
 
-    def _answer(self, a: Approval, decision: str, message: str, by: str) -> None:
+    def _answer(self, a: Approval, decision: str, message: str, by: str, **extra: str) -> None:
         a.answer(decision, message or ("Denied by hangar." if decision == "deny" else ""))
-        self._approval("approval_resolved", id=a.id, decision=decision, by=by, message=clip(message or "", 500))
+        self._approval("approval_resolved", id=a.id, decision=decision, by=by, message=clip(message or "", 500),
+                       **{k: clip(v, 200) for k, v in extra.items() if v})
 
     def _approval(self, kind: str, **data: object) -> None:
         self.ctl.record(self.out.event(kind, **data))  # --- harden: the log, and hangar's own copy
@@ -1568,6 +1612,8 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--base-env", help="with --as: hangar's copy of the agent's ~/.hangar/env, used in its place; "
                                        "read and deleted at start (--- harden)")
     ap.add_argument("--tainted", action="store_true", help="the turn starts having read untrusted content (#130)")
+    ap.add_argument("--preclear", action="store_true",
+                    help="calls Tower signed are in <ctl>/preclear, signed with the run's key (KAN-77)")
     ap.add_argument("--write-tool", action="append", default=[],
                     help="an MCP tool (fnmatch pattern) that writes: needs a person once tainted (#130)")
     # --- KAN-83: the driver sidecar
@@ -1610,6 +1656,8 @@ def main(argv: list | None = None) -> int:
         prompt = f.read()
     out, ctl = Out(), Control(args.ctl)
     drv = Driver(args, out, ctl)
+    if args.preclear:  # --- KAN-77: with the key in hand, before the harness can ask anything
+        drv.preclear = load_preclear(args.ctl, ctl.key)
     if args.relay:  # --- KAN-83: like the key, the relay's token is in memory only from here on
         try:
             with open(token_file, "rb") as f:
