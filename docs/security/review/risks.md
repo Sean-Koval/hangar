@@ -17,6 +17,7 @@ next release. A row leaves this page when its fix lands, and its finding moves t
 | Git grants cross nodes in plain HTTP | Low (L-10) | KAN-180 | Grants are per sandbox, short-lived and end with the sandbox |
 | Kubernetes Secrets aren't encrypted with a customer key | Not rated | KAN-180 | Google encrypts etcd at rest; the vault inside is Fernet-encrypted |
 | No dependency, image or secret scanning in CI | Not rated | KAN-179 | Locked, hashed dependencies; digest-pinned images; Dependabot for actions |
+| Five of six node pools run as the Compute Engine default service account (CIS 5.2.1) | Not rated | KAN-183 | gVisor stands between a sandbox and the node; the pools are replaced once, with Secure Boot |
 | The audit log lives on the same disk as the database it records | Not rated | KAN-182 | Only the pod's service account mounts the disk; backups copy it daily |
 
 ## Accepted for 1.0
