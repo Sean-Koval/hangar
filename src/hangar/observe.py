@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 from urllib.parse import quote, urlparse
 
-from hangar import metrics
+from hangar import metrics, slolog
 
 log = logging.getLogger("hangar.observe")
 
@@ -206,11 +206,37 @@ def _safe(fn: Callable[..., Any] | None, *a: Any) -> Any:
         return None
 
 
+def _slo(fn: Any, a: tuple, kw: dict[str, Any], result: Any, err: BaseException | None, secs: float) -> None:
+    if fn is None:
+        return
+    try:
+        fn(a, kw, result, err, secs)
+    except Exception:  # noqa: BLE001 - a log line never breaks the call
+        log.debug("SLO log line failed", exc_info=True)
+
+
+async def _slo_only(fn: Any, call: Callable[..., Any], a: tuple, kw: dict[str, Any]) -> Any:
+    """--- KAN-144: tracing and metrics off: time the call for its SLO line and nothing else."""
+    t0 = time.monotonic()
+    result: Any = None
+    err: BaseException | None = None
+    try:
+        result = await call(*a, **kw)
+        return result
+    except BaseException as e:
+        err = e
+        raise
+    finally:
+        _slo(fn, a, kw, result, err, time.monotonic() - t0)
+
+
 class _Spec(NamedTuple):
     attrs: Callable[[dict[str, Any]], dict[str, Any]] | None = None  # from the call's arguments
     result: Callable[[Any], dict[str, Any]] | None = None  # from what it returned
     record: Callable[[dict[str, Any], Any, BaseException | None, float], None] | None = None  # metrics
     child_only: bool = False
+    # --- KAN-144: the SLO log line, written even with tracing and metrics off, from the raw call (no binding)
+    slo: Callable[[tuple, dict[str, Any], Any, BaseException | None, float], None] | None = None
 
 
 def traced(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -223,7 +249,9 @@ def traced(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         @functools.wraps(fn)
         async def wrapper(*a: Any, **kw: Any) -> Any:
             if _tracer is None and (spec.record is None or metrics.M is None):
-                return await fn(*a, **kw)
+                if spec.slo is None:
+                    return await fn(*a, **kw)
+                return await _slo_only(spec.slo, fn, a, kw)
             try:
                 bound = sig.bind(*a, **kw)
                 bound.apply_defaults()
@@ -245,6 +273,7 @@ def traced(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     raise
                 finally:
                     _safe(spec.record, args, result, err, time.monotonic() - t0)
+                    _slo(spec.slo, a, kw, result, err, time.monotonic() - t0)
 
         return wrapper
 
@@ -289,6 +318,15 @@ def _record_create(a: dict[str, Any], sb: Any, err: BaseException | None, secs: 
     metrics.sandbox_created(provider, env, secs, err is None, warm)
 
 
+def _slo_create(a: tuple, kw: dict[str, Any], sb: Any, err: BaseException | None, secs: float) -> None:
+    """--- KAN-144: Fleet.create(self, environment, ...)'s SLO line (slolog.sandbox_create)."""
+    fleet = a[0] if a else None
+    env = kw.get("environment", a[1] if len(a) > 1 else None)
+    provider = (getattr(sb, "provider", None) or kw.get("provider")
+                or getattr(getattr(fleet, "settings", None), "default_provider", None))
+    slolog.sandbox_create(provider, env, secs, err)
+
+
 def _record_capture(a: dict[str, Any], ck: Any, err: BaseException | None, secs: float) -> None:
     result = "error" if err is not None else ("stored" if ck is not None else "unchanged")
     metrics.checkpoint("capture", result, secs, a.get("reason"), sum(ck.parts.values()) if ck is not None else None)
@@ -317,7 +355,7 @@ _SPECS: dict[str, _Spec] = {
         attrs=lambda a: {"hangar.environment": a.get("environment"), "hangar.provider": a.get("provider"),
                          "hangar.harness": a.get("harness"), "hangar.sandbox.fork": a.get("_parent") is not None},
         result=lambda sb: {**_sb_attrs(sb), "hangar.sandbox.warm": sb.info.get("warm")},
-        record=_record_create),
+        record=_record_create, slo=_slo_create),
     "sandbox.image": _Spec(
         attrs=lambda a: {"hangar.environment": a["spec"].name, "hangar.provider": a.get("pname"),
                          "hangar.harness": a.get("harness")},

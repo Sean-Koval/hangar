@@ -132,6 +132,14 @@ class Metrics:
         # person label: labels stay bounded)
         self.awaiting_capacity = Gauge("hangar_jobs_awaiting_capacity", "Queued jobs held for review capacity",
                                        registry=r)
+        # --- KAN-144: the SLO signals (slolog.py, docs/slos.md)
+        self.job_starts = Counter("hangar_job_starts", "Job starts: queued or provisioning to running (ok) or failed "
+                                  "(error; rejected for the requester's own mistakes)", ["result"], registry=r)
+        self.job_queue = Histogram("hangar_job_queue_seconds", "From queued to running, for jobs that started",
+                                   buckets=_SLOW, registry=r)
+        self.fail_closed = Counter("hangar_governance_fail_closed", "Decisions hangar answered itself because Tower "
+                                   "didn't (never an allow)", ["kind", "failure"], registry=r)
+        self.jobs_stuck = Gauge("hangar_jobs_stuck", "Live jobs that look stuck (slolog.stuck_jobs)", registry=r)
         # --- #181: the eval queue: each provider's observed token rate and the eval budget; eval jobs held, by why
         self.eval_tpm = Gauge("hangar_eval_observed_tpm", "Tokens per minute observed per provider (rolling 60 s)",
                               ["provider"], registry=r)

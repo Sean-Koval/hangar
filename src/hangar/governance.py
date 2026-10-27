@@ -257,6 +257,9 @@ def fail_closed(kind: str, failure: Failure, reason: str, *, approval_id: str | 
     """The kind's fallback when the workspace didn't answer. Never an allow."""
     outcome = FAIL_CLOSED.get(kind, "deny")
     assert outcome != "allow"
+    from hangar import slolog  # --- KAN-144: the "Tower down, failing closed" alert counts these
+
+    slolog.fail_closed(kind, failure)
     return Decision(outcome=outcome, reason=f"approval service unavailable: {reason}", approval_id=approval_id,
                     status="unavailable", source="fail_closed", failure=failure, retryable=retryable)
 

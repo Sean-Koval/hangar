@@ -105,6 +105,12 @@ nav:
           - "Check it: hangar doctor": team/doctor.md
       - Runbooks:
           - runbooks/README.md
+          - On call and escalation: runbooks/on-call.md
+          - "Incident: a stuck job": runbooks/stuck-job.md
+          - "Incident: a credential leak": runbooks/credential-leak.md
+          - "Incident: Tower down": runbooks/tower-down.md
+          - "Incident: a full disk or quota": runbooks/disk-and-quota.md
+          - "Incident: a bad deploy": runbooks/bad-deploy.md
           - Onboarding a team: runbooks/onboarding.md
           - The per-repo checklist: runbooks/repo-checklist.md
           - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md
@@ -160,6 +166,8 @@ nav:
       - Usage and insight:
           - Activity, usage and budgets: activity.md
           - Observability: observability.md
+          - SLOs: slos.md
+          - Alerting: alerting.md
           - Weekly adoption metrics: metrics.md
   - Reference:
       - APIs:
