@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,76 @@ from hangar.store import Store
 from hangar.vault import Vault, load_or_create_key
 
 ENVS = Path(__file__).parent / "fixtures" / "envs"
+
+
+# --- KAN-138: capabilities. A test that needs what not every machine has says so with `@pytest.mark.needs("docker")`
+# (or a module's `pytestmark`). Where the capability is missing it skips, with a reason that starts "capability:",
+# instead of failing: a hangar job's sandbox has no Docker daemon, no KVM, and runs as one unprivileged user. CI sets
+# HANGAR_REQUIRE_CAPS=1, which fails such a test instead, so a test CI should run can never start skipping there.
+def _docker() -> str | None:
+    host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+    if not host.startswith("unix://"):
+        return None  # a TCP daemon: trust the setting
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.settimeout(2)
+            s.connect(host.removeprefix("unix://"))
+        return None
+    except OSError as e:
+        return f"no Docker daemon at {host} ({e.strerror or e})"
+
+
+def _kvm() -> str | None:
+    return None if os.access("/dev/kvm", os.R_OK | os.W_OK) else "no usable /dev/kvm"
+
+
+def _uid_split() -> str | None:
+    """Tests that run a process as another uid (root drops to nobody with setpriv) need the scratch root reachable
+    by that uid. As root under a 0700 home (/root), it isn't; as any other user, no switch happens."""
+    if os.geteuid() != 0:
+        return None
+    if not shutil.which("setpriv"):
+        return "running as root without setpriv"
+    for d in [scratch_root(), *scratch_root().parents]:
+        if not os.stat(d).st_mode & 0o001:
+            return (f"running as root, and {d} is closed to other users, so the dropped uid can't reach the scratch "
+                    "root (set HANGAR_TEST_ROOT=/dev/shm/hangar-tests)")
+    return None
+
+
+CAPABILITIES = {"docker": _docker, "kvm": _kvm, "uid_split": _uid_split}
+_missing: dict[str, str | None] = {}
+
+
+def missing(capability: str) -> str | None:
+    """Why `capability` is missing on this machine, or None when it's there. Checked once per process."""
+    if capability not in _missing:
+        _missing[capability] = CAPABILITIES[capability]()
+    return _missing[capability]
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "needs(*capabilities): skip unless the machine has them "
+                                       f"({', '.join(CAPABILITIES)}); HANGAR_REQUIRE_CAPS=1 fails instead")
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        for mark in item.iter_markers("needs"):
+            unknown = set(mark.args) - set(CAPABILITIES)
+            if unknown:
+                raise pytest.UsageError(f"{item.nodeid}: unknown capability {sorted(unknown)}; "
+                                        f"known: {sorted(CAPABILITIES)}")
+
+
+def pytest_runtest_setup(item):
+    for mark in item.iter_markers("needs"):
+        for capability in mark.args:
+            if why := missing(capability):
+                if os.environ.get("HANGAR_REQUIRE_CAPS") == "1":
+                    pytest.fail(f"capability {capability} is required here (HANGAR_REQUIRE_CAPS=1): {why}",
+                                pytrace=False)
+                pytest.skip(f"capability: {capability}: {why}")
 
 
 @pytest.fixture(autouse=True)
@@ -132,6 +203,30 @@ def free_port() -> int:
     raise RuntimeError(f"no free port in {first}-{first + size - 1}")
 
 
+# --- KAN-138: the host paths a fake sandbox's commands may name (this checkout, its venv, the interpreter), which
+# remap() leaves alone. In a hangar sandbox the checkout is /workspace/hangar and Python lives under /home/agent, so
+# remapping those too sent the scripted harnesses and the driver to paths inside the box that don't exist.
+HOST_PATHS = sorted({str(Path(__file__).resolve().parents[1]), sys.prefix, sys.base_prefix,
+                     os.path.dirname(sys.executable), os.path.dirname(os.path.realpath(sys.executable))},
+                    key=len, reverse=True)
+
+
+def remap(text: str, box: str, tmp: bool = True) -> str:
+    """A command or script's sandbox paths (/home/agent, /workspace and, with `tmp`, /tmp/) moved into the fake
+    sandbox `box`, but not the host paths in HOST_PATHS that happen to start with one of them."""
+    held = {}
+    for i, path in enumerate(HOST_PATHS):
+        if path in text:
+            held[f"\x01host{i}\x01"] = path
+            text = text.replace(path, f"\x01host{i}\x01")
+    text = text.replace("/home/agent", f"{box}/home/agent").replace("/workspace", f"{box}/workspace")
+    if tmp:
+        text = text.replace("/tmp/", f"{box}/tmp/")
+    for token, path in held.items():
+        text = text.replace(token, path)
+    return text
+
+
 class FakeProvider(Provider):
     """Each sandbox is a temp dir; exec runs bash locally with HOME/workspace remapped into it."""
 
@@ -197,8 +292,7 @@ class FakeProvider(Provider):
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None):
         box = self.boxes[sandbox.provider_ref]
         # Remap absolute sandbox paths into the box for the handful of commands fleet issues.
-        cmd = command.replace("/home/agent", f"{box}/home/agent").replace("/workspace", f"{box}/workspace") \
-            .replace("/tmp/", f"{box}/tmp/")
+        cmd = remap(command, str(box))
         # TMUX_TMPDIR gives each fake sandbox a private tmux socket. Without it, fleet's
         # `tmux kill-server` (fork scrubbing) hits the real tmux server of whoever runs the tests,
         # e.g. the hangar agent session running this suite inside a sandbox.
@@ -229,8 +323,8 @@ class FakeProvider(Provider):
     async def write_file(self, sandbox, path, data, mode=0o644):
         p = self._map(sandbox, path)
         if path.endswith(".sh"):  # scripts fleet writes (agent runs) name sandbox paths; remap like exec does
-            box = str(self.boxes[sandbox.provider_ref]).encode()
-            data = data.replace(b"/home/agent", box + b"/home/agent").replace(b"/workspace", box + b"/workspace")
+            data = remap(data.decode(errors="surrogateescape"), str(self.boxes[sandbox.provider_ref]),
+                         tmp=False).encode(errors="surrogateescape")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
         p.chmod(mode)

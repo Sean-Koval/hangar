@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
-# The check hangar jobs on this repo run (`verify:` in envs/hangar.yaml): ruff on the Python files the branch
-# changed, then the tests those changes can break (select_tests.py, as pre-merge CI picks them). It exits 0 when
-# nothing is selected; an empty list must never reach pytest, which would run the whole suite.
+# The check hangar jobs on this repo run (`verify:` in .hangar/environment.yaml): ruff on the Python files the branch
+# changed, then the tests those changes can break (select_tests.py), capped to fit a job (docs/ci-verify.md).
+# It exits 0 when nothing is selected; an empty list must never reach pytest, which would run the whole suite.
+#
+# Tests that need what the machine lacks (Docker, KVM, a uid split) skip with a "capability:" reason. A test that
+# fails here counts only when it passes on the base commit (verify_baseline.py); failures the base shares are
+# printed as pre-existing, and verify passes. CI runs every test, uncapped, and lets no capability skip.
 #
 #   bash scripts/ci/verify.sh                 # against origin/main
+#   bash scripts/ci/verify.sh --full          # every test: no selection, no cap
 #   VERIFY_BASE=origin/dev bash scripts/ci/verify.sh
+#   VERIFY_BUDGET=600 bash scripts/ci/verify.sh   # seconds of recorded CI time the selection may take
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 base=${VERIFY_BASE:-origin/main}
 since=$(git merge-base "$base" HEAD)
+full=0
+for arg in "$@"; do
+  case $arg in
+    --full) full=1 ;;
+    *) echo "verify: unknown argument $arg (want --full)" >&2; exit 2 ;;
+  esac
+done
 
 mapfile -t py < <({ git diff --name-only --diff-filter=ACMR "$since" -- '*.py'
                     git ls-files --others --exclude-standard -- '*.py'; } | sort -u)
@@ -16,9 +29,27 @@ if ((${#py[@]})); then
   uv run ruff check "${py[@]}"
 fi
 
-mapfile -t tests < <(python3 scripts/ci/select_tests.py --base "$base")
+if ((full)); then
+  select=(--all)
+else
+  select=(--base "$base" --budget "${VERIFY_BUDGET:-600}")
+fi
+# Only non-empty lines: one empty path would send pytest the whole suite.
+mapfile -t tests < <(python3 scripts/ci/select_tests.py "${select[@]}" | grep . || true)
 if ((${#tests[@]} == 0)); then
   echo "verify: no tests selected for this change"
   exit 0
 fi
-uv run pytest -q -n "${VERIFY_WORKERS:-4}" "${tests[@]}"
+
+workers=${VERIFY_WORKERS:-4}
+report=$(mktemp -d)
+trap 'rm -rf "$report"' EXIT
+status=0
+uv run pytest -q -n "$workers" --junitxml "$report/head.xml" "${tests[@]}" || status=$?
+if ((status == 0)); then
+  exit 0
+fi
+if ((status != 1)) || [[ ! -s $report/head.xml ]]; then
+  exit "$status"  # interrupted, a usage or internal error: nothing to compare
+fi
+uv run python3 scripts/ci/verify_baseline.py --base-sha "$since" --junit "$report/head.xml" --workers "$workers"

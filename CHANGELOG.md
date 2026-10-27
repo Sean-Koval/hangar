@@ -45,6 +45,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   their open network until they end; resumed sessions, forks and warm sandboxes come back proxied. To keep one
   environment open, give it `egress: {mode: open}`; to keep all, set `HANGAR_EGRESS_DEFAULT: "open"` in your overlay's
   `hangar-site` ConfigMap (a ConfigMap key wins over `hangar config set`).
+- **`approvals: governed` asks Tower** (KAN-79, [docs/governed-approvals.md](docs/governed-approvals.md)). The calls
+  the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
+  requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
+  answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
 
 ## v0.2.0: the safe release
 

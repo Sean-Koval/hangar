@@ -165,6 +165,7 @@ class SessionService:
         # --- overnight/sweep: called with a session just before it is deleted (jobs keep its usage); must not raise
         self.on_delete: list[Callable[[Session], None]] = []
         self.env_requests: Any = None  # --- computer: envrequests.EnvRequests, wired by the app
+        self.governed: Any = None  # --- KAN-79: governed.Governed, wired by the app (approvals=governed asks Tower)
         # --- taint (#129): the job a session carries (wired by JobService), for what the job's input taints; and
         # listeners called with (session, turn, ref) when a session first becomes tainted (must not raise)
         self.job_of: Callable[[str], Any] | None = None
@@ -1199,6 +1200,8 @@ class SessionService:
                 break
             if self.env_requests is not None:  # --- computer: what the agent asks its owner for, while it works
                 await self.env_requests.tick(s, turn)
+            if self.governed is not None:  # --- KAN-79: the calls a governed turn's driver holds go to Tower
+                self.governed.tick(s, turn)
         if outcome == "exited" and await harness_thaw.stops_after(self, s, turn):  # --- harness locks (#134)
             outcome = "failed"
         turn.finished_at = now()

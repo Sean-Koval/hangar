@@ -471,8 +471,9 @@ class Settings(BaseSettings):
     # approvals. Off (or a sandbox without python3): one-shot turns, as before.
     live_turns: bool = True
     # How tool permission prompts are answered when neither the session nor its environment says: auto (no
-    # prompts), ask (a person answers; denied after approval_timeout_seconds) or deny-risky (hangar's rules).
-    approvals: Literal["auto", "ask", "deny-risky"] = "auto"
+    # prompts), ask (a person answers; denied after approval_timeout_seconds), deny-risky (hangar's rules) or
+    # governed (--- KAN-79: the calls hangar's rules flag ask Tower, per HANGAR_GOVERNANCE; governed.py).
+    approvals: Literal["auto", "ask", "deny-risky", "governed"] = "auto"
     approval_timeout_seconds: int = Field(600, ge=10, le=86400)
     # --- isolation: run each turn's driver as hangar's own user and the agent as the sandbox user, so code the agent
     # runs can't reach the driver, its key or its control files (docs/steering.md). auto: wherever the sandbox allows

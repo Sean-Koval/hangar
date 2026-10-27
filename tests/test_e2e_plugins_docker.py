@@ -30,7 +30,8 @@ from hangar.harnesses import HARNESSES
 
 BASE = "mirror.gcr.io/library/ubuntu:24.04"  # not Docker Hub, which rate-limits pulls
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 
 def _marketplace(root: Path) -> None:

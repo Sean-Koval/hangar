@@ -660,7 +660,7 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
         detail = e.get("detail") if isinstance(e.get("detail"), str) else ""
         data = _small({"id": aid, "tool": e.get("tool"), "status": "pending", "policy": e.get("policy"),
                        "expires_at": e.get("expires_at"), "taint": e.get("taint"),  # --- taint (#130): why it asks
-                       "args_hash": e.get("args_hash")})  # --- KAN-77
+                       "args_hash": e.get("args_hash"), "risky": e.get("risky")})  # --- KAN-77, KAN-79
         data["detail"] = detail[:2200]  # whole (driver.shown): the person approving must see all of it
         return [RunEvent(kind="approval_request", text=_clip(f"{e.get('tool') or '?'}: {detail}"), data=data)]
     if t == "approval_resolved" and isinstance(aid, str) and e.get("decision") in _DECIDED:

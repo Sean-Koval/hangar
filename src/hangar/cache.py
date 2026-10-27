@@ -91,7 +91,7 @@ def _auto(svc: SessionService, s: Session, h: Harness) -> tuple[str | None, str]
     if s.idle_minutes == 0 or s.idle_minutes > DEFAULT_TTL_MINUTES:
         waits.append(f"it waits {'indefinitely' if s.idle_minutes == 0 else f'{s.idle_minutes} min'} "
                      "for the next message")
-    if approvals(svc, s) == "ask" and svc.settings.approval_timeout_seconds > DEFAULT_TTL_MINUTES * 60:
+    if approvals(svc, s) in ("ask", "governed") and svc.settings.approval_timeout_seconds > DEFAULT_TTL_MINUTES * 60:
         waits.append("people answer its tool approvals")
     if s.needs_input or any(t.outcome == "needs_input" for t in s.turns):
         waits.append("its agent asks people questions")  # and the turn that asks must have written 1h entries

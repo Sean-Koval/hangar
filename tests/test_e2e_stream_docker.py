@@ -18,7 +18,8 @@ from hangar import sandbox_streams
 from hangar.envd import find_binaries
 from hangar.streams import hub
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 ROOT = Path(__file__).parents[1]
 

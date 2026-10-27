@@ -23,7 +23,8 @@ import pytest
 
 from tests.test_mcp_modern import AppThread
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "acceptance" / "gke.sh"
