@@ -1,0 +1,10 @@
+# osv-scanner: dependency findings left in uv.lock on purpose (KAN-179, docs/security/operations.md#vulnerability-management).
+# The security workflow fails on a High or Critical finding that has a fix. Record one here only when it can't be
+# bumped yet, with why, and an ignoreUntil no later than its triage deadline (Critical 7 days, High 30):
+#
+#   [[IgnoredVulns]]
+#   id = "GHSA-xxxx-xxxx-xxxx"
+#   ignoreUntil = 2026-11-30
+#   reason = "the fix needs Python 3.13; hangar's paths never call the affected function"
+#
+# The first audit (2026-10-26) found one, GHSA-6q48-6c7w-9gw2 in certifi (Critical), fixed by bumping certifi.

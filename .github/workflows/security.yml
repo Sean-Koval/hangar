@@ -1,0 +1,123 @@
+# Vulnerability and secret scanning (KAN-179, docs/security/operations.md#vulnerability-management):
+#   dependencies  osv-scanner on uv.lock; fails on a High or Critical finding that has a fix (osv-scanner.toml holds
+#                 the ones left on purpose, each with its reason)
+#   secrets       gitleaks on a pull request's commits; nightly and by hand, the whole history (.gitleaksignore holds
+#                 the triaged false positives)
+#   image         Trivy on the control-plane image, built here, on pull requests and nightly; main's builds are
+#                 scanned in images.yml and releases in release.yml. Reports to code scanning, never fails.
+#   codeql        CodeQL for Python and the web console's JavaScript (src/hangar/ui), to code scanning
+# osv-scanner and gitleaks install with `go install` at a pinned version: the Go checksum database proves the source
+# is the one every other user of that version got.
+name: security
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *"  # nightly: new advisories against what main already ships
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: auto
+  OSV_SCANNER: github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
+  GITLEAKS: github.com/zricethezav/gitleaks/v8@v8.30.1
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install osv-scanner
+        run: go install "$OSV_SCANNER" && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Audit uv.lock
+        run: |
+          osv-scanner --version
+          # Exit 1 means "found something": the gate below decides what fails.
+          osv-scanner scan source --lockfile uv.lock --format json > osv.json || [ $? -eq 1 ]
+          set -o pipefail
+          python3 scripts/ci/audit_deps.py osv.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install gitleaks
+        run: go install "$GITLEAKS" && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Scan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          gitleaks version
+          # A pull request: its own commits. A push: what it added. Nightly or by hand: the whole history.
+          range=--all
+          if [ "$EVENT" = pull_request ] || { [ "$EVENT" = push ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; }; then
+            range="$BASE..HEAD"
+          fi
+          echo "Scanning $range"
+          # --redact: a finding's value never reaches the log. .gitleaksignore is read from the checkout.
+          gitleaks git --redact --no-banner --log-opts="$range" .
+
+  image:
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write  # the SARIF upload
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: hangar:scan
+          cache-from: type=gha
+      - uses: ./.github/actions/trivy-image
+        with:
+          image: hangar:scan
+
+  codeql:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write  # the SARIF upload
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            config: |
+              paths: [src/hangar, scripts]
+          - language: javascript-typescript
+            # the web console; src/hangar/ui/airframe is vendored from agent-factory and scanned there
+            config: |
+              paths: [src/hangar/ui]
+              paths-ignore: [src/hangar/ui/airframe]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config: ${{ matrix.config }}
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}

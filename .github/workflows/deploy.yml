@@ -163,6 +163,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      security-events: write  # images.yml's scan job asks for it; it skips when called from here (KAN-179)
 
   control-plane:
     needs: [setup, state]
