@@ -4,6 +4,13 @@ zone             = "us-central1-a"
 domain           = "hangar.example.com"
 enable_kata_pool = false
 
+# Cluster hardening (hardening.tf, docs/security/gke-cluster.md). Secure Boot replaces every node pool on an existing
+# cluster, so it is off by default; a new install turns it on here.
+shielded_secure_boot = true
+# private_nodes              = true   # internal IPs only, with Cloud NAT
+# master_authorized_networks = [{ cidr_block = "203.0.113.4/32", display_name = "my laptop" }]
+# deletion_protection        = false  # only before a deliberate terraform destroy
+
 # Sandbox nodes off 1 AM - 9:50 AM, ready with a warm node by 10 (deploy/gke/power.sh on Cloud Scheduler);
 # hangar and the system pool stay up
 # enable_power_schedule = true

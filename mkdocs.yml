@@ -182,6 +182,7 @@ nav:
           - security/README.md
           - What a compromised sandbox does not get: security/compromised-sandbox.md
           - Running hangar safely: security/operations.md
+          - How the GKE cluster is hardened: security/gke-cluster.md
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
           - Gaps found in the 1.0 review: security/review-1.0.md

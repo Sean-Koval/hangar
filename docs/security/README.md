@@ -56,6 +56,7 @@ command output and idle connections.
 | Page | What it covers |
 | --- | --- |
 | [What a compromised sandbox does not get](compromised-sandbox.md) | The six things out of an attacker's reach, one section each |
+| [How the GKE cluster is hardened](gke-cluster.md) | Cluster settings, the CIS GKE mapping, Binary Authorization, changes to an existing cluster |
 | [Running hangar safely](operations.md) | Operational advice: a private control plane, a token per client, the vault key |
 | [A compromised sandbox: the threat model](threat-model.md) | Every goal an attacker inside a sandbox could have, what stops it and the test |
 | [What is not covered](not-covered.md) | The gaps, stated plainly |

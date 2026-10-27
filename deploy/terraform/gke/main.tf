@@ -41,7 +41,8 @@ resource "google_container_cluster" "hangar" {
 
   remove_default_node_pool = true
   initial_node_count       = 1
-  deletion_protection      = false
+  # KAN-180: Terraform refuses to delete the cluster (a Terraform-side flag: no API call, applies in place).
+  deletion_protection = var.deletion_protection
 
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
@@ -50,7 +51,57 @@ resource "google_container_cluster" "hangar" {
   # NetworkPolicy enforcement (Dataplane V2) backs Agent Sandbox's default-deny egress to internal ranges.
   datapath_provider = "ADVANCED_DATAPATH"
 
-  depends_on = [google_project_service.apis]
+  # --- KAN-180 hardening (hardening.tf has the variables, the KMS key and the NAT; docs/security/gke-cluster.md the
+  # CIS mapping and what each change does to an existing cluster).
+  # Inter-node transparent encryption: WireGuard between nodes on Dataplane V2, so git grants to hangar-gateway:8788
+  # don't cross nodes in plain HTTP (KAN-174 L-10). In place, but GKE restarts every node to turn it on.
+  in_transit_encryption_config = var.inter_node_encryption ? "IN_TRANSIT_ENCRYPTION_INTER_NODE_TRANSPARENT" : null
+
+  # Application-layer secrets encryption: etcd's Secrets wrapped with a Cloud KMS key. In place; restarts the (zonal)
+  # control plane, so the Kubernetes API is down for the operation.
+  dynamic "database_encryption" {
+    for_each = var.secrets_encryption ? [1] : []
+    content {
+      state    = "ENCRYPTED"
+      key_name = local.secrets_key
+    }
+  }
+
+  enable_shielded_nodes = true # GKE's default; stated so a review sees it
+
+  # Kubernetes security posture (workload configuration auditing). Workload vulnerability scanning is left to GKE:
+  # Google removed both of its tiers (standard 2025-07-31, advanced 2026-06-16); images are scanned by Artifact
+  # Analysis in the registry instead (var.image_vulnerability_scanning).
+  security_posture_config {
+    mode = var.security_posture
+  }
+
+  # Optional private nodes: nodes get internal IPs only (Cloud NAT in hardening.tf for egress). The control plane keeps
+  # its public endpoint, so up.sh, CI and the power jobs still reach it.
+  dynamic "private_cluster_config" {
+    for_each = var.private_nodes ? [1] : []
+    content {
+      enable_private_nodes = true
+    }
+  }
+
+  # Optional master authorized networks: only these ranges reach the public endpoint (plus Google's own, for Cloud
+  # Build and Cloud Run). Empty: no restriction (today's behaviour).
+  dynamic "master_authorized_networks_config" {
+    for_each = length(var.master_authorized_networks) > 0 ? [1] : []
+    content {
+      gcp_public_cidrs_access_enabled = var.master_authorized_gcp_ranges
+      dynamic "cidr_blocks" {
+        for_each = var.master_authorized_networks
+        content {
+          cidr_block   = cidr_blocks.value.cidr_block
+          display_name = cidr_blocks.value.display_name
+        }
+      }
+    }
+  }
+
+  depends_on = [google_project_service.apis, google_kms_crypto_key_iam_member.gke_secrets]
 }
 
 resource "google_container_node_pool" "system" {
@@ -66,8 +117,18 @@ resource "google_container_node_pool" "system" {
   node_config {
     machine_type = "e2-standard-2"
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    shielded_instance_config { # KAN-180; secure boot forces a new pool on an existing cluster (hardening.tf)
+      enable_secure_boot          = var.shielded_secure_boot
+      enable_integrity_monitoring = true
+    }
     workload_metadata_config {
       mode = "GKE_METADATA"
+    }
+  }
+  dynamic "network_config" { # KAN-180: private nodes on existing pools too (in place, a rolling node update)
+    for_each = var.private_nodes ? [1] : []
+    content {
+      enable_private_nodes = true
     }
   }
 }
@@ -107,8 +168,18 @@ resource "google_container_node_pool" "sandboxes" {
         enabled = true
       }
     }
+    shielded_instance_config { # KAN-180; secure boot forces a new pool on an existing cluster (hardening.tf)
+      enable_secure_boot          = var.shielded_secure_boot
+      enable_integrity_monitoring = true
+    }
     workload_metadata_config {
       mode = "GKE_METADATA"
+    }
+  }
+  dynamic "network_config" { # KAN-180: private nodes on existing pools too (in place, a rolling node update)
+    for_each = var.private_nodes ? [1] : []
+    content {
+      enable_private_nodes = true
     }
   }
 }
@@ -150,8 +221,18 @@ resource "google_container_node_pool" "kata" {
       threads_per_core             = 0
       enable_nested_virtualization = true
     }
+    shielded_instance_config { # KAN-180; secure boot forces a new pool on an existing cluster (hardening.tf)
+      enable_secure_boot          = var.shielded_secure_boot
+      enable_integrity_monitoring = true
+    }
     workload_metadata_config {
       mode = "GKE_METADATA"
+    }
+  }
+  dynamic "network_config" { # KAN-180: private nodes on existing pools too (in place, a rolling node update)
+    for_each = var.private_nodes ? [1] : []
+    content {
+      enable_private_nodes = true
     }
   }
 }
