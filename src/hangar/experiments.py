@@ -764,8 +764,10 @@ async def _loop(jobs: JobService, job: Job, st: State, spec: ExperimentSpec,
                                  f"{child.approval.reason if child.approval else 'see the job'}")
             if child.state == JobState.NEEDS_INPUT and child.id not in jobs._active:
                 jobs.cancel(child.id, f"experiment:{job.id}")  # nobody answers an experiment's agents
-            if child.state not in JOB_TERMINAL and not child.cancel_requested and t.pin_set:
-                _check_pin(jobs, job, t, child)  # --- #178: turn 1 against the pin set; drift ends it
+            if t.pin_set and (child.state in JOB_TERMINAL or not child.cancel_requested):
+                # --- #178: turn 1 against the pin set; drift ends it. Also once the job has ended: a short turn can
+                # finish between two polls, and its drift must still decide the trial (KAN-184).
+                _check_pin(jobs, job, t, child)
             if child.state not in JOB_TERMINAL and not child.cancel_requested and _infra_turn(child) is not None:
                 # --- #166: a restart or the power-down cut its turn off and the job would resume from a checkpoint:
                 # not the conditions the other trials ran under. It ends here and runs again as a fresh trial.
