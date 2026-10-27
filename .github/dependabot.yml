@@ -1,8 +1,10 @@
 # Actions are pinned by commit SHA with the version in a comment (KAN-171); Dependabot bumps both together.
+# uv.lock and the Dockerfile's digests too (KAN-179, docs/security/operations.md#vulnerability-management): grouped
+# weekly updates, while security updates for a known advisory open at once, outside the groups.
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    directories: ["/", "/.github/actions/*"]  # the workflows, and the local trivy-image action's pins
     schedule:
       interval: weekly
     groups:
@@ -10,3 +12,24 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci"
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps"
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        applies-to: version-updates
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"

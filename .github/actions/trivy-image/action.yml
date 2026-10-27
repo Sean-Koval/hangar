@@ -1,0 +1,70 @@
+# Scan a control-plane image with Trivy and send the findings to GitHub code scanning (KAN-179,
+# docs/security/operations.md#vulnerability-management). Used by security.yml (pull requests, nightly), images.yml
+# (main) and release.yml (tags). It reports and never fails the job: triage follows the SLA, and code scanning shows
+# what's new on a pull request. Findings with no fixed version are left out; .trivyignore holds the ones left on
+# purpose, each with its reason.
+#
+# The job needs `security-events: write` (and `packages: read` to pull a private GHCR image, with TRIVY_USERNAME and
+# TRIVY_PASSWORD in its env).
+name: trivy-image
+description: Trivy scan of a container image, SARIF to code scanning, High and Critical in the job summary
+inputs:
+  image:
+    description: The image to scan, in the local Docker daemon or a registry
+    required: true
+  category:
+    description: The code scanning category; the same everywhere, so main, pull requests and tags compare
+    default: trivy-control-plane
+  ref:
+    description: The Git ref the results belong to, when it isn't the run's own (release.yml run by hand)
+    default: ""
+  sha:
+    description: The commit the results belong to, with ref
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Trivy (SARIF)
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        version: v0.76.1
+        image-ref: ${{ inputs.image }}
+        format: sarif
+        output: trivy.sarif
+        ignore-unfixed: true
+        trivyignores: .trivyignore
+        exit-code: "0"
+    - name: Trivy (High and Critical, for the summary)
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        version: v0.76.1
+        skip-setup-trivy: true
+        image-ref: ${{ inputs.image }}
+        format: table
+        output: trivy.txt
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        trivyignores: .trivyignore
+        exit-code: "0"
+    - name: Summary
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        {
+          echo "### Trivy: \`$IMAGE\`"
+          echo
+          echo "High and Critical findings that have a fix (all severities are in code scanning):"
+          echo
+          echo '```'
+          cat trivy.txt 2>/dev/null || echo "(no table)"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    # A fork's pull request gets a read-only token, which can't upload; its findings stay in the summary.
+    - if: ${{ !github.event.pull_request.head.repo.fork }}
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+      with:
+        sarif_file: trivy.sarif
+        category: ${{ inputs.category }}
+        ref: ${{ inputs.ref }}
+        sha: ${{ inputs.sha }}

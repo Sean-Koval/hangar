@@ -1,0 +1,3 @@
+# Trivy: control-plane image findings left on purpose (KAN-179, docs/security/operations.md#vulnerability-management).
+# One CVE id per line, each under a comment saying why and until when. Unfixed findings aren't reported
+# (--ignore-unfixed), so only list a fixed one that hangar can't take yet.

@@ -1,0 +1,83 @@
+# gitleaks: findings triaged as false positives (KAN-179). One line per finding, as commit:file:rule:line.
+# The full-history scan of 2026-10-26 (gitleaks 8.30.1, 693 commits, every ref) found 46, all listed here: none is
+# a real credential. A new finding fails the PR check; fix it, or mark a test fixture `# gitleaks:allow` on its line.
+
+# docs/e2b.md: prose naming E2B's token headers, not a token
+a1f6d8d65f5097fb969e2ab05a935732a5402fc2:docs/e2b.md:generic-api-key:89
+
+# envd/src/config.rs: a unit test's made-up token for --token-file
+6b9363158113481ca64d1da3e4d7f5951bb9a20c:envd/src/config.rs:generic-api-key:140
+
+# src/hangar/canary.py: the public PGP fingerprint of Claude Code's release key, which the canary checks signatures against
+dc4dceeb12f6418bdf58db238607b18c17af16b0:src/hangar/canary.py:generic-api-key:80
+
+# src/hangar/config.py: a comment naming E2B's API header, not a key
+b8b1344d3abe3a7c395cb443f6b62882c671ca3e:src/hangar/config.py:generic-api-key:89
+
+# tests/test_buildcache.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+39095de80b88e824613b24685be59c6e12ba19da:tests/test_buildcache.py:stripe-access-token:646
+39095de80b88e824613b24685be59c6e12ba19da:tests/test_buildcache.py:stripe-access-token:662
+
+# tests/test_events_out.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+ab2de73200a36daad34ecd23c205fe6eab27656c:tests/test_events_out.py:generic-api-key:29
+
+# tests/test_exchange.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+22dbe6d80714f993f3f322888081a0bf436d84ac:tests/test_exchange.py:generic-api-key:160
+22dbe6d80714f993f3f322888081a0bf436d84ac:tests/test_exchange.py:generic-api-key:301
+22dbe6d80714f993f3f322888081a0bf436d84ac:tests/test_exchange.py:generic-api-key:65
+
+# tests/test_fleet_api.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+7eb6f5bb6879e0a0e81789b63ca3e9b91bee8e02:tests/test_fleet_api.py:curl-auth-header:301
+7eb6f5bb6879e0a0e81789b63ca3e9b91bee8e02:tests/test_fleet_api.py:generic-api-key:296
+
+# tests/test_identity.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:106
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:108
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:117
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:121
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:193
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:24
+2d0edaeccd04c1287e2b138fd29163044358b0df:tests/test_identity.py:generic-api-key:78
+e660c783b18508a86377fb94b6a15d152213d94e:tests/test_identity.py:generic-api-key:271
+f1246de5969f1ab9df02c254ffd996d59d6dc80b:tests/test_identity.py:generic-api-key:271
+
+# tests/test_people.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+b708449418fe4ad72151897c6c31e13d648bff6a:tests/test_people.py:generic-api-key:368
+b708449418fe4ad72151897c6c31e13d648bff6a:tests/test_people.py:generic-api-key:386
+b708449418fe4ad72151897c6c31e13d648bff6a:tests/test_people.py:generic-api-key:427
+b8bfb813f69dfc6fb48c7988c00bb6d78b1514f1:tests/test_people.py:generic-api-key:158
+b8bfb813f69dfc6fb48c7988c00bb6d78b1514f1:tests/test_people.py:generic-api-key:159
+
+# tests/test_secretscan.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+ff6e271db30d623f9a22b603a13ebfa707905348:tests/test_secretscan.py:generic-api-key:247
+ff6e271db30d623f9a22b603a13ebfa707905348:tests/test_secretscan.py:generic-api-key:258
+ff6e271db30d623f9a22b603a13ebfa707905348:tests/test_secretscan.py:generic-api-key:288
+
+# tests/test_setup_cicd.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+b8c8b37ee0dc4e5501b801c42f3af31b36a122ed:tests/test_setup_cicd.py:generic-api-key:26
+
+# tests/test_slack.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+de3006a8f33fd9a568488c1ac5860874f223269e:tests/test_slack.py:generic-api-key:34
+
+# tests/test_subscription_logins.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+33e7204ba1984edfb2b705cde4ffd118a2976509:tests/test_subscription_logins.py:generic-api-key:164
+33e7204ba1984edfb2b705cde4ffd118a2976509:tests/test_subscription_logins.py:generic-api-key:259
+33e7204ba1984edfb2b705cde4ffd118a2976509:tests/test_subscription_logins.py:generic-api-key:49
+
+# tests/test_teamcreds.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+14505129de97a2f69c538d4fd27af410a0b02039:tests/test_teamcreds.py:generic-api-key:230
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:atlassian-api-token:286
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:atlassian-api-token:293
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:generic-api-key:147
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:generic-api-key:186
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:generic-api-key:187
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:generic-api-key:56
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:generic-api-key:57
+7586508920a778e8b5a02c164cfe18be6e629433:tests/test_teamcreds.py:generic-api-key:58
+
+# tests/test_turnlogin.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+6452efac9d8b6c7b89e2f6e5395cf9b3359d3c19:tests/test_turnlogin.py:generic-api-key:85
+aac3928dd56d6fcb716e9d8c5c11af7c5cb6c374:tests/test_turnlogin.py:generic-api-key:167
+
+# tests/test_vault_mounted.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
+12df926dbdd357cd41d751b6c6bd00709fd58b8c:tests/test_vault_mounted.py:generic-api-key:51
