@@ -191,6 +191,7 @@ nav:
               - Controls and evidence: security/review/controls.md
               - Open findings and accepted risks: security/review/risks.md
           - The git credential gateway: security/git-gateway.md
+          - Who may continue a custom session branch: security/branch-creators.md
           - Egress allowlists: security/egress.md
           - Package mirrors: security/package-mirrors.md
           - Sandbox networking on Docker: security/docker-network.md
