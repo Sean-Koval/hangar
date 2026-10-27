@@ -30,7 +30,7 @@ Control numbers follow the CIS GKE Benchmark v1.9.0. Check them against the vers
 | Control | What it asks | Status | How, or why not |
 | --- | --- | --- | --- |
 | 5.1.1 | Image vulnerability scanning | Set | Artifact Analysis on the registry (`image_vulnerability_scanning`). |
-| 5.2.1 | Nodes not on the Compute Engine default service account | Partly | The heavy pool has its own account. The other pools still use the default; changing that replaces each pool. |
+| 5.2.1 | Nodes not on the Compute Engine default service account | Yes, opt-in | `dedicated_node_service_account` runs every pool as `hangar-nodes`, which can only write logs and metrics and pull hangar's images. It replaces the pools, so pair it with Secure Boot (KAN-183). |
 | 5.2.2 | Workload Identity | Set | hangar's pod uses its own Google service account. |
 | 5.3.1 | Secrets encrypted with Cloud KMS | Set | `secrets_encryption`. |
 | 5.4.1 | Legacy metadata APIs off | Set | GKE's default, and `GKE_METADATA` hides them from pods. |

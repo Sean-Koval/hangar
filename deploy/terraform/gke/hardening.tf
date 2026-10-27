@@ -141,3 +141,40 @@ resource "google_compute_router_nat" "nat" {
     filter = "ERRORS_ONLY"
   }
 }
+
+# --------------------------------------------------------------------------- node identity (KAN-183, CIS 5.2.1)
+# Every pool but the heavy one ran on the Compute Engine default account, which is often Editor on the project with the
+# cloud-platform scope: a gVisor or Kata escape to a node would get the project. A dedicated account holds only what a
+# node needs (logs, metrics, pulling hangar's images). Changing a pool's account replaces the pool, so this is off for
+# existing installs: turn it on in the same window as shielded_secure_boot, and the pools are replaced once.
+variable "dedicated_node_service_account" {
+  description = "Run the system, sandbox, Kata, microVM and overnight pools as hangar-nodes (least privilege) instead of the Compute Engine default account. Replaces those pools: pair it with shielded_secure_boot in one maintenance window."
+  type        = bool
+  default     = false
+}
+
+resource "google_service_account" "nodes" {
+  count        = var.dedicated_node_service_account ? 1 : 0
+  account_id   = "hangar-nodes"
+  display_name = "hangar node pools (KAN-183)"
+}
+
+resource "google_project_iam_member" "nodes" {
+  count   = var.dedicated_node_service_account ? 1 : 0
+  project = var.project_id
+  role    = "roles/container.defaultNodeServiceAccount" # logs, metrics, monitoring metadata: what a node writes
+  member  = "serviceAccount:${google_service_account.nodes[0].email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "nodes_pull" {
+  count      = var.dedicated_node_service_account ? 1 : 0
+  location   = google_artifact_registry_repository.hangar.location
+  repository = google_artifact_registry_repository.hangar.name
+  role       = "roles/artifactregistry.reader" # environment images and harness packs, from hangar's repository only
+  member     = "serviceAccount:${google_service_account.nodes[0].email}"
+}
+
+locals {
+  # null keeps the Compute Engine default account, as before.
+  node_service_account = var.dedicated_node_service_account ? google_service_account.nodes[0].email : null
+}

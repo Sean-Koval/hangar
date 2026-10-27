@@ -298,6 +298,8 @@ def test_the_provider_supports_in_transit_encryption():
 
 
 def test_cluster_hardening_defaults_are_secure():
+    import re
+
     d = _defaults()
     assert d["deletion_protection"] == "true"
     assert d["inter_node_encryption"] == "true"  # KAN-174 L-10
@@ -309,7 +311,8 @@ def test_cluster_hardening_defaults_are_secure():
     # Secure Boot forces a new pool (shielded_instance_config is ForceNew): off for existing installs, on in the
     # example new installs copy.
     assert d["shielded_secure_boot"] == "false"
-    assert "shielded_secure_boot = true" in (TF_GKE / "terraform.tfvars.example").read_text()
+    example = (TF_GKE / "terraform.tfvars.example").read_text()
+    assert re.search(r"^shielded_secure_boot\s+= true", example, re.M)
 
     cluster = _block(_tf(), 'resource "google_container_cluster" "hangar"')
     assert "deletion_protection = var.deletion_protection" in cluster
@@ -348,6 +351,27 @@ def test_every_node_pool_is_shielded_and_on_the_gke_metadata_server():
         assert "enable_secure_boot          = var.shielded_secure_boot" in shield, name
         assert "enable_integrity_monitoring = true" in shield, name
         assert "for_each = var.private_nodes" in _block(pool, 'dynamic "network_config"'), name
+
+
+def test_node_pools_can_run_on_a_least_privilege_account():
+    """KAN-183 (CIS 5.2.1): every pool but heavy (which has its own) runs as hangar-nodes when asked. Off by default,
+    since it replaces each pool; on in the example new installs copy."""
+    import re
+
+    tf = _tf()
+    assert _defaults()["dedicated_node_service_account"] == "false"
+    assert re.search(r"^dedicated_node_service_account\s+= true", (TF_GKE / "terraform.tfvars.example").read_text(),
+                     re.M)
+    for name in ("system", "sandboxes", "kata", "microvm", "overnight"):
+        pool = _block(tf, f'resource "google_container_node_pool" "{name}"')
+        assert "service_account = local.node_service_account" in _block(pool, "node_config"), name
+    assert "google_service_account.heavy_nodes[0].email" in _block(tf, 'resource "google_container_node_pool" "heavy"')
+    grant = _block(tf, 'resource "google_project_iam_member" "nodes"')
+    assert 'role    = "roles/container.defaultNodeServiceAccount"' in grant
+    pull = _block(tf, 'resource "google_artifact_registry_repository_iam_member" "nodes_pull"')
+    assert '"roles/artifactregistry.reader"' in pull and "google_artifact_registry_repository.hangar.name" in pull
+    nodes = re.findall(r'"serviceAccount:\$\{google_service_account\.nodes\[0\]\.email\}"', tf)
+    assert len(nodes) == 2  # those two grants and nothing else
 
 
 def test_private_nodes_get_cloud_nat():

@@ -25,7 +25,9 @@ resource "google_container_node_pool" "overnight" {
     spot         = true
     disk_size_gb = var.sandbox_disk_gb
     disk_type    = var.sandbox_disk_type
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # KAN-183: hangar-nodes with dedicated_node_service_account; null is the default account
+    service_account = local.node_service_account
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     sandbox_config {
       type = "GVISOR"
     }

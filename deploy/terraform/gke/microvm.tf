@@ -79,7 +79,9 @@ resource "google_container_node_pool" "microvm" {
     spot         = var.microvm_spot
     disk_size_gb = var.microvm_disk_gb
     disk_type    = var.microvm_disk_type
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # KAN-183: hangar-nodes with dedicated_node_service_account; null is the default account
+    service_account = local.node_service_account
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     labels = {
       "hangar.dev/runtime"    = "microvm"
       "nested-virtualization" = "enabled" # the label GKE's own nested-virtualization guide schedules on

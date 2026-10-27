@@ -116,7 +116,9 @@ resource "google_container_node_pool" "system" {
 
   node_config {
     machine_type = "e2-standard-2"
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # KAN-183: hangar-nodes with dedicated_node_service_account; null is the default account
+    service_account = local.node_service_account
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     shielded_instance_config { # KAN-180; secure boot forces a new pool on an existing cluster (hardening.tf)
       enable_secure_boot          = var.shielded_secure_boot
       enable_integrity_monitoring = true
@@ -157,7 +159,9 @@ resource "google_container_node_pool" "sandboxes" {
     # suspend sessions first (`hangar session suspend`), they resume from their checkpoints afterwards.
     disk_size_gb = var.sandbox_disk_gb
     disk_type    = var.sandbox_disk_type
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # KAN-183: hangar-nodes with dedicated_node_service_account; null is the default account
+    service_account = local.node_service_account
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     sandbox_config {
       type = "GVISOR"
     }
@@ -202,7 +206,9 @@ resource "google_container_node_pool" "kata" {
     image_type   = "UBUNTU_CONTAINERD"
     spot         = var.sandbox_spot
     disk_size_gb = 200
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # KAN-183: hangar-nodes with dedicated_node_service_account; null is the default account
+    service_account = local.node_service_account
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     # kata-deploy's RuntimeClass selects nodes by the two katacontainers labels, which kata-deploy
     # only adds after installing. Pre-labelling the pool puts them in the autoscaler's node
     # template, so a pending Kata pod can scale the pool up from zero. A pod that lands before the
