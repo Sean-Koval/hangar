@@ -4,8 +4,8 @@ The control plane serves a web console on the same port as the API, `:8787` by d
 paste an API token, and it shows the fleet.
 
 The server prints a bootstrap admin token when it first starts. It saves it to `~/.hangar/bootstrap-token`, in its
-data directory. The console uses an admin's routes, so use an admin token; the token stays in that browser until you
-choose **Sign out**.
+data directory. The console uses an admin's routes, so use an admin token; the token stays in that tab's session
+storage until you choose **Sign out** or close the browser.
 
 The top bar's first four sections are where the work happens, each with a count:
 
