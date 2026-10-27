@@ -13,7 +13,6 @@ from typing import Any
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import hangar.auth as auth_mod  # --- relay
@@ -1347,9 +1346,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------ dashboard
     ui_dir = resources.files("hangar") / "ui"
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index():
-        return FileResponse(str(ui_dir / "index.html"))
+    from hangar.uiheaders import ConsoleFiles, page_headers  # --- KAN-174: CSP, nosniff, no referrer, no framing
 
-    app.mount("/ui", StaticFiles(directory=str(ui_dir)), name="ui")
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request):
+        return FileResponse(str(ui_dir / "index.html"), headers=page_headers(request.headers.get("host")))
+
+    app.mount("/ui", ConsoleFiles(directory=str(ui_dir)), name="ui")
     return app

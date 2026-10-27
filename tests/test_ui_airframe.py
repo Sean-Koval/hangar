@@ -21,7 +21,7 @@ SYNC = ROOT / "scripts" / "sync-airframe.sh"
 
 # hangar's own files: no color literals. (favicon.svg is the exception: a favicon can't read CSS variables, so
 # agent-factory generates it from the tokens, and scripts/sync-brand.sh vendors it with the README banner.)
-OWN = ["app.css", "index.html", "vnc.html", "app.js", "fleet.js"]
+OWN = ["app.css", "index.html", "vnc.html", "vnc.css", "app.js", "fleet.js", "theme.js", "boot.js", "vnc.js"]
 HEX = re.compile(r"(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b")
 FUNC = re.compile(r"\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\s*\(", re.IGNORECASE)
 HEADER = re.compile(r"\A/\*\s*Airframe (theme-v\d+) (tokens|components)\b.{0,40}?Generated from airframe/", re.S)
@@ -123,9 +123,11 @@ def test_console_serves_and_links_airframe(settings):
     assert "/ui/airframe/airframe.css" in c.get("/ui/vnc.html").text
     # airframe.js is an ES module, loaded first and handed to the classic scripts as window.airframe; the deferred
     # scripts then run in order: app.js, then the Fleet page (fleet.js), which uses app.js's helpers
-    mod = re.search(r'<script type="module">(.*?)</script>', page, re.S)
-    assert mod and 'from "/ui/airframe/airframe.js"' in mod.group(1) and "window.airframe = airframe" in mod.group(1)
-    assert 'config.icons = "/ui/airframe/airframe-icons.svg"' in mod.group(1), "the sprite is not next to the page"
+    # (boot.js, not an inline module: the Content-Security-Policy refuses inline scripts, KAN-174)
+    mod = re.search(r'<script type="module" src="/ui/boot.js"></script>', page)
+    boot = c.get("/ui/boot.js").text
+    assert mod and 'from "/ui/airframe/airframe.js"' in boot and "window.airframe = airframe" in boot
+    assert 'config.icons = "/ui/airframe/airframe-icons.svg"' in boot, "the sprite is not next to the page"
     assert mod.start() < page.index('src="/ui/app.js"') < page.index('src="/ui/fleet.js"')
     for src in ("/ui/app.js", "/ui/fleet.js"):
         assert re.search(rf'<script defer src="{src}">', page), f"{src} must be deferred to run after the module"
@@ -364,7 +366,7 @@ def test_page_forms_are_airframe_fields_and_the_screen_has_an_empty_state():
     bare_css = re.search(r"^(?:input, select, textarea|label|textarea|input)\s*\{", css, re.M)
     assert not bare_css, "app.css styles bare controls; Airframe's af-input does"
     assert not re.search(r"[a-z]\(s\)[ ,.`<]", app), "write the plural (plural(n, word)), never '(s)'"
-    vnc = (UI / "vnc.html").read_text()
+    vnc = (UI / "vnc.html").read_text() + (UI / "vnc.js").read_text()
     assert 'class="af-empty"' in vnc and 'show("no-data", "No screen to show."' in vnc and 'show("error"' in vnc
 
 
@@ -414,8 +416,12 @@ def test_theme_switch_lands_on_needs_you_and_one_primary_per_view():
     html, css, app = (UI / "index.html").read_text(), (UI / "app.css").read_text(), (UI / "app.js").read_text()
     assert html.startswith('<!doctype html>\n<html lang="en" data-theme="dark">'), "Night is the default, not the OS"
     head = html[:html.index("<link")]
-    assert 'localStorage.getItem("hangar.theme")' in head, "the stored theme is applied before the stylesheets"
-    assert (UI / "vnc.html").read_text().count('localStorage.getItem("hangar.theme")') == 1, "the agent screen follows"
+    # theme.js, a blocking script in <head> (not inline: the Content-Security-Policy refuses inline scripts, KAN-174)
+    assert '<script src="/ui/theme.js"></script>' in head, "the stored theme is applied before the stylesheets"
+    assert 'localStorage.getItem("hangar.theme")' in (UI / "theme.js").read_text()
+    vnc = (UI / "vnc.html").read_text()
+    assert vnc.count('<script src="/ui/theme.js"></script>') == 1 and vnc.index("theme.js") < vnc.index("<link"), \
+        "the agent screen follows"
     assert 'id="theme-switch" class="af-btn af-btn--ghost af-btn--sm af-btn--icon theme-switch"' in html
     assert 'aria-label="Switch to Day"' in html and '"Switch to Night"' in app
     assert 'localStorage.setItem("hangar.theme"' in app and "function applyTheme(" in app
