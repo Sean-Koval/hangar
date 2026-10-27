@@ -596,7 +596,7 @@ function drawFleet() {
   const owners = d.owners || [];
   paint($("#fleet-owners"), owners.length > 1 || fleet.owner ? `<span class="af-note">Owner</span><div class="af-chips" role="group" aria-label="Owner">
     <button type="button" class="af-chip" data-owner="" aria-pressed="${!fleet.owner}">Everyone</button>${owners.map((o) =>
-      `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "hangar" : esc(o.name && o.name !== o.id ? o.name : actorParts(o.id).who)}<span class="af-note">${o.count}</span></button>`).join("")}</div>` : "", "owners");
+      `<button type="button" class="af-chip fleet-owner" data-owner="${esc(o.id)}" aria-pressed="${fleet.owner === o.id}">${o.id === "none" ? "hangar" : esc(o.name && o.name !== o.id ? o.name : actorParts(o.id).who)}<span class="af-note">${esc(o.count)}</span></button>`).join("")}</div>` : "", "owners");
   // the deck band: the same deck as Needs you, collapsible; gone when nothing waits
   const q = queue(), sets = deckSets();
   const band = $("#fleet-band");
@@ -654,7 +654,7 @@ function drawNeeds() {
       ${idHtml(i.job || leadId(u), { cls: "af-id af-agent__tail" })}
       <span class="af-agent__ttl"><span class="af-agent__work">${esc(i.title || u?.work || tailOf(i.job) || "")}</span><span class="af-agent__sub"><span class="af-agent__now">${esc(i.reason || "")}</span></span></span>
       <span class="af-agent__rig">${i.repo ? `<span class="af-mono">${esc(repoShort(i.repo))}</span>` : ""}</span>
-      <span class="needs-review__acts">${pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${esc(pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job ? sbtn("Open job", "ghost", { "data-go": `job:${i.job}` }) : ""}</span></li>`; }).join("")}</ul>` : "", "review");
+      <span class="needs-review__acts">${pr ? `<a class="af-btn af-btn--ghost af-btn--sm" href="${safeUrl(pr)}" target="_blank" rel="noopener">Open PR</a>` : ""}${i.job ? sbtn("Open job", "ghost", { "data-go": `job:${i.job}` }) : ""}</span></li>`; }).join("")}</ul>` : "", "review");
 }
 // say it when what needs someone changes (the screen reader hears it; the screen already shows it)
 function announce() {

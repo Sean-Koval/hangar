@@ -12,7 +12,8 @@ that would start with no login. The setup it checks is on [team setup](../team.m
   `credentials: person` policy makes unlinked senders' jobs fail.
 - **subscription logins**: warns for mapped repos, webhooks and schedules whose harness would find only subscription
   logins. It also warns for people whose only logins for a harness are subscriptions: their jobs fail while their
-  sessions work. It fails under `HANGAR_SUBSCRIPTION_LOGINS=any`.
+  sessions work. Its fix is the `hangar cred add` command for each harness's API key. It fails while
+  `HANGAR_SUBSCRIPTION_LOGINS=any` is still stored ([removed switches](../upgrading.md#removed-switches)).
 - **harness repo**: when `HANGAR_HARNESS_REPO` is set, whether it is reachable, when it was last refreshed, and
   whether every channel resolves.
 - **inbox delivery**: with the Slack app configured, warns for people who get DMs (`--dm` isn't `off`) but have no

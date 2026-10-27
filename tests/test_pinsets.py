@@ -227,3 +227,19 @@ async def test_an_experiment_records_a_pin_set_per_variant(jobs, world):
     assert op.harness_digest is None and op.harness_lock is None and op.overlay_digest  # its first trial knows it
     assert {t["variant"]: t["pin_set"] for t in v["trials"]} == {"locked": locked, "overlay": overlay}
     assert all(t["outcome"] == "succeeded" and not t["excluded"] for t in v["trials"]), v["trials"]
+
+
+@needs_tools
+async def test_drift_decides_a_trial_whose_job_ended_between_polls(jobs, world):
+    """KAN-184: a trial's job can finish before the experiment next looks at it. Its drift must still end the trial
+    as infra_error / drift, not let it count as the agent's result."""
+    jobs.settings.job_poll_seconds = 5.0  # the experiment looks once the short turn has long finished
+    p, _ = await _pinned(jobs, world)
+    spec_file = world["envs"] / "lockenv.yaml"
+    d = json.loads(spec_file.read_text())
+    d["description"] = "changed after the pin set"
+    spec_file.write_text(json.dumps(d))
+    jobs.fleet.catalog.reload()
+    out, exp = await _trials(jobs, world, p, n=1)
+    t = pinsets.trial_view(jobs, out["trial_ids"][0])
+    assert (t["outcome_class"], t["infra_reason"], t["excluded"]) == ("infra_error", "drift", True), t

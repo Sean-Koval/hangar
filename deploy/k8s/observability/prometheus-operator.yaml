@@ -31,3 +31,22 @@ spec:
       authorization:
         type: Bearer
         credentials: {name: hangar-metrics-token, key: token}  # a Secret in this namespace
+---
+# KAN-174 L-8: Prometheus scrapes /metrics on the API port. kube-prometheus-stack's usual namespace is monitoring;
+# change it to the one your Prometheus runs in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hangar-ingress-prometheus
+  namespace: hangar
+spec:
+  podSelector:
+    matchLabels: {app: hangar}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports: [{protocol: TCP, port: 8787}]

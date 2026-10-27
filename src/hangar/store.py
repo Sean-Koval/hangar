@@ -47,6 +47,9 @@ from hangar.trialcache import CacheEntry  # --- #180: the trial-result cache
 
 T = TypeVar("T", bound=BaseModel)
 log = logging.getLogger("hangar.store")
+# KAN-182: every audit entry also leaves the pod as one `hangar.audit: {json}` line on stdout. Cloud Logging keeps it,
+# and deploy/terraform/gke/audit.tf routes it to a log bucket the pod can't rewrite (docs/security/audit.md).
+audit_log = logging.getLogger("hangar.audit")
 
 _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Sandbox: ("sandboxes", "id"),
@@ -392,8 +395,10 @@ class Store:
 
     # --- audit --------------------------------------------------------------
     def audit(self, event: AuditEvent) -> None:
+        data = event.model_dump_json()
         with self._lock:
-            self._db.execute("INSERT INTO audit(ts, data) VALUES(?, ?)", (event.ts, event.model_dump_json()))
+            self._db.execute("INSERT INTO audit(ts, data) VALUES(?, ?)", (event.ts, data))
+        audit_log.info(data)  # the same JSON the table holds, nothing more: one line (JSON escapes newlines)
 
     def audit_since(self, since: float, actions: Collection[str], target: str | None = None,
                     limit: int = 500) -> list[AuditEvent]:

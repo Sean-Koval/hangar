@@ -115,7 +115,6 @@ async def test_the_api_and_the_push_webhook(jobs, world, settings, tmp_path, mon
 
 async def test_intake_jobs_run_from_the_default_harness(jobs, world, settings):  # noqa: F811
     reg, digest = await _frozen_registry(jobs, world)
-    settings.intake_posture = "off"
     settings.default_harness = "team@stable"
 
     def submit(source, **kw):

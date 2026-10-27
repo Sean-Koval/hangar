@@ -177,15 +177,22 @@ nav:
           - Trace export (hangar.trace/v1): api/traces.md
           - Run capture (hangar.run/v1): api/outbox.md
           - Trials and pin sets (hangar.pinset/v1): api/trials.md
+          - Tower's events (POST /api/governance/events): api/governance-events.md
           - Model gateway and tapes: model-gateway.md
       - Security model:
           - security/README.md
           - What a compromised sandbox does not get: security/compromised-sandbox.md
           - Running hangar safely: security/operations.md
+          - How the GKE cluster is hardened: security/gke-cluster.md
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
           - Gaps found in the 1.0 review: security/review-1.0.md
+          - Reviewing hangar for production:
+              - security/review/index.md
+              - Controls and evidence: security/review/controls.md
+              - Open findings and accepted risks: security/review/risks.md
           - The git credential gateway: security/git-gateway.md
+          - Who may continue a custom session branch: security/branch-creators.md
           - Egress allowlists: security/egress.md
           - The GKE egress default: security/egress-default.md
           - Package mirrors: security/package-mirrors.md
@@ -196,9 +203,12 @@ nav:
           - Front-door security: security/front-doors.md
           - People and OAuth connectors: security/people.md
           - Sealed graders: security/graders.md
+          - The driver sidecar on GKE: security/driver-sidecar.md
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md
+          - How the control-plane pod is locked down: security/control-plane-pod.md
+          - Where the audit log is kept: security/audit.md
       - CI: ci.md
   - Design notes:
       - specs/README.md
@@ -223,6 +233,7 @@ nav:
       - Upgrading: upgrading.md
       - Release notes:
           - releases/README.md
+          - "Enforced intake and API keys": releases/enforce.md
           - "Harness lock, outbox and doors": releases/adopt-capture.md
           - "Harness lock, outbox and doors: the steps": releases/adopt-capture-procedure.md
           - "Secure intake and API keys": releases/safe-release.md

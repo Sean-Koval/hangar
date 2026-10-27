@@ -4,20 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hangar</title>
-<!-- The theme, before first paint: Night is the default (the brand's dark cockpit); a stored choice (localStorage
-     hangar.theme) or a link's ?theme=day|night wins, and "auto" follows the OS. The switch in the top bar sets it. -->
-<script>
-  (function () {
-    var t = null;
-    try {
-      var q = new URLSearchParams(location.search).get("theme");
-      t = q || localStorage.getItem("hangar.theme");
-      if (q) localStorage.setItem("hangar.theme", q);
-    } catch (e) {}
-    if (t === "light" || t === "day") document.documentElement.dataset.theme = "light";
-    else if (t === "auto") document.documentElement.removeAttribute("data-theme");
-  })();
-</script>
+<!-- The theme, before first paint (theme.js): Night is the default; a stored choice or ?theme=day|night wins. -->
+<script src="/ui/theme.js"></script>
 <!-- Airframe (Sean-Koval/agent-factory) is the design source of truth: /ui/airframe/ is vendored by
      scripts/sync-airframe.sh and never edited here; app.css uses var(--af-*) tokens and af- classes only. -->
 <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
@@ -402,14 +390,9 @@
 <!-- the one form dialog (Airframe Dialog); confirms are airframe.confirm() -->
 <dialog id="dialog" class="af-dialog" aria-labelledby="dialog-title"><form method="dialog" id="dialog-form" class="af-dialog__form"></form></dialog>
 
-<!-- Airframe's helpers and behaviours (status, meta, btn, avatar, toast, confirm, drawer) are one ES module, vendored
-     with the CSS. The console's classic scripts reach it as window.airframe: deferred scripts run in document order,
-     so the module is in place before app.js and fleet.js. -->
-<script type="module">
-  import airframe from "/ui/airframe/airframe.js";
-  airframe.config.icons = "/ui/airframe/airframe-icons.svg";
-  window.airframe = airframe;
-</script>
+<!-- Airframe's helpers as window.airframe (boot.js), in place before app.js and fleet.js: scripts run in document order.
+     No inline script anywhere: the Content-Security-Policy refuses them (KAN-174). -->
+<script type="module" src="/ui/boot.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <script defer src="/ui/tails.js"></script>

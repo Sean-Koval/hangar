@@ -55,7 +55,7 @@ Later routine deploys go through `deploy.yml` while the pools are on, 10:00–01
 
 ```bash
 hangar doctor                          # clean: no failures
-hangar config get HANGAR_INTAKE_POSTURE   # enforce (not warn, not off)
+hangar config get HANGAR_INTAKE_POSTURE   # enforce, the only value (warn and off were removed after v0.2.0)
 ```
 
 ### 2. People

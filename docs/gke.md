@@ -15,6 +15,7 @@ terraform init && terraform apply
 This creates:
 
 - **A Standard cluster** on the RAPID channel, since Agent Sandbox needs GKE 1.35.2-gke.1210000 or later. It uses Workload Identity and Dataplane V2.
+- **Cluster hardening:** see [the CIS mapping](security/gke-cluster.md).
 - **A system pool**, plus a gVisor sandbox pool (Spot by default) that autoscales from 0 to N nodes.
 - **The Agent Sandbox add-on**, enabled through `gcloud`, and optionally Pod snapshots.
 - **Supporting resources:** an Artifact Registry repo, a `hangar` Google service account bound to the pod's KSA, and a global static IP.
@@ -465,13 +466,18 @@ If hangar can't start at all, stage the restore from a one-off pod with the same
 kubectl -n hangar scale deploy/hangar --replicas=0
 IMAGE=$(kubectl -n hangar get deploy/hangar -o jsonpath='{.spec.template.spec.containers[0].image}')
 kubectl -n hangar run hangar-restore --rm -i --restart=Never --image="$IMAGE" --overrides='{"spec": {
-  "serviceAccountName": "hangar", "enableServiceLinks": false, "securityContext": {"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
+  "serviceAccountName": "hangar", "enableServiceLinks": false, "securityContext": {"runAsNonRoot": true, "runAsUser": 1000,
+    "runAsGroup": 1000, "fsGroup": 1000, "seccompProfile": {"type": "RuntimeDefault"}},
   "containers": [{"name": "hangar-restore", "image": "'"$IMAGE"'",
     "command": ["hangar", "admin", "restore", "--local", "latest"],
+    "securityContext": {"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
+      "capabilities": {"drop": ["ALL"]}, "seccompProfile": {"type": "RuntimeDefault"}},
     "envFrom": [{"configMapRef": {"name": "hangar"}}, {"configMapRef": {"name": "hangar-site", "optional": true}},
                 {"secretRef": {"name": "hangar"}}],
-    "volumeMounts": [{"name": "data", "mountPath": "/data"}]}],
-  "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "hangar-data"}}]}}'
+    "volumeMounts": [{"name": "data", "mountPath": "/data"}, {"name": "tmp", "mountPath": "/tmp"},
+                     {"name": "home", "mountPath": "/home/hangar"}]}],
+  "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "hangar-data"}},
+              {"name": "tmp", "emptyDir": {"sizeLimit": "4Gi"}}, {"name": "home", "emptyDir": {"sizeLimit": "256Mi"}}]}}'
 kubectl -n hangar scale deploy/hangar --replicas=1
 ```
 
@@ -540,9 +546,9 @@ Long streams (a command's output, a terminal) end after the backend timeout (one
 
 ## Notes
 
-- **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents in an `open` environment reach GitHub and package registries, never your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
+- **Network.** The default SandboxTemplate network policy allows egress to the public internet only, and blocks RFC1918 ranges and the metadata server. Agents in `open` environments reach GitHub and registries, not your VPC. `deploy/k8s/sandbox-network.yaml` applies the same baseline as hangar's own NetworkPolicies (DNS, public internet minus private and link-local ranges, no ingress), so it still holds if the managed policy is turned off or you run the open-source controller.
 - **Git gateway.** `deploy/k8s/gateway.yaml` adds the `hangar-gateway` Service (port 8788) and a NetworkPolicy that lets sandbox pods reach that port, and only that port, of the control plane. `config.yaml` sets `HANGAR_GATEWAY_URL=http://hangar-gateway.hangar.svc:8788`, which keeps GitHub tokens out of sandboxes ([security/git-gateway.md](security/git-gateway.md)); intake-triggered jobs need it.
-- **Intake posture.** `config.yaml` sets `HANGAR_INTAKE_POSTURE: "enforce"`: jobs from GitHub, Slack, Jira, GitHub Projects and webhooks need the gateway and get at least `allowlist` egress, even in an `open` environment ([security/front-doors.md](security/front-doors.md#intake-posture)). `"warn"` runs them as before for one release ([upgrading.md](upgrading.md)).
+- **Intake posture.** `config.yaml` sets `HANGAR_INTAKE_POSTURE: "enforce"`: intake jobs (GitHub, Slack, Jira, webhooks) need the gateway and get at least `allowlist` egress, even in `open` environments ([security/front-doors.md](security/front-doors.md#intake-posture)). Nothing else is accepted ([removed switches](upgrading.md#removed-switches)).
 - **Egress allowlists.** The same Service serves hangar's egress proxy on 3128 (`HANGAR_EGRESS_URL`). `config.yaml` sets `HANGAR_EGRESS_DEFAULT: "allowlist"`, so environments without their own `egress.mode` are proxied ([what gets through](security/egress-default.md)). Their pods carry `dev.hangar/egress=proxied` and reach only the gateway and the proxy, with no DNS. Their SandboxTemplate carries that policy in place of Agent Sandbox's default, which allows the internet ([security/egress.md](security/egress.md)).
 - **Expiry.** Each claim gets `lifecycle.shutdownTime` (sandbox TTL plus 5 minutes) as a backstop to hangar's reaper.
 - **Storage.** The control plane keeps state in SQLite on a 20 Gi PVC. It backs itself up to the bucket; PD snapshots are the alternative (§7).

@@ -29,11 +29,12 @@ spec:
       # with hangar's own settings.
       enableServiceLinks: false
       terminationGracePeriodSeconds: 45
-      securityContext:  # the image's user (KAN-170); the rest of the hardening is KAN-174
+      securityContext:  # the image's user (KAN-170); the container's hardening below (KAN-174 L-8)
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: hangar
           image: ghcr.io/sean-koval/hangar
@@ -44,8 +45,18 @@ spec:
             - configMapRef: {name: hangar-site, optional: true}  # your overlay's settings; they win
             # HANGAR_ADMIN_TOKEN and HANGAR_SECRET_KEY: kubectl create secret, or the external-secrets component
             - secretRef: {name: hangar}
+          # KAN-174 L-8: no privilege escalation, no capabilities, the runtime's seccomp profile and a read-only root.
+          # hangar writes only to /data (the PVC), /tmp (build contexts, fork and snapshot archives) and its home
+          # (gcloud's and docker's config for in-cluster builds), each a volume below.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
           volumeMounts:
             - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: home, mountPath: /home/hangar}
             - {name: credentials, mountPath: /var/run/hangar-secrets, readOnly: true}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
@@ -58,6 +69,11 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim: {claimName: hangar-data}
+        # Up to HANGAR_WORKSPACE_TRANSFER_MB (1 GiB) of archives in flight, plus build contexts.
+        - name: tmp
+          emptyDir: {sizeLimit: 4Gi}
+        - name: home
+          emptyDir: {sizeLimit: 256Mi}
         # Credentials from your secret manager, one file per credential (the external-secrets component fills it).
         # Optional: hangar starts without it, and a credential that references a missing file has no value.
         - name: credentials

@@ -340,7 +340,7 @@ def record_cast(path: Path) -> str:
 async def ui(pw, out: Path, work: Path) -> None:
     browser = await pw.chromium.launch()
     ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark")
-    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+    await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}')")
     await ctx.add_init_script(OVERLAY)
     page = await ctx.new_page()
     await page.goto(f"{demo.URL}/#jobs", wait_until="networkidle")
@@ -417,7 +417,7 @@ async def ui(pw, out: Path, work: Path) -> None:
 
     # --- the stills, without the overlay: 1440x900 at 2x
     shot = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
-    await shot.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+    await shot.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}')")
     tab = await shot.new_page()
     await tab.goto(f"{demo.URL}/#jobs", wait_until="networkidle")
     await tab.evaluate("document.fonts.ready")
@@ -450,7 +450,7 @@ async def hero(browser, out: Path) -> None:
     for theme, suffix in (("dark", ""), ("light", "-light")):
         ctx = await browser.new_context(viewport={"width": HERO, "height": H}, device_scale_factor=2,
                                         color_scheme=theme)
-        await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
+        await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
         tab = await ctx.new_page()
         await tab.goto(f"{demo.URL}/#jobs", wait_until="networkidle")
         await tab.evaluate("document.fonts.ready")
@@ -496,7 +496,7 @@ async def _crop(page, path: Path, first: str | None, last: str, pad: int = 12) -
 
 async def _fixture_context(browser, width: int, theme: str = "dark"):
     ctx = await browser.new_context(viewport={"width": width, "height": H}, device_scale_factor=2, color_scheme=theme)
-    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
+    await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
     return ctx
 
 
@@ -540,7 +540,7 @@ async def review(pw, out: Path, work: Path) -> None:
     """The review loop in one take: decide a held call in Needs you, open the job, read the change, comment back."""
     browser = await pw.chromium.launch()
     ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark")
-    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}')")
+    await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}')")
     await ctx.add_init_script(OVERLAY)
     fx = Fixture()
     page = await _console_page(ctx, fx, "needs")
@@ -640,7 +640,7 @@ async def clip(pw, out: Path, work: Path, theme: str) -> None:
     browser = await pw.chromium.launch()
     w, h = CLIP
     ctx = await browser.new_context(viewport={"width": w, "height": h + CLIP_BAND}, device_scale_factor=2, color_scheme=theme)
-    await ctx.add_init_script(f"localStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
+    await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}'); localStorage.setItem('hangar.theme', '{theme}')")
     fx = Fixture()
     clip_scene(fx, "queued")
     page = await ctx.new_page()

@@ -5,6 +5,10 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // text with its URLs as links (escaped first; a trailing . , ; ) stays outside the link)
+// a link's href from data: http and https only, escaped for the attribute; any other scheme is no link at all
+const safeUrl = (u) => (/^https?:\/\//i.test(String(u ?? "").trim()) ? esc(String(u).trim()) : "#");
+// a <select>'s options from data, as DOM nodes (no markup to escape): [[value, text, selected?]]
+const setOptions = (sel, opts) => sel.replaceChildren(...opts.map(([value, text, on]) => new Option(text, value, !!on, !!on)));
 const linkify = (text) => esc(text).replace(/\bhttps?:\/\/[^\s<]+?(?=[.,;:)]*(?:\s|$))/g, (u) =>
   `<a href="${u}" target="_blank" rel="noopener" class="af-mono">${u.replace(/^https?:\/\/(www\.)?/, "")}</a>`);
 
@@ -381,15 +385,21 @@ function changesHtml(kind, id, hasWork) {
       : `<div class="env-bar">${btn("Show the change", { kind: "secondary", sm: true, icon: "diff", attrs: { "data-diff-show": true } })}<span class="hint">The commits, uncommitted edits and new files against the base, from ${hasWork ? "the sandbox" : "the last checkpoint"}. Comment on a line and it goes to the agent with your next message.</span></div>`}</div>`;
 }
 
+// The admin token lives in sessionStorage (KAN-174): it is gone when the browser closes and is never written to disk
+// the way localStorage is. A token an older console left in localStorage moves over once and is deleted there.
+try {
+  const old = localStorage.getItem("hangar.token");
+  if (old) { if (!sessionStorage.getItem("hangar.token")) sessionStorage.setItem("hangar.token", old); localStorage.removeItem("hangar.token"); }
+} catch { /* storage blocked: the gate asks for the token */ }
 const store = {
-  get token() { try { return localStorage.getItem("hangar.token") || ""; } catch { return ""; } },
-  set token(v) { try { v ? localStorage.setItem("hangar.token", v) : localStorage.removeItem("hangar.token"); } catch {} },
+  get token() { try { return sessionStorage.getItem("hangar.token") || ""; } catch { return ""; } },
+  set token(v) { try { v ? sessionStorage.setItem("hangar.token", v) : sessionStorage.removeItem("hangar.token"); } catch {} },
   get theme() { try { return localStorage.getItem("hangar.theme") || ""; } catch { return ""; } },
   set theme(v) { try { v ? localStorage.setItem("hangar.theme", v) : localStorage.removeItem("hangar.theme"); } catch {} },
 };
 
 /* ---- theme: Night is the default (the dark cockpit), Day the alternative; the choice is kept in localStorage as
-   hangar.theme and applied by the inline script in <head> before first paint, so there is no flash. The switch in the
+   hangar.theme and applied by theme.js in <head> before first paint, so there is no flash. The switch in the
    top bar flips between the two; "auto" (follow the OS) is reachable through ?theme=auto, as in Tower. ---- */
 const themeInForce = () => document.documentElement.dataset.theme
   || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
@@ -569,11 +579,11 @@ async function refreshMeta() {
 /* ---- new sandbox form ---- */
 function openNewForm(env) {
   const f = $("#new-form");
-  f.environment.innerHTML = state.envs.filter((e) => !e.error).map((e) =>
-    `<option value="${esc(e.name)}">${esc(e.name)}${Object.keys(e.images || {}).length ? "" : " (builds on first use)"}</option>`).join("");
+  setOptions(f.environment, state.envs.filter((e) => !e.error).map((e) =>
+    [e.name, `${e.name}${Object.keys(e.images || {}).length ? "" : " (builds on first use)"}`]));
   if (env) f.environment.value = env;
-  f.provider.innerHTML = Object.entries(state.overview.providers).filter(([, p]) => p.ok)
-    .map(([n]) => `<option ${n === state.overview.default_provider ? "selected" : ""}>${esc(n)}</option>`).join("");
+  setOptions(f.provider, Object.entries(state.overview.providers).filter(([, p]) => p.ok)
+    .map(([n]) => [n, n, n === state.overview.default_provider]));
   syncNewCreds();
   f.hidden = false;
   f.environment.focus();
@@ -953,12 +963,12 @@ function renderJob(j) {
       <dt>Where</dt><dd>${meta([["env", j.environment, "strong"], ["harness", j.harness || "default agent"], ["model", j.model || ""]])}</dd>
       ${j.repo ? `<dt>Repo</dt><dd><span class="af-mono">${esc(jobRepo(j))}</span></dd>
         <dt>Branch</dt><dd><code class="branch" title="${esc(j.branch)}">${esc(j.branch)}</code>${j.base_branch ? ` <span class="sub-val">from</span> <code class="branch">${esc(j.base_branch)}</code>` : ""}</dd>` : ""}
-      ${r.pr_url ? `<dt>Pull request</dt><dd><a href="${esc(r.pr_url)}" target="_blank" rel="noopener" class="af-mono">#${esc(r.pr_number)}</a></dd>` : ""}
+      ${r.pr_url ? `<dt>Pull request</dt><dd><a href="${safeUrl(r.pr_url)}" target="_blank" rel="noopener" class="af-mono">#${esc(r.pr_number)}</a></dd>` : ""}
       ${j.verify ? `<dt>Check</dt><dd><code>${esc(j.verify)}</code> <span class="sub-val">${verify}</span></dd>` : ""}
       ${r.commits?.length ? `<dt>Commits</dt><dd>${r.commits.map((c) => `<div><code>${esc(c)}</code></div>`).join("")}</dd>` : ""}
       ${j.context?.length ? `<dt>Context</dt><dd>${j.context.map((c) => c.url
-        ? `<div><a class="af-mono" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a></div>`
-        : `<div><code>${esc(c.name)}</code><span class="sub-val">${c.size} B</span></div>`).join("")}</dd>` : ""}
+        ? `<div><a class="af-mono" href="${safeUrl(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a></div>`
+        : `<div><code>${esc(c.name)}</code><span class="sub-val">${esc(c.size)} B</span></div>`).join("")}</dd>` : ""}
       <dt>Sandbox</dt><dd>${live ? idHtml(j.sandbox_id) : `<span class="hint">released; a reply resumes it from the last checkpoint</span>`}</dd>
       ${j.session ? `<dt>Session</dt><dd class="row"><a href="#sessions" data-goto-ses="${esc(j.session_id)}">${tails.isRaw(j.session_id) ? idHtml(j.session_id) : esc(j.session.name)}</a>
         ${status(sesRole(j.session), sesWord(j.session))}<span class="hint">${plural(j.session.checkpoints, "checkpoint")}</span></dd>` : ""}
@@ -1126,7 +1136,7 @@ function renderSession(x) {
       <dt>Idle</dt><dd><select id="ses-idle">${[[15, "suspend after 15 min idle"], [30, "after 30 min"],
         [120, "after 2 h"], [480, "after 8 h"], [0, "stay up until I suspend it"]].map(([v, t]) =>
         `<option value="${v}" ${v === keep ? "selected" : ""}>${t}</option>`).join("")}${[15, 30, 120, 480, 0].includes(keep)
-        ? "" : `<option value="${keep}" selected>after ${keep} min</option>`}</select></dd>
+        ? "" : `<option value="${esc(keep)}" selected>after ${esc(keep)} min</option>`}</select></dd>
       ${x.job_id ? `<dt>Job</dt><dd><a href="#jobs" data-goto-job="${esc(x.job_id)}" >${idHtml(x.job_id)}</a></dd>` : ""}
       ${x.sandbox_id ? `<dt>Sandbox</dt><dd>${idHtml(x.sandbox_id)}</dd>` : ""}
     </dl>
@@ -1252,14 +1262,14 @@ function syncSessionHarness() {
   const f = $("#session-form");
   const env = state.envs.find((e) => e.name === f.environment.value);
   const hs = (env?.harnesses || []).filter((h) => h !== "git");
-  f.harness.innerHTML = `<option value="">${esc(env?.default_harness || "default")} (default)</option>` +
-    hs.filter((h) => h !== env?.default_harness).map((h) => `<option>${esc(h)}</option>`).join("");
+  setOptions(f.harness, [["", `${env?.default_harness || "default"} (default)`],
+    ...hs.filter((h) => h !== env?.default_harness).map((h) => [h, h])]);
 }
 $("#btn-new-session").addEventListener("click", () => {
   const f = $("#session-form");
   const envs = state.envs.filter((e) => !e.error && (e.harnesses || []).some((h) => h !== "git"))
     .sort((a, b) => (!!b.repo - !!a.repo) || ((b.credentials || []).length - (a.credentials || []).length));
-  f.environment.innerHTML = envs.map((e) => `<option value="${esc(e.name)}">${esc(e.name)}${e.repo ? ` (${esc(jobRepo(e))})` : ""}</option>`).join("");
+  setOptions(f.environment, envs.map((e) => [e.name, `${e.name}${e.repo ? ` (${jobRepo(e)})` : ""}`]));
   syncSessionHarness();
   f.hidden = false;
   f.name.focus();
@@ -1284,8 +1294,8 @@ function syncJobHarness() {
   const f = $("#job-form");
   const env = state.envs.find((e) => e.name === f.environment.value);
   const hs = (env?.harnesses || []).filter((h) => h !== "git");
-  f.harness.innerHTML = `<option value="">${esc(env?.default_harness || "default")} (default)</option>` +
-    hs.filter((h) => h !== env?.default_harness).map((h) => `<option>${esc(h)}</option>`).join("");
+  setOptions(f.harness, [["", `${env?.default_harness || "default"} (default)`],
+    ...hs.filter((h) => h !== env?.default_harness).map((h) => [h, h])]);
   f.repo.placeholder = env?.repo ? `${env.repo} (environment default)` : "https://github.com/org/repo.git";
 }
 $("#btn-new-job").addEventListener("click", () => {
@@ -1294,7 +1304,7 @@ $("#btn-new-job").addEventListener("click", () => {
   // Environments with a repo and credentials first: those are the ones set up for jobs.
   const agentEnvs = state.envs.filter((e) => !e.error && (e.harnesses || []).some((h) => h !== "git"))
     .sort((a, b) => (!!b.repo - !!a.repo) || ((b.credentials || []).length - (a.credentials || []).length));
-  f.environment.innerHTML = agentEnvs.map((e) => `<option value="${esc(e.name)}">${esc(e.name)}${e.repo ? ` (${esc(jobRepo(e))})` : ""}</option>`).join("");
+  setOptions(f.environment, agentEnvs.map((e) => [e.name, `${e.name}${e.repo ? ` (${jobRepo(e)})` : ""}`]));
   syncJobHarness();
   f.hidden = false;
   f.instructions.focus();
@@ -1443,13 +1453,13 @@ async function loadCreds() {
   $("#login-buttons").innerHTML = state.harnesses.filter((h) => h.logins.length).map((h) =>
     `<button type="button" class="af-btn af-btn--secondary" data-login="${esc(h.name)}" title="${esc(h.logins[0].notes)}">${ic("user")}Sign in to ${esc(h.title)}</button>`).join("");
   const f = $("#cred-form");
-  f.harness.innerHTML = state.harnesses.map((h) => `<option value="${esc(h.name)}">${esc(h.title)}</option>`).join("");
+  setOptions(f.harness, state.harnesses.map((h) => [h.name, h.title]));
   syncCredKinds();
 }
 function syncCredKinds() {
   const f = $("#cred-form");
   const h = state.harnesses.find((x) => x.name === f.harness.value);
-  f.kind.innerHTML = (h?.credential_kinds || []).map((k) => `<option value="${esc(k.kind)}">${esc(kindWord(k.kind))}</option>`).join("");
+  setOptions(f.kind, (h?.credential_kinds || []).map((k) => [k.kind, kindWord(k.kind)]));
   syncSlot();
 }
 function syncSlot() {
@@ -1621,8 +1631,8 @@ async function loadAudit() {
   const who = $("#audit-who"), what = $("#audit-what"), cw = who.value, ca = what.value;
   const names = new Map();
   for (const a of audit.rows) { const n = actorParts(a.actor).who; if (!names.has(n)) names.set(n, n); }
-  who.innerHTML = `<option value="">Everyone</option>${[...names.keys()].sort().map((n) => `<option>${esc(n)}</option>`).join("")}`;
-  what.innerHTML = `<option value="">Every action</option>${[...new Set(audit.rows.map((a) => a.action))].sort().map((n) => `<option>${esc(n)}</option>`).join("")}`;
+  setOptions(who, [["", "Everyone"], ...[...names.keys()].sort().map((n) => [n, n])]);
+  setOptions(what, [["", "Every action"], ...[...new Set(audit.rows.map((a) => a.action))].sort().map((n) => [n, n])]);
   who.value = names.has(cw) ? cw : ""; what.value = audit.rows.some((a) => a.action === ca) ? ca : "";
   drawAudit();
 }
@@ -1676,7 +1686,7 @@ async function loadUsage() {
     drawSpend(days.rows, days.since);
     const rows = (sel, data, people = false) => {
       $(`${sel} tbody`).innerHTML = data.rows.length ? data.rows.map((r) => `<tr>${people ? `<td title="${esc(r.key)}">${esc(actorName(r.key))}</td>` : `<td class="af-table__mono">${esc(r.key)}</td>`}
-        <td class="af-num af-table__mono">${r.turns}</td><td class="af-num af-table__mono">${kTok(r.tokens)}</td>
+        <td class="af-num af-table__mono">${esc(r.turns)}</td><td class="af-num af-table__mono">${kTok(r.tokens)}</td>
         <td class="af-num af-table__mono" title="${r.unpriced_turns ? `${plural(r.unpriced_turns, "turn")} with no known price` : ""}">${usd(r.cost_usd)}${r.unpriced_turns ? " +" : ""}</td></tr>`).join("")
         : `<tr><td colspan="4">${emptyState({ compact: true, title: "No agent turns in this range." })}</td></tr>`;
     };

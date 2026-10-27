@@ -16,7 +16,8 @@ import yaml
 ROOT = Path(__file__).parents[1]
 KUST = ROOT / "deploy" / "kustomize"
 K8S = ROOT / "deploy" / "k8s"
-SHARED = ["namespace.yaml", "gateway.yaml", "sandbox-network.yaml", "envd-network.yaml", "heavy-policy.yaml"]
+SHARED = ["namespace.yaml", "gateway.yaml", "control-plane-network.yaml", "sandbox-network.yaml", "envd-network.yaml",
+          "heavy-policy.yaml"]
 COMPONENTS = {  # component -> the hangar-deploy keys it reads
     "gke-workload-identity": {"gcp_service_account": "hangar@example-project.iam.gserviceaccount.com"},
     "ingress-gce": {"domain": "hangar.example.com", "static_ip_name": "hangar-ip"},

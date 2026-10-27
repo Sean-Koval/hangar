@@ -204,10 +204,7 @@ async def test_egress_open(h, remote, settings, fleet, tmp_path):
     fleet.catalog.reload()
     _, by = await check(h, remote)
     assert by["egress secure"]["status"] == "warn"  # enforce floors intake jobs; other doors' jobs run open
-    settings.intake_posture = "warn"
-    _, by = await check(h, remote)
-    assert by["egress secure"]["status"] == "fail" and by["intake posture"]["status"] == "warn"
-    assert "egress.mode: allowlist" in by["egress secure"]["fix"]
+    assert by["intake posture"]["status"] == "ok" and "egress.mode: allowlist" in by["egress secure"]["fix"]
 
 
 async def test_sudo(h, remote, settings, fleet, tmp_path):
@@ -215,9 +212,6 @@ async def test_sudo(h, remote, settings, fleet, tmp_path):
     fleet.catalog.reload()
     _, by = await check(h, remote)
     assert by["sudo secure"]["status"] == "warn" and "no-new-privileges" in by["sudo secure"]["detail"]
-    settings.intake_posture = "off"
-    _, by = await check(h, remote)
-    assert by["sudo secure"]["status"] == "fail" and by["intake posture"]["status"] == "fail"
 
 
 async def test_a_subscription_credential_fails(h, remote, broker, store, settings, fleet, tmp_path):
@@ -230,7 +224,6 @@ async def test_a_subscription_credential_fails(h, remote, broker, store, setting
     _, by = await check(h, remote)
     assert by["credentials secure"]["status"] == "fail", by["credentials secure"]
     assert "--kind api_key" in by["credentials secure"]["fix"]
-    settings.subscription_logins = "any"  # now jobs would run on it: still not ready
     broker.put("team-sub", "claude-code", CredentialKind.OAUTH_TOKEN, "sk-ant-oat01-yyyyyyyyyyyy")
     (tmp_path / "repo-envs" / "secure.yaml").write_text(SECURE.replace("[team-key]", "[team-sub]"))
     fleet.catalog.reload()

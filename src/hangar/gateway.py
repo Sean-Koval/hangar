@@ -1233,13 +1233,28 @@ class Gateway:
                     size: int) -> None:
         ok = status == 200 and bool(report) and report[0] == "unpack ok" and \
             all(not x.startswith("ng ") for x in report)
-        self._record_created(grant, [x[3:] for x in report if status == 200 and x.startswith("ok ")])
+        pushed = [x[3:] for x in report if status == 200 and x.startswith("ok ")]
+        self._record_created(grant, pushed)
+        self._record_creators(grant, repo, cmds, pushed)  # --- KAN-174 (gap 8)
         observe.gateway_push("ok" if ok or (status == 200 and not cmds.commands) else "failed",  # --- observe
                              **{"hangar.sandbox.id": grant.sandbox_id, "hangar.gateway.upstream_status": status})
         self.fleet.audit(f"sandbox:{grant.sandbox_id}", "gw.git.push", grant.sandbox_id, repo=repo,
                          result="ok" if ok or (status == 200 and not cmds.commands) else "failed", status=status,
                          refs=[{"ref": c.ref, "old": c.old[:12], "new": c.new[:12]} for c in cmds.commands],
                          report=report[:20], response_bytes=size)
+
+    def _record_creators(self, grant: SandboxGrant, repo: str, cmds: Commands, pushed: list[str]) -> None:
+        """--- KAN-174 (known gap 8): for each branch this push created (old id zero, accepted upstream), whose sandbox
+        created it. A new session refuses a custom branch another person's sandbox created (branchowners.py)."""
+        from hangar import branchowners
+
+        created = {c.ref for c in cmds.commands if _is_zero(c.old) and c.ref.startswith("refs/heads/")}
+        refs = [r for r in pushed if r in created]
+        if not refs:
+            return
+        sb = self.store.get(Sandbox, grant.sandbox_id)
+        for ref in refs:
+            branchowners.record(self.store, repo, ref, sb, via="delivery" if grant.pins else "gateway")
 
     def _record_created(self, grant: SandboxGrant, refs: list[str]) -> None:
         """Branches a sandbox created through a pattern become its own: it may update them, others may not."""

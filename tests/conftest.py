@@ -42,10 +42,29 @@ def _no_host_docker(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _intake_posture_off(monkeypatch):
-    """--- intake posture (#123): enforce, the default, needs the git gateway and an egress proxy, which the fake
-    provider and most tests (and e2e suites) don't set up. Tests about the posture pass `intake_posture` to Settings
-    themselves (test_posture.py, test_e2e_egress_docker.py)."""
-    monkeypatch.setenv("HANGAR_INTAKE_POSTURE", "off")
+    """--- intake posture (#123): enforce, the only posture since KAN-74, needs the git gateway and an egress proxy,
+    which the fake provider and most tests (and e2e suites) don't set up. So tests turn it off through posture.mode,
+    which no setting can do, unless they pass `intake_posture="enforce"` to Settings themselves (test_posture.py,
+    test_e2e_egress_docker.py)."""
+    from hangar import posture
+
+    monkeypatch.setattr(posture, "mode", posture_mode_for_tests)
+
+
+def _real_posture_mode():
+    from hangar import posture
+
+    return posture.mode
+
+
+REAL_POSTURE_MODE = _real_posture_mode()
+
+
+def posture_mode_for_tests(settings) -> str:
+    """posture.mode for tests: `enforce` where the test set `intake_posture` on its Settings, else off."""
+    from hangar import posture
+
+    return "enforce" if "intake_posture" in getattr(settings, "model_fields_set", ()) else posture.OFF
 
 
 @pytest.fixture(autouse=True)

@@ -112,7 +112,7 @@ prints the object `GET /api/repos/{owner}/{repo}/readiness` returns (admin token
 | `stale approvals` | the base branch dismisses stale approvals on a push | fail (hangar won't arm auto-merge); warn when the policy opts out |
 | `review rules` | it requires an approving review and approval of the most recent push | warn |
 | `auto-merge` | (shown when it fails) the repo allows auto-merge, for a policy that lands on approval | fail |
-| `intake posture` | `HANGAR_INTAKE_POSTURE=enforce` ([security/front-doors.md](security/front-doors.md#intake-posture)) | warn for `warn`, fail for `off` |
+| `intake posture` | `HANGAR_INTAKE_POSTURE=enforce` ([security/front-doors.md](security/front-doors.md#intake-posture)) | always ok: `enforce` is the only posture since KAN-74 |
 | `git gateway` | the gateway serves the repo's host and answers | fail when it doesn't serve the repo; warn when the control plane can't reach it |
 | `credential mode ENV` | each environment the repo's jobs run in resolves to `credential_mode: gateway` | fail when its sandboxes would hold a GitHub token; warn for `direct` while the gateway serves the repo (jobs still fetch through it, people's sessions don't) |
 | `sudo ENV` | `sudo: false` | warn under `enforce` (Docker job sandboxes run with no-new-privileges), else fail |

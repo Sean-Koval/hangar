@@ -101,6 +101,8 @@ class NewSession(BaseModel):
     approvals: ApprovalPolicy | None = None  # workstream steer: auto | ask | deny-risky (default: the environment's)
     cache: CachePolicy | None = None  # --- overnight/cache: auto | 5m | 1h | off (default: the environment's)
     harness_lock: str | None = Field(None, max_length=200)  # --- harness locks (#134): name, name@rN, name@sha256:...
+    # --- KAN-174 (gap 8): an admin continues a custom branch another person's sandbox created (audited)
+    take_branch: bool = False
 
 
 def extract_summary(harness: str | None, log_text: str, *, outcome: str | None = None, reason: str | None = None,
@@ -320,6 +322,8 @@ class SessionService:
         branch = req.branch or f"hangar/session/{req.name}"
         if not _BRANCH_RE.match(branch) or (req.base_branch and req.base_branch == branch):
             raise SessionError(f"invalid branch '{branch}'")
+        repo = req.repo or (spec.repo.url if spec.repo else None)
+        taken_from = self._check_branch_creator(req, branch, repo, requester, person)  # --- KAN-174 (gap 8)
         context = exchange.check_context(req.context, self.settings)  # workstream E
         schema = exchange.check_schema(req.output_schema)
         if (context or schema) and not req.message:
@@ -328,7 +332,7 @@ class SessionService:
         self.fleet.power.check(None)  # --- ops: no session that can't start until morning
         s = Session(name=req.name, title=(req.title or (req.message or req.name).strip().splitlines()[0])[:200],
                     owner=owner, environment=env, harness=harness, model=req.model,
-                    repo=req.repo or (spec.repo.url if spec.repo else None), base_branch=req.base_branch,
+                    repo=repo, base_branch=req.base_branch,
                     branch=branch, labels=req.labels, approvals=req.approvals, cache=req.cache,
                     idle_minutes=(req.idle_minutes if req.idle_minutes is not None
                                   else self.settings.session_idle_minutes),
@@ -341,6 +345,9 @@ class SessionService:
         self._sessions[s.id] = s
         self._set(s, SessionState.STARTING, f"created by {requester}")
         self.fleet.audit(requester, "session.new", s.id, name=s.name, environment=env, repo=s.repo)
+        if taken_from is not None:  # --- KAN-174 (gap 8): an admin took another person's branch
+            self.fleet.audit(requester, "session.branch_override", s.id, name=s.name, repo=s.repo, branch=branch,
+                             created_by=taken_from.get("person"), sandbox=taken_from.get("sandbox"))
         if req.message:
             s.turns.append(SessionTurn(message=req.message, requester=requester, context=context,
                                        output_schema=schema))
@@ -351,6 +358,37 @@ class SessionService:
             self._busy.add(s.id)
             self._spawn(self._boot_task(s.id))
         return s
+
+    def _check_branch_creator(self, req: NewSession, branch: str, repo: str | None, requester: str,
+                              person: str | None) -> dict[str, Any] | None:
+        """--- KAN-174 (known gap 8): a custom branch outside hangar/session/ that another person's sandbox created
+        through the gateway (branchowners.py) would hand this session that sandbox's commits. Refused, audited as
+        `session.branch_refused`, unless an admin passes `take_branch`; returns the record then, for the override's
+        audit entry. A branch hangar has no record of (pushed by a person, or before the record existed) and one the
+        same person's sandbox created are continued as before. The session's own record (it is in the store from
+        here on) reserves the branch against every other sandbox at the gateway."""
+        from hangar import branchowners, identity
+        from hangar.gateway import SESSION_REFS, parse_remote
+
+        if not req.branch or f"refs/heads/{branch}".startswith(SESSION_REFS):
+            return None
+        remote = parse_remote(repo, self.fleet.gateway.hosts) if repo else None
+        rec = branchowners.creator(self.store, remote[1], branch) if remote else None
+        who = person if person is not None else identity.person()
+        if rec is None or remote is None or not branchowners.foreign(rec, who):
+            return None
+        by = rec.get("person")
+        owner = f"{by}'s" if by else "a"
+        if req.take_branch and identity.sees_all():
+            return rec
+        self.fleet.audit(requester, "session.branch_refused", None, name=req.name, repo=remote[1], branch=branch,
+                         created_by=by, sandbox=rec.get("sandbox"), take_branch=req.take_branch)
+        if req.take_branch:
+            raise identity.Forbidden("only an admin may take a branch another person's sandbox created")
+        raise SessionError(f"branch '{branch}' was created by {owner} hangar sandbox"
+                           f"{' (job ' + rec['job'] + ')' if rec.get('job') else ''}, not one of yours; "
+                           "a session would continue its commits. Pick another branch, or ask an admin "
+                           "to start the session with take_branch")
 
     def open(self, ref: str, requester: str, harness: str | None = None) -> Session:
         s = self.get(ref)
@@ -419,10 +457,11 @@ class SessionService:
         return s
 
     def start_turn(self, s: Session, message: str, requester: str, context: list[ContextItem] | None = None,
-                   output_schema: dict[str, Any] | None = None) -> None:
-        """Begin a turn now; the caller has checked that the session can take one."""
+                   output_schema: dict[str, Any] | None = None, preclear: list[dict[str, str]] | None = None) -> None:
+        """Begin a turn now; the caller has checked that the session can take one. `preclear` (KAN-77): calls
+        Tower signed, which the turn's driver allows once each (govevents.py)."""
         s.turns.append(SessionTurn(message=message, requester=requester, context=context or [],
-                                   output_schema=output_schema))
+                                   output_schema=output_schema, preclear=preclear or []))
         s.needs_input = None  # this message answers the agent's question, if it had one
         s.question_options = []
         s.last_active_at = now()

@@ -63,6 +63,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          # KAN-185: every release run rebuilds the apt layer (security updates), whatever the build cache holds
+          build-args: APT_REFRESH=${{ env.TAG }}-${{ github.run_id }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ env.TAG }}
@@ -76,6 +78,31 @@ jobs:
           digest='${{ steps.build.outputs.digest }}'
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the build returned no image digest"; exit 1; }
           echo "$IMAGE:$TAG@$digest" >> "$GITHUB_STEP_SUMMARY"
+
+  # The published control-plane image, by digest, scanned with Trivy for code scanning against the tag (KAN-179,
+  # docs/security/operations.md#vulnerability-management). It reports and never holds the release back.
+  scan:
+    needs: control-plane
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read  # the GHCR package may still be private
+      security-events: write  # the SARIF upload
+    env:
+      TRIVY_USERNAME: ${{ github.actor }}
+      TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/trivy-image
+        with:
+          image: ${{ env.IMAGE }}@${{ needs.control-plane.outputs.digest }}
+          ref: refs/tags/${{ env.TAG }}
+          sha: ${{ steps.commit.outputs.sha }}
 
   packs:
     runs-on: ubuntu-24.04

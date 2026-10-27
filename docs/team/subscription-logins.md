@@ -19,7 +19,7 @@ The vendors' terms reserve these for one person's own use, and don't allow autom
   or thread that started the job:
 
   ```
-  job needs an API-key credential for claude-code; subscription logins are interactive-only (docs/team.md#subscription-logins). add one: hangar cred add NAME --harness claude-code --kind api_key --file key.txt (your own; an admin adds --team for work no person owns)
+  job needs an API-key credential for claude-code; subscription logins are interactive-only (docs/team.md#subscription-logins). add an Anthropic API key: hangar cred add claude-api --harness claude-code --kind api_key --file anthropic-key.txt (your own; an admin adds --team for work no person owns)
   ```
 
   A job that names a subscription login in `credentials` is refused the same way. Their person's API key, or the
@@ -28,9 +28,8 @@ The vendors' terms reserve these for one person's own use, and don't allow autom
   uses their subscription login, and says so. It adds a warning event, `warnings` on `get_session` and the sandbox,
   and an entry in each turn's manifest `warnings[]`:
   `subscription login in a hangar sandbox: personal, interactive use only`.
-- **`HANGAR_SUBSCRIPTION_LOGINS`**: `interactive` (the default) as above. `any` lets jobs use them, with a warning on
-  the job and sandbox, and `hangar doctor` fails the **subscription logins** check. Experiment trials and graders
-  never get one, whatever it says.
+- **No setting relaxes this.** `HANGAR_SUBSCRIPTION_LOGINS=any` let jobs use them in v0.2.0 only. It was removed
+  after it: hangar refuses to start with it ([removed switches](../upgrading.md#removed-switches)).
 - **Spend caps.** Put a workspace spend limit on each API key at the vendor (Anthropic Console workspace limits,
   OpenAI project limits); hangar can't set those. hangar's job budgets and daily caps ([jobs](../jobs/README.md)) are
   the cap inside hangar. Use both.
@@ -50,8 +49,8 @@ A Codex ChatGPT login (`~/.codex/auth.json`) rotates its refresh token as it's u
 at a time and writes the new token back when the sandbox ends. The same holds for the other sign-in files (pi,
 Gemini). One such login serves one sandbox at once, across everyone who uses it.
 
-A sign-in file is always someone's own, and only interactive sessions and sandboxes use one (jobs only with
-`HANGAR_SUBSCRIPTION_LOGINS=any`). So this is about one person's sessions. When a person has several logins of a kind,
+A sign-in file is always someone's own, and only interactive sessions and sandboxes use one. So this is about one
+person's sessions. When a person has several logins of a kind,
 they form a pool and a sandbox takes a free one.
 
 When all are in use, a job or session **waits** and says so in its events:

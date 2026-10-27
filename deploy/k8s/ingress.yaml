@@ -20,3 +20,19 @@ spec:
     service:
       name: hangar
       port: {number: 80}
+---
+# KAN-174 L-8: the load balancer and its health checks reach the API port from Google's front ends
+# (cloud.google.com/load-balancing/docs/health-checks#firewall_rules); container-native load balancing sends them
+# straight to the pod. control-plane-network.yaml has the rest of who may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hangar-ingress-gclb
+  namespace: hangar
+spec:
+  podSelector:
+    matchLabels: {app: hangar}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ipBlock: {cidr: 35.191.0.0/16}}, {ipBlock: {cidr: 130.211.0.0/22}}]
+      ports: [{protocol: TCP, port: 8787}]

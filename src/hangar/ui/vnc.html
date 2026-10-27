@@ -6,34 +6,13 @@
 <meta name="referrer" content="no-referrer">
 <title>hangar agent screen</title>
 <!-- the console's theme (hangar.theme, set by the switch in its top bar), applied before first paint -->
-<script>
-  (function () {
-    var t = null;
-    try { t = localStorage.getItem("hangar.theme"); } catch (e) {}
-    if (t === "light" || t === "day") document.documentElement.dataset.theme = "light";
-    else if (t === "auto") document.documentElement.removeAttribute("data-theme");
-  })();
-</script>
+<script src="/ui/theme.js"></script>
 <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="/ui/airframe/airframe.css">
 <link rel="stylesheet" href="/ui/airframe/airframe-components.css">
-<style>
-  /* Airframe tokens only (tests/test_ui_airframe.py): the screen's chrome is an af-nav header with a status */
-  html, body { height: 100%; }
-  body { display: flex; flex-direction: column; }
-  header.af-nav { flex: none; gap: 14px; }
-  header .af-lbl { color: var(--af-fg-muted); }
-  #status { margin-left: auto; }
-  #screen { position: relative; flex: 1; min-height: 0; background: var(--af-canvas); }
-  /* what the screen area says when there is no screen to show (Airframe EmptyState): no ticket, the agent's screen
-     went away, or the ticket was refused; the header's status says the same in one word */
-  #empty { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--af-space-24); }
-  #empty[hidden] { display: none; }
-  #empty .af-empty { background: var(--af-raised); border-radius: var(--af-radius-card); max-width: 520px; }
-  #empty .af-empty__text .af-mono { font-size: 12.5px; }
-</style>
+<link rel="stylesheet" href="/ui/vnc.css">
 </head>
 <body>
 <header class="af-nav af-hue--hangar">
@@ -55,67 +34,6 @@
     </div>
   </div>
 </div>
-<script type="module">
-  // A one-time ticket from POST /api/screen/tickets (or MCP open_screen) arrives in the fragment, which browsers
-  // never send to a server. Watching is view-only unless the ticket was minted for control; hangar enforces that
-  // itself, so the viewOnly flag here only spares a viewer from typing into nothing.
-  import RFB from "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js";
-
-  const params = new URLSearchParams(location.hash.slice(1));
-  history.replaceState(null, "", location.pathname);
-  const ticket = params.get("ticket");
-  const control = params.get("control") === "1";
-  const status = document.getElementById("status");
-  document.getElementById("mode").textContent = control ? "you have control" : "view only";
-  // Airframe statuses: connecting is queued (ring), connected is running (quiet dot), a lost screen is failed
-  const say = (text, role) => {
-    document.getElementById("status-text").textContent = text;
-    status.className = `af-status af-status--${role}${role === "failed" ? " af-status--lit" : ""}`;
-  };
-  // the screen area without a screen: an Airframe empty state that says what is not here and what to do (no-data
-  // for a missing ticket, after-action when the agent closed its screen, error when the connection failed)
-  const empty = document.getElementById("empty"), card = empty.firstElementChild;
-  const show = (kind, title, html) => {
-    card.dataset.kind = kind;
-    card.querySelector(".af-ic").hidden = kind === "error";
-    card.querySelector(".af-status").hidden = kind !== "error";
-    card.querySelector(".af-empty__title").textContent = title;
-    card.querySelector(".af-empty__text").innerHTML = html;
-    empty.hidden = false;
-  };
-  const mono = (t) => `<span class="af-mono">${t}</span>`;
-
-  if (!ticket) {
-    say("No ticket", "off");
-    show("no-data", "No screen to show.", `Open this page from a sandbox's <b>Agent screen</b> action, from your MCP client (${mono("open_screen")}) `
-      + `or with a ticket from ${mono("POST /api/screen/tickets")}. A ticket opens one screen once.`);
-  } else {
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const rfb = new RFB(document.getElementById("screen"),
-                        `${scheme}://${location.host}/api/screen?ticket=${encodeURIComponent(ticket)}`,
-                        { wsProtocols: ["binary"] });
-    rfb.viewOnly = !control;
-    rfb.scaleViewport = true;
-    rfb.background = getComputedStyle(document.documentElement).getPropertyValue("--af-canvas").trim();
-    rfb.addEventListener("connect", () => { say("Connected", "running"); empty.hidden = true; });
-    rfb.addEventListener("disconnect", (e) => {
-      const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      if (e.detail.clean) {
-        say("Disconnected", "off");
-        show("after-action", "The agent's screen closed.", `The sandbox ended its screen session at ${mono(when)}; the sandbox itself may still be running. `
-          + "Open the screen again from the sandbox to get a new ticket.");
-      } else {
-        say("The screen went away", "failed");
-        show("error", "The screen went away.", `The connection dropped at ${mono(when)}: the sandbox stopped, or the network did. `
-          + "The sandbox's terminal and files are unaffected. Open the screen again from the sandbox for a new ticket.");
-      }
-    });
-    rfb.addEventListener("securityfailure", (e) => {
-      say("Refused", "failed");
-      show("error", "hangar refused this ticket.", `${e.detail.reason ? mono(e.detail.reason) : "The ticket was used already or has expired"}. `
-        + "A ticket opens one screen once: open the screen again from the sandbox for a new one.");
-    });
-  }
-</script>
+<script type="module" src="/ui/vnc.js"></script>
 </body>
 </html>

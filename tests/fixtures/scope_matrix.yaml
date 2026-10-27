@@ -991,6 +991,13 @@ git.post:
   scope: grant
   owner: any
   enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+governance.post_events:
+  server: hangar
+  mcp: null
+  rest: POST /api/governance/events
+  scope: signed
+  owner: any
+  enforced_by: 'govevents.Receiver.receive: X-AW-Signature (Tower''s HMAC), 300 s, event ids kept 48 h'
 harness.job:
   server: hangar
   mcp: null

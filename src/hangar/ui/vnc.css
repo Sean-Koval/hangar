@@ -1,0 +1,15 @@
+/* The agent screen's own layout (vnc.html). A file, not a <style> block, so the page's Content-Security-Policy needs
+ no inline styles (KAN-174). */
+/* Airframe tokens only (tests/test_ui_airframe.py): the screen's chrome is an af-nav header with a status */
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; }
+header.af-nav { flex: none; gap: 14px; }
+header .af-lbl { color: var(--af-fg-muted); }
+#status { margin-left: auto; }
+#screen { position: relative; flex: 1; min-height: 0; background: var(--af-canvas); }
+/* what the screen area says when there is no screen to show (Airframe EmptyState): no ticket, the agent's screen
+   went away, or the ticket was refused; the header's status says the same in one word */
+#empty { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--af-space-24); }
+#empty[hidden] { display: none; }
+#empty .af-empty { background: var(--af-raised); border-radius: var(--af-radius-card); max-width: 520px; }
+#empty .af-empty__text .af-mono { font-size: 12.5px; }

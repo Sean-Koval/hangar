@@ -601,13 +601,7 @@ class JobService:
                         + ", ".join(f"{r} {v.repo}" + (" (read-only)" if v.agent != "write" else "")
                                     for r, v in cs.roles.items()) + "; lands " + " → ".join(cs.land_order))
         self.fleet.audit(requester, "job.submit", job.id, environment=env, repo=repo, source=source)
-        if stance is not None and stance.posture == "warn" and stance.problems:  # --- intake posture (#123)
-            self._event(job, "posture.warn: " + "; ".join(stance.problems) + " (HANGAR_INTAKE_POSTURE=warn runs it; "
-                        "enforce would " + ("refuse it)" if posture.gateway_problem(self.settings, repo)
-                                            else "give it at least allowlist egress)"))
-            self.fleet.audit(requester, "posture.warn", job.id, source=source, reason=stance.reason,
-                             problems=stance.problems)
-        elif stance is not None and stance.floor:
+        if stance is not None and stance.floor:  # --- intake posture (#123)
             self._event(job, f"intake posture: egress at least {posture.FLOOR} ({stance.reason})")
         shadows.at_submit(self, job, policy, source)  # --- #183: sample it for a shadow (repo policy `shadow`)
         if approval is None:
@@ -704,10 +698,6 @@ class JobService:
         if (s := self._session(job)) is not None:
             s.labels.update(posture.inherit(job.labels))
             self.sessions._save(s)
-        if stance.posture == "warn" and stance.problems:
-            self._event(job, "posture.warn: " + "; ".join(stance.problems))
-            self.fleet.audit(requester, "posture.warn", job.id, source=job.source, reason="untrusted-follow-up",
-                             problems=stance.problems)
 
     async def _posture_move(self, job: Job, s: Any) -> None:
         """--- intake posture (#123): a live sandbox without the egress floor its job now has goes (checkpointed), so
@@ -1000,7 +990,7 @@ class JobService:
         job.sandbox_id = sb.id
         job.harness = job.harness or sb.info.get("harness")
         job.repo = job.repo or sb.repo
-        for w in sb.info.get("credential_warnings") or []:  # --- #125: HANGAR_SUBSCRIPTION_LOGINS=any
+        for w in sb.info.get("credential_warnings") or []:  # --- #125: a subscription login (never a job's: KAN-74)
             self._event(job, f"warning: {w}")
         self._save(job)
         if job.cancel_requested:
