@@ -55,7 +55,7 @@ PATHS: list[tuple[str, list[str] | str]] = [
     ("LICENSE", []),
     ("bench/*", []),
     ("evals/*", []),
-    ("Dockerfile", []),  # the image build runs on main
+    ("Dockerfile", ["tests/test_image_supply_chain.py", "tests/test_apt_versions.py"]),  # and the build, on main
     (".dockerignore", []),
     (".gitignore", []),
     ("deploy/terraform/gke/outbox.tf", ["tests/test_outbox.py"]),  # --- outbox (#163): its write-once IAM

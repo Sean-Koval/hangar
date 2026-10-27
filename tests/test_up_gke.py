@@ -273,3 +273,139 @@ def test_gke_needs_its_tools_and_tfvars(gke, monkeypatch, tmp_path):
     assert r.exit_code == 2 and "missing terraform, gcloud, kubectl" in r.output
     assert runner.invoke(cli.app, ["up", "--dry-run"]).exit_code == 2  # --dry-run is a --gke option
 
+
+# --------------------------------------------------------------------------- KAN-180: cluster hardening
+TF_GKE = REPO / "deploy/terraform/gke"
+
+
+def _tf() -> str:
+    return "\n".join(p.read_text() for p in sorted(TF_GKE.glob("*.tf")))
+
+
+def _block(text: str, header: str) -> str:
+    """The body of the block that starts with `header {`, by brace matching."""
+    start = text.index(header)
+    i, depth = text.index("{", start), 0
+    for j in range(i, len(text)):
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        if depth == 0:
+            return text[i + 1:j]
+    raise AssertionError(header)
+
+
+def _defaults() -> dict[str, str]:
+    import re
+
+    out = {}
+    for name in re.findall(r'^variable "(\w+)"', _tf(), re.M):
+        m = re.search(r"^\s*default\s*=\s*(.+)$", _block(_tf(), f'variable "{name}"'), re.M)
+        out[name] = m.group(1).strip() if m else None
+    return out
+
+
+def test_every_variable_terraform_uses_is_declared():
+    """A cheap stand-in for `terraform validate` where terraform isn't installed (test_alerting runs the real one)."""
+    import re
+
+    used = set(re.findall(r"\bvar\.(\w+)", _tf()))
+    assert used <= set(_defaults()), used - set(_defaults())
+
+
+def test_the_provider_supports_in_transit_encryption():
+    import re
+
+    pin = re.search(r'^\s+version\s*=\s*">=\s*(\d+)\.(\d+)"', (TF_GKE / "versions.tf").read_text(), re.M)
+    assert (int(pin.group(1)), int(pin.group(2))) >= (6, 36)  # in_transit_encryption_config arrived in 6.36.0
+
+
+def test_cluster_hardening_defaults_are_secure():
+    import re
+
+    d = _defaults()
+    assert d["deletion_protection"] == "true"
+    assert d["inter_node_encryption"] == "true"  # KAN-174 L-10
+    assert d["secrets_encryption"] == "true"
+    assert d["security_posture"] == '"BASIC"'
+    assert d["image_vulnerability_scanning"] == "true"
+    # Opt-in: they change how up.sh, CI and the power jobs reach the cluster and what nodes can reach.
+    assert d["private_nodes"] == "false" and d["master_authorized_networks"] == "[]"
+    # Secure Boot forces a new pool (shielded_instance_config is ForceNew): off for existing installs, on in the
+    # example new installs copy.
+    assert d["shielded_secure_boot"] == "false"
+    example = (TF_GKE / "terraform.tfvars.example").read_text()
+    assert re.search(r"^shielded_secure_boot\s+= true", example, re.M)
+
+    cluster = _block(_tf(), 'resource "google_container_cluster" "hangar"')
+    assert "deletion_protection = var.deletion_protection" in cluster
+    assert '"IN_TRANSIT_ENCRYPTION_INTER_NODE_TRANSPARENT"' in cluster
+    assert 'datapath_provider = "ADVANCED_DATAPATH"' in cluster  # inter-node encryption needs Dataplane V2
+    enc = _block(cluster, 'dynamic "database_encryption"')
+    assert 'state    = "ENCRYPTED"' in enc and "local.secrets_key" in enc
+    assert "enable_shielded_nodes = true" in cluster
+    assert "mode = var.security_posture" in _block(cluster, "security_posture_config")
+    assert "enable_private_nodes = true" in _block(cluster, 'dynamic "private_cluster_config"')
+    assert "var.master_authorized_networks" in _block(cluster, 'dynamic "master_authorized_networks_config"')
+    assert "master_ipv4_cidr_block" not in cluster  # ForceNew; PSC-based clusters don't need it
+
+
+def test_the_secrets_key_is_hangars_and_only_gke_uses_it():
+    tf = _tf()
+    key = _block(tf, 'resource "google_kms_crypto_key" "gke_secrets"')
+    assert 'rotation_period = "7776000s"' in key
+    grant = _block(tf, 'resource "google_kms_crypto_key_iam_member" "gke_secrets"')
+    assert "roles/cloudkms.cryptoKeyEncrypterDecrypter" in grant and "container-engine-robot" in grant
+    assert 'location   = var.region' in _block(tf, 'resource "google_kms_key_ring" "gke"')  # zonal: the zone's region
+    assert "containerscanning.googleapis.com" in _block(tf, 'resource "google_project_service" "hardening"')
+
+
+def test_every_node_pool_is_shielded_and_on_the_gke_metadata_server():
+    import re
+
+    tf = _tf()
+    pools = re.findall(r'resource "google_container_node_pool" "(\w+)"', tf)
+    assert {"system", "sandboxes", "kata", "heavy", "microvm", "overnight"} <= set(pools), pools
+    for name in pools:
+        pool = _block(tf, f'resource "google_container_node_pool" "{name}"')
+        meta = _block(pool, "workload_metadata_config")
+        assert 'mode = "GKE_METADATA"' in meta, name
+        shield = _block(pool, "shielded_instance_config")
+        assert "enable_secure_boot          = var.shielded_secure_boot" in shield, name
+        assert "enable_integrity_monitoring = true" in shield, name
+        assert "for_each = var.private_nodes" in _block(pool, 'dynamic "network_config"'), name
+
+
+def test_node_pools_can_run_on_a_least_privilege_account():
+    """KAN-183 (CIS 5.2.1): every pool but heavy (which has its own) runs as hangar-nodes when asked. Off by default,
+    since it replaces each pool; on in the example new installs copy."""
+    import re
+
+    tf = _tf()
+    assert _defaults()["dedicated_node_service_account"] == "false"
+    assert re.search(r"^dedicated_node_service_account\s+= true", (TF_GKE / "terraform.tfvars.example").read_text(),
+                     re.M)
+    for name in ("system", "sandboxes", "kata", "microvm", "overnight"):
+        pool = _block(tf, f'resource "google_container_node_pool" "{name}"')
+        assert "service_account = local.node_service_account" in _block(pool, "node_config"), name
+    assert "google_service_account.heavy_nodes[0].email" in _block(tf, 'resource "google_container_node_pool" "heavy"')
+    grant = _block(tf, 'resource "google_project_iam_member" "nodes"')
+    assert 'role    = "roles/container.defaultNodeServiceAccount"' in grant
+    pull = _block(tf, 'resource "google_artifact_registry_repository_iam_member" "nodes_pull"')
+    assert '"roles/artifactregistry.reader"' in pull and "google_artifact_registry_repository.hangar.name" in pull
+    nodes = re.findall(r'"serviceAccount:\$\{google_service_account\.nodes\[0\]\.email\}"', tf)
+    assert len(nodes) == 2  # those two grants and nothing else
+
+
+def test_private_nodes_get_cloud_nat():
+    tf = _tf()
+    nat = _block(tf, 'resource "google_compute_router_nat" "nat"')
+    assert "var.private_nodes ? 1 : 0" in nat and "ALL_SUBNETWORKS_ALL_IP_RANGES" in nat
+
+
+def test_the_hardening_is_documented():
+    page = (REPO / "docs/security/gke-cluster.md").read_text()
+    for control in ("5.3.1", "5.4.2", "5.5.5", "5.5.6", "5.5.7", "5.6.3", "5.6.5", "5.10.4", "5.10.5"):
+        assert f"| {control} " in page, control
+    assert "Binary Authorization" in page and "L-10" in page
+    assert "security/gke-cluster.md" in (REPO / "docs/gke.md").read_text()
+    assert "gke-cluster.md" in (REPO / "docs/security/README.md").read_text()
+    assert "security/gke-cluster.md" in (REPO / "mkdocs.yml").read_text()

@@ -56,10 +56,12 @@ command output and idle connections.
 | Page | What it covers |
 | --- | --- |
 | [What a compromised sandbox does not get](compromised-sandbox.md) | The six things out of an attacker's reach, one section each |
+| [How the GKE cluster is hardened](gke-cluster.md) | Cluster settings, the CIS GKE mapping, Binary Authorization, changes to an existing cluster |
 | [Running hangar safely](operations.md) | Operational advice: a private control plane, a token per client, the vault key |
 | [A compromised sandbox: the threat model](threat-model.md) | Every goal an attacker inside a sandbox could have, what stops it and the test |
 | [What is not covered](not-covered.md) | The gaps, stated plainly |
-| [Gaps found in the 1.0 review](review-1.0.md) | What the independent review found, until each fix lands |
+| [Reviewing hangar for production](review/index.md) | For SRE and security reviewers: what hangar stores, every control with its evidence, and the accepted risks |
+| [Gaps found in the 1.0 review](review-1.0.md) | What the independent review found, and where each finding stands |
 | [The git credential gateway](git-gateway.md) | Grants, turning it on, fetch-only jobs and hangar's delivery push, the GitHub App, what it doesn't cover |
 | [Egress allowlists](egress.md) | Hostname allowlists, the proxy, what egress doesn't stop |
 | [Package mirrors](package-mirrors.md) | Read-only PyPI, npm and Go through the gateway |
@@ -74,6 +76,7 @@ command output and idle connections.
 | [Screens, previews and the agent's requests](screen.md) | VNC through hangar, tickets, env requests |
 | [The vault key ring](vault-key.md) | Where the keys live, rotation, backups |
 | [How the control-plane pod is locked down](control-plane-pod.md) | The pod's securityContext, who may connect, why IAP is off |
+| [Where the audit log is kept](audit.md) | The database copy, the export to a retained Cloud Logging bucket, reading it |
 
 The design record is [spec 0003, sandbox security](../specs/0003-sandbox-security.md).
 

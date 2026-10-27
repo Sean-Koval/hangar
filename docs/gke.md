@@ -15,6 +15,7 @@ terraform init && terraform apply
 This creates:
 
 - **A Standard cluster** on the RAPID channel, since Agent Sandbox needs GKE 1.35.2-gke.1210000 or later. It uses Workload Identity and Dataplane V2.
+- **Cluster hardening:** see [the CIS mapping](security/gke-cluster.md).
 - **A system pool**, plus a gVisor sandbox pool (Spot by default) that autoscales from 0 to N nodes.
 - **The Agent Sandbox add-on**, enabled through `gcloud`, and optionally Pod snapshots.
 - **Supporting resources:** an Artifact Registry repo, a `hangar` Google service account bound to the pod's KSA, and a global static IP.

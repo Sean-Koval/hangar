@@ -1,14 +1,36 @@
 # Gaps found in the 1.0 security review
 
-What an independent review of hangar found before 1.0, and what stays open until each fix lands. It adds to [what is not covered](not-covered.md). This is part of the [security model](README.md).
+What an independent review of hangar found before 1.0, and where each finding stands. It adds to
+[what is not covered](not-covered.md). This is part of the [security model](README.md), and the
+[review packet](review/index.md) builds on it.
 
-The review read hangar at `01c136c` as an attacker would. It found one High, five Medium and five Low gaps in hangar. Each is tracked in Jira, and this page shrinks as the fixes land.
+The review read hangar at `01c136c` as an attacker would. It found one High, five Medium and five Low gaps in hangar.
+Each is tracked in Jira. What remains open, with its owner and reason, is on
+[open findings and accepted risks](review/risks.md).
+
+## Where each finding stands
+
+| Finding | Severity | Ticket | Status |
+| --- | --- | --- | --- |
+| Approvals inside a turn on GKE and E2B | High | KAN-165 | Mitigated: refused under `required`; the sidecar is KAN-83 |
+| Codex rules in hardened turns | Medium | KAN-169 | Fixed at turn start; a file written during the turn is accepted |
+| Login files written back from a sandbox | Medium | KAN-168, KAN-178 | Fixed for team logins; a person's own login is accepted |
+| The image ignores `uv.lock`, uses `uv:latest`, runs as root | Medium | KAN-170 | Fixed |
+| GitHub Actions pinned by tag | Medium | KAN-171 | Fixed |
+| hangar's Google roles are project-wide | Medium | KAN-172 | Fixed in hangar; Tower's own registry is its half |
+| The console: no CSP, the admin token in browser storage | Low (L-7) | KAN-174 | Open |
+| The control-plane pod's security context and NetworkPolicy | Low (L-8) | KAN-174 | Open; non-root is fixed (KAN-170) |
+| GKE ships with `open` egress | Low (L-9) | KAN-174 | Waiting on a decision |
+| Git grants in plain HTTP between nodes | Low (L-10) | KAN-180 | Open |
+| Tower is not consulted yet | Low (L-1) | KAN-77 to KAN-79 | Accepted until wired |
+| The gateway has no connection cap | Known gap 10 | KAN-174 | Fixed: a per-peer cap |
+| NAT64 and 6to4 addresses pass the callback check | Q-2, Q-3 | KAN-174 | Fixed |
 
 ## Approvals inside a turn on GKE and E2B (High)
 
-On GKE and E2B there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent can allow itself or answer its own approval.
+On GKE and E2B there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent could allow itself or answer its own approval.
 
-Elsewhere the default (`HANGAR_UID_SPLIT=auto`) only warns. The Kubernetes manifests now set `required`, which refuses those turns instead; `auto` turns are unaffected. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
+Elsewhere the default (`HANGAR_UID_SPLIT=auto`) only warns. The Kubernetes manifests set `required`, which refuses those turns instead; `auto` turns are unaffected. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
 
 ## Codex rules in hardened turns (Medium)
 
@@ -16,30 +38,28 @@ Codex reads `~/.codex/rules`, a repository's `.codex/rules` and MCP servers set 
 
 Fixed for files there when a turn starts. A Codex turn that asks won't start while either rules directory holds a `.rules` file. Nor will it while `~/.codex/config.toml` sets an MCP tool to `approve`.
 
-Open: a file the agent writes during the turn. Codex has no switch to ignore rules, so closing it means giving Codex a home directory hangar owns. Tracked in KAN-169.
+Accepted: a file the agent writes during the turn. Codex has no switch to ignore rules, so closing it means giving Codex a home directory hangar owns.
 
 ## Login files written back from a sandbox (Medium)
 
 When a sandbox releases a login file, hangar can store the file the sandbox returns, so a refreshed token survives. The sandbox writes that file, and the identity in it isn't verified.
 
-Fixed for team logins: hangar never stores a file a sandbox returns for one. Members who fall back to it can't be moved to another account. Subscription logins can't be team credentials, so none needs its rotation kept.
+Fixed for team logins: hangar never stores a file a sandbox returns for one. Storing a new login also ends any lease on the old one, so a sandbox can't write a stale file back (KAN-178).
 
-Open for a person's own login. hangar stores a returned file only when it names the same account and its access tokens changed with its refresh token. A sandbox that refreshes the stored login first, then swaps in another account's refresh token, still passes. Only that person's later sandboxes would be affected.
+Accepted for a person's own login. hangar stores a returned file only when it names the same account and its access tokens changed with its refresh token. A sandbox that refreshes the login, then swaps in another account's refresh token, still passes. Only that person's later sandboxes would be affected.
 
-Closing it means hangar refreshing the login itself and checking the identity it gets back. Tracked in KAN-168.
+Closing it means hangar refreshing the login itself and checking the identity it gets back.
 
 ## The control plane's image and identity (Medium)
 
-The production image installs from the version ranges in `pyproject.toml`, not from `uv.lock`, and runs as root. GitHub Actions in the deploy and canary jobs are pinned by tag, not by commit. Tracked in KAN-170 and KAN-171.
-
-The control plane's Google identity can write any bucket and the whole image repository. Tower's image lives in that repository. Tracked in KAN-172.
+Fixed. The image installs from `uv.lock` with hashes, pins every base image by digest and runs as uid 1000 (KAN-170). Every GitHub Action is pinned by commit SHA (KAN-171). hangar's Google identity builds with Cloud Build, writes only its own registry repository and a build-staging bucket, and has no project-wide storage role (KAN-172).
 
 ## Low
 
-- **The dashboard** sends no Content-Security-Policy, and it keeps the admin token in browser storage. One missed escape in agent text would leak it.
-- **The control-plane pod** runs without a restricted security context. No NetworkPolicy limits who reaches its ports.
+- **The console** sends no Content-Security-Policy, and it keeps the admin token in browser storage. One missed escape in agent text would leak it.
+- **The control-plane pod** runs as non-root, but without a restricted security context. No NetworkPolicy limits who reaches its ports.
 - **GKE ships with `open` egress.** Set `HANGAR_EGRESS_DEFAULT=allowlist` for untrusted work.
-- **Grants and keys cross the pod network in plain HTTP.** Turn on GKE's inter-node encryption.
-- **Tower is not consulted yet.** The governance client exists, but no turn calls it and hangar has no events route. `HANGAR_GOVERNANCE` changes nothing in 1.0.
+- **Grants and keys cross the pod network in plain HTTP.** KAN-180 turns on GKE's inter-node encryption.
+- **Tower is not consulted yet.** The governance client exists, but no turn calls it and hangar has no events route. `HANGAR_GOVERNANCE` changes nothing yet.
 
 These are tracked in KAN-174, with the review's notes on each known gap in [what is not covered](not-covered.md).

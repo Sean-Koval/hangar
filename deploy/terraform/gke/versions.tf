@@ -2,8 +2,9 @@ terraform {
   required_version = ">= 1.6"
   required_providers {
     google = {
+      # 6.36: in_transit_encryption_config (KAN-180). An existing install runs `terraform init -upgrade` once.
       source  = "hashicorp/google"
-      version = ">= 6.0"
+      version = ">= 6.36"
     }
   }
 }
