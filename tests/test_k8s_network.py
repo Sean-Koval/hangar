@@ -132,3 +132,53 @@ def test_the_baseline_still_lets_sandboxes_reach_the_internet_and_dns():
         assert any(ip in n for b in blocks for n in reachable(b)), addr
     assert any(peer.get("podSelector", {}).get("matchLabels") == {"k8s-app": "kube-dns"}
                for r in base["spec"]["egress"] for peer in r["to"])
+
+
+# --------------------------------------------------------------------------- KAN-174 L-8: hangar's own pods
+GCLB = {"35.191.0.0/16", "130.211.0.0/22"}  # Google's front ends: the load balancer and its health checks
+
+
+def hangar_ingress() -> list[tuple[dict, dict, set]]:
+    """(policy, peer, ports) for every ingress allowance into hangar's pods, in every file (optional ones too)."""
+    out = []
+    for p in policies():
+        if p["metadata"]["namespace"] != "hangar" or p["spec"]["podSelector"] != {"matchLabels": {"app": "hangar"}}:
+            continue
+        for rule in p["spec"].get("ingress") or []:
+            assert rule.get("from") and rule.get("ports"), f"{p['_file']}: {rule} admits every peer or every port"
+            ports = {x["port"] for x in rule["ports"]}
+            assert all("endPort" not in x for x in rule["ports"]), f"{p['_file']}: a port range"
+            out.extend((p, peer, ports) for peer in rule["from"])
+    return out
+
+
+def test_hangars_pods_are_ingress_isolated():
+    base = next(p for p in policies() if p["metadata"]["name"] == "hangar-ingress")
+    assert base["_file"] == "control-plane-network.yaml" and base["spec"]["policyTypes"] == ["Ingress"]
+
+
+def test_only_sandboxes_reach_the_gateway_and_the_proxy_and_never_the_api():
+    sandboxes = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SANDBOXES}}}
+    self_ = {"podSelector": {"matchLabels": {"app": "hangar"}}}
+    for p, peer, ports in hangar_ingress():
+        if peer == sandboxes:
+            assert ports == {8788, 3128}, f"{p['_file']}: sandboxes reach {ports}"
+        elif peer != self_:
+            assert ports == {8787}, f"{p['_file']}: {peer} reaches {ports}"
+        ns = (peer.get("namespaceSelector") or {}).get("matchLabels", {}).get("kubernetes.io/metadata.name")
+        if ns == SANDBOXES:
+            assert peer == sandboxes and 8787 not in ports, f"{p['_file']}: {peer}"
+
+
+def test_address_blocks_reach_hangar_only_from_googles_front_ends():
+    blocks = {peer["ipBlock"]["cidr"] for _, peer, _ in hangar_ingress() if "ipBlock" in peer}
+    assert blocks == GCLB, blocks
+    assert all(not peer["ipBlock"].get("except") for _, peer, _ in hangar_ingress() if "ipBlock" in peer)
+
+
+def test_the_front_door_and_tower_reach_the_api():
+    peers = [(peer, ports) for _, peer, ports in hangar_ingress()]
+    assert ({"ipBlock": {"cidr": "35.191.0.0/16"}}, {8787}) in peers
+    tower = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "tower"}},
+             "podSelector": {"matchLabels": {"app": "tower"}}}
+    assert (tower, {8787}) in peers

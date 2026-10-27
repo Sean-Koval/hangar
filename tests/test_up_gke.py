@@ -54,6 +54,7 @@ FAKE = textwrap.dedent('''\
             print(v, end="")
         if args[:1] == ["apply"] and "-k" in args:
             shutil.copy(Path(args[args.index("-k") + 1]) / "config.yaml", os.environ["FAKE_CAPTURE"])
+            shutil.copytree(Path(args[args.index("-k") + 1]), os.environ["FAKE_CAPTURE"] + ".d", dirs_exist_ok=True)
     ''')
 
 
@@ -103,6 +104,9 @@ def gke(tmp_path, monkeypatch):
 
         def config(self):
             return capture.read_text() if capture.exists() else None
+
+        def config_path(self):
+            return capture
 
     g = G()
     g.set()
@@ -223,6 +227,23 @@ def test_up_sh_points_cloud_build_at_hangars_own_staging_bucket(gke):
     assert not [c for c in gke.calls()[n:] if "restart" in c]
 
 
+def test_up_sh_deploys_the_hardened_pod_and_its_network_policies(gke):
+    """KAN-174 L-8: what up.sh applies (deploy/k8s after its substitutions) keeps the container's securityContext, the
+    ingress policy for hangar's pods and the load balancer's rule."""
+    import yaml
+
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    out = Path(str(gke.config_path()) + ".d")
+    assert "control-plane-network.yaml" in yaml.safe_load((out / "kustomization.yaml").read_text())["resources"]
+    docs = [d for f in out.glob("*.yaml") for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
+    dep = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "hangar")
+    ctx = dep["spec"]["template"]["spec"]["containers"][0]["securityContext"]
+    assert ctx["readOnlyRootFilesystem"] and not ctx["allowPrivilegeEscalation"]
+    names = {d["metadata"]["name"] for d in docs
+             if d.get("kind") == "NetworkPolicy" and d["metadata"]["namespace"] == "hangar"}
+    assert {"hangar-ingress", "hangar-ingress-gclb"} <= names, names
+
+
 def test_terraform_scopes_hangars_roles():
     """KAN-172: no project-wide storage or registry role for hangar's service account; the registry writer is on the
     hangar repository and storage admin on its staging bucket only."""
@@ -251,3 +272,4 @@ def test_gke_needs_its_tools_and_tfvars(gke, monkeypatch, tmp_path):
     r = runner.invoke(cli.app, ["up", "--gke"])
     assert r.exit_code == 2 and "missing terraform, gcloud, kubectl" in r.output
     assert runner.invoke(cli.app, ["up", "--dry-run"]).exit_code == 2  # --dry-run is a --gke option
+

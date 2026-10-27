@@ -27,3 +27,38 @@ def test_kubernetes_has_no_uid_split_yet():
     from hangar.providers.kubernetes import KubernetesProvider
 
     assert not isolation.supported(KubernetesProvider.__new__(KubernetesProvider))
+
+
+DEPLOYMENTS = ["deploy/k8s/deployment.yaml", "deploy/kustomize/base/deployment.yaml"]
+
+
+def _hangar(path: str) -> dict:
+    docs = [d for d in yaml.safe_load_all((ROOT / path).read_text()) if d]
+    return next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "hangar")["spec"]["template"]
+
+
+@pytest.mark.parametrize("path", DEPLOYMENTS)
+def test_the_control_plane_container_is_locked_down(path):
+    """KAN-174 L-8: no privilege escalation, no capabilities, RuntimeDefault seccomp, a read-only root."""
+    pod = _hangar(path)["spec"]
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    (c,) = pod["containers"]
+    ctx = c["securityContext"]
+    assert ctx["allowPrivilegeEscalation"] is False
+    assert ctx["capabilities"] == {"drop": ["ALL"]}
+    assert ctx["seccompProfile"] == {"type": "RuntimeDefault"}
+    assert ctx["readOnlyRootFilesystem"] is True
+    assert not ctx.get("privileged") and "add" not in ctx["capabilities"]
+
+
+@pytest.mark.parametrize("path", DEPLOYMENTS)
+def test_every_path_hangar_writes_is_a_volume(path):
+    """With a read-only root, hangar writes only to /data (the PVC), /tmp and its home (gcloud's and docker's config,
+    for in-cluster builds); `docker run --read-only` showed docker buildx failing without a writable home."""
+    pod = _hangar(path)["spec"]
+    mounts = {m["mountPath"]: m["name"] for m in pod["containers"][0]["volumeMounts"]}
+    vols = {v["name"]: v for v in pod["volumes"]}
+    assert vols[mounts["/data"]]["persistentVolumeClaim"]["claimName"] == "hangar-data"
+    for path_, size in (("/tmp", "4Gi"), ("/home/hangar", "256Mi")):
+        assert vols[mounts[path_]]["emptyDir"] == {"sizeLimit": size}, path_
+
