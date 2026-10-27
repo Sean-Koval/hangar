@@ -30,12 +30,12 @@ next release. A row leaves this page when its fix lands, and its finding moves t
 | Tower isn't consulted yet: `HANGAR_GOVERNANCE` changes nothing | Low (L-1) | hangar's own approvals, gateway and landing are the controls until then | The wiring is KAN-77 to KAN-79 |
 | E2B command output may be buffered whole before hangar sees it | Low (gap 9) | E2B is an optional provider, not the GKE default | A re-test is due before it leaves [what is not covered](../not-covered.md) |
 
-## Waiting on a decision
+## Decided, in review
 
-These stay open until Sean decides, because each fix changes what users can do.
+Sean decided all three on 2026-10-27. Each fix is a pull request, and its row leaves when it merges.
 
-| Question | The trade-off |
-| --- | --- |
-| Make `allowlist` the GKE egress default? (L-9) | Stops data going to arbitrary hosts. Jobs that install from the internet need their hosts listed |
-| Remove the warn switches, including `HANGAR_SUBSCRIPTION_LOGINS=any`? (KAN-74) | Ends automated use of personal subscription logins, which vendor terms forbid. Needs API keys for every harness first |
-| Reserve custom session branches before the session exists? (gap 8) | Stops another sandbox pre-creating the branch. Breaks continuing a branch you pushed yourself |
+| Decision | Pull request | What changes for users |
+| --- | --- | --- |
+| GKE ships with `allowlist` egress (L-9) | #387 | Sandboxes reach model APIs, the package mirror and the gateway. Direct GitHub, run-time toolchain downloads and arbitrary sites need an `allow` entry |
+| The warn switches are removed (KAN-74) | #388 | Automated jobs refuse subscription logins and need the gateway. Each harness needs an API-key credential first |
+| Custom session branches are checked against their creator (gap 8) | #386 | A session can't take a branch another person's sandbox created. An admin can, with `take_branch`, and it is audited |

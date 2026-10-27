@@ -41,13 +41,8 @@ The threat model is [a compromised sandbox](../threat-model.md). Each goal there
 proof rather than read it. Operations are covered by the [SLOs](../../slos.md), the [alerts](../../alerting.md) and
 the [runbooks](../../runbooks/README.md).
 
-## The decisions still open
+## The decisions taken
 
-Three choices change what a reviewer will accept. They are Sean's to make before 1.0.
-
-1. **Egress on GKE defaults to `open`.** Making `allowlist` the default stops data reaching arbitrary hosts, but jobs
-   that install from the internet need their hosts listed (KAN-174, L-9).
-2. **The warn switches.** The live deployment runs `HANGAR_SUBSCRIPTION_LOGINS=any`, so jobs use a person's ChatGPT
-   login. The vendor's terms don't allow that for automated work. KAN-74 removes both switches; it needs API keys first.
-3. **Custom session branches** can be created by another sandbox before the session exists. Closing it breaks
-   continuing a branch you pushed yourself (known gap 8).
+Three choices changed what a reviewer will accept. Sean took all three, and each fix is in review: allowlist egress
+on GKE, removing the warn switches, and checking custom branches against their creator.
+[Open findings and accepted risks](risks.md#decided-in-review) lists the pull requests and what each changes for users.
