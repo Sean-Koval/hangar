@@ -56,7 +56,6 @@ def test_the_policy_can_name_the_reviewer_and_mode_is_validated():
 # ====================================================================== the review job
 @pytest.mark.parametrize(("author", "reviewer"), [("claude-code", "codex"), ("codex", "claude-code")])
 async def test_the_review_job_is_fenced_and_on_the_other_harness(svc, gh, settings, author, reviewer):  # noqa: F811
-    settings.intake_posture = "warn"  # no git gateway in this test; enforce would refuse the intake job
     reviews_on(svc)
     job = agent_job(svc, harness=author)
     rj = await aireview.submit(svc, job, HEAD, "test")
@@ -75,7 +74,6 @@ async def test_the_review_job_is_fenced_and_on_the_other_harness(svc, gh, settin
 
 
 async def test_a_new_head_is_reviewed_again_at_most_every_five_minutes(svc, gh, settings):  # noqa: F811
-    settings.intake_posture = "warn"
     reviews_on(svc)
     job = agent_job(svc)
     aireview.request(svc, job, "hangar pushed")
@@ -92,7 +90,6 @@ async def test_a_new_head_is_reviewed_again_at_most_every_five_minutes(svc, gh, 
 
 
 async def test_a_draft_waits_until_ready_for_review(svc, gh, settings):  # noqa: F811
-    settings.intake_posture = "warn"
     reviews_on(svc)
     job = agent_job(svc)
     job.landing.draft = True
@@ -108,7 +105,6 @@ async def test_a_draft_waits_until_ready_for_review(svc, gh, settings):  # noqa:
 
 # ====================================================================== the result on the PR
 async def test_the_verdict_is_one_comment_review_from_the_app(svc, gh, settings):  # noqa: F811
-    settings.intake_posture = "warn"
     reviews_on(svc)
     job = agent_job(svc)
     rj = await aireview.submit(svc, job, HEAD)
@@ -131,7 +127,6 @@ async def test_the_verdict_is_one_comment_review_from_the_app(svc, gh, settings)
 
 
 async def test_an_inline_comment_outside_the_diff_falls_back_to_the_body(svc, gh, settings):  # noqa: F811
-    settings.intake_posture = "warn"
     reviews_on(svc)
     job = agent_job(svc)
     rj = await aireview.submit(svc, job, HEAD)
@@ -144,7 +139,6 @@ async def test_an_inline_comment_outside_the_diff_falls_back_to_the_body(svc, gh
 
 
 async def test_no_result_is_an_error_that_doesnt_count(svc, gh, settings):  # noqa: F811
-    settings.intake_posture = "warn"
     reviews_on(svc)
     job = agent_job(svc)
     rj = await aireview.submit(svc, job, HEAD)
@@ -191,7 +185,6 @@ echo reviewed > "$HANGAR_JOB_DIR/RESULT.md"
 
 
 async def test_a_review_job_runs_fenced_and_its_spend_shows_under_source_review(jobs, world, monkeypatch):  # noqa: F811
-    jobs.settings.intake_posture = "warn"
 
     async def proxied(fleet, prov, sb):  # the fake provider can't fence a sandbox; pretend it can, to see the record
         return "http://127.0.0.1:9"

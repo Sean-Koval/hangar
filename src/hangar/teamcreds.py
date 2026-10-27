@@ -16,10 +16,10 @@
   a job or session waits and says which are busy (HANGAR_LOGIN_WAIT_SECONDS) instead of failing on the first.
 * **Subscription logins are interactive-only** (#125; docs/team.md#subscription-logins). Every resolution has a
   purpose: `automated` (every job sandbox, whatever its front door, schedules, webhooks, experiment trials and
-  graders, forks of those) or `interactive` (a person's own `create_sandbox`, `new_session`, `run_agent`). Under
-  HANGAR_SUBSCRIPTION_LOGINS=interactive (the default) an automated resolution drops subscription logins from the
-  pool and refuses one named outright; an interactive one keeps it, with a warning. `any` lets jobs use them, with a
-  warning, and `hangar doctor` fails. Experiment trials and graders never get one, whatever the setting.
+  graders, forks of those) or `interactive` (a person's own `create_sandbox`, `new_session`, `run_agent`). An
+  automated resolution drops subscription logins from the pool and refuses one named outright; an interactive one
+  keeps it, with a warning. HANGAR_SUBSCRIPTION_LOGINS=any, the safe release's switch that let jobs use them, was
+  removed after v0.2.0 (KAN-74; config.REMOVED_SWITCHES refuses it).
 """
 
 from __future__ import annotations
@@ -55,8 +55,6 @@ Purpose = Literal["automated", "interactive"]
 PURPOSES: tuple[str, ...] = ("automated", "interactive")
 PURPOSE_LABEL = "hangar.purpose"  # automated | interactive, on a sandbox whose create names no purpose
 INTERACTIVE_WARNING = "subscription login in a hangar sandbox: personal, interactive use only"
-ANY_WARNING = ("subscription login used by automated work (HANGAR_SUBSCRIPTION_LOGINS=any): the vendors' terms "
-               "don't allow automated use of consumer logins (docs/team.md#subscription-logins)")
 # Consumer sign-ins (`claude setup-token`, a ChatGPT or Google login): one person's, by the vendors' terms.
 SUBSCRIPTION_KINDS = frozenset({CredentialKind.OAUTH_TOKEN, CredentialKind.AUTH_FILE})
 POLL_SECONDS = 5.0  # how often a create waiting for a leased login looks again
@@ -97,18 +95,28 @@ class SubscriptionRefused(CredentialError):
     """An automated resolution that would need a subscription login (#125). Its text reaches the job's thread."""
 
 
+# --- KAN-74: what to store instead of a subscription login, per harness: (the key, a credential name, its file)
+API_KEYS: dict[str, tuple[str, str, str]] = {
+    "claude-code": ("an Anthropic API key", "claude-api", "anthropic-key.txt"),
+    "codex": ("an OpenAI API key", "codex-api", "openai-key.txt"),
+    "antigravity": ("a Gemini API key", "antigravity-api", "gemini-key.txt"),
+}
+
+
+def add_key_command(harness: str) -> str:
+    """The command that stores an API key for `harness` (KAN-74)."""
+    _, name, file = API_KEYS.get(harness, ("", "NAME", "key.txt"))
+    return f"hangar cred add {name} --harness {harness} --kind api_key --file {file}"
+
+
 def _hint(harness: str) -> str:
-    return (f"add one: hangar cred add NAME --harness {harness} --kind api_key --file key.txt (your own; an admin "
-            "adds --team for work no person owns)")
+    what = API_KEYS.get(harness, ("an API key",))[0]
+    return (f"add {what}: {add_key_command(harness)} (your own; an admin adds --team for work no person owns)")
 
 
 def refusal(harness: str) -> str:
     return (f"job needs an API-key credential for {harness}; subscription logins are interactive-only "
             f"(docs/team.md#subscription-logins). {_hint(harness)}")
-
-
-def policy_of(settings: Settings | None) -> str:
-    return getattr(settings, "subscription_logins", "interactive") if settings is not None else "interactive"
 
 
 # ---------------------------------------------------------------------------- the migration
@@ -156,7 +164,7 @@ def mode_for(store: Store, repo: str | None) -> str:
 class Resolved(NamedTuple):
     names: list[str]
     busy: list[str]  # pools whose every login is leased to another sandbox, said plainly
-    warnings: list[str] = []  # --- #125: a subscription login went in (interactive, or HANGAR_SUBSCRIPTION_LOGINS=any)
+    warnings: list[str] = []  # --- #125: a subscription login went into a person's own interactive sandbox
 
 
 def _pick(chosen: list[Credential]) -> tuple[list[Credential], str | None]:
@@ -190,11 +198,11 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
     and for git when the environment lists a git credential, the person's own replace the team's (`mode`); with no
     own and no team one listed, every team credential for it is the pool.
 
-    `purpose` (#125): an `automated` resolution under HANGAR_SUBSCRIPTION_LOGINS=interactive (or `strict`, for
-    experiment trials and graders, whatever the setting) leaves subscription logins out of every pool and refuses one
-    named outright (SubscriptionRefused); when that leaves the agent harness with nothing it raises too."""
+    `purpose` (#125): an `automated` resolution (`strict` too: experiment trials and graders) leaves subscription
+    logins out of every pool and refuses one named outright (SubscriptionRefused); when that leaves the agent harness
+    with nothing it raises too. No setting relaxes it (KAN-74)."""
     creds = {c.name: c for c in store.list(Credential)}
-    refuse = purpose == "automated" and (strict or policy_of(settings) != "any")
+    refuse = purpose == "automated"
     if refuse and explicit:
         named = [n for n in names if n in creds and is_subscription(creds[n])]
         if named:
@@ -248,7 +256,7 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
 def purpose_of(purpose: str | None, labels: dict[str, str] | None) -> tuple[Purpose, bool]:
     """(purpose, strict) for a sandbox create (#125). Named by the caller, else from its labels: a job's (and so a
     best-of-N attempt's, a follow-up's, a fork's of either), an experiment trial's or a grader's sandbox is
-    automated. Trials and graders are strict: never a subscription login, whatever HANGAR_SUBSCRIPTION_LOGINS says."""
+    automated, even when the caller names `interactive` (KAN-74). Trials and graders are strict."""
     from hangar.experiments import EXP_LABEL, GRADER_LABEL
 
     lb = labels or {}
@@ -257,7 +265,7 @@ def purpose_of(purpose: str | None, labels: dict[str, str] | None) -> tuple[Purp
     if purpose is not None:
         if purpose not in PURPOSES:
             raise ValueError(f"purpose must be one of {', '.join(PURPOSES)}")
-        return ("automated" if strict else purpose), strict  # type: ignore[return-value]
+        return ("automated" if strict or "hangar.job" in lb else purpose), strict  # type: ignore[return-value]
     return ("automated" if strict or "hangar.job" in lb else "interactive"), strict
 
 
@@ -267,10 +275,11 @@ def is_subscription_name(store: Store, name: str) -> bool:
 
 
 def _warnings(creds: dict[str, Credential], names: list[str], purpose: str) -> list[str]:
-    """What a sandbox holding `names` is warned about: a subscription login in it at all (#125)."""
-    if not any(n in creds and is_subscription(creds[n]) for n in names):
+    """What a sandbox holding `names` is warned about: a subscription login in it at all (#125). Only an interactive
+    one can hold one: an automated resolution refuses them."""
+    if purpose != "interactive" or not any(n in creds and is_subscription(creds[n]) for n in names):
         return []
-    return [INTERACTIVE_WARNING if purpose == "interactive" else ANY_WARNING]
+    return [INTERACTIVE_WARNING]
 
 
 def check_job(fleet: Fleet, environment: str, harness: str | None, person: str | None, repo: str | None,
@@ -399,14 +408,12 @@ def _subscription_check(h: Any, creds: list[Credential]) -> dict[str, Any]:
     s, store = h.settings, h.store
     name = "subscription logins"
     doc = "docs/team.md#subscription-logins"
-    if policy_of(s) == "any":
-        n = sorted(c.name for c in creds if is_subscription(c))
-        return _check(name, "fail", "HANGAR_SUBSCRIPTION_LOGINS=any lets jobs, schedules and webhooks run on "
-                      "subscription logins, which the vendors' terms reserve for one person's own interactive use"
-                      + (f" (stored: {', '.join(n)})" if n else ""),
-                      f"add API keys (hangar cred add NAME --harness HARNESS --kind api_key --file key.txt), then "
-                      f"unset HANGAR_SUBSCRIPTION_LOGINS; {doc}")
+    cfg = getattr(h, "config", None)  # --- KAN-74: `any`, stored with hangar config before the upgrade
+    for key, msg in (cfg.removed() if cfg is not None and hasattr(cfg, "removed") else []):
+        if key == "HANGAR_SUBSCRIPTION_LOGINS":
+            return _check(name, "fail", msg, f"hangar config unset {key}")
     blocked: list[str] = []
+    needs: set[str] = set()  # --- KAN-74: the harnesses an API key is missing for
     sources = [(*x, None) for x in _no_person_sources(h)]
     for sch in store.list(ScheduledJob):
         t = sch.template or {}
@@ -427,6 +434,7 @@ def _subscription_check(h: Any, creds: list[Credential]) -> dict[str, Any]:
                     purpose="automated")
         except SubscriptionRefused:
             blocked.append(f"{what}: {env} ({harness})")
+            needs.add(harness)
         except CredentialError:
             continue  # the team-credentials check reports it
     only: list[str] = []
@@ -438,6 +446,7 @@ def _subscription_check(h: Any, creds: list[Credential]) -> dict[str, Any]:
         for harness, cs in sorted(hs.items()):
             if all(is_subscription(c) for c in cs):
                 only.append(f"{person} ({harness}: {', '.join(sorted(c.name for c in cs))})")
+                needs.add(harness)
     if not blocked and not only:
         return _check(name, "ok", "subscription logins are interactive-only, and no job, schedule or webhook "
                       "depends on one")
@@ -446,10 +455,10 @@ def _subscription_check(h: Any, creds: list[Credential]) -> dict[str, Any]:
         parts.append("these would find only subscription logins, so their jobs fail: " + "; ".join(blocked))
     if only:
         parts.append("these people have only subscription logins, so their jobs (GitHub, Slack, Jira, schedules, "
-                     "submit_job) fail while their sessions work: " + ", ".join(only))
+                     "submit_job, ChatGPT and claude.ai) are refused while their sessions work: " + ", ".join(only))
     return _check(name, "warn", "; ".join(parts),
-                  f"add an API key for each (hangar cred add NAME --harness HARNESS --kind api_key --file key.txt; "
-                  f"--team for work no person owns); {doc}")
+                  "store an API key for each, as its person (--team for work no person owns): "
+                  + "; ".join(add_key_command(x) for x in sorted(needs)) + f"; {doc}")
 
 
 def doctor_checks(h: Any) -> list[dict[str, Any]]:

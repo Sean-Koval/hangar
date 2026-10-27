@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,40 @@ def _settings(tmp_path, **kw) -> Settings:
 def test_the_default_is_enforce(monkeypatch):
     monkeypatch.delenv("HANGAR_INTAKE_POSTURE", raising=False)
     assert Settings().intake_posture == "enforce"
+    assert Settings(intake_posture="enforce").intake_posture == "enforce"
+
+
+@pytest.mark.parametrize("value", ["warn", "off", "WARN"])
+def test_warn_and_off_are_refused_wherever_they_are_set(value, monkeypatch, tmp_path, store):
+    """--- KAN-74: the safe release's switch back (`warn`) and `off` are gone. In the environment hangar doesn't
+    start; `hangar config set` refuses them; stored before the upgrade they aren't applied and the doctor fails."""
+    from pydantic import ValidationError
+
+    from hangar.settings_store import SettingError, SettingsStore
+
+    monkeypatch.setenv("HANGAR_INTAKE_POSTURE", value)
+    with pytest.raises(ValidationError) as e:
+        Settings(data_dir=tmp_path)
+    assert f"HANGAR_INTAKE_POSTURE={value.lower()} was removed" in str(e.value)
+    assert "HANGAR_GATEWAY_URL" in str(e.value)
+    monkeypatch.delenv("HANGAR_INTAKE_POSTURE")
+    s = Settings(data_dir=tmp_path)
+    cfg = SettingsStore(store, s)
+    with pytest.raises(SettingError, match="was removed"):
+        cfg.set("HANGAR_INTAKE_POSTURE", value)
+    store.kv_set("setting:intake_posture", json.dumps(value))  # stored by v0.2.0
+    cfg.apply()
+    assert s.intake_posture == "enforce"
+    checks = posture.removed_checks(SimpleNamespace(settings=s, config=cfg), "intake_posture")
+    assert [c["status"] for c in checks] == ["fail"] and "was removed" in checks[0]["detail"]
+    assert checks[0]["fix"] == "hangar config unset HANGAR_INTAKE_POSTURE"
+
+
+def test_the_posture_is_enforce_whatever_the_settings_say(settings):
+    """No setting turns it off: only tests replace posture.mode (conftest.py)."""
+    from tests.conftest import REAL_POSTURE_MODE
+
+    assert REAL_POSTURE_MODE(settings) == "enforce"
 
 
 @pytest.mark.parametrize(("source", "untrusted", "ctx", "want"), [
@@ -127,7 +162,7 @@ def test_enforce_refuses_an_intake_job_without_the_gateway_and_says_how(svc):
     for source in ("github", "jira", "slack", "webhook", "github-projects"):
         with pytest.raises(JobError, match="HANGAR_GATEWAY_URL") as e:
             svc.submit(req, Caller("x", "x"), source=source, source_ref=f"{source}:1")
-        assert "HANGAR_INTAKE_POSTURE=warn" in str(e.value)
+        assert "HANGAR_INTAKE_POSTURE" not in str(e.value)  # one fix, not a weaker posture (KAN-74)
     # a person's own submission (MCP, the API, the CLI) is unaffected
     job = svc.submit(req, Caller("sean", "sean"), source="mcp")
     assert posture.FLOOR_LABEL not in job.labels and posture.INTAKE_LABEL not in job.labels
@@ -150,25 +185,6 @@ svc.fleet, Vault(svc.fleet.store, b"0" * 43 + b"="))
                    base_branch=None, branch=job.branch, provider=None, labels=job.labels, extra_dirs=[],
                    idle_minutes=5)
     assert s.labels[posture.FLOOR_LABEL] == "allowlist"
-
-
-def test_warn_runs_the_job_with_an_event_an_audit_entry_and_a_packet_line(svc):
-    svc.settings.intake_posture = "warn"
-    job = svc.submit(SubmitJob(instructions="fix it", repo=REPO, environment="plain"), Caller("x", "x"),
-                     source="slack", source_ref="slack:C1:1")
-    assert posture.FLOOR_LABEL not in job.labels
-    assert any(e.message.startswith("posture.warn: ") and "HANGAR_GATEWAY_URL" in e.message for e in job.events)
-    audit = [e for e in svc.fleet.store.audit_tail(50) if isinstance(e, AuditEvent) and e.action == "posture.warn"]
-    assert audit and audit[-1].target == job.id and audit[-1].detail["reason"] == "source:slack"
-    lines = posture.packet_lines(svc.settings, job, svc.fleet.catalog.get("plain"))
-    assert lines and "Intake posture (warn)" in lines[0] and "open" in lines[0]
-
-
-def test_off_changes_nothing(svc):
-    svc.settings.intake_posture = "off"
-    job = svc.submit(SubmitJob(instructions="fix it", repo=REPO, environment="plain"), Caller("x", "x"),
-                     source="github", source_ref="github:o/r#1")
-    assert posture.INTAKE_LABEL not in job.labels and posture.packet_lines(svc.settings, job) == []
 
 
 def test_the_review_packet_shows_the_floor(svc):
@@ -212,13 +228,10 @@ def test_the_doctor_reports_the_posture(fleet):
     assert checks["intake posture: gateway"]["status"] == "fail" and "job from GitHub is refused" in checks[
         "intake posture: gateway"]["detail"]
     assert checks["intake environment plain"]["detail"] == "egress open; intake jobs get allowlist (intake floor)"
+    assert checks["intake environment plain"]["status"] == "ok"
     s.gateway_url = GW
-    s.intake_posture = "warn"
     checks = {c["name"]: c for c in posture.doctor_checks(h)}
     assert checks["intake posture: gateway"]["status"] == "ok"
-    assert checks["intake environment plain"]["status"] == "warn"
-    s.intake_posture = "off"
-    assert posture.doctor_checks(h)[0]["status"] == "warn"
 
 
 def test_a_fresh_laptop_without_intake_doors_is_not_a_doctor_failure(fleet, monkeypatch):

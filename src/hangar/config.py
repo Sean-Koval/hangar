@@ -7,8 +7,35 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# --- KAN-74 (#223): the warn switches of the safe release (v0.2.0), and `off`, are gone; the next release enforces.
+# A removed value is refused wherever it is set: in the environment (Settings() fails, so `hangar serve` refuses to
+# start, naming it), with `hangar config set`, and, stored before the upgrade, `hangar doctor` fails on it.
+_UPGRADE_DOC = "docs/upgrading.md#removed-switches"
+_POSTURE_FIX = ("jobs from GitHub, GitHub Projects, Jira, Slack and inbound webhooks always need the git gateway and "
+                "get at least allowlist egress. Instead: set HANGAR_GATEWAY_URL (and HANGAR_EGRESS_URL on GKE), then "
+                "remove HANGAR_INTAKE_POSTURE where it is set (the hangar-site config map, .env, or "
+                f"`hangar config unset HANGAR_INTAKE_POSTURE`); {_UPGRADE_DOC}")
+REMOVED_SWITCHES: dict[tuple[str, str], str] = {
+    ("intake_posture", "warn"): f"HANGAR_INTAKE_POSTURE=warn was removed after v0.2.0 (#223): {_POSTURE_FIX}",
+    ("intake_posture", "off"): f"HANGAR_INTAKE_POSTURE=off was removed after v0.2.0 (#223): {_POSTURE_FIX}",
+    ("subscription_logins", "any"): (
+        "HANGAR_SUBSCRIPTION_LOGINS=any was removed after v0.2.0 (#223): jobs, schedules, webhooks, experiments and "
+        "replays never run on a subscription login (oauth_token, auth_file), so a Codex job on a ChatGPT login or a "
+        "Claude Code job on a Pro or Max login is refused. Instead: store an API key for each harness your jobs use, "
+        "e.g. hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt (add --team for work no "
+        "person owns), then remove HANGAR_SUBSCRIPTION_LOGINS where it is set (the hangar-site config map, .env, or "
+        "`hangar config unset HANGAR_SUBSCRIPTION_LOGINS`). People's own interactive sessions keep their logins; "
+        f"{_UPGRADE_DOC}"),
+}
+
+
+def removed_switch(name: str, value: Any) -> str | None:
+    """What to say about a setting value that no longer exists (KAN-74), or None."""
+    v = value.strip().lower() if isinstance(value, str) else value
+    return REMOVED_SWITCHES.get((name, v)) if isinstance(v, str) else None
 
 
 class Settings(BaseSettings):
@@ -338,11 +365,10 @@ class Settings(BaseSettings):
     # HANGAR_SECRET_SCAN). A bigger push is refused in block mode, let through unscanned (audited) in warn mode.
     gateway_scan_max_mb: int = Field(64, ge=1, le=1024)
     # --- intake posture (#123, posture.py, docs/security/front-doors.md#intake-posture): jobs from GitHub, GitHub
-    # Projects, Jira, Slack and inbound webhooks (or with an untrusted author or context). enforce: they need the git
-    # gateway (else refused at submit) and their sandboxes get at least `allowlist` egress; warn: they run as before,
-    # with a job event, an audit entry and a review-packet line saying what enforce would do (the one-release
-    # transition, docs/upgrading.md); off: neither.
-    intake_posture: Literal["enforce", "warn", "off"] = "enforce"
+    # Projects, Jira, Slack and inbound webhooks (or with an untrusted author or context) need the git gateway (else
+    # refused at submit) and their sandboxes get at least `allowlist` egress. `enforce` is the only value: `warn` and
+    # `off` were removed after v0.2.0 (KAN-74, REMOVED_SWITCHES).
+    intake_posture: Literal["enforce"] = "enforce"
     # --- egress: hostname allowlists (egress.py, docs/security/egress.md) ----
     # The mode of environments that don't set `egress.mode`: open (the public internet, as before), allowlist or none.
     egress_default: Literal["open", "allowlist", "none"] = "open"
@@ -511,10 +537,10 @@ class Settings(BaseSettings):
     # leased (a Codex ChatGPT login goes into one sandbox at a time); then it fails, saying which are busy
     login_wait_seconds: float = Field(600, ge=0)
     # --- #125: where a subscription login (`--kind oauth_token` or `auth_file`: Claude Pro/Max, a ChatGPT or Google
-    # sign-in) may go. `interactive`: only a person's own sandboxes and sessions, with a warning; jobs, schedules,
-    # webhooks, experiments and replays need an API key. `any`: jobs may use them too, with a warning, and `hangar
-    # doctor` fails. Experiment trials and graders never get one either way (docs/team.md#subscription-logins).
-    subscription_logins: Literal["interactive", "any"] = "interactive"
+    # sign-in) may go: only a person's own sandboxes and sessions, with a warning; jobs, schedules, webhooks,
+    # experiments and replays need an API key (docs/team.md#subscription-logins). `interactive` is the only value:
+    # `any` was removed after v0.2.0 (KAN-74, REMOVED_SWITCHES).
+    subscription_logins: Literal["interactive"] = "interactive"
     # Stopped and failed sandbox records older than this move to an archive table (retention.py): out of listings
     # and of every scan, still found by id. Archived ones are deleted after sandbox_archive_days (0 = kept).
     sandbox_retention_days: float = 7
@@ -653,6 +679,14 @@ class Settings(BaseSettings):
     # --- #182: monthly eval spend (evalbudget.py), per calendar month UTC: the team's (0: off) and each author's
     eval_budget_usd_month: float = Field(1500.0, ge=0)
     eval_author_cap_usd_month: float = Field(400.0, ge=0)
+
+    @field_validator("intake_posture", "subscription_logins", mode="before")
+    @classmethod
+    def _removed_switch(cls, v: Any, info: Any) -> Any:
+        """KAN-74: a removed value is refused with what to do instead, not pydantic's list of allowed values."""
+        if msg := removed_switch(info.field_name, v):
+            raise ValueError(msg)
+        return v
 
     @property
     def backup_interval_hours(self) -> float:

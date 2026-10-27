@@ -36,8 +36,9 @@ data:
   HANGAR_EGRESS_URL: "http://hangar-gateway.hangar.svc:3128"
   # HANGAR_EGRESS_DEFAULT: "allowlist"
   # Intake posture (docs/security/front-doors.md#intake-posture): jobs from GitHub, Jira, Slack, GitHub Projects and inbound
-  # webhooks need the gateway and get at least `allowlist` egress. "warn" for one release while you set the gateway
-  # up (docs/upgrading.md); "off" is not recommended.
+  # webhooks need the gateway and get at least `allowlist` egress. "enforce" is the only value: "warn" and "off" were
+  # removed after v0.2.0 (KAN-74), and hangar refuses to start with either (docs/upgrading.md#removed-switches). So is
+  # HANGAR_SUBSCRIPTION_LOGINS=any: jobs need an API-key credential (docs/team/subscription-logins.md).
   HANGAR_INTAKE_POSTURE: "enforce"
   # No uid split on GKE (KAN-165): the driver would run as the agent's own user, which could then allow its own tool
   # calls. `required` refuses an `ask` or `deny-risky` turn instead of running it unbound; `auto` turns are unaffected.
