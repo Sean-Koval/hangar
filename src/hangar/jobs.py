@@ -66,6 +66,7 @@ from hangar import resident as resident  # --- durable: live and recent jobs in 
 from hangar import restarts as restarts  # --- reconciler: interrupted jobs resume after a restart
 from hangar import secretscan as secretscan  # --- egress: secrets are scanned for before a push
 from hangar import shadows as shadows  # --- #183: shadow runs of sampled real jobs
+from hangar import slolog as slolog  # --- KAN-144: the SLO signals
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar import testresults as testresults  # --- testresults: structured results of every check
 from hangar import turnlogin as turnlogin  # --- #293: a turn refused for want of a login
@@ -883,10 +884,13 @@ class JobService:
             getattr(self._queue, "wake", lambda: None)()
 
     def _event(self, job: Job, message: str, state: JobState | None = None, reason: str | None | bool = False) -> None:
+        before = job.state
         if state is not None:
             job.state = state
         if reason is not False:
             job.reason = reason
+        if state is not None and state != before:  # --- KAN-144: a job start (ok or failed) and its time queued
+            slolog.job_transition(job, str(before), str(state))
         if state is not None and not experiments.is_experiment(job):  # --- #166: the final outcome's class
             if state in JOB_TERMINAL:
                 outcomes.mark(job.result, *outcomes.job_class(job))

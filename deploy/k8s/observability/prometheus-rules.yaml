@@ -1,0 +1,94 @@
+# Optional: hangar's SLO alerts for a Prometheus that scrapes /metrics (prometheus-operator.yaml's ServiceMonitor).
+# Not in the base kustomization. The same SLOs and thresholds as deploy/terraform/gke/alerting.tf, which alerts
+# through Cloud Monitoring for clusters with no Prometheus server (docs/slos.md, docs/alerting.md).
+#
+#   kubectl apply -f deploy/k8s/observability/prometheus-rules.yaml
+#
+# Route them with Alertmanager on the `severity` label: page to the on-call owner, ticket to the team channel
+# (docs/runbooks/on-call.md). Each alert names its runbook.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hangar-slos
+  namespace: hangar
+  # labels: {release: kube-prometheus-stack}  # whatever your Prometheus's ruleSelector matches
+spec:
+  groups:
+    - name: hangar-slis
+      interval: 1m
+      rules:
+        # SLO 1: 97% of job starts reach running (28 days)
+        - record: hangar:job_start_errors:ratio_rate1h
+          expr: |
+            sum(increase(hangar_job_starts_total{result="error"}[1h]))
+            / sum(increase(hangar_job_starts_total{result=~"ok|error"}[1h]))
+        # SLO 2: 95% of starts go from queued to running within 300 s (28 days)
+        - record: hangar:job_queue_over_300s:ratio_rate3h
+          expr: |
+            1 - sum(increase(hangar_job_queue_seconds_bucket{le="300.0"}[3h]))
+            / sum(increase(hangar_job_queue_seconds_count[3h]))
+        # SLO 3: at most 2% of sandbox creates fail (28 days)
+        - record: hangar:sandbox_create_errors:ratio_rate1h
+          expr: |
+            sum(increase(hangar_sandbox_create_seconds_count{result="error"}[1h]))
+            / sum(increase(hangar_sandbox_create_seconds_count[1h]))
+    - name: hangar-slos
+      rules:
+        - alert: HangarJobStartsFailing
+          expr: |
+            sum(increase(hangar_job_starts_total{result="error"}[1h])) >= 3
+            and hangar:job_start_errors:ratio_rate1h > 0.5
+          labels: {severity: page, product: hangar}
+          annotations:
+            summary: Half of the last hour's job starts failed (fast burn of the 97% job-start SLO)
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/stuck-job/
+        - alert: HangarJobStartsSlowBurn
+          expr: |
+            sum(increase(hangar_job_starts_total{result="error"}[24h])) >= 5
+            and sum(increase(hangar_job_starts_total{result="error"}[24h]))
+              / sum(increase(hangar_job_starts_total{result=~"ok|error"}[24h])) > 0.15
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: Job starts failed above budget over 24 hours
+            runbook_url: https://sean-koval.github.io/hangar/slos/#job-starts
+        - alert: HangarQueueSlow
+          expr: |
+            sum(increase(hangar_job_queue_seconds_count[3h])) >= 4
+            and hangar:job_queue_over_300s:ratio_rate3h > 0.25
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: More than a quarter of the last 3 hours' starts waited over 5 minutes in the queue
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/stuck-job/
+        - alert: HangarSandboxCreatesFailing
+          expr: |
+            sum(increase(hangar_sandbox_create_seconds_count{result="error"}[1h])) >= 3
+            and hangar:sandbox_create_errors:ratio_rate1h > 0.2
+          labels: {severity: page, product: hangar}
+          annotations:
+            summary: A fifth of the last hour's sandbox creates failed
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/disk-and-quota/
+        - alert: HangarJobStuck
+          expr: max_over_time(hangar_jobs_stuck[10m]) > 0
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: A live job looks stuck
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/stuck-job/
+        - alert: HangarTowerFailClosed
+          expr: |
+            sum(increase(hangar_governance_fail_closed_total{failure=~"unreachable|server_error|circuit_open|rate_limited"}[10m])) > 0
+          labels: {severity: page, product: hangar}
+          annotations:
+            summary: Tower isn't answering, so hangar is failing closed
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/tower-down/
+        - alert: HangarDatabaseBackupStale
+          expr: time() - hangar_db_backup_last_success_timestamp_seconds > 2 * 86400
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: No database backup stored for two days
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/disk-and-quota/
+        - alert: HangarLoopFailing
+          expr: sum by (loop) (increase(hangar_loop_failures_total[15m])) >= 5
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: A background loop keeps raising
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/stuck-job/

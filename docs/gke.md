@@ -18,6 +18,7 @@ This creates:
 - **A system pool**, plus a gVisor sandbox pool (Spot by default) that autoscales from 0 to N nodes.
 - **The Agent Sandbox add-on**, enabled through `gcloud`, and optionally Pod snapshots.
 - **Supporting resources:** an Artifact Registry repo, a `hangar` Google service account bound to the pod's KSA, and a global static IP.
+- **Alerting, opt-in** (`enable_alerting`): [SLO alerts and a dashboard](alerting.md), with [runbooks](runbooks/README.md) for each alert.
 
 ## 2. Control plane
 
@@ -27,7 +28,7 @@ The quick way is one script. It reads the Terraform outputs, builds the control-
 bash deploy/gke/up.sh            # KATA=1 also installs Kata on the microVM pool (step 4)
 ```
 
-Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name that resolves to the static IP, so the managed certificate provisions with no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a hangar that's already running with checkpoints on its disk, it leaves the setting alone, since switching would strand the local checkpoints of suspended sessions. On every install it sets `HANGAR_OUTBOX_URL` to the run bucket (`run_bucket`, [below](#run-capture-bucket)), so finished runs reach flightdeck. The manual steps below do the same thing by hand.
+Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name, so the certificate needs no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a running hangar with checkpoints on its disk it leaves the setting alone: switching would strand them. On every install it sets `HANGAR_OUTBOX_URL` to the run bucket (`run_bucket`, [below](#run-capture-bucket)), so finished runs reach flightdeck. The manual steps below do the same thing by hand.
 
 
 ```bash

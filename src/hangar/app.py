@@ -1263,6 +1263,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     fleet_api.mount(app, h, U)  # KAN-140: GET /api/fleet, the Fleet page's one read
     inbox_notify.mount(app, h, U)  # --- inbox delivery (#157, #158): PUT /api/people/{id}/delivery
     inbox_notify.register(h)  # the digests ride the ops loop
+    from hangar import slolog  # --- KAN-144: the stuck-jobs gauge and log line ride it too
+
+    slolog.register()
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

@@ -255,7 +255,7 @@ cloud doctor: 2 open finding(s); last run 9h ago (done)
 | turn start | from `begin_turn` to the agent running, the sandbox up (time spent waiting for a best-of-N sibling's cache excluded) | p50 ≤ 5 s, p95 ≤ 15 s |
 | resume | `hot`: a parked sandbox woken / `cold`: a new sandbox restored from a checkpoint | p95 ≤ 5 s / ≤ 60 s |
 
-These are the observability review's targets for GKE. Forks aren't creates here. Samples live in memory, are saved to the store every minute by the ops loop and reloaded at start, so a restart keeps the day. `hangar_sandbox_create_seconds` in `/metrics` carries the creates for people who scrape.
+These are the observability review's targets for GKE; forks aren't creates here. Samples are saved every minute, so a restart keeps the day. The rate SLOs and their alerts are on [their own page](slos.md). `hangar_sandbox_create_seconds` in `/metrics` carries the creates for people who scrape.
 
 ## Flight records
 

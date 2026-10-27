@@ -556,3 +556,20 @@ def test_final_comment_explains_failures(fleet):
     assert "on the PR" not in text and "re-add the `hangar` label" in text
     job.result.pr_url = "https://github.com/o/r/pull/9"
     assert "on the PR" in svc._final_comment(job)
+
+
+async def test_job_starts_are_logged_for_the_slos(jobs, world, fleet, caplog):  # --- KAN-144 (docs/slos.md)
+    import logging
+
+    caplog.set_level(logging.INFO, "hangar.slo")
+    ok = await _until(jobs, jobs.submit(SubmitJob(instructions="Add fix.txt", repo=world["url"], environment="jobenv"),
+                                        Caller("svc", "svc")).id, DONE)
+    subprocess.run(["git", "--git-dir", str(world["remote"]), "branch", "hangar/taken-slo", "main"], check=True)
+    bad = await _until(jobs, jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv",
+                                                   branch="hangar/taken-slo"), Caller("svc", "svc")).id, DONE)
+    assert ok.state == JobState.SUCCEEDED and bad.reason == "bad_branch"
+    lines = [r.getMessage() for r in caplog.records if r.name == "hangar.slo"]
+    starts = [ln for ln in lines if ln.startswith("event=job_start")]
+    assert len(starts) == 2 and starts[0].startswith("event=job_start result=ok queued_s=")
+    assert "result=rejected" in starts[1] and "reason=bad_branch" in starts[1]
+    assert sum(ln.startswith("event=sandbox_create result=ok provider=docker environment=jobenv") for ln in lines) == 2

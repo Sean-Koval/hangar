@@ -17,3 +17,10 @@ enable_kata_pool = false
 # Run capture (outbox.tf, on by default): flightdeck's nightly compactor reads the run bucket. Its
 # deploy/compactor/setup.sh creates this account and grants it read on the bucket; list it here once it exists.
 # run_bucket_readers = ["serviceAccount:flightdeck-compactor@my-gcp-project.iam.gserviceaccount.com"]
+
+# SLOs, alerts and the dashboard (alerting.tf, docs/alerting.md): Cloud Monitoring, no Prometheus needed. Off by
+# default. After the apply, fire each alert once: sh scripts/fire-test-alerts.sh
+# enable_alerting        = true
+# alert_email            = "you@example.com"      # the on-call owner
+# alert_escalation_email = "backup@example.com"   # page alerts still open after an hour
+# alert_slack_channel    = "#hangar-alerts"       # with TF_VAR_alert_slack_token, never in this file
