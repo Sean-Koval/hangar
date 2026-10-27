@@ -73,6 +73,7 @@ command output and idle connections.
 | [Build caches as shared infrastructure](build-caches.md) | Who writes a cache, sealing, what a poisoned entry can and can't do |
 | [Screens, previews and the agent's requests](screen.md) | VNC through hangar, tickets, env requests |
 | [The vault key ring](vault-key.md) | Where the keys live, rotation, backups |
+| [Where the audit log is kept](audit.md) | The database copy, the export to a retained Cloud Logging bucket, reading it |
 
 The design record is [spec 0003, sandbox security](../specs/0003-sandbox-security.md).
 
