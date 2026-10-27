@@ -48,7 +48,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "a2a-sdk>=1.2,<2",  # a
        "pytest-xdist>=3.8", "pytest-rerunfailures>=16"]  # CI: parallel shards; one rerun on main (docs/ci.md)
 
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12.0"]
+requires = ["uv_build>=0.13.5,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.pytest.ini_options]
