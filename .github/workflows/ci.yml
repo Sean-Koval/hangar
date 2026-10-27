@@ -24,6 +24,7 @@ env:
   PYTEST_WORKERS: "8"
   PYTEST_ADDOPTS: -p no:cacheprovider --durations=10
   UV_COMPILE_BYTECODE: "1"
+  HANGAR_REQUIRE_CAPS: "1"  # KAN-138: a test that needs Docker, KVM or a uid split fails here, never skips
   PYTHONPATH: scripts/ci  # -p flake_report
   RERUN: --reruns 1 -p flake_report
 

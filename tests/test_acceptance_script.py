@@ -29,6 +29,7 @@ from tests.test_gateway_git import PAT, upstream  # noqa: F401 - fixture: acme/w
 from tests.test_mcp_modern import AppThread
 
 e2e = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+docker = pytest.mark.needs("docker")  # --- KAN-138: CI (HANGAR_REQUIRE_CAPS=1) fails instead of skipping
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "acceptance" / "gke.sh"
@@ -73,6 +74,7 @@ def _env(tmp_path: Path, port: int, **extra: str) -> dict[str, str]:
 
 
 @e2e
+@docker
 def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: F811
     from hangar.app import create_app
     from hangar.config import Settings
@@ -153,6 +155,7 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
 
 
 @e2e
+@docker
 def test_in_pod_exec_measurement(tmp_path):
     """The exec check's in-cluster measurement (hangar_accept.IN_POD, which gke.sh runs in the control-plane pod with
     kubectl exec) times the provider's own exec and then hangar-envd. Kubernetes isn't here, so the Docker provider,
@@ -201,6 +204,7 @@ def test_in_pod_exec_measurement(tmp_path):
 
 
 @e2e
+@docker
 def test_cleanup_runs_after_a_failed_check(tmp_path):
     """A check that fails (a sandbox in an environment that doesn't exist) skips the checks that need it, the others
     still run, cleanup still removes what they made, and the run exits non-zero."""

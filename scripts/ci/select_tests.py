@@ -13,6 +13,7 @@ after the merge, so this only has to catch most breakage, fast.
     scripts/ci/select_tests.py --base origin/main --shard 2/4   # this shard's share of them
     scripts/ci/select_tests.py --files src/hangar/slack.py      # for given paths instead of a git diff
     scripts/ci/select_tests.py --base origin/main --e2e         # the Docker e2e suites to run, as a JSON list
+    scripts/ci/select_tests.py --base origin/main --budget 600  # verify.sh's: capped to 600 s of CI time
     scripts/ci/select_tests.py --record-durations junit/*.xml > scripts/ci/durations.json   # from a full run
 
 Why it chose what it did goes to stderr; stdout is only the answer.
@@ -73,6 +74,13 @@ PATHS: list[tuple[str, list[str] | str]] = [
 ]
 
 LARGE_DIFF = 12  # changed hangar modules past which selection isn't worth its risk
+
+# --- KAN-138: verify.sh's cap (--budget). A hangar job's check has minutes, not CI's 32 workers: past the budget it
+# keeps the API and contract tests (for a hub change, or when CI would run everything), the tests a changed path
+# names, then the tests importing a changed module directly, then the rest, cheapest first. CI keeps running it all.
+CONTRACT = ["tests/test_app.py", "tests/test_mcp_contract.py", "tests/test_scope_parity.py",
+            "tests/test_fleet_api.py", "tests/test_steer_api.py"]
+CAPPED_PATHS = [("scripts/ci/*", ["tests/test_ci.py"]), (".github/workflows/*", ["tests/test_ci.py"])]
 READS = {
     "envs": re.compile(r"""(parents\[1\]|ROOT)\s*/\s*["']envs["']"""),  # the repo's environments
     "envd": re.compile(r"""BINARIES|envd_dir|HANGAR_ENVD_DIR"""),  # the hangar-envd binary
@@ -84,6 +92,9 @@ class Selection:
     full: bool = False
     tests: set[str] = field(default_factory=set)  # repo-relative test files
     why: list[str] = field(default_factory=list)
+    named: set[str] = field(default_factory=set)  # changed test files, tests a changed path names, a module's test_<it>
+    direct: set[str] = field(default_factory=set)  # tests importing a changed module (or a changed helper) directly
+    hub: bool = False  # a core module changed
 
     def everything(self, reason: str) -> None:
         self.full = True
@@ -134,13 +145,17 @@ def opt_ins(tree: ast.Module) -> dict[str, str]:
     os.environ.get("HANGAR_E2E") != "1", ...)` -> {"pytestmark": "HANGAR_E2E"}."""
     found = {}
     for node in tree.body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
-                and ast.unparse(node.value.func).endswith("skipif"):
-            env = [c.value for c in ast.walk(node.value) if isinstance(c, ast.Constant)
-                   and isinstance(c.value, str) and c.value.startswith("HANGAR_")]
-            calls = {ast.unparse(c.func) for c in ast.walk(node.value) if isinstance(c, ast.Call)}
-            if env and calls & {"os.environ.get", "os.getenv"}:
-                found.update((t.id, env[0]) for t in node.targets if isinstance(t, ast.Name))
+        if not isinstance(node, ast.Assign):
+            continue
+        # one mark, or a list of them (`[skipif(...), pytest.mark.needs("docker")]`, KAN-138)
+        marks = node.value.elts if isinstance(node.value, ast.List) else [node.value]
+        for mark in marks:
+            if isinstance(mark, ast.Call) and ast.unparse(mark.func).endswith("skipif"):
+                env = [c.value for c in ast.walk(mark) if isinstance(c, ast.Constant)
+                       and isinstance(c.value, str) and c.value.startswith("HANGAR_")]
+                calls = {ast.unparse(c.func) for c in ast.walk(mark) if isinstance(c, ast.Call)}
+                if env and calls & {"os.environ.get", "os.getenv"}:
+                    found.update((t.id, env[0]) for t in node.targets if isinstance(t, ast.Name))
     return found
 
 
@@ -209,22 +224,29 @@ def select(changed: list[str], graph: Graph) -> Selection:
     for path in changed:
         if any(fnmatch.fnmatch(path, pat) for pat in FULL):
             sel.everything(f"{path} is shared by every test or is CI itself")
+            sel.named |= {t for pat, ts in CAPPED_PATHS if fnmatch.fnmatch(path, pat) for t in ts}
             continue
         name = module_name(path)
         if name and name.startswith("hangar"):
             if name in graph.core:
                 sel.everything(f"{path} is a core module (CORE, or imported by tests/conftest.py)")
+                sel.hub = True
             src_modules.append(name)
+            sel.named |= {f"tests/test_{name.rpartition('.')[2] or name}.py"}
+            sel.direct |= graph.test_files(graph.dependents(name, hops=0))
             continue
         if name and name.startswith("tests"):
             hit = graph.test_files(graph.dependents(name))
             sel.tests |= hit
+            sel.named.add(path)
+            sel.direct |= hit
             sel.why.append(f"{path}: {len(hit)} test file(s) (it and the tests importing it)")
             continue
         for pattern, targets in PATHS:
             if fnmatch.fnmatch(path, pattern):
                 hit = graph.reading(targets) if isinstance(targets, str) else set(targets)
                 sel.tests |= hit
+                sel.named |= hit
                 sel.why.append(f"{path}: {len(hit)} test file(s) read it" if hit else f"{path}: no tests")
                 break
         else:
@@ -274,6 +296,26 @@ def shard(files: list[str], index: int, count: int, durations: dict[str, float])
     return sorted(shards[index - 1])
 
 
+def cap(sel: Selection, files: list[str], budget: float, durations: dict[str, float]) -> tuple[list[str], str]:
+    """--- KAN-138: verify's selection within `budget` seconds of recorded (CI) time, and why. Under it, everything
+    selected; over it, the API and contract tests when a hub changed or CI would run everything, and the tests a
+    change names, always; then direct importers of a changed module, then the rest, each cheapest first."""
+    known = sorted(durations.values())
+    default = known[len(known) // 2] if known else 1.0
+    cost = {f: durations.get(f, default) for f in files}
+    if sum(cost.values()) <= budget:
+        return sorted(files), ""
+    keep = (sel.named | (set(CONTRACT) if sel.hub or sel.full else set())) & set(files)
+    total = sum(cost[f] for f in keep)
+    for tier in (sel.direct, set(files)):
+        for f in sorted(tier & set(files) - keep, key=lambda f: (cost[f], f)):
+            if total + cost[f] <= budget:
+                keep.add(f)
+                total += cost[f]
+    return sorted(keep), (f"capped at {budget:.0f}s of CI time: {len(keep)} of {len(files)} test files, about "
+                          f"{total:.0f}s; CI runs the rest (--full runs everything)")
+
+
 def record_durations(junit_files: list[str]) -> dict[str, float]:
     """Seconds per test file from pytest's junit XML (`--junitxml`), summed over its tests."""
     total: dict[str, float] = defaultdict(float)
@@ -294,7 +336,11 @@ def main(argv: list[str] | None = None) -> int:
     src.add_argument("--record-durations", nargs="+", metavar="JUNIT_XML", help=f"print a new {DURATIONS.name}")
     ap.add_argument("--shard", help="I/N: only shard I (1-based) of N")
     ap.add_argument("--e2e", action="store_true", help="print the selected Docker e2e suites as a JSON list")
+    ap.add_argument("--budget", type=float, metavar="SECONDS",
+                    help="cap the selection at this much recorded CI time (verify.sh); CI never caps")
     args = ap.parse_args(argv)
+    if args.budget is not None and (args.shard or args.all):
+        ap.error("--budget is for verify.sh's selection, not with --shard or --all")
 
     if args.record_durations:
         print(json.dumps(record_durations(args.record_durations), indent=0))
@@ -312,6 +358,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(sorted(t for t in sel.tests if graph.is_e2e(t))))
         return 0
     files = sorted(t for t in sel.tests if graph.is_unit(t))
+    if args.budget is not None:
+        files, why = cap(sel, files, args.budget, json.loads(DURATIONS.read_text()) if DURATIONS.exists() else {})
+        if why:
+            print(why, file=sys.stderr)
     if args.shard:
         index, _, count = args.shard.partition("/")
         if not (index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count)):
@@ -319,7 +369,8 @@ def main(argv: list[str] | None = None) -> int:
         durations = json.loads(DURATIONS.read_text()) if DURATIONS.exists() else {}
         files = shard(files, int(index), int(count), durations)
     print(f"{len(files)} of {len(graph.tests)} test files selected", file=sys.stderr)
-    print("\n".join(files))
+    if files:  # --- KAN-138: nothing, not an empty line, which `mapfile` reads as one empty path (the whole suite)
+        print("\n".join(files))
     return 0
 
 

@@ -30,7 +30,8 @@ from hangar import harness_lock, plugins
 from tests.fixtures.live import fake_models
 from tests.test_e2e_jobs_docker import _bridge_gateway, remote  # noqa: F401 - fixture: bare repo served over git://
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 BASE = "mirror.gcr.io/library/ubuntu:24.04"  # not Docker Hub, which rate-limits pulls
 GIT = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBranch=main"]
 

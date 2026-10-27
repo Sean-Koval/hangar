@@ -16,7 +16,8 @@ import pytest
 
 from hangar.envd import EnvdTerminal, find_binaries
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 ROOT = Path(__file__).parents[1]
 

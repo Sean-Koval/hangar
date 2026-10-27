@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "ci"))
 import bisect_hook as ci_bisect  # noqa: E402
 import flakes  # noqa: E402
 import select_tests as st  # noqa: E402
+import verify_baseline as vb  # noqa: E402
 
 
 # ====================================================================== selection
@@ -116,6 +117,64 @@ def test_every_hangar_module_maps_to_tests_or_the_full_suite():
         if name.startswith("hangar"):
             sel = st.select([path], graph)
             assert sel.full or sel.tests, path
+
+
+# ---------------------------------------------------------------------- verify's cap (KAN-138)
+def capped(graph, budget, durations, *changed):
+    sel = st.select(list(changed), graph)
+    files = sorted(t for t in sel.tests if graph.is_unit(t))
+    kept, why = st.cap(sel, files, budget, durations)
+    return [Path(t).stem for t in kept], why
+
+
+def test_under_the_budget_verify_runs_what_ci_would(repo):
+    assert capped(repo, 100, {}, "src/hangar/a.py") == (["test_a", "test_b", "test_helper_user", "test_scan"], "")
+
+
+def test_over_the_budget_it_keeps_named_then_direct_then_cheapest(repo, monkeypatch):
+    monkeypatch.setattr(st, "CONTRACT", ["tests/test_core.py"])
+    durations = {"tests/test_a.py": 5, "tests/test_b.py": 1, "tests/test_helper_user.py": 1, "tests/test_scan.py": 9,
+                 "tests/test_c.py": 2, "tests/test_core.py": 3}
+    # a.py: test_a is its own (named), the others import it one hop away; 7s fits test_a, then the cheapest two
+    kept, why = capped(repo, 7, durations, "src/hangar/a.py")
+    assert kept == ["test_a", "test_b", "test_helper_user"] and "3 of 4 test files" in why and "--full" in why
+    # a hub change keeps the contract tests, then its direct importers (test_core imports core) within the budget
+    kept, _ = capped(repo, 4, durations, "src/hangar/core.py")
+    assert kept == ["test_b", "test_core"]
+    # what CI runs everything for keeps the contract tests however small the budget (and test_ci for scripts/ci/)
+    kept, _ = capped(repo, 0, durations, "scripts/ci/verify.sh")
+    assert kept == ["test_core"]
+
+
+def test_the_real_cap_keeps_the_api_and_contract_tests_for_a_hub():
+    graph = st.Graph()
+    durations = json.loads(st.DURATIONS.read_text())
+    for hub in ("src/hangar/app.py", "src/hangar/config.py", "src/hangar/models.py"):
+        sel = st.select([hub], graph)
+        files = sorted(t for t in sel.tests if graph.is_unit(t))
+        kept, why = st.cap(sel, files, 240, durations)
+        assert sel.full and set(st.CONTRACT) <= set(kept) and len(kept) < len(files) and "CI runs the rest" in why
+    sel = st.select(["scripts/ci/verify_baseline.py"], graph)
+    kept, _ = st.cap(sel, sorted(t for t in sel.tests if graph.is_unit(t)), 240, durations)
+    assert "tests/test_ci.py" in kept
+
+
+def test_the_cli_caps_only_when_asked(tmp_path):
+    def run(*args):
+        return subprocess.run([sys.executable, str(ROOT / "scripts/ci/select_tests.py"), *args],
+                              capture_output=True, text=True)
+    everything = run("--files", "src/hangar/app.py").stdout.split()
+    some = run("--files", "src/hangar/app.py", "--budget", "120")
+    assert set(st.CONTRACT) <= set(some.stdout.split()) < set(everything) and "capped at 120s" in some.stderr
+    assert run("--all", "--budget", "60").returncode == 2  # CI's full run is never capped
+    assert run("--files", "LICENSE").stdout == ""  # not an empty line: verify.sh would pass pytest ""
+
+
+def test_a_list_of_marks_still_opts_in():
+    import ast
+    tree = ast.parse('import os, pytest\npytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", '
+                     'reason=""), pytest.mark.needs("docker")]\n')
+    assert st.opt_ins(tree) == {"pytestmark": "HANGAR_E2E"}
 
 
 def test_cli_with_files_and_shards(tmp_path):
@@ -315,3 +374,134 @@ def test_ports_come_from_this_worker_block_below_the_ephemeral_range(monkeypatch
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
     ports = [conftest.free_port() for _ in range(5)]
     assert len(set(ports)) == 5 and all(low - 4 * 256 <= p < low - 3 * 256 for p in ports)
+
+
+# ====================================================================== verify's baseline (KAN-138)
+def test_junit_names_become_node_ids(tmp_path):
+    (tmp_path / "tests").mkdir()
+    for f in ("test_a", "test_b", "test_c"):
+        (tmp_path / "tests" / f"{f}.py").write_text("")
+    (tmp_path / "j.xml").write_text(JUNIT)
+    assert vb.outcomes(tmp_path / "j.xml", tmp_path) == {
+        "tests/test_a.py::test_ok": "passed", "tests/test_a.py::test_bad[x-1]": "failed",
+        "tests/test_b.py::TestK::test_err": "failed", "tests/test_c.py": "failed"}
+
+
+def test_only_what_also_failed_on_the_base_is_pre_existing():
+    base = {"t::a": "failed", "t::b": "passed", "t::c": "skipped", "t::d": "missing"}
+    assert vb.compare(["t::a", "t::b", "t::c", "t::d", "t::e"], base) == (["t::a"], ["t::b", "t::c", "t::d", "t::e"])
+
+
+BASE_TESTS = """
+def test_always_broken():
+    assert False
+
+def test_fine():
+    assert True
+"""
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd, check=True,
+                   capture_output=True)
+
+
+@pytest.fixture
+def two_commits(tmp_path, monkeypatch):
+    """A repo whose base has one broken test, and a branch that breaks test_fine and adds a broken test."""
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "__init__.py").write_text("")
+    (repo / "tests" / "test_x.py").write_text(BASE_TESTS)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    monkeypatch.setattr(vb, "ROOT", repo)
+    return repo, base
+
+
+def _run_head(repo):
+    junit = repo.parent / "head.xml"
+    subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--junitxml", str(junit),
+                    "tests"], cwd=repo, capture_output=True)
+    return junit
+
+
+def test_verify_passes_when_every_failure_is_the_bases(two_commits, capsys):
+    repo, base = two_commits
+    junit = _run_head(repo)
+    assert vb.main(["--base-sha", base, "--junit", str(junit), "--workers", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "pre-existing: tests/test_x.py::test_always_broken" in out and "no new failures" in out
+    cached = json.loads(vb.cache_file(base).read_text())
+    assert cached == {"tests/test_x.py::test_always_broken": "failed"}
+    assert vb.main(["--base-sha", base, "--junit", str(junit), "--workers", "0"]) == 0  # from the cache
+    assert "running" not in capsys.readouterr().err
+    assert "hangar-verify-base" not in subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True,
+                                                      text=True).stdout  # the scratch worktree is gone
+
+
+def test_verify_fails_on_a_new_failure_and_names_it(two_commits, capsys):
+    repo, base = two_commits
+    (repo / "tests" / "test_x.py").write_text(BASE_TESTS.replace("assert True", "assert 0"))
+    (repo / "tests" / "test_y.py").write_text("def test_new():\n    assert False\n")
+    junit = _run_head(repo)
+    assert vb.main(["--base-sha", base, "--junit", str(junit), "--workers", "0"]) == 1
+    out = capsys.readouterr().out
+    assert "pre-existing: tests/test_x.py::test_always_broken" in out
+    assert "new: tests/test_x.py::test_fine (base: passed)" in out
+    assert "new: tests/test_y.py::test_new (base: missing)" in out
+
+
+def test_verify_counts_a_test_the_base_lacks_inside_a_file_it_has(two_commits, capsys):
+    repo, base = two_commits
+    (repo / "tests" / "test_x.py").write_text(BASE_TESTS + "\ndef test_added():\n    assert False\n")
+    junit = _run_head(repo)
+    assert vb.main(["--base-sha", base, "--junit", str(junit), "--workers", "0"]) == 1
+    assert "new: tests/test_x.py::test_added (base: missing)" in capsys.readouterr().out
+
+
+# ====================================================================== capabilities (KAN-138)
+def test_a_missing_capability_skips_with_its_reason_and_ci_fails_it(tmp_path):
+    (tmp_path / "conftest.py").write_text("from tests.conftest import *  # noqa\nfrom tests import conftest as c\n"
+                                          "c._missing['kvm'] = 'no usable /dev/kvm'\n")
+    (tmp_path / "test_k.py").write_text("import pytest\n\n@pytest.mark.needs('kvm')\ndef test_k():\n    pass\n")
+    env = {**os.environ, "PYTHONPATH": str(ROOT)}
+    env.pop("HANGAR_REQUIRE_CAPS", None)
+
+    def run(**extra):
+        return subprocess.run([sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider", "-p",
+                               "no:randomly", str(tmp_path)], capture_output=True, text=True, cwd=tmp_path,
+                              env={**env, **extra})
+    r = run()
+    assert r.returncode == 0 and "capability: kvm: no usable /dev/kvm" in r.stdout and "1 skipped" in r.stdout
+    r = run(HANGAR_REQUIRE_CAPS="1")
+    assert r.returncode == 1 and "capability kvm is required here" in r.stdout
+
+
+def test_an_unknown_capability_is_a_usage_error(tmp_path):
+    (tmp_path / "conftest.py").write_text("from tests.conftest import *  # noqa\n")
+    (tmp_path / "test_k.py").write_text("import pytest\n\n@pytest.mark.needs('gpu')\ndef test_k():\n    pass\n")
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(tmp_path)],
+                       capture_output=True, text=True, cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(ROOT)})
+    assert r.returncode == 4 and "unknown capability ['gpu']" in r.stdout + r.stderr
+
+
+def test_ci_never_lets_a_capability_skip():
+    for wf in ("ci.yml", "pr.yml", "harness-contract.yml"):
+        assert 'HANGAR_REQUIRE_CAPS: "1"' in (ROOT / ".github/workflows" / wf).read_text(), wf
+    docker = [p.name for p in (ROOT / "tests").glob("test_e2e_*docker.py")
+              if 'pytest.mark.needs("docker")' not in p.read_text()]
+    assert docker == []  # every Docker suite says so: CI fails it, rather than skips it, without Docker
+
+
+def test_fake_sandboxes_remap_their_paths_but_not_the_hosts(monkeypatch):
+    monkeypatch.setattr(conftest, "HOST_PATHS", ["/workspace/hangar/.venv", "/workspace/hangar",
+                                                 "/home/agent/.local/python"])
+    cmd = "/workspace/hangar/.venv/bin/python /workspace/hangar/tests/h.py --home /home/agent --repo /workspace/r"
+    assert conftest.remap(cmd, "/box") == ("/workspace/hangar/.venv/bin/python /workspace/hangar/tests/h.py --home "
+                                           "/box/home/agent --repo /box/workspace/r")
+    assert conftest.remap("/home/agent/.local/python/bin/python3 /tmp/x", "/box") == \
+        "/home/agent/.local/python/bin/python3 /box/tmp/x"
+    assert conftest.remap("/tmp/x", "/box", tmp=False) == "/tmp/x"

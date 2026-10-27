@@ -17,7 +17,8 @@ import pytest
 from tests.test_e2e_jobs_docker import remote  # noqa: F401 - fixture: bare repo served over git://
 from tests.test_e2e_sessions_docker import AGENT, _settle
 
-pytestmark = pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run")
+pytestmark = [pytest.mark.skipif(os.environ.get("HANGAR_E2E") != "1", reason="set HANGAR_E2E=1 to run"),
+              pytest.mark.needs("docker")]
 
 
 def test_checkpoint_without_the_checkout_on_docker(tmp_path, remote, monkeypatch):  # noqa: F811
