@@ -79,7 +79,9 @@ resource "google_container_node_pool" "microvm" {
     spot         = var.microvm_spot
     disk_size_gb = var.microvm_disk_gb
     disk_type    = var.microvm_disk_type
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    # KAN-183: hangar-nodes with dedicated_node_service_account; null is the default account
+    service_account = local.node_service_account
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     labels = {
       "hangar.dev/runtime"    = "microvm"
       "nested-virtualization" = "enabled" # the label GKE's own nested-virtualization guide schedules on
@@ -107,8 +109,18 @@ resource "google_container_node_pool" "microvm" {
         local_ssd_count = var.microvm_local_ssds
       }
     }
+    shielded_instance_config { # KAN-180; secure boot forces a new pool on an existing cluster (hardening.tf)
+      enable_secure_boot          = var.shielded_secure_boot
+      enable_integrity_monitoring = true
+    }
     workload_metadata_config {
       mode = "GKE_METADATA"
+    }
+  }
+  dynamic "network_config" { # KAN-180: private nodes on existing pools too (in place, a rolling node update)
+    for_each = var.private_nodes ? [1] : []
+    content {
+      enable_private_nodes = true
     }
   }
 }
