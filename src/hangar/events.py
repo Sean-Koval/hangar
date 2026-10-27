@@ -1127,7 +1127,10 @@ class TurnWatcher:
             return
         from hangar.steer import track  # import cycle
 
-        path = shlex.quote(f"{isolation.ctl_dir(self.fleet.settings, self.turn.run_id, True)}/approvals")
+        side = False  # --- KAN-186: a sidecar run's control directory is in its driver container's CTL
+        with contextlib.suppress(Exception):
+            side = isolation.run_sidecar(self.fleet.get(self.s.sandbox_id), self.turn.run_id)
+        path = shlex.quote(f"{isolation.ctl_dir(self.fleet.settings, self.turn.run_id, True, side)}/approvals")
         for _ in range(READS_PER_POLL):
             try:
                 res = await self._sh(f"tail -c +{self.approvals_read + 1} {path} 2>/dev/null | head -c {CHUNK} "

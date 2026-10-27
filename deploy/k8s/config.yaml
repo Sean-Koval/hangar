@@ -40,10 +40,14 @@ data:
   # removed after v0.2.0 (KAN-74), and hangar refuses to start with either (docs/upgrading.md#removed-switches). So is
   # HANGAR_SUBSCRIPTION_LOGINS=any: jobs need an API-key credential (docs/team/subscription-logins.md).
   HANGAR_INTAKE_POSTURE: "enforce"
-  # No uid split on GKE (KAN-165): the driver would run as the agent's own user, which could then allow its own tool
-  # calls. `required` refuses an `ask` or `deny-risky` turn instead of running it unbound; `auto` turns are unaffected.
-  # Until the driver sidecar lands (KAN-83), keep it (docs/security/review-1.0.md).
+  # No uid split in one GKE container (KAN-165): the driver would run as the agent's own user, which could then allow
+  # its own tool calls. `required` refuses an `ask` or `deny-risky` turn instead of running it unbound; `auto` turns
+  # are unaffected. Keep it: with the driver sidecar on, it lets those turns run in a pod whose sidecar passes hangar's
+  # probe, and still refuses them anywhere else (docs/security/review-1.0.md).
   HANGAR_UID_SPLIT: "required"
+  # The driver sidecar (KAN-186): a `hangar-driver` container per sandbox pod that runs a turn's driver out of the
+  # agent's reach. Off until the checks in docs/security/driver-sidecar-check.md pass on this cluster.
+  HANGAR_K8S_DRIVER_SIDECAR: "false"
   # Tower, the Govern plane, runs beside hangar in namespace tower (docs/runbooks/tower.md; Tower's ADR 0018). hangar
   # asks its Service in the cluster: no load balancer or certificate on the fail-closed path. Read once #172 wires the
   # client; until then hangar ignores them. Shadow never changes an outcome: hangar's rules decide, Tower is asked a dry

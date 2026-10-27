@@ -86,11 +86,13 @@ CLAUDE_PLUGINS = ("Claude Code plugins the environment's settings enable outside
 @dataclass
 class Plan:
     """How a hardened turn starts its harness: `live_run` replaces the harness's own, `driver_args` go to the driver,
-    `files` are written into isolation.RUNS as hangar's user first."""
+    `files` are written into isolation.RUNS as hangar's user first; `ctl_files` into the run's control directory
+    (the driver sidecar's, KAN-186: hangar's copy of the agent's environment stays out of the agent's container)."""
 
     live_run: str
     driver_args: str
     files: dict[str, tuple[bytes | None, int]] = field(default_factory=dict)
+    ctl_files: dict[str, tuple[bytes | None, int]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -101,7 +103,8 @@ def keep(fleet: Any, prov: Provider, sb: Sandbox, h: Harness, servers: dict[str,
     configured. Built from what hangar wrote, never read back: a fork starts from its parent's files, and the parent's
     agent may have left something there that runs when hangar sets the fork up (its ~/.bashrc, for one). The
     credentials' post-inject scripts of the harnesses with a structured mode add nothing to that file."""
-    if not h.live or not isolation.supported(prov) or fleet.settings.uid_split == "off":
+    if not h.live or fleet.settings.uid_split == "off" or not (
+            isolation.supported(prov) or isolation.sidecar_wanted(prov, fleet.settings)):  # --- KAN-186
         return  # no split there: nothing would use it
     text = "\n".join([*prelude, *(f"export {k}={shlex.quote(v)}" for k, v in env.items())]) + "\n"
     mcp = mcp_config("claude", servers)[1] if h.mcp_format == "claude" else None
@@ -143,8 +146,12 @@ def claude_flags(run: str, wd: str, memory: bool) -> list[str]:
 CODEX_FLAGS = ["--disable", "hooks"]  # before the subcommand; `-c features.hooks=false`
 
 
-def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[str, str]) -> Plan | str:
-    """The hardened start of a split turn's harness, or why hangar can't own its settings in this sandbox."""
+def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[str, str],
+         ctl: str | None = None) -> Plan | str:
+    """The hardened start of a split turn's harness, or why hangar can't own its settings in this sandbox. `ctl`:
+    the run's control directory under the driver sidecar (KAN-186), where its `agent-env` goes instead of RUNS. The
+    settings files stay in RUNS, on hangar-home: the harness reads them in the agent's container, which mounts it
+    read-only, so the agent can't rewrite them."""
     binary = isolation.pinned(sb)
     if not binary:
         return (sb.info.get("isolation") or {}).get("harness_why") or "the harness wasn't checked"
@@ -158,7 +165,8 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
     r = f"{isolation.RUNS}/{run_id}"
     base = kept.get("env") or ""
     rest = h.live_run.split(None, 1)[1] if len(h.live_run.split(None, 1)) > 1 else ""  # shell words, expanded later
-    p = Plan(live_run="", driver_args=f"--base-env {shlex.quote(r + '.agent-env')}")
+    agent_env = f"{ctl}/agent-env" if ctl else f"{r}.agent-env"
+    p = Plan(live_run="", driver_args=f"--base-env {shlex.quote(agent_env)}")
     if h.live == "claude":
         try:
             spec = fleet.catalog.get(sb.environment)
@@ -192,5 +200,8 @@ def plan(fleet: Any, sb: Sandbox, h: Harness, run_id: str, wd: str, env: dict[st
     else:
         p.live_run = f"{shlex.quote(binary)} {shlex.join(CODEX_FLAGS)} {rest}"
         p.warnings.append(CODEX_RULES)
-    p.files[f"{run_id}.agent-env"] = (base.encode(), 0o600)
+    if ctl:
+        p.ctl_files["agent-env"] = (base.encode(), 0o600)
+    else:
+        p.files[f"{run_id}.agent-env"] = (base.encode(), 0o600)
     return p

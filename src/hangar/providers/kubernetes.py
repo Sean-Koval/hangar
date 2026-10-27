@@ -539,10 +539,11 @@ class KubernetesProvider(Provider):
         return getattr(self, "core_exec", None) or self.core
 
     def _exec_blocking(self, pod: str, argv: list[str], timeout: int,
-                       keep: int | None = 2 * MAX_OUTPUT) -> tuple[int, str, str]:
+                       keep: int | None = 2 * MAX_OUTPUT, container: str = CONTAINER) -> tuple[int, str, str]:
         """Only the last `keep` characters of each stream are kept (None: all of them, for hangar's own uploads
-        and reads): the sandbox decides how much its commands print."""
-        ws = k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+        and reads): the sandbox decides how much its commands print. `container`: the agent's, or the driver
+        sidecar's (KAN-186)."""
+        ws = k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=container,
                         command=argv, stderr=True, stdin=False, stdout=True, tty=False,
                         _preload_content=False)
         big = 1 << 62
@@ -561,15 +562,21 @@ class KubernetesProvider(Provider):
         return (code if code is not None else -1), out.value(), err.value()
 
     async def exec(self, sandbox, command, timeout=120, cwd=None, user=None) -> ExecResult:
-        if (res := await self.envd.exec(sandbox, command, timeout, cwd, user)) is not None:  # --- envd
-            return res
+        # --- KAN-186: hangar's own user is the driver sidecar's container, through pods/exec: never envd (the
+        # agent's daemon, in the agent's container)
+        container = DRIVER_CONTAINER if user == DRIVER_USER else CONTAINER
+        if container == DRIVER_CONTAINER and not self.settings.k8s_driver_sidecar:
+            raise ProviderError(f"exec as {user} needs the driver sidecar (HANGAR_K8S_DRIVER_SIDECAR)")
+        if container == CONTAINER and (res := await self.envd.exec(sandbox, command, timeout, cwd, user)) is not None:
+            return res  # --- envd
         pod = await self._pod(sandbox)
-        wd = cwd or self.settings.workspace_dir
+        wd = cwd or (DRIVER_HOME if container == DRIVER_CONTAINER else self.settings.workspace_dir)
         script = f"cd {shlex.quote(wd)} 2>/dev/null; {command}"
         argv = ["timeout", "--kill-after=5", str(int(timeout)), "bash", "-lc", script]
         t0 = time.monotonic()
         try:
-            code, out, err = await asyncio.to_thread(self._exec_blocking, pod, argv, timeout)
+            code, out, err = await asyncio.to_thread(self._exec_blocking, pod, argv, timeout, 2 * MAX_OUTPUT,
+                                                     container)
         except ApiException as e:
             raise ProviderError(f"exec failed: {e.reason}") from e
         trunc = len(out) > MAX_OUTPUT or len(err) > MAX_OUTPUT
@@ -665,6 +672,63 @@ class KubernetesProvider(Provider):
         if code != 0:
             raise ProviderError(f"write {path} failed: {err}")
 
+    # ------------------------------------------------------------------ the driver sidecar (--- KAN-186)
+    def _raw_blocking(self, pod: str, container: str, argv: list[str], stdin: bytes | None,
+                      timeout: int) -> tuple[int, str, str]:
+        """`argv` as is (no shell, no login profile), with `stdin` (ASCII: base64, a token) written to it. The exec
+        websocket can't end stdin, so whatever reads it must know where its input stops (a line, `head -c N`)."""
+        ws = k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=container,
+                        command=argv, stderr=True, stdin=stdin is not None, stdout=True, tty=False,
+                        _preload_content=False)
+        out, err = OutputTail(2 * MAX_OUTPUT, ""), OutputTail(2 * MAX_OUTPUT, "")
+
+        def drain() -> None:
+            if ws.peek_stdout():
+                out.add(ws.read_stdout())
+            if ws.peek_stderr():
+                err.add(ws.read_stderr())
+
+        deadline = time.monotonic() + timeout
+        try:
+            if stdin:
+                text = stdin.decode("ascii")
+                step = 256 * 1024
+                for i in range(0, len(text), step):
+                    if time.monotonic() > deadline or not ws.is_open():
+                        break
+                    ws.write_stdin(text[i:i + step])
+                    ws.update(timeout=0)
+                    drain()
+            while ws.is_open() and time.monotonic() < deadline:
+                ws.update(timeout=1)
+                drain()
+            code = ws.returncode
+        finally:
+            ws.close()
+        return (code if code is not None else -1), out.value(), err.value()
+
+    async def exec_raw(self, sandbox: Sandbox, argv: list[str], timeout: int, stdin: bytes | None = None,
+                       user: str | None = None) -> ExecResult:
+        """pods/exec of `argv` in the agent's container, or with `user` = DRIVER_USER in the driver sidecar's, never
+        through envd or a login shell: what isolation.py starts and checks there (the relay, `put`, the probe)."""
+        container = DRIVER_CONTAINER if user == DRIVER_USER else CONTAINER
+        pod = await self._pod(sandbox)
+        t0 = time.monotonic()
+        try:
+            code, out, err = await asyncio.to_thread(self._raw_blocking, pod, container, argv, stdin, timeout)
+        except ApiException as e:
+            raise ProviderError(f"exec failed: {e.reason}") from e
+        return ExecResult(exit_code=code, stdout=out[-MAX_OUTPUT:], stderr=err[-MAX_OUTPUT:],
+                          duration_ms=int((time.monotonic() - t0) * 1000))
+
+    async def sidecar_pod(self, sandbox: Sandbox) -> dict[str, Any]:
+        """What the pod's own spec says about its driver sidecar: {"why": a reason it can't keep the agent out, or
+        None; "readonly": the agent container's read-only mount paths}. Read through the API, so nothing in the pod
+        can change the answer."""
+        pod = await self._pod(sandbox)
+        p = await asyncio.to_thread(self.core.read_namespaced_pod, pod, self.ns)
+        return sidecar_shape(client.ApiClient().sanitize_for_serialization(p))
+
     # ------------------------------------------------------------------ GKE Pod snapshots: pause/resume
     async def _take_snapshot(self, sandbox: Sandbox, pod: str) -> str:
         trigger = f"hangar-{sandbox.id}-{int(time.time())}"[:63]
@@ -755,13 +819,16 @@ class KubernetesProvider(Provider):
             except ApiException:
                 pass
 
-    async def open_terminal(self, sandbox, command, cols=120, rows=32) -> TerminalStream:
-        if (term := await self.envd.open_terminal(sandbox, command, cols, rows)) is not None:  # --- envd
+    async def open_terminal(self, sandbox, command, cols=120, rows=32, user=None) -> TerminalStream:
+        """`user` = DRIVER_USER: in the driver sidecar's container (a split run's read-only tmux view, KAN-186)."""
+        container = DRIVER_CONTAINER if user == DRIVER_USER else CONTAINER
+        if container == CONTAINER and (term := await self.envd.open_terminal(sandbox, command, cols,
+                                                                             rows)) is not None:  # --- envd
             return term
         pod = await self._pod(sandbox)
 
         def _open():
-            return k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=CONTAINER,
+            return k8s_stream(self._exec_api.connect_get_namespaced_pod_exec, pod, self.ns, container=container,
                               command=command, stderr=True, stdin=True, stdout=True, tty=True,
                               _preload_content=False)
 
@@ -817,6 +884,56 @@ def add_driver_sidecar(pod: dict, image: str) -> bool:
         "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
     })
     return True
+
+
+DRIVER_USER = "hangar"  # isolation.USER: exec as this user goes to the driver's container (--- KAN-186)
+
+
+def sidecar_shape(pod: dict) -> dict[str, Any]:
+    """--- KAN-186: whether a pod (as the API returns it, camelCase) has the driver sidecar in the shape that keeps
+    the agent out (add_driver_sidecar): {"why": the first thing wrong, or None; "readonly": the agent container's
+    read-only mount paths, where a harness binary the agent can't change may live}."""
+    spec, status = pod.get("spec") or {}, pod.get("status") or {}
+    cs = {c.get("name"): c for c in spec.get("containers") or []}
+    main, drv = cs.get(CONTAINER) or {}, cs.get(DRIVER_CONTAINER)
+    mounts = main.get("volumeMounts") or []
+    out: dict[str, Any] = {"why": None, "readonly": [m["mountPath"] for m in mounts if m.get("readOnly")]}
+
+    def bad(why: str) -> dict[str, Any]:
+        return {**out, "why": why}
+
+    if drv is None:
+        return bad(f"the pod has no {DRIVER_CONTAINER} container (made before HANGAR_K8S_DRIVER_SIDECAR was on, or "
+                   "its agent container is privileged)")
+    if spec.get("shareProcessNamespace"):
+        return bad("the pod shares one PID namespace between its containers")
+    msc, dsc = main.get("securityContext") or {}, drv.get("securityContext") or {}
+    psc = spec.get("securityContext") or {}
+    if msc.get("privileged") or msc.get("allowPrivilegeEscalation", True) is not False:
+        return bad("the agent's container is privileged or may escalate (sudo)")
+    if dsc.get("privileged") or dsc.get("allowPrivilegeEscalation", True) is not False:
+        return bad(f"the {DRIVER_CONTAINER} container is privileged or may escalate")
+    auid, duid = msc.get("runAsUser", psc.get("runAsUser")), dsc.get("runAsUser", psc.get("runAsUser"))
+    if duid is None or auid is None or duid == auid or duid == 0:
+        return bad(f"the {DRIVER_CONTAINER} container's runAsUser ({duid}) isn't its own (the agent's: {auid})")
+    vols = {v.get("name"): v for v in spec.get("volumes") or []}
+    if "emptyDir" not in (vols.get("hangar-ctl") or {}) or "emptyDir" not in (vols.get("hangar-home") or {}):
+        return bad("the pod's hangar-ctl and hangar-home volumes aren't emptyDirs")
+    for m in mounts:
+        path = m.get("mountPath") or ""
+        if m.get("name") == "hangar-ctl" or path == DRIVER_CTL or DRIVER_CTL.startswith(path.rstrip("/") + "/"):
+            return bad(f"the agent's container mounts {path} over the control volume")
+        if m.get("name") == "hangar-home" and (path != DRIVER_HOME or not m.get("readOnly")):
+            return bad(f"the agent's container mounts hangar-home at {path} without readOnly")
+    if not any(m.get("name") == "hangar-home" and m.get("mountPath") == DRIVER_HOME for m in mounts):
+        return bad(f"the agent's container doesn't mount hangar-home at {DRIVER_HOME}")
+    dm = {(m.get("name"), m.get("mountPath"), bool(m.get("readOnly"))) for m in drv.get("volumeMounts") or []}
+    if not {("hangar-home", DRIVER_HOME, False), ("hangar-ctl", DRIVER_CTL, False)} <= dm:
+        return bad(f"the {DRIVER_CONTAINER} container doesn't mount hangar-home and hangar-ctl read-write")
+    ready = {c.get("name"): c.get("ready") for c in status.get("containerStatuses") or []}
+    if not ready.get(DRIVER_CONTAINER):
+        return bad(f"the {DRIVER_CONTAINER} container isn't ready")
+    return out
 
 
 def _explain_event(reason: str, message: str) -> str:

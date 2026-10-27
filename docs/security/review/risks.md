@@ -24,7 +24,7 @@ next release. A row leaves this page when its fix lands, and its finding moves t
 
 | Risk | Severity | Why it is acceptable | What limits it |
 | --- | --- | --- | --- |
-| On GKE an agent can answer its own approval in an `ask` or `deny-risky` turn (no uid split) | High (H-1), mitigated | The Kubernetes manifests set `HANGAR_UID_SPLIT=required`, which refuses those turns | The gateway, egress proxy and landing checks still hold; the sidecar is KAN-83 |
+| On GKE an agent can answer its own approval in an `ask` or `deny-risky` turn (no uid split) | High (H-1), mitigated | The Kubernetes manifests set `HANGAR_UID_SPLIT=required`, which refuses those turns | The gateway, egress proxy and landing checks still hold. The [driver sidecar](../driver-sidecar.md) is built (KAN-186) and off until its [cluster checks](../driver-sidecar-check.md) pass |
 | A Codex rules file the agent writes during a turn lets a call run unasked | Medium | Files present at turn start already refuse the turn; Codex has no switch to ignore rules | Same limits as above; closing it needs a hangar-owned Codex home (KAN-169) |
 | A person's own login file can be swapped for another account's refresh token after a refresh | Medium | Team logins are never written back; only that person's later sandboxes are affected | Same-account check, rotation check, and a new login ends old leases (KAN-168, KAN-178) |
 | Tower isn't consulted yet: `HANGAR_GOVERNANCE` changes nothing | Low (L-1) | hangar's own approvals, gateway and landing are the controls until then | The wiring is KAN-77 to KAN-79 |

@@ -49,7 +49,7 @@ async def test_a_docker_sandbox_is_set_up_once_as_root_and_remembered():
 
 @pytest.mark.parametrize("prov,settings,why", [
     (Prov(name="kubernetes"), Settings(), "GKE Sandbox's policy"),
-    (Prov(name="kubernetes"), Settings(k8s_driver_sidecar=True), "turns don't use it yet (KAN-186)"),  # KAN-83
+    (Prov(name="kubernetes"), Settings(), "HANGAR_K8S_DRIVER_SIDECAR is off"),  # KAN-186: the sidecar: its own tests
     (Prov(name="e2b"), Settings(), "the e2b provider doesn't support it yet"),
     (Prov(out="agent can use sudo (the environment has sudo: true)", code=3), Settings(), "agent can use sudo"),
     (Prov(out="the image has no setpriv", code=3), Settings(), "the image has no setpriv"),
@@ -143,19 +143,26 @@ async def test_ask_in_a_single_user_sandbox_warns_or_refuses(svc, live, monkeypa
     steering.forget(svc, run_id)
 
 
-async def test_required_still_refuses_ask_beside_the_unwired_driver_sidecar(svc, live, monkeypatch,  # noqa: F811
+async def test_required_still_refuses_ask_where_the_pod_has_no_driver_sidecar(svc, live, monkeypatch,  # noqa: F811
                                                                            settings):
-    """--- KAN-83: the sidecar prototype doesn't bind a turn yet, so `required` keeps refusing, and says why."""
+    """--- KAN-186: with HANGAR_K8S_DRIVER_SIDECAR on but no usable sidecar in the pod, `required` keeps refusing, and
+    says why (the sidecar's own tests: tests/test_sidecar_turns.py)."""
     new(svc, live, "kp", "hello")
     s = await settle(svc, "kp")
     sb = svc.fleet.get(s.sandbox_id)
     settings.k8s_driver_sidecar = True
-    monkeypatch.setattr(isolation, "supported", lambda prov: False)
-    monkeypatch.setattr(svc.fleet._running(sb.id)[1], "name", "kubernetes")
+    prov = svc.fleet._running(sb.id)[1]
+    monkeypatch.setattr(prov, "name", "kubernetes")
+
+    async def sidecar_pod(sbx):
+        return {"why": "the pod has no hangar-driver container (made before HANGAR_K8S_DRIVER_SIDECAR was on, or its "
+                       "agent container is privileged)", "readonly": []}
+
+    monkeypatch.setattr(prov, "sidecar_pod", sidecar_pod, raising=False)
     sb.info.pop("isolation", None)
     settings.uid_split = "required"
     s.approvals = "deny-risky"
-    with pytest.raises(steering.SteerError, match=r"turns don't use it yet \(KAN-186\).*HANGAR_UID_SPLIT=required"):
+    with pytest.raises(steering.SteerError, match=r"has no hangar-driver container.*HANGAR_UID_SPLIT=required"):
         await steering.prepare(svc, s, SessionTurn(message="x"), sb, HARNESSES["live-claude"])
 
 

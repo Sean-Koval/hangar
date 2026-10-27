@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("hangar.steer")
 
 DRIVER = Path(__file__).with_name("driver.py")
+RELAY = Path(__file__).with_name("relay.py")  # --- KAN-186: the agent's end under the driver sidecar
 KV = "steer-key:"
 ACK_WAIT = 15.0  # seconds a command waits for the driver's answer
 APPROVAL_ID = re.compile(r"^ap-[0-9a-f]{12}$")
@@ -80,7 +81,8 @@ def policy(svc: SessionService, s: Session) -> str:
 
 def ctl_dir(svc: SessionService, run_id: str, sb: Sandbox | None = None) -> str:
     """`sb`: where a split run (isolation.py) keeps it; without it, the agent's ~/.hangar/runs."""
-    return isolation.ctl_dir(svc.settings, run_id, sb is not None and isolation.run_split(sb, run_id))
+    return isolation.ctl_dir(svc.settings, run_id, sb is not None and isolation.run_split(sb, run_id),
+                             sb is not None and isolation.run_sidecar(sb, run_id))
 
 
 async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox, h: Harness,
@@ -107,6 +109,11 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     # --- KAN-79: and governed: Tower deciding doesn't stop an agent sharing the driver's user forging its answer
     guarded = pol != "auto"
     required = svc.settings.uid_split == "required"
+    # --- KAN-186: under the driver sidecar only a turn that asks runs split; an `auto` one keeps its per-edit trees
+    # and verify gate, which need the checkout, in the agent's container as before (KAN-187)
+    side = split and isolation.sidecar(sb)
+    if side and not guarded:
+        split = side = False
     if guarded and not split:
         why = isolation.why_not(svc.settings, sb)
         if required:
@@ -116,9 +123,10 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                              "tamper with later turns: change the harness's settings, environment and binary so it "
                              "doesn't ask, and fake the run log, approval requests and exit status hangar reads "
                              "(docs/steering.md#the-uid-split)")
-    ctl = isolation.ctl_dir(svc.settings, run_id, split)
+    ctl = isolation.ctl_dir(svc.settings, run_id, split, side)
     wd = sb.info.get("repo_path") or svc.settings.workspace_dir  # where fleet.run_agent runs it
-    hard = harden.plan(svc.fleet, sb, h, run_id, wd, env or {}) if split and guarded else None  # --- harden
+    hard = (harden.plan(svc.fleet, sb, h, run_id, wd, env or {}, ctl=ctl if side else None)  # --- harden
+            if split and guarded else None)
     if isinstance(hard, str):
         if required:
             raise SteerError(f"approvals={pol} needs hangar to own the harness's settings, and it can't in this "
@@ -141,7 +149,24 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                              "(docs/steering.md#hangar-owned-harness-settings)")
     # --- KAN-77: calls Tower signed while the session was suspended for them, signed with the run's key
     preclear = preclear_file(key.encode(), turn.preclear) if guarded and turn.preclear else None
-    if split:
+    if side:  # --- KAN-186: the driver sidecar: the key, relay token and agent env only in its container's CTL
+        driver = isolation.DRIVER
+        token = isolation.relay_token(run_id)  # handed to the relay's stdin by isolation.start
+        name = f"{run_id}.ctl"
+        try:
+            await asyncio.gather(
+                isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644),
+                                                         "relay.py": (RELAY.read_bytes(), 0o644)}),
+                *([isolation.put(prov, sb, isolation.RUNS, hard.files)] if hard and hard.files else []))
+            await isolation.put(prov, sb, isolation.CTL_RUNS, {
+                name: (None, 0o700), f"{name}/key": (key.encode(), 0o600),
+                f"{name}/relay-token": (f"{token}\n".encode(), 0o600),
+                **({f"{name}/preclear": (preclear, 0o600)} if preclear else {}),
+                **{f"{name}/{k}": v for k, v in (hard.ctl_files if hard else {}).items()}})
+        except BaseException:
+            isolation.drop_relay(run_id)
+            raise
+    elif split:
         driver = isolation.DRIVER
         await asyncio.gather(
             isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644)}),
@@ -161,7 +186,8 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     one_shot = isolation.agent_command(svc.settings, run_id, wd, h.run) if split else h.run
     fallback = (f"{one_shot}" if pol == "auto" else
                 f"echo 'hangar: approvals={pol} needs python3 >= 3.8 in the sandbox' >&2; false")
-    split_args = f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else ""
+    split_args = (f" {isolation.relay_args(svc.settings, run_id, wd)}" if side  # --- KAN-186
+                  else f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else "")
     if hard:  # --- harden: the harness by its path, with hangar's settings and environment
         split_args += f" {hard.driver_args}"
     from hangar import taint  # --- taint (#130): a turn that starts tainted, and the environment's MCP writes
@@ -206,6 +232,7 @@ def reseal(store: Any, ring: Any) -> int:
 def forget(svc: SessionService, run_id: str | None) -> None:
     """The run is over (or never started): its key is of no more use."""
     if run_id:
+        isolation.drop_relay(run_id)  # --- KAN-186
         with contextlib.suppress(Exception):
             svc.store.kv_delete(KV + run_id)
 
@@ -223,7 +250,8 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
     sb = svc.fleet.get(s.sandbox_id)
     _, prov = svc.fleet._running(sb.id)
     split = isolation.run_split(sb, turn.run_id)  # --- isolation: the control files are hangar's user's
-    ctl = isolation.ctl_dir(svc.settings, turn.run_id or "", split)
+    # --- KAN-186: under the driver sidecar, in its container's CTL (isolation.put and .sh go there)
+    ctl = isolation.ctl_dir(svc.settings, turn.run_id or "", split, isolation.run_sidecar(sb, turn.run_id))
     if split:
         await isolation.put(prov, sb, ctl, {f".{cid}": (json.dumps(cmd).encode(), 0o600)})
     else:

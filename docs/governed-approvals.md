@@ -48,4 +48,4 @@ In `enforce`, a person who allows a flagged call or a request in hangar signs To
 
 ## On GKE
 
-`HANGAR_UID_SPLIT=required` refuses a `governed` turn wherever the driver can't run as a user of its own, as it refuses `ask`. Tower deciding doesn't stop an agent that shares the driver's user from forging the driver's answer. Until [the driver sidecar](security/driver-sidecar.md) is wired, that means GKE.
+`HANGAR_UID_SPLIT=required` refuses a `governed` turn wherever the driver can't run as a user of its own, as it refuses `ask`. Tower deciding doesn't stop an agent that shares the driver's user from forging the driver's answer. On GKE that means every pod until [the driver sidecar](security/driver-sidecar.md) is turned on there.
