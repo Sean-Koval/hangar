@@ -122,6 +122,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  bench:  # KAN-197: the needs("quiet_cpu") tests skip under xdist; here they run alone, where they can't skip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-extras --locked
+      - run: uv run pytest -q -m needs tests/test_modelgw.py
+
   e2e:
     name: e2e (${{ matrix.suite }})
     needs: envd
@@ -192,7 +204,7 @@ jobs:
 
   report:  # flakes and durations from every shard and suite; on red, bisect and repair (or an issue)
     if: always()
-    needs: [lint, envd, rust, unit, e2e, image, terraform]
+    needs: [lint, envd, rust, unit, bench, e2e, image, terraform]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
