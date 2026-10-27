@@ -167,6 +167,7 @@ def test_the_cli_caps_only_when_asked(tmp_path):
     some = run("--files", "src/hangar/app.py", "--budget", "120")
     assert set(st.CONTRACT) <= set(some.stdout.split()) < set(everything) and "capped at 120s" in some.stderr
     assert run("--all", "--budget", "60").returncode == 2  # CI's full run is never capped
+    assert run("--files", "LICENSE").stdout == ""  # not an empty line: verify.sh would pass pytest ""
 
 
 def test_a_list_of_marks_still_opts_in():
