@@ -186,6 +186,8 @@ async def _probe(settings: Settings, prov: Provider, sb: Sandbox) -> dict[str, A
     if not supported(prov):
         why = ("Kubernetes sandboxes run as one non-root user without capabilities (GKE Sandbox's policy)"
                if prov.name == "kubernetes" else f"the {prov.name} provider doesn't support it yet")
+        if prov.name == "kubernetes" and settings.k8s_driver_sidecar:  # --- KAN-83: a prototype, not wired to turns
+            why = "the pod has the driver sidecar (HANGAR_K8S_DRIVER_SIDECAR), but turns don't use it yet (KAN-186)"
         return {"mode": "shared", "why": why, "v": VERSION}
     from hangar.harnesses import HARNESSES
 

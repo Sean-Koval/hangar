@@ -410,3 +410,50 @@ async def test_the_warm_pool_template_of_an_open_environment_names_the_gateway(m
     tpl = next(b for b in applied if b["kind"] == "SandboxTemplate")["spec"]["podTemplate"]["spec"]
     assert tpl["hostAliases"] == [{"ip": "10.4.0.9", "hostnames": ["hangar-gateway.hangar.svc"]}]
     assert "dnsPolicy" not in tpl
+
+
+# --- KAN-83: the driver sidecar (docs/security/driver-sidecar.md)
+def test_no_driver_sidecar_by_default():
+    pod = provider()._pod_template(spec(), "i")["spec"]
+    assert [c["name"] for c in pod["containers"]] == ["sandbox"]
+    assert "shareProcessNamespace" not in pod
+
+
+def test_the_driver_sidecar_keeps_the_agent_out_by_the_pods_shape():
+    from hangar import isolation
+    from hangar.providers.kubernetes import DRIVER_CONTAINER, DRIVER_CTL, DRIVER_HOME, DRIVER_UID
+
+    pod = provider(k8s_driver_sidecar=True)._pod_template(
+        spec(packs={"claude": "reg/pack@sha256:" + "a" * 64}, services={"redis": {"image": "redis:7", "port": 6379}}),
+        "reg/py:abc")["spec"]
+    by = {c["name"]: c for c in pod["containers"]}
+    agent, drv = by["sandbox"], by[DRIVER_CONTAINER]
+    assert pod["shareProcessNamespace"] is False  # its own PID namespace: no /proc/<driver>, no signals
+    assert DRIVER_HOME == isolation.HOME
+    # a uid of its own, no capabilities, nothing to escalate with
+    assert drv["securityContext"]["runAsUser"] == DRIVER_UID != pod["securityContext"]["runAsUser"]
+    assert DRIVER_UID != 0 and drv["securityContext"]["runAsNonRoot"] is True
+    assert drv["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert drv["securityContext"]["allowPrivilegeEscalation"] is False
+    assert drv["securityContext"]["readOnlyRootFilesystem"] is True
+    assert drv["image"] == agent["image"] == "reg/py:abc"
+    # the control volume is the driver's alone; hangar's home is read-only for the agent
+    vols = {v["name"]: v for v in pod["volumes"]}
+    assert vols["hangar-ctl"]["emptyDir"]["medium"] == "Memory"
+    mounts = {c["name"]: {m["name"]: m for m in c.get("volumeMounts", [])} for c in pod["containers"]}
+    assert "hangar-ctl" not in mounts["sandbox"] and "hangar-ctl" not in mounts["svc-redis"]
+    assert mounts["sandbox"]["hangar-home"] == {"name": "hangar-home", "mountPath": DRIVER_HOME, "readOnly": True}
+    assert mounts[DRIVER_CONTAINER]["hangar-ctl"]["mountPath"] == DRIVER_CTL
+    assert not mounts[DRIVER_CONTAINER]["hangar-home"].get("readOnly")
+    assert not any(n.startswith("pack-") for n in mounts[DRIVER_CONTAINER])  # the harness runs in the agent's
+    assert "pack-claude" in mounts["sandbox"]
+    assert {e["name"]: e["value"] for e in drv["env"]}["TMUX_TMPDIR"] == DRIVER_CTL
+
+
+def test_no_driver_sidecar_beside_an_agent_that_can_be_root():
+    from hangar.providers.kubernetes import add_driver_sidecar
+
+    pod = {"containers": [{"name": "sandbox", "securityContext": {"privileged": True,
+                                                                   "allowPrivilegeEscalation": True}}]}
+    assert add_driver_sidecar(pod, "i") is False
+    assert len(pod["containers"]) == 1 and "volumes" not in pod

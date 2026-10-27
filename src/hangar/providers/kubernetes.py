@@ -289,6 +289,8 @@ class KubernetesProvider(Provider):
                                        "effect": "NoSchedule"}]
         envservices.add_sidecars(pod, spec, s.k8s_cpu_request_fraction)  # --- envbuilds: services as sidecars
         rc = heavy.k8s_pod(pod, spec, s) or rc  # --- heavy: Kata on the heavy pool; with Docker, privileged in the VM
+        if s.k8s_driver_sidecar:  # --- KAN-83
+            add_driver_sidecar(pod, image)
         services_hosts = list(pod.get("hostAliases") or [])
         labels = {**MANAGED, "dev.hangar/env": spec.name}
         if egress.proxied(s, spec):  # --- egress: left out of the internet baseline (deploy/k8s/gateway.yaml)
@@ -772,6 +774,49 @@ class KubernetesProvider(Provider):
         await self.envd.close()
         if self._registry is not None:  # --- images
             await self._registry.close()
+
+
+# ====================================================================== the driver sidecar (--- KAN-83)
+DRIVER_CONTAINER = "hangar-driver"
+DRIVER_UID = 1001  # not the agent's (1000), not root
+DRIVER_HOME = "/var/lib/hangar"  # isolation.HOME: the driver, run scripts and hangar's harness settings
+DRIVER_CTL = "/var/lib/hangar-ctl"  # the run keys, commands and approvals: never mounted in the agent's container
+
+
+def add_driver_sidecar(pod: dict, image: str) -> bool:
+    """Add the turn driver's own container to a sandbox pod (docs/security/driver-sidecar.md). What keeps the agent
+    out is the pod's shape, not file modes: `hangar-ctl` exists only in the driver's mount namespace, `hangar-home`
+    is read-only in the agent's, the driver's processes are in a PID namespace the agent's can't see, and it runs as
+    a uid of its own with no capabilities (gVisor refuses ptrace across uids, and honours no_new_privs). The pod's
+    fsGroup makes both volumes group-writable for the agent's gid; the mounts, not the modes, stop the writes.
+
+    Same image as the agent's: no second pull, and the python3, tmux and git the driver already needs there. Not for
+    a pod whose agent container is privileged (a heavy pod with Docker): an agent that can be root gains nothing from
+    it. Returns whether it was added."""
+    main = pod["containers"][0]
+    sc = main.get("securityContext") or {}
+    if sc.get("privileged") or sc.get("allowPrivilegeEscalation", True):
+        return False
+    pod["shareProcessNamespace"] = False
+    pod.setdefault("volumes", []).extend([
+        {"name": "hangar-home", "emptyDir": {"sizeLimit": "1Gi"}},
+        {"name": "hangar-ctl", "emptyDir": {"medium": "Memory", "sizeLimit": "64Mi"}},
+    ])
+    main.setdefault("volumeMounts", []).append({"name": "hangar-home", "mountPath": DRIVER_HOME, "readOnly": True})
+    pod["containers"].append({
+        "name": DRIVER_CONTAINER,
+        "image": image,
+        "command": ["sleep", "infinity"],
+        "workingDir": DRIVER_HOME,
+        "securityContext": {"capabilities": {"drop": ["ALL"]}, "allowPrivilegeEscalation": False, "privileged": False,
+                            "runAsUser": DRIVER_UID, "runAsGroup": DRIVER_UID, "runAsNonRoot": True,
+                            "readOnlyRootFilesystem": True},
+        "env": [{"name": "HOME", "value": DRIVER_HOME}, {"name": "TMUX_TMPDIR", "value": DRIVER_CTL}],
+        "volumeMounts": [{"name": "hangar-home", "mountPath": DRIVER_HOME},
+                         {"name": "hangar-ctl", "mountPath": DRIVER_CTL}],
+        "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
+    })
+    return True
 
 
 def _explain_event(reason: str, message: str) -> str:
