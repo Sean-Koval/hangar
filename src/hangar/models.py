@@ -729,6 +729,11 @@ class Approval(BaseModel):
     message: str | None = None
     decided_at: float | None = None
     taint: str | None = None  # --- taint (#130): why it needs a person: "git push, after reading untrusted content"
+    # --- KAN-77 (spec 0015 §5, §10): the hash of the tool's input (governance.args_hash), and for a call Tower
+    # decided, its approval id and receipt
+    args_hash: str | None = None
+    workspace_approval: str | None = None
+    receipt: str | None = None
 
 
 class Steer(BaseModel):
@@ -800,6 +805,9 @@ class SessionTurn(BaseModel):
     # --- harness locks (#134): turn 1 of a session thawed from a lock, compared with it: [] matched,
     # [{"component", "lock", "effective"}] drifted; None: not checked (not turn 1, no lock, or not yet)
     drift: list[dict[str, Any]] | None = None
+    # --- KAN-77: calls Tower allowed while the session was suspended for them, each allowed once by the driver
+    # ({tool, args_hash, receipt, approval}; spec 0015 §5)
+    preclear: list[dict[str, str]] = Field(default_factory=list)
 
 
 class Checkpoint(BaseModel):
@@ -815,6 +823,41 @@ class Checkpoint(BaseModel):
     # --- perf: part name -> sha256 of the plaintext, as the sandbox computed it. A part whose digest matches the
     # previous checkpoint is copied inside the checkpoint store instead of being read and uploaded again.
     digests: dict[str, str] = Field(default_factory=dict)
+
+
+class GovernanceWait(BaseModel):
+    """--- KAN-77: a tool call in this session that waits on a Tower approval (spec 0015 §5). `state`: waiting (the
+    turn runs, the driver holds the call), suspended (the turn ended at that call and the sandbox was released),
+    approved (signed; the session resumes as soon as it can), then resumed, allowed (answered in the running turn),
+    denied, expired or stopped (`run.stop`: no later decision resumes it)."""
+
+    approval: str  # Tower's approval id
+    kind: str = "tool.call"
+    driver_approval: str | None = None  # the driver's own id (ap-...)
+    tool: str = ""
+    args_hash: str | None = None
+    detail: str = ""
+    turn: int = 0  # 1-based turn number
+    run_id: str | None = None
+    message: str = ""  # what the turn was asked, for the resumed turn's prompt
+    since: float = Field(default_factory=now)
+    state: Literal["waiting", "suspending", "suspended", "approved", "resumed", "allowed", "denied", "expired",
+                   "stopped"] = "waiting"
+    decided_by: str | None = None
+    receipt: str | None = None
+    reason: str | None = None
+    updated_at: float = Field(default_factory=now)
+
+
+class GovernanceStop(BaseModel):
+    """--- KAN-77: Tower stopped this session's run (`run.stop`). Turns up to `turn` stay stopped."""
+
+    by: str
+    at: float = Field(default_factory=now)
+    reason: str = ""
+    event: str = ""
+    run_id: str | None = None
+    turn: int = 0
 
 
 class Session(BaseModel):
@@ -864,6 +907,9 @@ class Session(BaseModel):
     # --- harness locks (#134): the lock it was thawed from, as claimed (harness_thaw.pin: ref, name, revision,
     # digest, harness, version, model, approvals, components)
     harness_lock: dict[str, Any] | None = None
+    # --- KAN-77 (govevents.py): a tool call waiting on a Tower approval, and the last `run.stop` from Tower
+    governance: GovernanceWait | None = None
+    governance_stop: GovernanceStop | None = None
 
 
 # ---------------------------------------------------------------------------- workstream F: git gateway (spec 0003)

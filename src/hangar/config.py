@@ -480,6 +480,17 @@ class Settings(BaseSettings):
     # and `ask` and `deny-risky` turns fail where the agent would share the driver's user, or where hangar can't own
     # the harness's settings (--- harden).
     uid_split: Literal["auto", "off", "required"] = "auto"
+    # --- governance (spec 0015; docs/runbooks/tower.md): Tower, the Govern plane. The default mode for every kind
+    # (off: hangar's own rules, Tower isn't asked), per-kind overrides, Tower's URL and the vault credentials of
+    # hangar's service key and of the secret Tower signs its events with. KAN-77: POST /api/governance/events is
+    # live when the mode isn't off for every kind and the secret is set; a tool call waiting on Tower for
+    # `governance_suspend_after_seconds` suspends its session until the approval is decided.
+    governance: Literal["off", "shadow", "enforce"] = "off"
+    governance_modes: str = ""
+    governance_url: str | None = None
+    governance_credential: str | None = None
+    governance_webhook_secret: str | None = None
+    governance_suspend_after_seconds: int = Field(60, ge=5, le=3600)
     # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
     # neither the session nor its environment says: auto (1h when the session waits on people for more than
     # 5 min, else 5m), 5m, 1h or off. And how long best-of-N attempts and forks started together hold back for the

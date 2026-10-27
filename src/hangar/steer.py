@@ -138,17 +138,22 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                              "(a Codex rules file, or an MCP server set to `approve`), and Codex can't be told to "
                              "ignore them. Remove them, or run with approvals=auto "
                              "(docs/steering.md#hangar-owned-harness-settings)")
+    # --- KAN-77: calls Tower signed while the session was suspended for them, signed with the run's key
+    preclear = preclear_file(key.encode(), turn.preclear) if guarded and turn.preclear else None
     if split:
         driver = isolation.DRIVER
         await asyncio.gather(
             isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644)}),
             isolation.put(prov, sb, isolation.RUNS, {f"{run_id}.ctl": (None, 0o700),
                                                      f"{run_id}.ctl/key": (key.encode(), 0o600),
+                                                     **({f"{run_id}.ctl/preclear": (preclear, 0o600)}
+                                                        if preclear else {}),
                                                      **(hard.files if hard else {})}))
     else:
         driver = f"/home/{svc.settings.sandbox_user}/.hangar/driver.py"
         await asyncio.gather(prov.write_file(sb, driver, DRIVER.read_bytes(), mode=0o644),
-                             prov.write_file(sb, f"{ctl}/key", key.encode(), mode=0o600))
+                             prov.write_file(sb, f"{ctl}/key", key.encode(), mode=0o600),
+                             *([prov.write_file(sb, f"{ctl}/preclear", preclear, mode=0o600)] if preclear else []))
     svc.store.kv_set(KV + run_id, svc.vault.encrypt(key.encode()).decode(), durable=True)
     turn.live, turn.approval_policy = True, pol  # type: ignore[assignment]
     q = shlex.quote
@@ -162,6 +167,8 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
 
     if pol != "auto" and (taint_args := taint.driver_args(svc.fleet, s, turn, svc._job(s))):
         split_args += f" {taint_args}"
+    if preclear:  # --- KAN-77
+        split_args += " --preclear"
     # -I: no PYTHON* variables, user site-packages or modules beside the driver, all of which the agent can write
     command = (f"{f'unset {CLAUDE_ENV}; ' if hard else ''}"  # --- harden: the gate is in hangar's settings file
                f"if python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then "
@@ -170,6 +177,14 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                f"{hard.live_run if hard else h.live_run}; "
                f"else touch {q(ctl)}/one-shot; {fallback}; fi")
     return run_id, command
+
+
+def preclear_file(key: bytes, calls: list[dict[str, str]]) -> bytes:
+    """--- KAN-77: `<ctl>/preclear` for the driver (driver.load_preclear): the calls, signed like a command."""
+    doc: dict[str, Any] = {"calls": [{k: str(c.get(k) or "") for k in ("tool", "args_hash", "receipt", "approval")}
+                                     for c in calls]}
+    doc["mac"] = sign(key, doc)
+    return json.dumps(doc).encode()
 
 
 def reseal(store: Any, ring: Any) -> int:
@@ -469,16 +484,21 @@ def track(turn: SessionTurn, events: list[RunEvent], on_gate: Any = None) -> boo
                 exp = ev.data.get("expires_at")
                 detail = ev.data.get("detail")
                 gate = ev.data.get("taint")  # --- taint (#130)
+                digest = ev.data.get("args_hash")  # --- KAN-77
                 turn.approvals.append(Approval(id=aid, tool=str(ev.data.get("tool") or ""),
                                                detail=detail if isinstance(detail, str) else ev.text.split(": ", 1)[-1],
                                                requested_at=ev.ts,
                                                expires_at=float(exp) if isinstance(exp, int | float) else None,
-                                               taint=gate if isinstance(gate, str) else None))
+                                               taint=gate if isinstance(gate, str) else None,
+                                               args_hash=digest if isinstance(digest, str) else None))
                 changed = True
         elif a is not None and a.status == "pending" and ev.data.get("status") in (
                 "allowed", "allowed_always", "denied", "cancelled"):
             a.status, a.by = ev.data["status"], str(ev.data.get("by") or "hangar")[:100]
             a.message, a.decided_at = ev.data.get("message"), ev.ts
+            if isinstance(ev.data.get("receipt"), str):  # --- KAN-77: a call Tower pre-cleared carries its receipt
+                a.receipt = ev.data["receipt"]
+                a.workspace_approval = ev.data.get("approval") or a.workspace_approval
             changed = True
             if a.taint and on_gate is not None:
                 on_gate(a)
