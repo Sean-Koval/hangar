@@ -1,6 +1,10 @@
 # The default starting point: Ubuntu + git tooling, no language runtimes, no harness binaries.
 # Every agent harness is *allowed*; each sandbox gets the one you pick (create_sandbox harness=...),
 # mounted read-only as a harness pack, with only that harness's credentials and config applied.
+# Egress: no mode here, so sandboxes follow HANGAR_EGRESS_DEFAULT: `allowlist` on GKE, `open` on a laptop. Under
+# allowlist they reach their harness's model API, PyPI, npm and Go through hangar's read-only mirror, crates, and the
+# repo through the git gateway. A child that needs more adds `egress: {allow: [host]}`; one that needs the open
+# internet says `egress: {mode: open}` and why (docs/security/egress-default.md).
 name: bare
 description: Ubuntu 24.04 + git/gh/tmux/ripgrep; any agent (Claude Code, Codex, pi, Antigravity)
 base: mirror.gcr.io/library/ubuntu:24.04  # Google's Docker Hub mirror: same image, no pull rate limits

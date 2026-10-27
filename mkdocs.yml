@@ -187,6 +187,7 @@ nav:
           - Gaps found in the 1.0 review: security/review-1.0.md
           - The git credential gateway: security/git-gateway.md
           - Egress allowlists: security/egress.md
+          - The GKE egress default: security/egress-default.md
           - Package mirrors: security/package-mirrors.md
           - Sandbox networking on Docker: security/docker-network.md
           - Secret scanning and redaction: security/secret-scanning.md

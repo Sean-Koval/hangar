@@ -2,7 +2,21 @@
 
 ## Unreleased
 
-Nothing yet since v0.2.0.
+- **GKE ships with allowlist egress (KAN-174, L-9).** `deploy/k8s/config.yaml` and `deploy/kustomize/base/config.yaml`
+  set `HANGAR_EGRESS_DEFAULT: "allowlist"`, so an environment without its own `egress.mode` reaches only its harness's
+  model API, the package mirror (pip, uv, npm, Go), crates, its MCP servers, the repo through the git gateway, and
+  hosts an owner approved. Vertex AI's global endpoint (`aiplatform.googleapis.com`) joins Google's harness hosts.
+  `hangar doctor` names the environments the default decides and the hosts sandboxes were refused in the last 24
+  hours. Docker keeps `open`. [docs/security/egress-default.md](docs/security/egress-default.md)
+
+  **Before you upgrade:** on GKE, every shipped environment (`bare`, `base`, `python`, `node`, `go`, `polyglot`,
+  `claude-python`, `codex-node`, `example-repo`, `hangar`, `hangar-jobs`, `minimal`) and every environment of yours
+  that doesn't set `egress.mode` becomes `allowlist`. Jobs that fetch from GitHub directly (`gh`, `pip install
+  git+https://github.com/…`, release downloads), download toolchains or browsers at run time, use Maven, Poetry's own
+  sources or conda, run `uv sync --frozen`, or call a regional Vertex AI endpoint are refused. Running sandboxes keep
+  their open network until they end; resumed sessions, forks and warm sandboxes come back proxied. To keep one
+  environment open, give it `egress: {mode: open}`; to keep all, set `HANGAR_EGRESS_DEFAULT: "open"` in your overlay's
+  `hangar-site` ConfigMap (a ConfigMap key wins over `hangar config set`).
 
 ## v0.2.0: the safe release
 
