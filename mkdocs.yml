@@ -204,6 +204,7 @@ nav:
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md
+          - How the control-plane pod is locked down: security/control-plane-pod.md
           - Where the audit log is kept: security/audit.md
       - CI: ci.md
   - Design notes:

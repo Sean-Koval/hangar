@@ -43,3 +43,18 @@ def test_it_runs_as_a_non_root_user():
     for f in ("deploy/k8s/deployment.yaml", "deploy/kustomize/base/deployment.yaml"):
         text = (ROOT / f).read_text()
         assert "runAsNonRoot: true" in text and "runAsUser: 1000" in text and "fsGroup: 1000" in text, f
+
+
+def test_the_image_runs_with_a_read_only_root():
+    """KAN-174 L-8: the deployments mount a read-only root, so everything the image writes at run time must be a
+    volume: HANGAR_DATA_DIR (/data), /tmp and the user's home. The image must not move them elsewhere."""
+    import yaml
+
+    assert re.search(r"^ENV [^\n]*HANGAR_DATA_DIR=/data\b", DOCKERFILE, re.M)
+    assert "--home-dir /home/hangar" in DOCKERFILE
+    assert not re.search(r"^ENV [^\n]*\b(TMPDIR|HOME|XDG_\w+|CLOUDSDK_CONFIG|DOCKER_CONFIG)=", DOCKERFILE, re.M)
+    for f in ("deploy/k8s/deployment.yaml", "deploy/kustomize/base/deployment.yaml"):
+        dep = next(d for d in yaml.safe_load_all((ROOT / f).read_text()) if d and d["kind"] == "Deployment")
+        (c,) = dep["spec"]["template"]["spec"]["containers"]
+        assert c["securityContext"]["readOnlyRootFilesystem"] is True, f
+        assert {m["mountPath"] for m in c["volumeMounts"]} >= {"/data", "/tmp", "/home/hangar"}, f

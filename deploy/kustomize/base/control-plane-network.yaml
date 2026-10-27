@@ -1,0 +1,38 @@
+# Who may connect to the control plane's pods (KAN-174 L-8). Without a policy that selects them, any pod in the
+# cluster could reach all three ports: the API on 8787, the git gateway on 8788 and the egress proxy on 3128.
+#
+# NetworkPolicies add up, and this one allows only:
+#   - sandbox pods (namespace hangar-sandboxes, every pod there is a sandbox) to the gateway and the proxy. Never 8787;
+#   - Tower's pods (namespace tower) to the API, for a Tower that calls hangar inside the cluster. The owner's Tower
+#     posts its approval events to hangar's public URL, through the load balancer, so it needs the rule below instead;
+#   - hangar's own pods, to all three ports (a pod reaching its own Service).
+# The front door is added by the ingress: Google's load balancer ranges in deploy/k8s/ingress.yaml and the ingress-gce
+# component, the ingress-nginx namespace in that component. Scrapers are added by observability/*.yaml. kubectl
+# port-forward and exec, and the kubelet's probes, don't pass through it.
+#
+# Not covered: the optional microVM pool (CubeSandbox, self-hosted E2B). Its VMs' traffic leaves from node addresses,
+# so add an ipBlock for that pool's nodes if its sandboxes use the gateway. tests/test_k8s_network.py holds this file.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hangar-ingress
+  namespace: hangar
+spec:
+  podSelector:
+    matchLabels: {app: hangar}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: hangar-sandboxes}
+      ports: [{protocol: TCP, port: 8788}, {protocol: TCP, port: 3128}]
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: tower}
+          podSelector:
+            matchLabels: {app: tower}
+      ports: [{protocol: TCP, port: 8787}]
+    - from:
+        - podSelector:
+            matchLabels: {app: hangar}
+      ports: [{protocol: TCP, port: 8787}, {protocol: TCP, port: 8788}, {protocol: TCP, port: 3128}]

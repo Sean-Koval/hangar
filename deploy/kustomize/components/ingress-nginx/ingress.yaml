@@ -25,3 +25,22 @@ spec:
               service:
                 name: hangar
                 port: {number: 80}
+---
+# KAN-174 L-8: the controller's pods reach the API port (control-plane-network.yaml has the rest of who may connect).
+# Another namespace or labels: patch this policy's `from` in your overlay.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hangar-ingress-nginx
+  namespace: hangar
+spec:
+  podSelector:
+    matchLabels: {app: hangar}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: ingress-nginx}
+      ports: [{protocol: TCP, port: 8787}]
