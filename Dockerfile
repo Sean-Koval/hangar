@@ -37,10 +37,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 # The dependencies exactly as uv.lock pins them, each checked against its hash (--locked fails on a stale lock);
-# then hangar itself, without resolving anything again.
+# then hangar itself, without resolving anything again. --no-cache: uv's download cache stays out of the image (Trivy
+# found a copy of every wheel under /root/.cache, KAN-179).
 RUN uv export --locked --no-dev --extra all --no-emit-project --format requirements-txt -o /tmp/requirements.txt \
- && uv pip install --system --require-hashes -r /tmp/requirements.txt \
- && uv pip install --system --no-deps . \
+ && uv pip install --system --no-cache --require-hashes -r /tmp/requirements.txt \
+ && uv pip install --system --no-cache --no-deps . \
  && rm /tmp/requirements.txt
 COPY envs /app/envs
 COPY --from=envd /src/dist/ /usr/local/lib/hangar/
