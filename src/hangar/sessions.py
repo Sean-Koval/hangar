@@ -1100,6 +1100,19 @@ class SessionService:
         s.last_active_at = now()
         self._set(s, SessionState.RUNNING, f"agent turn {len(s.turns)} running ({turn.mode})")
 
+    def _login_rejected(self, s: Session, turn: SessionTurn) -> None:
+        """--- KAN-178: a turn whose login the vendor refused marks the sandbox's login for its harness failed
+        (credhealth.login_rejected), so health, `hangar doctor` and its owner's inbox stop saying it works."""
+        from hangar import credhealth
+
+        try:
+            sb = self.fleet.store.get(Sandbox, s.sandbox_id) if s.sandbox_id else None
+            line = credhealth.login_rejected(self.fleet.store, list(sb.credentials) if sb else [], turn.harness,
+                                             turn.run_id)
+            log.warning("session %s: turn %s: %s", s.id, turn.run_id, line)
+        except Exception:  # noqa: BLE001 - the turn's outcome stands either way
+            log.warning("session %s: recording a refused login failed", s.id, exc_info=True)
+
     @observe.turn_end  # --- observe: closes it; turn duration, tokens, cost and budget stops in /metrics
     async def end_turn(self, s: Session, turn: SessionTurn, timeout_minutes: int | None = None,
                        should_cancel: Callable[[], bool] | None = None) -> tuple[str, str]:
@@ -1201,6 +1214,8 @@ class SessionService:
         # workstream E: result, question (-> needs_input), artifacts; before the checkpoint so it has them all
         outcome = await exchange.after_turn(self, s, turn, outcome)
         outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, raw=raw, harness=turn.harness))  # #166
+        if turn.infra_reason == "login_rejected":  # --- KAN-178: the vendor refused the login; mark it, say what to do
+            self._login_rejected(s, turn)
         if not turn.live and s.sandbox_id and self._alive(s.sandbox_id):  # --- #165: and its end tree
             await gittree.oneshot(self, s, turn, self.fleet.get(s.sandbox_id), turn.run_id, "end")
             self._save(s)

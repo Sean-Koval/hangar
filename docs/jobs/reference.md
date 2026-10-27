@@ -26,7 +26,7 @@ Every agent turn, best-of-N attempt, experiment trial and job (`result.outcome_c
 | Class | Means | Counted |
 | --- | --- | --- |
 | `agent` | the agent's own result, success or failure (an agent that exits 1 after editing files; one that crashed its own sandbox) | yes |
-| `infra_error` | infrastructure ended it; `infra_reason` says what: `preempted`, `power_down`, `rate_limited`, `provider_5xx`, `sandbox_create`, `checkpoint` (a restore failed), `control_plane_restart`, `drift` (a trial's turn 1 didn't run its pin set, #178), `no_login` (the turn's harness had no login, so hangar refused the turn before starting it, #293) | no: trials are retried ([experiments](experiments.md#infrastructure-errors-are-retried-and-left-out)); weekly yield leaves such jobs out |
+| `infra_error` | infrastructure ended it; `infra_reason` says what: `preempted`, `power_down`, `rate_limited`, `provider_5xx`, `sandbox_create`, `checkpoint` (a restore failed), `control_plane_restart`, `drift` (a trial's turn 1 didn't run its pin set, #178), `no_login` (the turn's harness had no login, so hangar refused the turn before starting it, #293), `login_rejected` (the vendor refused the turn's login, KAN-178) | no: trials are retried ([experiments](experiments.md#infrastructure-errors-are-retried-and-left-out)); weekly yield leaves such jobs out |
 | `cancelled` | someone (or an experiment) stopped it | no |
 | `human` | a person stepped in: an interrupt, or the agent asked a question | no (a job that then finishes is `agent`) |
 

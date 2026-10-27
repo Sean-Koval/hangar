@@ -212,3 +212,41 @@ def test_credential_health_never_rolls_back_a_deploy(store):
 
     out = credhealth.doctor_checks(SimpleNamespace(store=store))
     assert out and all(c["name"] == "credential health" and c["deploy_gate"] is False for c in out)
+
+
+# --- KAN-178: a run whose login the vendor refused marks it failed, and no file check says ok again
+async def test_a_login_the_vendor_refused_stays_failed_until_stored_again(fleet, broker, store):
+    from hangar import doctor  # noqa: F401 - doctor_checks imports from it
+
+    broker.put("codex-chatgpt", "codex", CredentialKind.AUTH_FILE, CODEX, person="owner")
+    broker.put("ant", "claude-code", CredentialKind.API_KEY, "sk-ant-api03-" + "k" * 40, person="owner")
+    [r] = [x for x in await credhealth.check_all(fleet, "nightly") if x["name"] == "codex-chatgpt"]
+    assert r["status"] == "ok"  # the file has a refresh token; whether OpenAI takes it, it can't say
+    line = credhealth.login_rejected(store, ["codex-chatgpt", "ant", "gone"], "codex", "run-87be38a0")
+    assert line.startswith(credhealth.REFUSED_PREFIXES)
+    assert "codex-chatgpt needs a fresh `codex login`; re-store the credential" in line
+    assert "hangar cred add codex-chatgpt --harness codex --kind auth_file" in line
+    c = store.get(Credential, "codex-chatgpt")
+    assert c.health["status"] == "fail" and c.health["method"] == credhealth.REFUSED_METHOD
+    assert c.health["by"] == "run:run-87be38a0" and "run-87be38a0" in c.health["detail"]
+    assert store.get(Credential, "ant").health["status"] == "ok"  # another harness's credential is left alone
+    assert CODEX not in json.dumps(c.model_dump(mode="json"))
+    # the nightly check keeps the refusal: the file can't contradict the vendor
+    got = {x["name"]: x for x in await credhealth.check_all(fleet, "nightly")}
+    assert got["codex-chatgpt"]["status"] == "fail"
+    assert store.get(Credential, "codex-chatgpt").health["status"] == "fail"
+    # so health, doctor and the owner's inbox say so
+    s = credhealth.summary(store)
+    assert [a["name"] for a in s["attention"]] == ["codex-chatgpt"]
+    [chk] = credhealth.doctor_checks(type("H", (), {"store": store})())
+    assert chk["status"] == "fail" and "codex-chatgpt" in chk["detail"] and "fresh `codex login`" in chk["detail"]
+    # storing it again starts over, and the next check looks at the new value
+    broker.put("codex-chatgpt", "codex", CredentialKind.AUTH_FILE, CODEX.replace('"c"', '"c2"'), person="owner")
+    assert store.get(Credential, "codex-chatgpt").health is None
+    got = {x["name"]: x for x in await credhealth.check_all(fleet, "nightly")}
+    assert got["codex-chatgpt"]["status"] == "ok"
+
+
+def test_a_refused_login_with_no_credential_on_record_still_says_what_to_do(store):
+    line = credhealth.login_rejected(store, [], "codex", "run-1")
+    assert line.startswith(credhealth.REFUSED_PREFIXES) and "log in again" in line

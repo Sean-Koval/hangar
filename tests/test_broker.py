@@ -195,3 +195,39 @@ def test_swapped():
     assert not swapped(old, b'{"tokens": {"access_token": "a2", "id_token": "i2", "refresh_token": "r2"}}')
     assert not swapped(old, old)  # unchanged
     assert not swapped(old, b"not json") and not swapped(b'{"refresh": "r1"}', b'{"refresh": "r2"}')  # no access
+
+
+# --- KAN-178: a login stored anew while a sandbox holds the old one is never overwritten by that sandbox
+async def test_a_login_stored_again_while_leased_isnt_overwritten_by_the_old_sandbox(broker):
+    prov = FakeProvider()
+    sb = Sandbox(name="t", environment="e", provider="fake")
+    await prov.create(sb, "img")
+    dead, fresh = _codex("acct-1", "user-1", "rt-dead"), _codex("acct-1", "user-1", "rt-fresh")
+    broker.put("codex", "codex", CredentialKind.AUTH_FILE, dead, person="alice")
+    await broker.inject(sb, prov, broker.acquire(["codex"], sb.id))
+    # the person logs in again and stores it while the job's sandbox, kept for follow-ups, still holds the dead file
+    broker.put("codex", "codex", CredentialKind.AUTH_FILE, fresh, person="alice")
+    assert broker.get("codex").leased_to is None
+    [e] = [e for e in broker.store.audit_tail() if e.action == "credential.lease_dropped"]
+    assert e.target == "codex" and e.detail["sandbox"] == sb.id and "rt-" not in repr(e.model_dump())
+    await broker.release(sb, prov)  # the sandbox ends: its dead file is not written back
+    assert broker.vault.get("cred:codex") == fresh
+    # the next sandbox gets the new login
+    sb2 = Sandbox(name="t2", environment="e", provider="fake")
+    await prov.create(sb2, "img")
+    await broker.inject(sb2, prov, broker.acquire(["codex"], sb2.id))
+    assert await prov.read_file(sb2, "/home/agent/.codex/auth.json") == fresh
+
+
+async def test_the_same_value_stored_again_keeps_the_lease(broker):
+    prov = FakeProvider()
+    sb = Sandbox(name="t", environment="e", provider="fake")
+    await prov.create(sb, "img")
+    old, new = _codex("acct-1", "user-1", "rt-old"), _codex("acct-1", "user-1", "rt-new")
+    broker.put("codex", "codex", CredentialKind.AUTH_FILE, old, person="alice")
+    broker.acquire(["codex"], sb.id)
+    broker.put("codex", "codex", CredentialKind.AUTH_FILE, old, person="bob")  # an owner change, say
+    assert broker.get("codex").leased_to == sb.id
+    await prov.write_file(sb, "/home/agent/.codex/auth.json", new)  # codex refreshed in the sandbox
+    await broker.release(sb, prov)
+    assert broker.vault.get("cred:codex") == new  # the rotation is kept, as before

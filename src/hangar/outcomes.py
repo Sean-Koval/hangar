@@ -6,7 +6,8 @@ as failures they corrupt yield metrics and paired experiments, so every turn, at
 
 * `agent`: the agent's own result, success or failure. What statistics count.
 * `infra_error`: infrastructure ended it; `infra_reason` says what (`preempted`, `power_down`, `rate_limited`,
-  `provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`, `no_login`). An experiment retries such
+  `provider_5xx`, `sandbox_create`, `checkpoint`, `control_plane_restart`, `no_login`, `login_rejected`). An
+  experiment retries such
   a trial as a fresh one and leaves it out (`excluded`); jobs aren't retried beyond today's restart and power-down
   resume, but the class is recorded and weekly yield leaves them out.
 * `cancelled`: someone (or the experiment) stopped it.
@@ -18,6 +19,10 @@ Misclassification goes towards `agent`: a sandbox that died with no node-level c
 agent's fork bomb or memory took down, say) stays `agent`; only a recorded node event (the reconciler's
 `pod_replaced`: node repair, scale-down, preemption), the power-down, a control-plane restart, or the harness's own
 report of a provider error (HTTP 429 after its retries, a 5xx, `overloaded_error`) makes it `infra_error`.
+
+`login_rejected` (KAN-178): the vendor refused the turn's login: Codex couldn't refresh a ChatGPT login's tokens
+("Your access token could not be refreshed"), or the harness's last error is a 401. That is a credential to renew,
+not the agent: credhealth.login_rejected marks the credential failed and says how to log in again.
 """
 
 from __future__ import annotations
@@ -31,33 +36,67 @@ if TYPE_CHECKING:
 CLASSES = ("agent", "infra_error", "cancelled", "human")
 INFRA_REASONS = ("preempted", "power_down", "rate_limited", "provider_5xx", "sandbox_create", "checkpoint",
                  "control_plane_restart", "drift",  # --- #178: drift: a trial's turn 1 didn't run its pin set
-                 "no_login")  # --- #293: no login for the turn's harness: configuration, refused before it started
+                 "no_login",  # --- #293: no login for the turn's harness: configuration, refused before it started
+                 "login_rejected")  # --- KAN-178: the vendor refused the turn's login (a dead refresh token, a 401)
 # How a harness reports a provider error it gave up on: Claude Code's result (`API Error: 529 {..."overloaded_error"
 # ...}`), Codex's `turn.failed` (`exceeded retry limit, last status: 429 Too Many Requests`), pi's and agy's errors.
 _RATE = re.compile(r"\b429\b|rate[_ -]?limit|too many requests|resource[_ ]exhausted", re.I)
 _5XX = re.compile(r"overloaded|\b5(?:0[0-4]|29)\b|internal server error|service unavailable|bad gateway|"
                   r"gateway time-?out|\bapi_error\b|server_error|upstream connect error", re.I)
+# --- KAN-178: the vendor refused the login. Codex logs a refresh it can't make on stderr, from codex_login
+# (`ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed ...`), and
+# then fails the turn with a 401 (`workspace routing discovery unauthorized (401)`). Claude Code says
+# `Invalid API key` or `OAuth token has expired`, or reports an `authentication_error`.
+# Only codex's permanent refusals: a refresh that failed on the network logs `Failed to refresh token: <error>`
+# without them, and is retried.
+_REFRESH = re.compile(r"access token could not be refreshed|refresh token (?:has expired|was already used|"
+                      r"was revoked)", re.I)
+_AUTH = re.compile(r"\b401\b|unauthori[sz]ed|authentication_error|invalid api key|oauth token has expired|"
+                   r"could not be refreshed|log out and sign in again", re.I)
+_ANSI = re.compile(rb"\x1b\[[0-9;]*m")
 LOG_TAIL = 256 * 1024  # the end of the run log is where the harness says why it stopped
 LAST_ERRORS = 3
+
+
+def _tail(raw: str | bytes) -> bytes:
+    data = raw.encode(errors="replace") if isinstance(raw, str) else raw
+    data = data[-LOG_TAIL:]
+    if (nl := data.find(b"\n")) > 0 and len(data) == LOG_TAIL:
+        data = data[nl + 1:]  # the first line is cut
+    return data
+
+
+def _harness_errors(data: bytes, harness: str | None) -> list[str] | None:
+    from hangar.events import parse_log
+
+    try:
+        evs, _ = parse_log(data, harness)
+    except Exception:  # noqa: BLE001 - a log hangar can't read says nothing about the provider
+        return None
+    return [e.text for e in evs if e.kind == "error" and e.text][-LAST_ERRORS:]
+
+
+def login_rejected(raw: str | bytes | None, harness: str | None = None) -> bool:
+    """--- KAN-178: True when the vendor refused the turn's login: the harness's own stderr says it couldn't refresh
+    its tokens, or one of its last error events is a 401 or an authentication error. Plain lines in a run log are the
+    harness's stderr (a tool's output is inside the harness's JSON events), so an agent that greps a log for "401"
+    is still the agent."""
+    if not raw:
+        return False
+    data = _tail(raw)
+    for line in data.splitlines():
+        if not line.lstrip().startswith(b"{") and _REFRESH.search(_ANSI.sub(b"", line).decode(errors="replace")):
+            return True
+    return any(_AUTH.search(t) for t in (_harness_errors(data, harness) or []))
 
 
 def provider_error(raw: str | bytes, harness: str | None = None) -> str | None:
     """`rate_limited` or `provider_5xx` when the harness's last errors in its run log are a provider's, else None.
     Only the harness's own error events count (a result marked as an error, `turn.failed`, an error item, a retry
     notice), never a tool's output: an agent that cats a log full of 503s is still the agent."""
-    from hangar.events import parse_log
-
-    data = raw.encode(errors="replace") if isinstance(raw, str) else raw
-    if not data:
+    if not raw:
         return None
-    data = data[-LOG_TAIL:]
-    if (nl := data.find(b"\n")) > 0 and len(data) == LOG_TAIL:
-        data = data[nl + 1:]  # the first line is cut
-    try:
-        evs, _ = parse_log(data, harness)
-    except Exception:  # noqa: BLE001 - a log hangar can't read says nothing about the provider
-        return None
-    errors = [e.text for e in evs if e.kind == "error" and e.text][-LAST_ERRORS:]
+    errors = _harness_errors(_tail(raw), harness) or []
     for text in reversed(errors):
         if _RATE.search(text):
             return "rate_limited"
@@ -90,6 +129,8 @@ def classify_turn(outcome: str | None, exit_code: int | None = None, *, raw: str
         if cause == "orphaned_by_restart":
             return "infra_error", "control_plane_restart"
     failed = outcome != "exited" or (exit_code or 0) != 0
+    if failed and raw and outcome != "over_budget" and login_rejected(raw, harness):  # --- KAN-178: before 5xx
+        return "infra_error", "login_rejected"
     if failed and raw and outcome != "over_budget" and (why := provider_error(raw, harness)):
         return "infra_error", why
     return "agent", None

@@ -131,3 +131,43 @@ def test_job_class():
     asked = Turn(run_id="run-2", outcome="exited", outcome_class="human")
     assert outcomes.job_class(job(JobState.SUCCEEDED, asked)) == ("agent", None)
     assert outcomes.run_fields(cut) == {"outcome_class": "infra_error", "infra_reason": "preempted"}
+
+
+# --- KAN-178: the vendor refused the login (job-7339173d: codex-cli 0.162.1, a ChatGPT login whose refresh token
+# OpenAI no longer takes). Codex logs the refusal on stderr, then fails the turn with a 401.
+_REFUSAL = ("\x1b[2m2026-10-26T23:59:07.479535Z\x1b[0m \x1b[31mERROR\x1b[0m \x1b[2mcodex_login::auth::manager\x1b[0m"
+            "\x1b[2m:\x1b[0m Failed to refresh token: Your access token could not be refreshed. Please log out and "
+            "sign in again.\n")
+CODEX_REFUSED = (_lines({"type": "thread.started", "thread_id": "x"}, {"type": "turn.started"},
+                        {"type": "error", "message": "Reconnecting... 5/5"})
+                 + _REFUSAL
+                 + _lines({"type": "error", "message": "workspace routing discovery unauthorized (401)"},
+                          {"type": "turn.failed", "error": {"message": "workspace routing discovery unauthorized "
+                                                                      "(401)"}}))
+CODEX_TRANSIENT = (_lines({"type": "thread.started", "thread_id": "x"})
+                   + "ERROR codex_login::auth::manager: Failed to refresh token: error sending request for url\n"
+                   + _lines({"type": "turn.failed", "error": {"message": "the agent gave up"}}))
+CODEX_TOOL_SAYS_IT = _lines(  # the agent's command prints the words: still the agent
+    {"type": "thread.started", "thread_id": "x"},
+    {"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": "cat codex.log",
+                                        "aggregated_output": "Your access token could not be refreshed. 401",
+                                        "exit_code": 1, "status": "failed"}},
+    {"type": "turn.failed", "error": {"message": "the tests still fail"}})
+
+
+def test_a_refused_login_is_infrastructure_not_the_agent():
+    assert outcomes.classify_turn("exited", 1, raw=CODEX_REFUSED, harness="codex") == ("infra_error",
+                                                                                       "login_rejected")
+    assert outcomes.login_rejected(CODEX_REFUSED, "codex")
+    assert outcomes.login_rejected(_REFUSAL)  # the stderr line alone, ANSI colours and all
+    # a refresh that failed on the network is retried by codex, and is not a dead login
+    assert not outcomes.login_rejected(CODEX_TRANSIENT, "codex")
+    assert outcomes.classify_turn("exited", 1, raw=CODEX_TRANSIENT, harness="codex") == ("agent", None)
+    # a tool's output that says it is the agent's
+    assert not outcomes.login_rejected(CODEX_TOOL_SAYS_IT, "codex")
+    assert outcomes.classify_turn("exited", 1, raw=CODEX_TOOL_SAYS_IT, harness="codex") == ("agent", None)
+    # a turn that got through in the end, or was stopped over budget, keeps its own class
+    assert outcomes.classify_turn("exited", 0, raw=CODEX_REFUSED, harness="codex") == ("agent", None)
+    assert outcomes.classify_turn("over_budget", -1, raw=CODEX_REFUSED, harness="codex") == ("agent", None)
+    assert not outcomes.login_rejected("") and not outcomes.login_rejected(None)
+    assert "login_rejected" in outcomes.INFRA_REASONS
