@@ -22,6 +22,10 @@
 
 People's own interactive sessions and sandboxes keep using their own subscription logins, with a warning, as before.
 
+**E2B refuses `ask`, `deny-risky` and `governed` turns by default** (KAN-189). Run them on Docker, or set
+`HANGAR_UID_SPLIT=auto` to keep the old warning, which `hangar doctor` flags
+([why](docs/security/e2b-driver-user.md)).
+
 ### Changed
 
 - **No setting relaxes the intake posture or interactive-only subscription logins** (KAN-74). `posture.py` and
@@ -34,6 +38,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **`HANGAR_UID_SPLIT` unset means `required` on E2B** (KAN-189, security review H-1). An E2B sandbox is one microVM
+  with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
+  split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
+  ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
 
 ## v0.2.0: the safe release
 

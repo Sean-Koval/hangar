@@ -47,7 +47,7 @@ Not checked: that GKE's admission policy accepts the second container, and the l
 - **Shared by the pod:** the network namespace, SysV IPC and `/dev/shm`. The driver uses none of them except its token-checked listener.
 - **The sandbox kernel itself.** A gVisor escape reaches every container in the pod.
 - **Per-edit trees and the verify gate.** The driver's container doesn't have the checkout. Trees turn off, and the gate is skipped with a note on stderr ([KAN-187](https://seanmkoval.atlassian.net/browse/KAN-187)).
-- **E2B.** One microVM, one container: [KAN-189](https://seanmkoval.atlassian.net/browse/KAN-189).
+- **E2B.** One microVM, one container. Those turns are refused there by default ([the driver's own user on E2B](e2b-driver-user.md)).
 - **Replays** don't depend on the uid split. Their sandbox has no credentials or egress, and the gateway compares outside it.
 
 ## Graders
