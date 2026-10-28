@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -292,12 +293,19 @@ class FakeSidecar(FakeProvider):
         super().__init__()
         self.prefix = prefix
         self.log: list[tuple[str, str, bytes | None]] = []  # (container, command or argv, stdin)
+        self.ctl_dirs: list[Path] = []  # each box's hangar-ctl, outside the box (see create)
 
     async def create(self, sandbox, image, spec=None):
         await super().create(sandbox, image, spec)
         box = self.boxes[sandbox.id]
-        for d in ("vol/hangar", "vol/hangar-ctl"):
-            (box / d).mkdir(parents=True)
+        (box / "vol/hangar").mkdir(parents=True)
+        # hangar-ctl holds the driver's tmux socket, and a unix socket path can't pass 107 bytes: under a long test
+        # root (CI's ~/.cache/hangar-tests/gw0-…/fake-…/sb-…) the box path alone uses most of that. So the volume is
+        # a symlink to a short directory; tmux resolves TMUX_TMPDIR's real path before naming its socket.
+        ctl = Path(tempfile.mkdtemp(prefix="hc-", dir="/dev/shm" if os.path.isdir("/dev/shm") else None))
+        ctl.chmod(0o755)
+        self.ctl_dirs.append(ctl)
+        (box / "vol/hangar-ctl").symlink_to(ctl)
 
     def view(self, sb: Sandbox, text: str, driver: bool) -> str:
         box = self.boxes[sb.provider_ref]
@@ -368,6 +376,8 @@ class FakeSidecar(FakeProvider):
             subprocess.run(["tmux", "kill-server"], capture_output=True, timeout=10,
                            env={"TMUX_TMPDIR": str(tmp), "PATH": "/usr/bin:/bin:/usr/local/bin"})
         super().cleanup()
+        for ctl in self.ctl_dirs:
+            shutil.rmtree(ctl, ignore_errors=True)
 
 
 @pytest.fixture
