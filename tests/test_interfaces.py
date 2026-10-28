@@ -755,6 +755,48 @@ async def test_an_experiment_of_two_variants_and_two_trials(jobs, world, fleet, 
         jobs.follow_up(exp.id, "again", "alice")
 
 
+SEMVER_MINI = ROOT / "tests/fixtures/experiments/semver-mini"
+SEMVER_AGENT = r"""#!/usr/bin/env bash
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cat "$STREAM.before"
+cp "$SOLUTION" semver.py
+if grep -q BREAK "$HOME/.tagent/AGENTS.md" 2>/dev/null; then
+  printf '\n\ndef satisfies(version, range_str):\n    return True\n' >> semver.py
+fi
+git add semver.py && git commit -qm "agent: semver.py"
+cat "$STREAM.after"
+"""
+
+
+async def test_an_experiment_grades_the_semver_mini_task(jobs, world, fleet, monkeypatch):
+    """#145: the semver-mini fixture end to end: a variant that solves it scores 5 of 5, one that breaks `satisfies`
+    3 of 5, and the base check fails (no semver.py), so the task is valid."""
+    root = Path(world["root"])
+    (root / "semver.py").write_text((SEMVER_MINI / "solution/semver.py").read_text())
+    (root / "semver_agent.sh").write_text(SEMVER_AGENT)
+    run = f"SOLUTION={root}/semver.py STREAM={root}/stream bash {root}/semver_agent.sh"
+    monkeypatch.setitem(HARNESSES, "tagent", HARNESSES["tagent"].model_copy(update={"run": run}))
+    spec = experiments.ExperimentSpec.model_validate({
+        "name": "semver-mini", "environment": "tenv", "trials": 1, "parallel": 2, "keep_minutes": 5,
+        "tasks": [{"id": "semver", "instructions": (SEMVER_MINI / "task.md").read_text(), "repo": world["url"]}],
+        "variants": {"solves": {}, "breaks": {"instructions_append": "BREAK"}},
+        "grader": {"command": 'bash "$HANGAR_HIDDEN_TESTS/grade.sh"', "timeout_seconds": 120,
+                   "files": {n: (SEMVER_MINI / n).read_text() for n in ("grade.sh", "hidden_test_semver.py")}}})
+    exp = await _until(jobs, experiments.submit(jobs, spec, Caller("svc", "svc")).id, DONE, timeout=120)
+    assert exp.state == JobState.SUCCEEDED, [e.message for e in exp.events]
+    v = experiments.view(jobs, exp)
+    jsonschema.validate(v, INDEX_SCHEMA)
+    grades = {t["variant"]: t["grade"] for t in v["trials"]}
+    assert grades["solves"]["exit_code"] == 0, grades["solves"]
+    assert grades["solves"]["data"] == {"passed": 5, "total": 5, "failed": []}
+    assert grades["breaks"]["exit_code"] == 1, grades["breaks"]
+    broken = ["test_range_caret", "test_range_prerelease"]
+    assert grades["breaks"]["data"] == {"passed": 3, "total": 5, "failed": broken}
+    assert all(g["files_mode"] == "pristine" and g["applied"] for g in grades.values())
+    check = v["task_checks"]["semver"]
+    assert check["state"] == "done" and check["invalid"] is False, check  # the hidden tests fail on the base
+
+
 async def test_cancelling_an_experiment_stops_its_trials(jobs, world, fleet, settings, monkeypatch):
     slow = Path(world["root"]) / "slow.sh"
     slow.write_text("#!/usr/bin/env bash\nsleep 30\n")

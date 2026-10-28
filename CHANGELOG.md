@@ -24,6 +24,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`evals/` is gone** (KAN-86, #145). The semver kit moved to flightdeck: the task to `tasks/smoke/semver/`, the
+  process metrics and rule labeller to its data plane. hangar's experiment tests grade
+  `tests/fixtures/experiments/semver-mini/`, five of its hidden cases.
 - **No setting relaxes the intake posture or interactive-only subscription logins** (KAN-74). `posture.py` and
   `teamcreds.py` drop the `warn`, `off` and `any` paths, with the `posture.warn` event, audit entry and review-packet
   line. `hangar config set` refuses the removed values. A job's sandbox is automated even when its caller names
