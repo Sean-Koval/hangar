@@ -197,6 +197,21 @@ async def test_facts_from_before_a_notifier_was_enabled_are_not_sent(svc):
     assert rec.got == []
 
 
+async def test_a_pr_opened_in_the_second_a_notifier_started_is_sent(svc):
+    """GitHub dates a PR in whole seconds, so it can read as up to a second before the notifier's start (KAN-201)."""
+    started = float(int(now())) + 0.9
+    svc.store.kv_set(events_out.SINCE_PREFIX + "rec", repr(started))
+    rec = Recorder()
+    d = _dispatcher(svc, rec)
+    j = _job(state=JobState.QUEUED, created_at=started)
+    j.result.pr_url, j.result.pr_number = "https://github.com/acme/api/pull/7", 7
+    j.landing.opened_at = float(int(started))  # created_at "…T12:00:00Z", 0.9 s before the notifier started
+    d.on_put(j)
+    svc.store.put(j)
+    await d.flush()
+    assert "pr.opened" in [e.type for e in rec.got]
+
+
 async def test_other_producers_emit_their_own_events(svc):
     rec = Recorder(patterns=("changeset.*",))
     d = _dispatcher(svc, rec)

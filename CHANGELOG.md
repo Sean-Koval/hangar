@@ -35,6 +35,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
 
+### Fixed
+
+- A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
+
 ## v0.2.0: the safe release
 
 The first tagged release (#274 tags it once #151's GKE run passes). It carries everything merged since the overnight
