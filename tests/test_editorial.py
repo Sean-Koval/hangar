@@ -91,7 +91,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "security/front-doors.md": (1406, 32, LATER + "the mechanism, its settings, its limits"),
     "security/git-gateway.md": (1993, 28, LATER + "the mechanism, its settings, its limits"),
     "security/graders.md": (511, 11, REWRITE),
-    "security/not-covered.md": (560, 7, REWRITE),
+    "security/not-covered.md": (507, 5, REWRITE),
     "security/package-mirrors.md": (493, 10, REWRITE),
     "security/people.md": (921, 14, LATER + "the mechanism, its settings, its limits"),
     "security/screen.md": (390, 5, REWRITE),

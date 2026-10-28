@@ -415,6 +415,9 @@ class HttpDecisionPoint:
 
     async def status(self, approval_id: str, *, kind: Kind) -> Decision:
         d = await self._call("GET", f"/v1/decisions/{approval_id}", kind, approval_id=approval_id)
+        if d.source == "workspace" and d.approval_id and d.approval_id != approval_id:  # KAN-174: not the one asked
+            return fail_closed(kind, "contract", f"asked about {approval_id}, answered about {d.approval_id}"[:300],
+                               approval_id=approval_id, retryable=False)
         return d if d.approval_id or d.source != "workspace" else d.model_copy(update={"approval_id": approval_id})
 
     async def withdraw(self, approval_id: str, reason: str) -> bool:
