@@ -98,7 +98,10 @@
           "files": {"type": ["integer", "null"]},
           "enabled": {"type": "boolean"},
           "effective": {"type": "boolean", "description": "Whether hangar's settings load it for this harness, hardened (ask, deny-risky) turns included."},
-          "source": {"const": "seed"}, "error": {"type": "string"}}}}]},
+          "source": {"const": "seed"},
+          "git": {"type": "string", "description": "A plugin from a git marketplace (#222): its repo URL, as the spec names it, with no credential."},
+          "commit": {"type": ["string", "null"], "description": "With git: the commit it is pinned to, fetched through the git gateway when the image was built."},
+          "error": {"type": "string"}}}}]},
     "mcp_servers": {
       "type": "array",
       "items": {

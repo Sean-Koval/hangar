@@ -113,7 +113,7 @@ class Plugin(BaseModel):
 _git_cache: Path | None = None
 
 
-def configure_git(cache: Path) -> None:
+def configure_git(cache: Path | None) -> None:
     """Where fetched git marketplaces are kept (Fleet sets `<data>/plugin-git`)."""
     global _git_cache
     _git_cache = cache
@@ -149,10 +149,14 @@ def _gitrun(args: list[str], env: dict[str, str] | None = None) -> tuple[bool, b
     return r.returncode == 0, r.stdout if r.returncode == 0 else r.stderr.strip()[-400:]
 
 
-def pin_error(p: Plugin, url: str, env: dict[str, str] | None = None) -> str:
-    """Why `p.ref` isn't a pin, naming the commit it points at now when the remote says (#167's way for models)."""
+def pin_error(p: Plugin, url: str, env: dict[str, str] | None = None, look: bool = True) -> str:
+    """Why `p.ref` isn't a pin, naming the commit it points at now when the remote says (#167's way for models).
+    `look`: ask the remote (prefetch does, through the gateway's upstream); False names no commit."""
     ref = p.ref or ""
-    ok, out = _gitrun(["ls-remote", "--", url, f"refs/heads/{ref}", f"refs/tags/{ref}", ref], env)
+    ok, out = False, b""
+    if look:
+        ok, out = _gitrun(["ls-remote", "--", url, f"refs/heads/{ref}", f"refs/tags/{ref}",
+                            f"refs/tags/{ref}^{{}}", ref], env)
     found: dict[str, str] = {}
     for line in out.decode(errors="replace").splitlines() if ok else []:
         sha, _, name = line.partition("\t")
@@ -168,6 +172,9 @@ def pin_error(p: Plugin, url: str, env: dict[str, str] | None = None) -> str:
                 f"names now: ref: {tag}")
     if re.fullmatch(r"[0-9a-fA-F]{4,39}", ref):
         return f"{where} is an abbreviated commit: pin the full commit id (git rev-parse {ref})"
+    if not look:  # a remote repo is read only through the gateway, when the image is built
+        return (f"{where} isn't a full commit id: an environment pins a plugin to a commit. Building the image names "
+                "the commit it points at now")
     return f"{where} isn't a full commit id: an environment pins a plugin to a commit (git rev-parse <ref>)"
 
 
@@ -259,7 +266,7 @@ def _root(spec: EnvSpec, p: Plugin) -> Path:
         tree = git_tree(p)
         if not tree.is_dir():
             if not pinned(p):
-                raise ValueError(pin_error(p, p.git))
+                raise ValueError(pin_error(p, p.git, look=p.git.startswith("file:///")))
             if not p.git.startswith("file:///"):
                 raise ValueError(f"plugin {p.name}: {safe_url(p.git)}@{p.ref} isn't fetched yet: hangar fetches it "
                                  "through the git gateway when it builds the image")
