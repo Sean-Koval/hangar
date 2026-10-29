@@ -32,6 +32,7 @@ root's, out of the agent's reach. hangar's own settings enable exactly those, in
 
 Only an admin's environment can declare them (not a repo's file), a prebuilt `image:` can't have them, and changing a
 plugin rebuilds the image. The details, and what the manifest records, are on [plugins](../harnesses.md#plugins).
+A plugin can also come from a git repo, pinned by commit and fetched through the git gateway ([git marketplaces](git-plugins.md)).
 
 ```yaml
 harnesses: [claude-code]

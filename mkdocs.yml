@@ -161,6 +161,7 @@ nav:
               - Agent-led setup: environments/agent-led-setup.md
               - "Agent-led setup: re-runs, budget and safety": environments/agent-led-setup-safety.md
               - Root, plugins and MCP trust: environments/sudo-plugins-mcp.md
+              - Plugins from a git marketplace: environments/git-plugins.md
           - Harnesses: harnesses.md
           - Harness locks: harness-lock.md
           - Computer use: computer-use.md
