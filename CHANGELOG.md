@@ -43,6 +43,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
 
+### Fixed
+
+- A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
+
 ## v0.2.0: the safe release
 
 The first tagged release (#274 tags it once #151's GKE run passes). It carries everything merged since the overnight

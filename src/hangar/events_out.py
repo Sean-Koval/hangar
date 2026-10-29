@@ -294,7 +294,9 @@ class Dispatcher:
                     work.append((n, ev, 0))
         people: dict[str | None, Person | None] = {}
         for n, ev, attempts in work:
-            if self._sent(n.name, ev.id, t) or ev.at < self._since(n.name):
+            # Whole seconds: a PR is dated by GitHub's created_at, so one opened in the second a notifier started
+            # would read as older than it and be dropped for good (KAN-201).
+            if self._sent(n.name, ev.id, t) or ev.at < int(self._since(n.name)):
                 continue
             if ev.person not in people:
                 people[ev.person] = self.store.get(Person, ev.person) if ev.person else None
