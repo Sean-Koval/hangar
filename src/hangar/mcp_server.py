@@ -856,8 +856,7 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         local work {"kind": "patch"} or {"kind": "bundle", "base_commit"}. `output_schema`: JSON Schema for
         result.data. `budget` caps each turn ({"max_minutes", "max_tokens", "max_cost_usd"}); over it, the work
         is delivered as a draft. Then wait_for_turn(job id).
-        `strategy="best_of_n"`, `n` 2-8: parallel attempts, the best delivered (`judge=True`: an agent compares;
-        `sequential=True`: attempt 1 alone first, the rest only if it fails verify).
+        `strategy="best_of_n"`, `n` 2-8: parallel attempts, the best delivered (`judge=True`: an agent compares).
         `verify_in_loop` (default on): failures go back to the agent in the turn. `autofix` (ci,reviews | ci |
         reviews | off): PR CI failures and trusted reviews start follow-ups. `harness_lock`: name@rN.
         `changeset`: a profile (no `repo`): one PR per changed repo. `ticket`: "jira:PAY-412"."""
