@@ -65,7 +65,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "jobs/reference.md": (589, 12, "a reference: one entry per label, outcome and setting, looked up, not read"),
     "jobs/test-results.md": (1239, 27, LATER + "the report, the flaky list"),
     "jobs/working-with-the-agent.md": (1356, 26, LATER + "questions, steering"),
-    "landing.md": (3793, 62, LATER + "the GitHub App, approvals, review rounds"),
+    "landing.md": (3497, 54, LATER + "the GitHub App, approvals, review rounds"),
     "local-microvms.md": (262, 2, REWRITE),
     "metrics.md": (526, 3, REWRITE),
     "microvm.md": (3221, 28, LATER + "by provider"),
