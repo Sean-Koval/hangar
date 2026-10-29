@@ -47,7 +47,8 @@ def hits(text: str) -> list[tuple[int, str | None]]:
 
 
 def test_hits_ignores_comments_in_code_fences():
-    text = "# Top\n\n## Your own interactive sessions\n\n```bash\n# a comment\nhangar cred add x --kind oauth_token\n```\n"
+    text = ("# Top\n\n## Your own interactive sessions\n\n"
+            "```bash\n# a comment\nhangar cred add x --kind oauth_token\n```\n")
     assert hits(text) == [(7, "Your own interactive sessions")]
     assert hits("## Team credentials\n\nnever `--kind oauth_token`\n") == [(3, "Team credentials")]
 
