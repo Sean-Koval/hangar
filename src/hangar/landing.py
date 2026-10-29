@@ -1185,6 +1185,10 @@ class Landing:
 
         if line := harness_thaw.packet_line(svc, job):
             out.append(line)
+        from hangar import strategies  # --- KAN-231: a sequential best-of-N: how many attempts ran, and why
+
+        if line := strategies.packet_line(job):
+            out.append(line)
         tier, why = self.tier(job, policy)
         out.append(f"- **Risk:** {tier}" + (": touches " + ", ".join(_code(p) for p in why[:8]) if why else ""))
         if st.checks_loosened:  # --- #170

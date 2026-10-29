@@ -45,6 +45,7 @@ from hangar.models import (
     Attempt,
     Job,
     JobState,
+    SequentialRun,
     Session,
     SessionState,
     SessionTurn,
@@ -54,6 +55,7 @@ from hangar.sessions import _BRANCH_RE, _NAME_RE, MAX_MESSAGE, PARTS, SessionErr
 
 if TYPE_CHECKING:
     from hangar.jobs import JobService, SubmitJob
+    from hangar.repopolicy import RepoPolicy
 
 log = logging.getLogger("hangar.strategies")
 
@@ -61,6 +63,7 @@ _TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]+\.py$|_
                         r"|\.(test|spec)\.[^/]+$|(^|/)conftest\.py$")
 MAX_JUDGE_DIFF = 200_000
 ATTEMPT_BRANCH = "the branch named at the end of this message"  # --- overnight/cache
+RISK_LABEL = "hangar.risk"  # --- KAN-231: a job's risk tier (low, normal, high): caps its attempts (repo policy)
 
 
 class SessionForkBody(BaseModel):
@@ -234,18 +237,61 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
 
 
 # ====================================================================== best-of-N jobs
-def check_submit(req: SubmitJob, max_n: int) -> int:
-    """Validate the strategy fields of a submission; returns the number of attempts."""
+def risk_tier(labels: dict[str, str]) -> str | None:
+    """--- KAN-231: the job's risk tier (low, normal, high), from its `hangar.risk` label: the submitter's, or the
+    ticket's "Touches risk paths?" answer (intake.apply_ticket). None: not stated."""
+    tier = (labels.get(RISK_LABEL) or "").strip().lower()
+    return tier if tier in ("low", "normal", "high") else None
+
+
+def tier_cap(req: SubmitJob, policy: RepoPolicy | None) -> tuple[str, int] | None:
+    """(tier, most attempts) when the repo policy's `best_of_n.max_n` names the job's risk tier."""
+    caps = policy.best_of_n.max_n if policy is not None and policy.best_of_n is not None else None
+    tier = risk_tier(req.labels)
+    return (tier, caps[tier]) if caps and tier in caps else None  # type: ignore[index]
+
+
+def check_submit(req: SubmitJob, max_n: int, policy: RepoPolicy | None = None) -> int:
+    """Validate the strategy fields of a submission; returns the number of attempts. --- KAN-231: the repo
+    policy's cap for the job's risk tier bounds `n`, and is `n` when the job names none."""
     from hangar.jobs import JobError
 
     if req.strategy == "single":
-        if (req.n or 1) != 1 or req.judge:
-            raise JobError("n and judge apply to strategy 'best_of_n'")
+        if (req.n or 1) != 1 or req.judge or req.sequential or req.escalate_at is not None:
+            raise JobError("n, judge, sequential and escalate_at apply to strategy 'best_of_n'")
         return 1
-    n = req.n if req.n is not None else min(3, max_n)
+    if req.escalate_at is not None and req.sequential is False:
+        raise JobError("escalate_at applies to a sequential best_of_n")
+    capped = tier_cap(req, policy)
+    n = req.n if req.n is not None else (capped[1] if capped else min(3, max_n))
+    if capped:
+        n = min(n, capped[1], max_n)
     if not 2 <= n <= max_n:
         raise JobError(f"best_of_n needs n between 2 and {max_n} (HANGAR_BEST_OF_N_MAX)")
     return n
+
+
+def sequential_for(req: SubmitJob, policy: RepoPolicy | None) -> SequentialRun | None:
+    """--- KAN-231: the job's sequential run, or None for parallel attempts (the default). The job's own
+    `sequential` comes first, then the repo policy's `best_of_n.sequential`; an `escalate_at` implies it."""
+    if req.strategy != "best_of_n":
+        return None
+    pb = policy.best_of_n if policy is not None else None
+    on = req.sequential if req.sequential is not None else (
+        True if req.escalate_at is not None else bool(pb and pb.sequential))
+    if not on:
+        return None
+    return SequentialRun(escalate_at=req.escalate_at if req.escalate_at is not None else (pb.escalate_at if pb
+                                                                                          else None))
+
+
+def describe(job: Job, policy: RepoPolicy | None = None) -> str:
+    """"best of 3", "sequential best of 3", with the risk tier's cap when the policy set it."""
+    out = ("sequential " if job.sequential else "") + f"best of {job.n}"
+    caps = policy.best_of_n.max_n if policy is not None and policy.best_of_n is not None else None
+    if caps and (tier := risk_tier(job.labels)) in caps:
+        out += f", at most {caps[tier]} for risk {tier}"  # type: ignore[index]
+    return out
 
 
 def is_attempt_phase(job: Job) -> bool:
@@ -295,10 +341,15 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
                 children = await _fork(svc, base, job.n, f"job:{job.id}", suffix="attempt", job_id=job.id)
             job.attempts = [Attempt(index=i, session_id=c.id, branch=c.branch) for i, c in enumerate(children, 1)]
             jobs._save(job)
-            if cache.policy(svc, base) != "off":  # --- overnight/cache: the first attempt to start writes the prefix
-                cache.STAGGER.group([c.id for c in children])
-        jobs._event(job, f"running {job.n} attempts in parallel ({job.environment}, "
-                         f"{base.harness or 'default harness'}); each is verified in its own sandbox")
+            if cache.policy(svc, base) != "off" and job.sequential is None:  # --- overnight/cache: the first
+                cache.STAGGER.group([c.id for c in children])  # attempt to start writes the prefix
+        if job.sequential is not None:  # --- KAN-231
+            jobs._event(job, f"running attempt 1 of {job.n} alone ({job.environment}, "
+                             f"{base.harness or 'default harness'}); attempts 2..{job.n} start only if it fails "
+                             "verify, changes nothing or the verify's tests, or goes over its share of the budget")
+        else:
+            jobs._event(job, f"running {job.n} attempts in parallel ({job.environment}, "
+                             f"{base.harness or 'default harness'}); each is verified in its own sandbox")
         jobs._spawn(jobs._callback(job, "job.started"))
         turn = job.turns[0]
         if turn.reply_to:
@@ -322,14 +373,100 @@ async def run_best_of_n(jobs: JobService, job: Job) -> None:
     async with contextlib.AsyncExitStack() as held:
         # --- interactions: an attempt that finished early must still be up when the slowest one is done and the
         # ranking runs; the idle loop would otherwise suspend it (after keep_minutes) and lose the best result.
-        for s in sessions.values():
-            await held.enter_async_context(svc.hold(s))
-        if pending:
+        seq = job.sequential  # --- KAN-231: attempts 2..N of a sequential run are held only once they start
+        for i, s in sessions.items():
+            if seq is None or i == 1 or seq.escalated:
+                await held.enter_async_context(svc.hold(s))
+        if pending and seq is not None:
+            await _run_sequential(jobs, job, sessions, held)
+        elif pending:
             await asyncio.gather(*(_run_attempt(jobs, job, a) for a in pending))
         if any(a.state == "waiting" for a in job.attempts):  # --- trust: they resume at power-up; the rest wait
             await jobs.fleet.power.requeue(jobs, job)
             return
         await _finish(jobs, job)
+
+
+async def _run_sequential(jobs: JobService, job: Job, sessions: dict[int, Session],
+                          held: contextlib.AsyncExitStack) -> None:
+    """--- KAN-231: attempt 1 alone, then attempts 2..N in parallel only if it fell short. The decision is recorded
+    on the job (`sequential`), so a restart re-attaches to whichever phase was running."""
+    seq, first, rest = job.sequential, job.attempts[0], job.attempts[1:]
+    assert seq is not None
+    if first.state != "done":
+        if first.run_id is None and first.budget is None:
+            first.budget = jobbudget.first_share(job)
+        await _run_attempt(jobs, job, first)
+        if first.state == "waiting":  # --- trust: the power-down cut it off; the job waits for power-up
+            return
+    if not seq.decided:
+        if job.cancel_requested:
+            return  # _finish reports it
+        short = escalation(jobs, job, first)
+        spent = jobbudget.exhausted(jobs, job) if short else None
+        seq.decided, seq.escalated = True, bool(short and not spent)
+        if seq.escalated:
+            seq.why = f"attempt 1 {short}: attempts 2..{job.n} started"
+            share = jobbudget.rest_share(jobs, job, len(rest))
+            for a in rest:
+                a.budget = share
+        else:
+            seq.why = (f"attempt 1 {short}, but the job budget is spent ({spent}): attempts 2..{job.n} not started"
+                       if spent else f"attempt 1 {_held_up(job, first)}: attempts 2..{job.n} not started")
+            for a in rest:
+                a.state, a.outcome = "done", "skipped"
+        jobs._save(job)
+        jobs._event(job, seq.why[0].upper() + seq.why[1:])
+        if not seq.escalated:
+            _archive_skipped(jobs, job, rest)
+        else:
+            for a in rest:  # up until the ranking, as a parallel run's attempts are
+                if (s := sessions.get(a.index)) is not None:
+                    await held.enter_async_context(jobs.sessions.hold(s))
+            if (base := jobs._session(job)) is not None and cache.policy(jobs.sessions, base) != "off":
+                cache.STAGGER.group([a.session_id for a in rest if a.session_id])  # --- overnight/cache
+    if seq.escalated:
+        await asyncio.gather(*(_run_attempt(jobs, job, a) for a in rest if a.state != "done"))
+
+
+def escalation(jobs: JobService, job: Job, a: Attempt) -> str | None:
+    """--- KAN-231: why attempt 1 of a sequential best-of-N falls short and the others must start, or None. (An
+    attempt that asked a question isn't short: the job waits for the answer, as a parallel one does.)"""
+    if a.outcome == "needs_input":
+        return None
+    if a.outcome == "over_budget":
+        return "went over its share of the budget"
+    if a.outcome not in ("exited", "timed_out"):
+        return f"did not finish ({a.outcome or 'no outcome'}" + (f": {a.error[:120]}" if a.error else "") + ")"
+    if a.outcome == "timed_out":
+        return "timed out"
+    if not _passed(job, a):
+        if job.verify:
+            return f"failed verify (exit {a.verify_exit_code})" if a.verify_exit_code is not None else \
+                "could not be verified"
+        return f"exited {a.exit_code}"
+    if a.touched_tests:
+        return "changed the verify's tests (" + ", ".join(a.touched_tests[:3]) + ")"
+    if not a.files:
+        return "changed nothing"
+    seq = job.sequential
+    limit = seq.escalate_at if seq is not None and seq.escalate_at is not None else None
+    used = jobbudget.used_fraction(jobs, job)
+    if limit is not None and used is not None and used > limit:
+        return f"used {used:.0%} of the job budget, more than its {limit:.0%}"
+    return None
+
+
+def _held_up(job: Job, a: Attempt) -> str:
+    return ("passed verify" if job.verify else "finished cleanly") + f" and changed {len(a.files)} file(s)"
+
+
+def _archive_skipped(jobs: JobService, job: Job, skipped: list[Attempt]) -> None:
+    """The forks of attempts that never ran: nothing to keep."""
+    for a in skipped:
+        if a.session_id:
+            with contextlib.suppress(Exception):
+                jobs.sessions.archive(a.session_id, requester=f"job:{job.id}")
 
 
 async def _run_attempt(jobs: JobService, job: Job, a: Attempt) -> None:
@@ -359,7 +496,8 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
         a.outcome, a.error = "error", "its session is gone"
         return
     async with svc.hold(s):
-        s.budget = jobbudget.attempt_share(job)  # --- interactions: an attempt is an agent turn of the job; its budget
+        # --- KAN-231: a sequential attempt's share was fixed when its phase started
+        s.budget = a.budget if a.budget is not None else jobbudget.attempt_share(job)  # --- interactions: an attempt is an agent turn of the job; its budget
         # applies (--- frontdoor: and its share of the job budget)
         if a.run_id is None:
             if job.cancel_requested:
@@ -753,7 +891,11 @@ def attempts_table(job: Job) -> str:
     """Markdown table of the attempts for the PR body."""
     if not job.attempts:
         return ""
-    rows = [f"Best of {job.n}: attempt {next((a.index for a in job.attempts if a.rank == 1), '?')} delivered.", "",
+    won = next((a.index for a in job.attempts if a.rank == 1), "?")
+    head = f"Best of {job.n}: attempt {won} delivered."
+    if job.sequential is not None:  # --- KAN-231
+        head = f"Sequential best of {job.n}: {ran_line(job)}. Attempt {won} delivered."
+    rows = [head, "",
             "| Attempt | Outcome | Verify | Diff | Rank | Notes |", "| --- | --- | --- | --- | --- | --- |"]
     for a in job.attempts:
         verify = "—" if a.verify_exit_code is None else ("passed" if a.verify_exit_code == 0
@@ -766,6 +908,23 @@ def attempts_table(job: Job) -> str:
             notes.append(f"`{a.pushed_branch}`")
         if a.error:
             notes.append(a.error[:120].replace("|", "/").replace("\n", " "))
-        rows.append(f"| {a.index} | {a.outcome or a.state} (exit {a.exit_code}) | {verify} | {diff} | "
+        outcome = "not started" if a.outcome == "skipped" else f"{a.outcome or a.state} (exit {a.exit_code})"
+        rows.append(f"| {a.index} | {outcome} | {verify} | {diff} | "
                     f"{a.rank or '—'} | {'; '.join(notes)} |")
     return "\n".join(rows)
+
+
+def ran_line(job: Job) -> str:
+    """--- KAN-231: "1 of 3 attempts ran: attempt 1 passed verify and changed 2 file(s)"."""
+    ran = sum(1 for a in job.attempts if a.outcome != "skipped" and (a.run_id or a.outcome))
+    seq = job.sequential
+    why = (seq.why or "") if seq is not None else ""
+    why = why.split(": attempts 2..")[0] if why else ""
+    return f"{ran} of {job.n} attempts ran" + (f": {why}" if why else "")
+
+
+def packet_line(job: Job) -> str | None:
+    """--- KAN-231: the review packet's line on a best-of-N job: how many attempts ran, and why it stopped there."""
+    if job.strategy != "best_of_n" or not job.attempts or job.sequential is None:
+        return None  # a parallel run's attempts all ran: the PR body's table says so
+    return f"- **Attempts:** sequential best of {job.n}; {ran_line(job)}"
