@@ -205,6 +205,7 @@ nav:
           - People and OAuth connectors: security/people.md
           - Sealed graders: security/graders.md
           - The driver sidecar on GKE: security/driver-sidecar.md
+          - The driver's own user on E2B: security/e2b-driver-user.md
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md

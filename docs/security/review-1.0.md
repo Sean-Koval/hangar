@@ -12,7 +12,7 @@ Each is tracked in Jira. What remains open, with its owner and reason, is on
 
 | Finding | Severity | Ticket | Status |
 | --- | --- | --- | --- |
-| Approvals inside a turn on GKE and E2B | High | KAN-165 | Mitigated: refused under `required`; the sidecar is KAN-83 |
+| Approvals inside a turn on GKE and E2B | High | KAN-165, KAN-189 | Mitigated: refused under `required`, the default on E2B; the sidecar is KAN-83 |
 | Codex rules in hardened turns | Medium | KAN-169 | Fixed at turn start; a file written during the turn is accepted |
 | Login files written back from a sandbox | Medium | KAN-168, KAN-178 | Fixed for team logins; a person's own login is accepted |
 | The image ignores `uv.lock`, uses `uv:latest`, runs as root | Medium | KAN-170 | Fixed |
@@ -30,7 +30,7 @@ Each is tracked in Jira. What remains open, with its owner and reason, is on
 
 On GKE and E2B there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent could allow itself or answer its own approval.
 
-Elsewhere the default (`HANGAR_UID_SPLIT=auto`) only warns. The Kubernetes manifests set `required`, which refuses those turns instead; `auto` turns are unaffected. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
+`HANGAR_UID_SPLIT=required` refuses those turns instead; `auto` turns are unaffected. The Kubernetes manifests set it. On E2B it is the default when the setting is unset (KAN-189), and `hangar doctor` flags an explicit `auto`. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
 
 ## Codex rules in hardened turns (Medium)
 

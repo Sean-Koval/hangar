@@ -479,8 +479,9 @@ class Settings(BaseSettings):
     # runs can't reach the driver, its key or its control files (docs/steering.md). auto: wherever the sandbox allows
     # it (Docker, an agent without sudo), else one user, with a warning; off: always one user; required: like auto,
     # and `ask` and `deny-risky` turns fail where the agent would share the driver's user, or where hangar can't own
-    # the harness's settings (--- harden).
-    uid_split: Literal["auto", "off", "required"] = "auto"
+    # the harness's settings (--- harden). Unset: `auto`, except on E2B, where it is `required` (--- KAN-189: an E2B
+    # sandbox is one microVM with one user, so those turns would always share the driver's user; isolation.policy).
+    uid_split: Literal["auto", "off", "required"] | None = None
     # --- governance (spec 0015; docs/runbooks/tower.md): Tower, the Govern plane. The default mode for every kind
     # (off: hangar's own rules, Tower isn't asked), per-kind overrides, Tower's URL and the vault credentials of
     # hangar's service key and of the secret Tower signs its events with. KAN-77: POST /api/governance/events is
