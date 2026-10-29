@@ -364,7 +364,7 @@ resource "google_monitoring_alert_policy" "slo" {
     content   = "Runbook: ${local.docs}/${each.value.runbook}\n\nOn call and escalation: ${local.docs}/runbooks/on-call/. SLOs: ${local.docs}/slos/."
   }
   depends_on = [google_logging_metric.job_starts, google_logging_metric.job_queue_seconds,
-  google_logging_metric.sandbox_creates, google_logging_metric.fail_closed, google_logging_metric.jobs_stuck,
+    google_logging_metric.sandbox_creates, google_logging_metric.fail_closed, google_logging_metric.jobs_stuck,
   google_logging_metric.deploy_lag]
 }
 
