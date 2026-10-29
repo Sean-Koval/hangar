@@ -226,6 +226,8 @@ nav:
           - 0014 Sister tool interfaces: specs/0014-sister-tool-interfaces.md
           - 0015 Governance decision point: specs/0015-governance-decision-point.md
       - Research - Google AX: research/ax.md
+      - Research - Test-first acceptance: research/test-first.md
+      - Research - Test-first isolation: research/test-first-isolation.md
   - Operations:
       - Running on GKE: gke.md
       - Deploying from CI/CD: cicd.md
