@@ -22,7 +22,10 @@ after a person approves. GitHub's branch protection stays the gate; hangar only 
 * **The end.** A merged or closed PR ends the job's session: a final checkpoint, then the sandbox goes.
 * **The packet.** One comment on each agent PR, from the job record: verification, cost, harness and model,
   files, risk tier, the AI review (#161, aireview.py), who may land it, and links to the session and recorded demos.
-  It is edited, not reposted, as the PR changes.
+  It is edited, not reposted, as the PR changes. --- KAN-229: a ticket job's packet has a table of its acceptance
+  criteria (intake.criteria) with the evidence the agent reported (intake.EVIDENCE_SCHEMA), a cited test proven only
+  when it passed in hangar's own check; the agent's "start here" files lead the file list, tests last; and a PR over
+  the policy's `diff_budget_lines` gets a size warning.
 """
 
 from __future__ import annotations
@@ -199,7 +202,7 @@ def start_here(job: Job, files: list[str]) -> tuple[list[str], int]:
 
 def reading_order(files: list[str], first: list[str]) -> list[str]:
     """`first`, then the other files in path order, tests last."""
-    rest = [f for f in files if f not in first]
+    rest = sorted(f for f in files if f not in first)
     return [*first, *[f for f in rest if not _TESTS.search(f)], *[f for f in rest if _TESTS.search(f)]]
 
 
