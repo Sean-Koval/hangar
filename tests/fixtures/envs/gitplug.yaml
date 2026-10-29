@@ -1,8 +1,0 @@
-name: gitplug
-harnesses:
-- claude-code
-plugins:
-- git: https://git.example.com/acme/harness
-  ref: main
-  path: market
-  name: workflow

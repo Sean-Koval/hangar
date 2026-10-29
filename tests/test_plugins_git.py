@@ -165,7 +165,8 @@ async def test_the_fetch_goes_through_the_gateways_upstream_with_its_credential(
         await plugins.prefetch(fleet, _spec("https://git.example.com/acme/harness", "main"))
 
 
-async def test_a_build_fetches_first_and_validation_waits_for_it(fleet, repo, monkeypatch):
+async def test_a_build_fetches_first_and_validation_waits_for_it(fleet, repo, monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet.catalog, "save_dir", tmp_path / "envs")  # not the shared fixtures' directory
     fleet.settings.gateway_upstreams = {"git.example.com": f"file://{repo['upstream']}"}
 
     async def auth_env(f, url):
