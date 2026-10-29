@@ -77,5 +77,5 @@ The page fires when at least 3 creates failed in an hour and they were over a fi
 These alert, but promise no rate:
 
 - **Stuck jobs.** Every minute hangar counts live jobs that look stuck. That is a runnable job queued for an hour, or a sandbox not up in 20 minutes. It is also a job still running 30 minutes past its own timeout. The log line is `event=jobs_stuck`; the gauge is `hangar_jobs_stuck`.
-- **Failing closed.** `event=fail_closed` marks a decision hangar answered itself because Tower didn't. It is never an allow. It starts counting once hangar asks Tower ([#172](https://github.com/Sean-Koval/hangar/issues/172)).
+- **Failing closed.** `event=fail_closed` marks a decision hangar answered itself because Tower didn't. It is never an allow. It counts whenever a kind in `enforce` can't get an answer ([job release and landing](tower-release-landing.md), [governed approvals](governed-approvals.md)).
 - **Restarts and disks.** GKE's own metrics: the control plane's restarts, its data disk and each node's ephemeral storage.

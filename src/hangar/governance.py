@@ -13,8 +13,11 @@ an egress request and a secret request. This module is the contract's client sid
 * `GovernanceRouter`: picks the source per kind and mode (`off`, `shadow`, `enforce`) and honours break-glass.
 * `verify_event`: the signed approval events the workspace pushes (hints only: hangar re-reads the decision).
 
-Nothing here is wired into an approval path yet: #172 (job release, landing), #173 (tool calls), #190 (events) and
-#174 (passports) build on it. Until then the mode is `off` and hangar decides as before.
+* `PassportCredential` / `PassportVerifier` (--- KAN-33, #174, spec 0015 §9 phase 2): the control plane's own
+  passport, by RFC 8693 token exchange of a token hangar mints itself, checked before hangar uses it.
+
+govrelease.py (job release, landing), governed.py (tool calls, egress and secret requests) and govevents.py (events)
+use it. With every kind `off` (the default) Tower is never asked.
 """
 
 from __future__ import annotations
@@ -335,8 +338,13 @@ class LocalDecisionPoint:
 # ====================================================================== the workspace over HTTP
 class Credential(Protocol):
     async def token(self, *, fresh: bool = False) -> str:
-        """A bearer token for the workspace: the service key now, a control-plane passport after #174."""
+        """A bearer token for the workspace: the service key (phase 1), or a control-plane passport
+        (`PassportCredential`, phase 2). Raises CredentialUnavailable when there is none to give."""
         ...
+
+
+class CredentialUnavailable(Exception):
+    """hangar couldn't get a credential for Tower (the passport exchange failed): the call fails closed (`auth`)."""
 
 
 class StaticCredential:
@@ -424,6 +432,11 @@ class HttpDecisionPoint:
         for _ in range(2):
             try:
                 token = await self.credential.token(fresh=fresh)
+            except CredentialUnavailable as e:  # --- KAN-33: no passport, no request
+                self._failed()
+                return fail_closed(kind, "auth", f"hangar has no credential for Tower: {e}"[:300],
+                                   approval_id=approval_id)
+            try:
                 r = await asyncio.wait_for(
                     self._http().request(method, self.url + path, json=json, timeout=self.timeout,
                                          headers={**(headers or {}), "authorization": f"Bearer {token}"}),
@@ -472,6 +485,211 @@ class HttpDecisionPoint:
             return fail_closed(kind, "malformed", f"an answer hangar can't read: {e}"[:300], approval_id=approval_id)
         self._ok()
         return d
+
+
+# ====================================================================== passports (--- KAN-33, #174)
+TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"  # RFC 8693
+JWT_TYPE = "urn:ietf:params:oauth:token-type:jwt"
+CONTROL_PLANE_SUB = "hangar:control-plane"  # spec 0015 §9: the subject Tower trusts for agent `hangar`
+PASSPORT_LEEWAY = 60  # seconds of clock skew, as Tower allows; also how early a cached passport is renewed
+MAX_CHAIN = 3  # Tower's MAX_CHAIN: at most three agents behind one call
+JWKS_REFETCH = 60.0  # an unknown key id refetches Tower's JWKS at most once a minute
+
+
+class PassportRefused(Exception):
+    """A passport hangar won't use or accept: why, safe to log (never the token)."""
+
+
+def _b64d(part: str) -> bytes:
+    import base64
+
+    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+
+def act_chain(claims: dict[str, Any]) -> list[str]:
+    """The agents an RFC 8693 `act` claim names, earliest first (the current actor is the outermost `act`, earlier
+    ones nested inside it, §4.1). Ids without the `agent:` prefix. Raises PassportRefused for a malformed or too
+    deep claim."""
+    out: list[str] = []
+    act = claims.get("act")
+    while act is not None:
+        if not isinstance(act, dict) or not isinstance(act.get("sub"), str) or not act["sub"].startswith("agent:"):
+            raise PassportRefused("a malformed act claim")
+        out.append(act["sub"][len("agent:"):])
+        if len(out) > MAX_CHAIN:
+            raise PassportRefused(f"an act chain longer than {MAX_CHAIN}")
+        act = act.get("act")
+    return out[::-1]
+
+
+def check_chain(claims: dict[str, Any]) -> list[str]:
+    """The passport's `chain` (earliest agent first), checked against `agent` and `act` the way Tower builds them
+    (aw/workload.py `_passport`): `agent` is the last link; `act` names every link, or all but the first when the
+    subject is that first agent itself. Raises PassportRefused."""
+    chain = claims.get("chain")
+    if not isinstance(chain, list) or not chain or not all(isinstance(a, str) and a for a in chain):
+        raise PassportRefused("no chain of agents")
+    if len(chain) > MAX_CHAIN:
+        raise PassportRefused(f"a chain of {len(chain)} agents is longer than the {MAX_CHAIN} allowed")
+    if len(set(chain)) != len(chain):
+        raise PassportRefused("an agent appears twice in the chain")
+    if claims.get("agent") != chain[-1]:
+        raise PassportRefused("the passport's agent isn't the last link of its chain")
+    want = chain[1:] if claims.get("sub") == f"agent:{chain[0]}" else chain
+    if act_chain(claims) != want:
+        raise PassportRefused("the act claim doesn't match the chain")
+    return list(chain)
+
+
+class PassportVerifier:
+    """Checks a passport Tower signed (EdDSA, its `/.well-known/jwks.json`): the key, the signature, issuer,
+    audience, expiry and not-before with `PASSPORT_LEEWAY`, and the chain of agents (`check_chain`). An unknown key
+    id refetches the JWKS at most once a minute."""
+
+    def __init__(self, issuer: str, audience: str | list[str], *, jwks_url: str | None = None,
+                 client: httpx.AsyncClient | None = None, clock: Callable[[], float] = time.time):
+        self.issuer = issuer.rstrip("/")
+        self.audiences = [audience] if isinstance(audience, str) else list(audience)
+        self.jwks_url = jwks_url or f"{self.issuer}/.well-known/jwks.json"
+        self._client, self._own = client, client is None
+        self.clock = clock
+        self._keys: dict[str, Any] = {}
+        self._fetched = float("-inf")
+
+    async def close(self) -> None:
+        if self._own and self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def _refresh(self) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        if self.clock() - self._fetched < JWKS_REFETCH:
+            return
+        self._fetched = self.clock()
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=httpx.Timeout(DECIDE_TIMEOUT, connect=CONNECT_TIMEOUT))
+        try:
+            r = await self._client.get(self.jwks_url)
+            keys = r.json().get("keys") if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError) as e:
+            raise PassportRefused(f"Tower's JWKS couldn't be read ({type(e).__name__})") from None
+        if not isinstance(keys, list):
+            raise PassportRefused(f"Tower's JWKS answered HTTP {r.status_code}")
+        found: dict[str, Any] = {}
+        for k in keys:
+            if isinstance(k, dict) and k.get("kty") == "OKP" and k.get("crv") == "Ed25519" and k.get("kid"):
+                try:
+                    found[str(k["kid"])] = Ed25519PublicKey.from_public_bytes(_b64d(str(k.get("x", ""))))
+                except ValueError:
+                    continue
+        self._keys = found
+
+    async def verify(self, token: str) -> dict[str, Any]:
+        """The passport's claims, or PassportRefused."""
+        from cryptography.exceptions import InvalidSignature
+
+        try:
+            head_b, body_b, sig_b = token.split(".")
+            header, claims = json.loads(_b64d(head_b)), json.loads(_b64d(body_b))
+            sig = _b64d(sig_b)
+        except (ValueError, json.JSONDecodeError):
+            raise PassportRefused("not a JWT") from None
+        if not isinstance(header, dict) or not isinstance(claims, dict):
+            raise PassportRefused("not a JWT")
+        if header.get("alg") != "EdDSA":
+            raise PassportRefused(f"algorithm {header.get('alg')!r}, not EdDSA")
+        kid = str(header.get("kid") or "")
+        if kid not in self._keys:
+            await self._refresh()
+        key = self._keys.get(kid)
+        if key is None:
+            raise PassportRefused("signed with a key Tower doesn't publish")
+        try:
+            key.verify(sig, f"{head_b}.{body_b}".encode())
+        except InvalidSignature:
+            raise PassportRefused("bad signature") from None
+        if str(claims.get("iss") or "").rstrip("/") != self.issuer:
+            raise PassportRefused("from another issuer")
+        aud = claims.get("aud")
+        if not any(a in self.audiences for a in (aud if isinstance(aud, list) else [aud])):
+            raise PassportRefused("for another audience")
+        now_ = self.clock()
+        exp, nbf = claims.get("exp"), claims.get("nbf", claims.get("iat"))
+        if not isinstance(exp, int | float) or exp + PASSPORT_LEEWAY < now_:
+            raise PassportRefused("expired")
+        if isinstance(nbf, int | float) and nbf - PASSPORT_LEEWAY > now_:
+            raise PassportRefused("not valid yet")
+        check_chain(claims)
+        return claims
+
+
+class PassportCredential:
+    """The control plane's passport for Tower (spec 0015 §9 phase 2): hangar mints itself a short-lived token
+    (`mint`: `sub: hangar:control-plane`, `aud` = Tower's token endpoint), exchanges it at `token_url` (RFC 8693)
+    for a 15-minute passport, checks it (`verifier`; it must name `agent`), and caches it until `PASSPORT_LEEWAY`
+    seconds before it expires. `fresh=True` (after a 401) exchanges again. Any failure is CredentialUnavailable,
+    which the decision point turns into its kind's fail-closed answer."""
+
+    def __init__(self, mint: Callable[[], str], token_url: str, *, agent: str = "hangar",
+                 verifier: PassportVerifier | None = None, client: httpx.AsyncClient | None = None,
+                 clock: Callable[[], float] = time.time):
+        self.mint, self.token_url, self.agent, self.verifier = mint, token_url, agent, verifier
+        self._client, self._own = client, client is None
+        self.clock = clock
+        self._passport: str | None = None
+        self._expires = 0.0
+        self._lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        if self._own and self._client is not None:
+            await self._client.aclose()
+            self._client = None
+        if self.verifier is not None:
+            await self.verifier.close()
+
+    async def token(self, *, fresh: bool = False) -> str:
+        async with self._lock:
+            if not fresh and self._passport and self.clock() < self._expires - PASSPORT_LEEWAY:
+                return self._passport
+            self._passport, self._expires = await self._exchange()
+            return self._passport
+
+    async def _exchange(self) -> tuple[str, float]:
+        try:
+            subject = self.mint()
+        except Exception as e:  # noqa: BLE001 - no signing key, no issuer URL
+            raise CredentialUnavailable(f"hangar couldn't mint its own token ({type(e).__name__}: {e})"[:300]) from None
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=httpx.Timeout(DECIDE_TIMEOUT, connect=CONNECT_TIMEOUT))
+        try:
+            r = await self._client.post(self.token_url, data={
+                "grant_type": TOKEN_EXCHANGE, "subject_token": subject, "subject_token_type": JWT_TYPE,
+                "requested_token_type": JWT_TYPE})
+        except httpx.HTTPError as e:
+            raise CredentialUnavailable(f"the token exchange failed ({type(e).__name__})") from None
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        if r.status_code != 200 or not isinstance(body, dict) or not isinstance(body.get("access_token"), str):
+            why = str(body.get("error") or "") if isinstance(body, dict) else ""
+            raise CredentialUnavailable(f"Tower refused the token exchange: HTTP {r.status_code}"
+                                        + (f" {why}"[:100] if why else ""))
+        passport = body["access_token"]
+        exp = self.clock() + float(body.get("expires_in") or 0)
+        if self.verifier is not None:
+            try:
+                claims = await self.verifier.verify(passport)
+            except PassportRefused as e:
+                raise CredentialUnavailable(f"Tower's passport didn't check out: {e}") from None
+            if claims.get("agent") != self.agent:
+                raise CredentialUnavailable(f"Tower's passport names agent {claims.get('agent')!r}, not {self.agent!r}")
+            exp = float(claims["exp"])
+        if exp <= self.clock():
+            raise CredentialUnavailable("Tower's passport has no lifetime")
+        log.info("governance: exchanged a passport for agent %s, valid %.0f s", self.agent, exp - self.clock())
+        return passport, exp
 
 
 # ====================================================================== waiting

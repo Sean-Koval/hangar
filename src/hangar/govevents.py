@@ -11,7 +11,8 @@ kept in the store, so a restart doesn't forget them. A rejected event is audited
 
 * `approval.created` and `approval.decided` are hints. hangar re-reads `GET /v1/decisions/{id}` with its own
   credential and acts on that answer, so a reordered event ("decided" before "created") needs nothing special, and
-  a hint for an approval nothing waits on yet is kept until something does (`watch`).
+  a hint for an approval nothing waits on yet is kept until something does (`watch`). Job releases and landings
+  waiting on Tower are followed by govrelease.Releases (KAN-33), which this receiver asks first.
 * A tool call waiting on Tower (`watch`, called when the driver's request got `wait`) that waits more than
   HANGAR_GOVERNANCE_SUSPEND_AFTER_SECONDS is denied with "Paused for approval A-9", its turn interrupted at that
   call, checkpointed, and its sandbox released (`SessionService._suspend`). When Tower allows it, the session
@@ -40,11 +41,14 @@ from fastapi.responses import JSONResponse
 from hangar import fairness
 from hangar import steer as steering
 from hangar.governance import (
+    CONTROL_PLANE_SUB,
     Decision,
     DecisionPoint,
     EventRejected,
     GovernanceEvent,
     HttpDecisionPoint,
+    PassportCredential,
+    PassportVerifier,
     parse_modes,
     verify_event,
 )
@@ -111,6 +115,18 @@ class VaultCredential:
         return self.broker.secret_text(self.name)
 
 
+def passport_credential(fleet: Any, url: str, settings: Any) -> PassportCredential:
+    """--- KAN-33 (#174, spec 0015 §9 phase 2): the control plane's passport for Tower, from hangar's own issuer."""
+    token_url = settings.governance_token_url or f"{url.rstrip('/')}/oauth/token"
+
+    def mint() -> str:
+        return fleet.cloud.mint_service(CONTROL_PLANE_SUB, token_url)[0]
+
+    # Tower signs passports for its gateway's audience today (`<origin>/mcp`); /v1/decisions taking them is Tower#14.
+    origin = url.rstrip("/")
+    return PassportCredential(mint, token_url, verifier=PassportVerifier(origin, [f"{origin}/mcp", origin]))
+
+
 class Receiver:
     def __init__(self, sessions: Any, *, tower: DecisionPoint | None = None, clock: Any = time.time):
         self.sessions = sessions
@@ -127,6 +143,7 @@ class Receiver:
         self._loop: asyncio.Task | None = None
         self._pruned = 0.0
         self.governed: Any = None  # --- KAN-79: governed.Governed: egress and secret requests waiting on Tower
+        self.releases: Any = None  # --- KAN-33: govrelease.Releases: job releases and landings waiting on Tower
 
     # ================================================================== configuration
     def enabled(self) -> bool:
@@ -144,6 +161,9 @@ class Receiver:
     def tower(self) -> DecisionPoint:
         if self._tower is None:
             url, cred = self.settings.governance_url, self.settings.governance_credential
+            if url and getattr(self.settings, "governance_auth", "key") == "passport":  # --- KAN-33 (#174)
+                self._tower = HttpDecisionPoint(url, passport_credential(self.fleet, url, self.settings))
+                return self._tower
             if not url or not cred:
                 raise Unavailable("HANGAR_GOVERNANCE_URL and HANGAR_GOVERNANCE_CREDENTIAL must both be set")
             self._tower = HttpDecisionPoint(url, VaultCredential(self.fleet.broker, cred))
@@ -221,6 +241,10 @@ class Receiver:
     async def hint(self, aid: str, by: Any = None) -> dict[str, Any]:
         """Something about approval `aid` changed (an event, or the poll): re-read it from Tower and act on that."""
         sid = self.store.kv_get(WAIT + aid)
+        if sid is None and self.releases is not None:  # --- KAN-33: a job release or a landing waits on it?
+            async with self._locks[aid]:
+                if (out := await self.releases.hint(aid, by)) is not None:
+                    return out
         if sid is None and self.governed is not None:  # --- KAN-79: an egress or secret request waits on it?
             async with self._locks[aid]:
                 if (out := await self.governed.hint(aid)) is not None:
@@ -481,6 +505,11 @@ class Receiver:
                 await self.governed.tick_requests(t)
             except Exception:  # noqa: BLE001
                 log.exception("governance: following requests failed")
+        if self.releases is not None:  # --- KAN-33: opens and follows job releases and landings
+            try:
+                await self.releases.tick(t)
+            except Exception:  # noqa: BLE001
+                log.exception("governance: following releases and landings failed")
         if t - self._pruned > 600:
             self._pruned = t
             self.seen.prune()
@@ -537,8 +566,12 @@ class Receiver:
         self._loop = None
         if self.governed is not None:  # --- KAN-79
             await self.governed.stop()
+        if self.releases is not None:  # --- KAN-33
+            await self.releases.stop()
         if isinstance(self._tower, HttpDecisionPoint):
             await self._tower.close()
+            if isinstance(self._tower.credential, PassportCredential):
+                await self._tower.credential.close()
 
     def _spawn(self, coro: Any) -> None:
         task = asyncio.ensure_future(coro)

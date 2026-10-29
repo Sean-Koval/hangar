@@ -68,7 +68,9 @@ jobs:
           fi
           echo "Scanning $range"
           # --redact: a finding's value never reaches the log. .gitleaksignore is read from the checkout.
-          gitleaks git --redact --no-banner --log-opts="$range" .
+          # --verbose prints each finding's rule, file, line, commit and fingerprint (the value stays redacted), so a
+          # false positive can go in .gitleaksignore by fingerprint.
+          gitleaks git --redact --verbose --no-banner --log-opts="$range" .
 
   image:
     if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

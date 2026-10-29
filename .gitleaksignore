@@ -81,3 +81,8 @@ aac3928dd56d6fcb716e9d8c5c11af7c5cb6c374:tests/test_turnlogin.py:generic-api-key
 
 # tests/test_vault_mounted.py: made-up credentials, the fixtures hangar's credential and redaction tests feed in
 12df926dbdd357cd41d751b6c6bd00709fd58b8c:tests/test_vault_mounted.py:generic-api-key:51
+
+# tests/test_passports.py: a parameter's type annotation (an Ed25519 key class), not a key (KAN-33). The second
+# line is this comment's first wording, which quoted that annotation and was flagged in turn.
+f7872b42346fe4fc34e1be2186e30c3abf12f215:tests/test_passports.py:generic-api-key:52
+937fa75b8f8cc34e35f57c1175d562e5ac490418:.gitleaksignore:generic-api-key:85

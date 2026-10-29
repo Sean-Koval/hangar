@@ -3,8 +3,8 @@
 The planned half of [the break-glass runbook](break-glass.md): what to do once hangar asks Tower and Tower is down or
 wrong.
 
-Everything here is planned in spec 0015 (§5–§8, §14). It lands with #172 for job release and landing, then #173
-for tool calls and requests. Check the spec and the CHANGELOG for what has shipped before you rely on a step.
+Spec 0015 (§5–§8, §14) plans it. The modes are built for every kind; `hangar governance local` isn't yet. Check the
+CHANGELOG for what has shipped before you rely on a step.
 
 ## The modes
 
@@ -47,8 +47,7 @@ Set the kind to `shadow` (hangar decides; Tower is still asked as a dry run, so 
 `off` (Tower isn't asked):
 
 ```bash
-HANGAR_GOVERNANCE_MODES='job.release=shadow,landing.approve=shadow'   # planned setting; how a change applies
-                                                                       # (live or at a restart) comes with #172
+HANGAR_GOVERNANCE_MODES='job.release=shadow,landing.approve=shadow'   # read on every decision: applies live
 ```
 
 Nothing is migrated, and receipts Tower already wrote stay (spec 0015 §14). hangar's own checks run in every mode.
