@@ -73,6 +73,12 @@ spec:
           annotations:
             summary: A live job looks stuck
             runbook_url: https://sean-koval.github.io/hangar/runbooks/stuck-job/
+        - alert: HangarDeployLag  # KAN-216: hangar sets it only while the infra is up
+          expr: max_over_time(hangar_deploy_lag_over[10m]) > 0
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: Production is too far behind main; a deploy waits for approval
+            runbook_url: https://sean-koval.github.io/hangar/runbooks/deploy/
         - alert: HangarTowerFailClosed
           expr: |
             sum(increase(hangar_governance_fail_closed_total{failure=~"unreachable|server_error|circuit_open|rate_limited"}[10m])) > 0

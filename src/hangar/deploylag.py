@@ -134,8 +134,10 @@ async def _look(gh: Any, full: str, sha: str, known_tag: tuple[str | None] | Non
     return out
 
 
-async def refresh(h: Any, force: bool = False, clock=time.time) -> dict[str, Any]:
+async def refresh(h: Any, force: bool = False, clock=None) -> dict[str, Any]:
     """Look again when the cache is older than REFRESH or production runs another commit. Never raises."""
+    power = getattr(getattr(h, "fleet", None), "power", None)
+    clock = clock or getattr(power, "clock", None) or time.time
     store, t = h.store, clock()
     run = running(store)
     old = cached(store)
