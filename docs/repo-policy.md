@@ -51,6 +51,7 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `branch_template` | The repo's job branches, e.g. `feature/{ticket_key}-{job}`. It must contain `{job}`, or the set is refused and nothing changes. Unset: `hangar/<job>` (`--branch-template`; `''` clears it). See [change sets](changesets.md#company-conventions-in-the-repo-policy). |
 | `require_ticket` | `true` refuses a job for the repo without a `ticket` (`jira:PAY-412`) (`--require-ticket`, `--no-require-ticket`). |
 | `title_template` | The title of the repo's agent PRs, e.g. `{ticket_key}: {title}` (`--title-template`; `''` clears it). Placeholders: `{job}`, `{ticket}`, `{ticket_key}`, `{title}`, `{role}`. |
+| `best_of_n` | `{sequential, escalate_at, max_n}` for best-of-N jobs. Attempt 1 runs alone first, may use `escalate_at` of the job budget, and `max_n` caps attempts per risk tier. See [sequential best-of-N](jobs/sequential-best-of-n.md). |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 

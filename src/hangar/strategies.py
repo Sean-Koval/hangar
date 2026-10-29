@@ -496,9 +496,9 @@ async def _attempt_steps(jobs: JobService, job: Job, a: Attempt) -> None:
         a.outcome, a.error = "error", "its session is gone"
         return
     async with svc.hold(s):
-        # --- KAN-231: a sequential attempt's share was fixed when its phase started
-        s.budget = a.budget if a.budget is not None else jobbudget.attempt_share(job)  # --- interactions: an attempt is an agent turn of the job; its budget
-        # applies (--- frontdoor: and its share of the job budget)
+        # --- interactions: an attempt is an agent turn of the job; its budget applies (--- frontdoor: and its share
+        # of the job budget; --- KAN-231: a sequential attempt's share was fixed when its phase started)
+        s.budget = a.budget if a.budget is not None else jobbudget.attempt_share(job)
         if a.run_id is None:
             if job.cancel_requested:
                 a.outcome = "cancelled"

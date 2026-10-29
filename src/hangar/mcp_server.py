@@ -866,7 +866,8 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
                         context=[ContextItem.model_validate(c) for c in context or []],
                         timeout_minutes=timeout_minutes, callback_url=callback_url, output_schema=output_schema,
                         budget=Budget.model_validate(budget) if budget else None, strategy=strategy, n=n,
-                        judge=judge, sequential=sequential, verify_in_loop=verify_in_loop, autofix=autofix,  # --- overnight/autofix
+                        judge=judge, sequential=sequential,  # --- KAN-231
+                        verify_in_loop=verify_in_loop, autofix=autofix,  # --- overnight/autofix
                         harness_lock=harness_lock,  # --- harness locks (#134)
                         changeset=changeset, ticket=ticket)  # --- change sets (docs/changesets.md)
         who = current_actor.get()

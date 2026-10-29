@@ -326,7 +326,6 @@ def apply_ticket(svc: JobService, req: SubmitJob, text: str | None, ticket: str)
     `acceptance.md` with the criteria and the suggested check, and `verify` when `verify_allowed` matches. Returns
     parse_ticket's answer with `verify_used`."""
     from hangar.models import ContextItem
-
     from hangar.strategies import RISK_LABEL  # --- KAN-231
 
     got = parse_ticket(text)
