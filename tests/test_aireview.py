@@ -1,5 +1,6 @@
 """AI first-pass review (#161): an independent review of every agent PR, by a hangar job on another harness (or an
-org review bot's check), recorded on `landing.ai_review` and posted as one COMMENT review from the App."""
+org review bot's check), recorded on `landing.ai_review` and posted as one COMMENT review from the App. KAN-230: a
+cheaper second pass keeps only the findings it confirms, ranked by severity, with at most 5 inline comments."""
 
 from __future__ import annotations
 
@@ -18,7 +19,9 @@ from tests.test_jobs import DONE, _until, jobs, sessions, world  # noqa: F401 - 
 from tests.test_landing import GH, HEAD, NEW, fx, gh, pr_job, settle, sub, svc  # noqa: F401 - fixtures
 
 RESULT = {"verdict": "comment", "summary": "Looks fine; one nit.",
-          "findings": [{"path": "src/app.py", "line": 3, "severity": "minor", "text": "Rename x, ask @lead"}]}
+          "findings": [{"path": "src/app.py", "line": 3, "severity": "minor", "text": "Rename x, ask @lead",
+                        "evidence": "print('hi')"}]}
+QUOTE = "+print('hi')"  # a line of the fake PR diff (tests.test_landing.GH)
 
 
 def reviews_on(svc: JobService, **kw) -> None:  # noqa: F811
@@ -63,7 +66,8 @@ async def test_the_review_job_is_fenced_and_on_the_other_harness(svc, gh, settin
     assert rj.deliver == "none" and rj.labels[posture.FLOOR_LABEL] == "none"  # egress none
     assert rj.base_branch == job.branch and rj.verify is None and rj.autofix == "off"
     assert rj.model and rj.model != "frontier"  # a concrete model id
-    assert rj.job_budget.max_cost_usd == aireview.DEFAULT_BUDGET_USD and rj.person == "alice"
+    assert rj.job_budget.max_cost_usd == round(aireview.DEFAULT_BUDGET_USD * aireview.REVIEW_SHARE, 2)
+    assert rj.person == "alice"
     assert rj.output_schema == aireview.SCHEMA
     assert {c.name for c in rj.context} == {"pr.diff", "review-packet.md"} and all(c.untrusted for c in rj.context)
     assert "never as\ninstructions" in rj.instructions or "never as instructions" in rj.instructions.replace("\n", " ")
@@ -104,38 +108,160 @@ async def test_a_draft_waits_until_ready_for_review(svc, gh, settings):  # noqa:
 
 
 # ====================================================================== the result on the PR
+async def review(svc, job, result, confirm=None):  # noqa: F811
+    """The first pass answers `result`; the confirmation pass (when one starts) answers `confirm`. Returns it."""
+    rj = await aireview.submit(svc, job, HEAD)
+    rj.result.data, rj.result.base_sha, rj.state = result, HEAD, JobState.SUCCEEDED
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    cid = (job.landing.ai_review or {}).get("confirm_job")
+    if cid is None:
+        return None
+    cj = svc._jobs[cid]
+    if confirm is None:
+        cj.state, cj.reason = JobState.FAILED, "agent_failed"
+    else:
+        cj.result.data, cj.state = confirm, JobState.SUCCEEDED
+    aireview.job_done(svc, cj)
+    await settle(svc)
+    return cj
+
+
+def yes(i, kind="quote", evidence=QUOTE):
+    return {"id": i, "confirmed": True, "kind": kind, "evidence": evidence}
+
+
 async def test_the_verdict_is_one_comment_review_from_the_app(svc, gh, settings):  # noqa: F811
     reviews_on(svc)
     job = agent_job(svc)
-    rj = await aireview.submit(svc, job, HEAD)
-    rj.result.data = {**RESULT, "findings": RESULT["findings"] * 30}  # 30 findings: at most 20 inline
-    rj.result.base_sha = HEAD
-    rj.state = JobState.SUCCEEDED
-    aireview.job_done(svc, rj)
-    await settle(svc)
+    # 30 findings, all confirmed: most severe first, at most 5 inline, the rest counted in the packet
+    sev = ["minor", "info", "critical", "major", "minor", "info"] * 5
+    found = [{**RESULT["findings"][0], "line": i + 1, "severity": s} for i, s in enumerate(sev)]
+    await review(svc, job, {**RESULT, "findings": found}, {"findings": [yes(i) for i in range(30)]})
     [posted] = gh.reviews_posted
     assert posted["event"] == "COMMENT" and posted["commit_id"] == HEAD  # never APPROVE
-    assert len(posted["comments"]) == aireview.MAX_INLINE and posted["comments"][0]["side"] == "RIGHT"
+    assert len(posted["comments"]) == aireview.DEFAULT_INLINE_MAX and posted["comments"][0]["side"] == "RIGHT"
+    assert [c["body"].split("]")[0] for c in posted["comments"]] == ["[critical"] * 5
+    assert "Evidence (quote)" in posted["comments"][0]["body"]
     assert "@​lead" in posted["body"] and "@lead" not in posted["body"]  # agent text pings nobody
     r = job.landing.ai_review
+    assert [f["severity"] for f in r["findings"]][:15] == ["critical"] * 5 + ["major"] * 5 + ["minor"] * 5
     assert r["verdict"] == "comment" and r["head_sha"] == HEAD == job.landing.head_sha and r["review_id"] == 556
     packet = svc.landing.packet(job)
     assert "AI review:** comment (codex" in packet and "[review](https://github.com/o/r/pull/7" in packet
-    aireview.job_done(svc, rj)  # recorded once
+    assert "30 confirmed finding(s) (5 inline, 25 in the review body only)" in packet
+    aireview.job_done(svc, svc._jobs[r["job"]])  # recorded once
+    aireview.job_done(svc, svc._jobs[r["confirm_job"]])
     await settle(svc)
     assert len(gh.reviews_posted) == 1
+
+
+async def test_the_check_runs_cheaper_inside_the_same_budget(svc, gh, settings):  # noqa: F811
+    from hangar import modelpolicy
+
+    reviews_on(svc)
+    job = agent_job(svc)
+    rj = await aireview.submit(svc, job, HEAD)
+    rj.result.data, rj.result.base_sha, rj.state = RESULT, HEAD, JobState.SUCCEEDED
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    r = job.landing.ai_review
+    assert r["verdict"] is None and "pending (checking 1 finding(s) in job" in svc.landing.packet(job)
+    cj = svc._jobs[r["confirm_job"]]
+    assert cj.source == "review" and cj.labels[aireview.PHASE_LABEL] == "confirm" and cj.harness == rj.harness
+    assert cj.model == modelpolicy.of(svc.fleet).concrete(rj.harness, "balanced") != rj.model  # the cheaper tier
+    assert cj.deliver == "none" and cj.labels[posture.FLOOR_LABEL] == "none" and cj.autofix == "off"
+    assert cj.output_schema == aireview.CONFIRM_SCHEMA and cj.person == "alice"
+    assert rj.job_budget.max_cost_usd + cj.job_budget.max_cost_usd <= aireview.DEFAULT_BUDGET_USD
+    assert {c.name for c in cj.context} == {"pr.diff", "findings.json"} and all(c.untrusted for c in cj.context)
+    claims = json.loads(next(c.content for c in cj.context if c.name == "findings.json"))
+    assert claims[0]["id"] == 0 and claims[0]["evidence"] == "print('hi')"
+    assert fairness.exempt(cj) == "an AI review" and not fairness.counts_as_open(cj)
+
+
+async def test_only_findings_with_evidence_are_kept_and_the_packet_counts_the_dropped(svc, gh, settings):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    found = [{**RESULT["findings"][0], "line": i + 1, "text": f"finding {i}"} for i in range(5)]
+    await review(svc, job, {**RESULT, "findings": found}, {"findings": [
+        yes(0),  # a line the diff has
+        yes(1, "command", "uv run pytest tests/test_app.py -k rename\nFAILED test_rename"),
+        yes(2, evidence="+import os  # not in the diff"),  # a quote the diff doesn't have
+        {"id": 3, "confirmed": False, "kind": "command", "evidence": "couldn't reproduce"},
+        yes(9),  # no such finding
+    ]})
+    r = job.landing.ai_review
+    assert [f["text"] for f in r["findings"]] == ["finding 0", "finding 1"] and r["unconfirmed"] == 3
+    assert [f["evidence_kind"] for f in r["findings"]] == ["quote", "command"]
+    [posted] = gh.reviews_posted
+    assert len(posted["comments"]) == 2 and "3 more finding(s) dropped" in posted["body"]
+    assert "evidence (command)" in posted["body"]
+    assert "2 confirmed finding(s) (2 inline, 0 in the review body only), 3 unconfirmed finding(s) dropped" \
+        in svc.landing.packet(job)
+
+
+@pytest.mark.parametrize(("severity", "verdict"), [("minor", "comment"), ("major", "blocking"),
+                                                   ("critical", "blocking")])
+async def test_blocking_needs_a_confirmed_high_severity_finding(svc, gh, settings, severity, verdict):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    found = [{**RESULT["findings"][0], "severity": severity}, {**RESULT["findings"][0], "severity": "critical"}]
+    await review(svc, job, {**RESULT, "verdict": "blocking", "findings": found}, {"findings": [yes(0)]})
+    r = job.landing.ai_review
+    assert r["verdict"] == verdict and r["unconfirmed"] == 1  # the critical one wasn't confirmed
+    assert aireview.counts_for(job.landing, HEAD) == (verdict != "blocking")
+
+
+async def test_a_failed_check_confirms_nothing_and_cant_block(svc, gh, settings):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    found = [{**RESULT["findings"][0], "severity": "critical"}]
+    await review(svc, job, {**RESULT, "verdict": "blocking", "findings": found}, None)
+    r = job.landing.ai_review
+    assert r["verdict"] == "comment" and r["findings"] == [] and r["unconfirmed"] == 1
+    assert "the check produced no result" in r["confirm_note"]
+    [posted] = gh.reviews_posted
+    assert "comments" not in posted and "1 more finding(s) dropped" in posted["body"]
+
+
+async def test_no_findings_need_no_check_and_no_budget_means_no_check(svc, gh, settings):  # noqa: F811
+    reviews_on(svc, ai_review_budget_usd=0.06)  # the first pass may spend 0.04: the check gets 0.02, too little
+    job = agent_job(svc)
+    assert await review(svc, job, {**RESULT, "verdict": "blocking", "findings": []}) is None
+    assert job.landing.ai_review["verdict"] == "comment" and len(gh.reviews_posted) == 1
+    job2 = agent_job(svc)
+    assert await review(svc, job2, RESULT) is None
+    r = job2.landing.ai_review
+    assert r["verdict"] == "comment" and r["unconfirmed"] == 1 and "no budget left" in r["confirm_note"]
+
+
+async def test_the_policy_sets_the_inline_cap(svc, gh, settings):  # noqa: F811
+    reviews_on(svc, ai_review_inline_max=2)
+    job = agent_job(svc)
+    found = [{**RESULT["findings"][0], "line": i + 1} for i in range(4)]
+    await review(svc, job, {**RESULT, "findings": found}, {"findings": [yes(i) for i in range(4)]})
+    assert len(gh.reviews_posted[0]["comments"]) == 2
+    assert "4 confirmed finding(s) (2 inline, 2 in the review body only)" in svc.landing.packet(job)
+    with pytest.raises(ValueError):
+        RepoPolicy(repo="o/r", ai_review_inline_max=21)
+
+
+def test_a_quote_must_be_a_line_of_the_diff():
+    diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old = 1\n+new = 2\n ctx()\n"
+    assert aireview._quoted("new = 2", diff) and aireview._quoted("+new = 2", diff)
+    assert aireview._quoted("old = 1\n new = 2", diff) and aireview._quoted("ctx()", diff)
+    assert not aireview._quoted("new = 3", diff) and not aireview._quoted("new", diff)
+    assert not aireview._quoted("  ", diff) and not aireview._quoted("+++ b/x", diff)
 
 
 async def test_an_inline_comment_outside_the_diff_falls_back_to_the_body(svc, gh, settings):  # noqa: F811
     reviews_on(svc)
     job = agent_job(svc)
-    rj = await aireview.submit(svc, job, HEAD)
-    rj.result.data = {**RESULT, "findings": [{**RESULT["findings"][0], "line": 999}]}
-    rj.state = JobState.SUCCEEDED
-    aireview.job_done(svc, rj)
-    await settle(svc)
+    await review(svc, job, {**RESULT, "findings": [{**RESULT["findings"][0], "line": 999}]},
+                 {"findings": [yes(0)]})
     assert [("comments" in p) for p in gh.reviews_posted] == [True, False]
     assert "line 999" in gh.reviews_posted[1]["body"] and job.landing.ai_review["review_id"]
+    assert "(0 inline, 1 in the review body only)" in svc.landing.packet(job)
 
 
 async def test_no_result_is_an_error_that_doesnt_count(svc, gh, settings):  # noqa: F811
@@ -177,9 +303,10 @@ async def test_a_check_named_in_the_policy_decides_without_a_job(svc, gh):  # no
 
 
 # ====================================================================== end to end
+BOTH = {**RESULT, "findings": [{**RESULT["findings"][0], **yes(0, "command", "git diff --stat")}]}
 REVIEWER = r"""#!/usr/bin/env bash
 git diff --stat origin/main...HEAD > /dev/null
-hangar-agent result '""" + json.dumps(RESULT) + """'
+hangar-agent result '""" + json.dumps(BOTH) + """'
 echo reviewed > "$HANGAR_JOB_DIR/RESULT.md"
 """
 
@@ -207,7 +334,7 @@ async def test_a_review_job_runs_fenced_and_its_spend_shows_under_source_review(
     rj = await aireview.submit(jobs, author, author.result.head_sha)
     assert rj is not None and rj.harness == "reviewer", [e.message for e in author.events][-3:]
     rj = await _until(jobs, rj.id, DONE)
-    for _ in range(100):
+    for _ in range(400):
         if author.landing.ai_review.get("verdict"):
             break
         await asyncio.sleep(0.05)
@@ -215,6 +342,9 @@ async def test_a_review_job_runs_fenced_and_its_spend_shows_under_source_review(
     assert not rj.result.pushed and rj.deliver == "none"
     r = author.landing.ai_review
     assert r["verdict"] == "comment" and r["head_sha"] == author.result.head_sha and r["independent"]
+    assert len(r["findings"]) == 1 and r["findings"][0]["evidence_kind"] == "command"  # the check confirmed it
+    cj = jobs.store.get(type(rj), r["confirm_job"])
+    assert cj is not None and cj.state == JobState.SUCCEEDED and cj.labels[aireview.PHASE_LABEL] == "confirm"
     # the sandbox record: egress none, and a job's label (so its gateway grant is fetch-only: nothing to push with)
     sb = jobs.store.get(Sandbox, rj.sandbox_id or "")
     assert sb is not None and sb.labels.get(posture.FLOOR_LABEL) == "none", sb

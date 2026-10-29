@@ -49,6 +49,7 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "max_open_agent_prs",  # --- review capacity (#159)
           "self_approval",  # --- self-approval (#160)
           "ai_review", "ai_review_harness", "ai_review_model", "ai_review_budget_usd",  # --- AI review (#161)
+          "ai_review_inline_max",  # --- KAN-230
           "verify_allowed",  # --- #156
           "shadow",  # --- #183
           "overnight",  # --- #186: its intake jobs run in the overnight lane
@@ -164,6 +165,8 @@ class RepoPolicy(BaseModel):
     ai_review_harness: str | None = None
     ai_review_model: str | None = Field(None, max_length=200)
     ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
+    # --- KAN-230: the most inline comments one review posts, most severe confirmed findings first (default 5)
+    ai_review_inline_max: int | None = Field(None, ge=0, le=20)
     # --- #156: globs a ticket's own verify command must match to become its job's `verify` (`make test*`,
     # `pytest tests/*`); otherwise the agent gets it only as a suggestion (intake.apply_ticket)
     verify_allowed: list[str] | None = Field(None, max_length=50)
@@ -418,6 +421,7 @@ class PolicyUpdate(BaseModel):
     ai_review_harness: str | None = None
     ai_review_model: str | None = Field(None, max_length=200)
     ai_review_budget_usd: float | None = Field(None, gt=0, le=100)
+    ai_review_inline_max: int | None = Field(None, ge=0, le=20)  # --- KAN-230
     verify_allowed: list[str] | None = None  # --- #156
     shadow: ShadowPolicy | None = None  # --- #183
     overnight: bool | None = None  # --- #186
