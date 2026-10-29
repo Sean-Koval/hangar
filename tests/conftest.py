@@ -61,7 +61,18 @@ def _uid_split() -> str | None:
     return None
 
 
-CAPABILITIES = {"docker": _docker, "kvm": _kvm, "uid_split": _uid_split}
+def _quiet_cpu() -> str | None:
+    """--- KAN-197: a latency bench times the machine as well as the code. Under xdist the workers share the CPUs
+    (4 on 2 vCPU in a sandbox), so its numbers would measure the load, not hangar."""
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return "an xdist worker shares the CPUs with the others; ci.yml's bench job runs this alone"
+    return None
+
+
+CAPABILITIES = {"docker": _docker, "kvm": _kvm, "uid_split": _uid_split, "quiet_cpu": _quiet_cpu}
+# Missing by design in a parallel run, so HANGAR_REQUIRE_CAPS skips these instead of failing them: a CI job of their
+# own runs them without xdist, where they are present and so can't skip.
+SERIAL = {"quiet_cpu"}
 _missing: dict[str, str | None] = {}
 
 
@@ -90,7 +101,7 @@ def pytest_runtest_setup(item):
     for mark in item.iter_markers("needs"):
         for capability in mark.args:
             if why := missing(capability):
-                if os.environ.get("HANGAR_REQUIRE_CAPS") == "1":
+                if os.environ.get("HANGAR_REQUIRE_CAPS") == "1" and capability not in SERIAL:
                     pytest.fail(f"capability {capability} is required here (HANGAR_REQUIRE_CAPS=1): {why}",
                                 pytrace=False)
                 pytest.skip(f"capability: {capability}: {why}")

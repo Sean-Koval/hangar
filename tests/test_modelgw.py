@@ -11,6 +11,7 @@ The proxy tests use a mock upstream; the latency bench and the real Claude Code 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import json
 import os
@@ -234,6 +235,69 @@ async def test_only_a_live_grant_for_that_provider_gets_through(gw, fleet, store
     assert gw.grants(sb.id) == []
 
 
+# --- KAN-197: a call that ends early is still on the tape, and settle() can't hang
+@pytest.mark.parametrize("how", ["cancelled", "disconnected"])
+async def test_a_call_cut_off_mid_stream_is_recorded_before_settle_returns(gw, fleet, store, how):
+    _upstream(fleet)
+    sb, s, turn = _session(store)
+    token = gw.mint(sb, "anthropic", "anthropic-key")
+    body = json.dumps(_conversation(1)).encode()
+    first_chunk = asyncio.Event()
+    asked = False
+
+    async def receive():
+        nonlocal asked
+        if not asked:
+            asked = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.Event().wait()  # the client never says it left
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk.set()
+            if how == "disconnected":
+                raise OSError("the client went away")
+            await asyncio.Event().wait()  # the client stops reading; the relay blocks here until cancelled
+
+    path = "/model/anthropic/v1/messages"
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1",
+             "method": "POST", "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+             "root_path": "", "client": ("127.0.0.1", 40000), "server": ("gw.test", 80),
+             "headers": [(b"host", b"gw.test"), (b"x-api-key", token.encode()),
+                         (b"anthropic-version", b"2023-06-01"), (b"content-type", b"application/json")]}
+    call = asyncio.create_task(fleet.gateway.asgi_app()(scope, receive, send))
+    await asyncio.wait_for(first_chunk.wait(), 5)
+    if how == "cancelled":
+        call.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await call
+    await gw.settle(timeout=5)
+    tape = await gw.turn_ended(s, turn)
+    assert tape is not None, "the cut-off call never reached the tape"
+    [entry] = [json.loads(p.read_text()) for p in sorted(tape.glob("0*.json"))]
+    assert entry["resp"]["truncated"] is True and modelgw.validate(tape)["entries"] == 1
+
+
+async def test_settle_gives_up_with_a_message_instead_of_hanging(gw):
+    stuck = asyncio.Event()
+    gw._spawn(stuck.wait())  # a tape write that never finishes
+    t = time.monotonic()
+    with pytest.raises(modelgw.ModelGatewayError, match=r"1 tape write still pending after 0.2 s"):
+        await gw.settle(timeout=0.2)
+    assert time.monotonic() - t < 2
+    stuck.set()
+    await gw.settle(timeout=5)
+    assert not gw._pending
+
+
+async def test_settle_does_not_spin_on_a_finished_write_it_was_never_told_about(gw):
+    done = asyncio.ensure_future(asyncio.sleep(0))
+    await done
+    gw._pending.add(done)  # finished, but its done callback never took it out of the set
+    await asyncio.wait_for(gw.settle(timeout=5), 2)
+    assert not gw._pending
+
+
 async def test_an_upstream_failure_reads_like_a_provider_5xx(gw, fleet, store):
     def boom(request):
         raise httpx.ConnectError("down")
@@ -343,6 +407,22 @@ async def live(gw, fleet, settings):
     srv.shutdown()
 
 
+async def test_calls_through_a_real_listener_all_reach_the_tape(live, gw, fleet, store):
+    """The bench's path without its timing, so it runs in every parallel shard too (KAN-197)."""
+    sb, s, turn = _session(store)
+    token = gw.mint(sb, "anthropic", "anthropic-key")
+    body = json.dumps(_conversation(4)).encode()
+    headers = {"anthropic-version": "2023-06-01", "content-type": "application/json", "x-api-key": token}
+    async with httpx.AsyncClient(timeout=30) as c:
+        for _ in range(5):
+            r = await c.post(live["gw"] + "/model/anthropic/v1/messages", content=body, headers=headers)
+            assert r.status_code == 200
+    await gw.settle()
+    tape = await gw.turn_ended(s, turn)
+    assert modelgw.validate(tape)["entries"] == 5
+
+
+@pytest.mark.needs("quiet_cpu")  # KAN-197: a p50 taken beside other xdist workers times the load
 async def test_bench_the_gateway_adds_under_50ms_p50(live, gw, fleet, store):
     sb, s, turn = _session(store)
     token = gw.mint(sb, "anthropic", "anthropic-key")

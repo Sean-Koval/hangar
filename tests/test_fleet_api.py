@@ -303,6 +303,7 @@ def test_text_is_redacted(client):
     assert "sekrit" not in a["work"] and "sekrit" not in a["now"]
 
 
+@pytest.mark.needs("quiet_cpu")  # a timing budget: run alone (ci.yml bench), never on a loaded xdist worker
 def test_two_hundred_sandboxes_read_in_under_fifty_ms(client):
     """The list path is one in-memory pass: p95 under 50 ms for 200 sandboxes, each with a job, a session and a
     live turn (the budget the Decision deck's 2 s refresh and the stream's coalescing assume)."""
