@@ -174,6 +174,7 @@ async def status(fleet: Any, sessions: Any = None, jobs: Any = None, sections: s
         ov = fleet.power.overview()
         if want("power"):
             out["power"], out["last_deploy"] = ov["power"], ov["last_deploy"]
+            out["deploy_lag"] = ov.get("deploy_lag")  # --- KAN-216
         if want("loops"):
             out["loops"] = ov["loops"]
     if want("harnesses"):
