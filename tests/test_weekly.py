@@ -143,6 +143,81 @@ def test_active_delegators_have_three_merged_prs(fixture):
     assert d["value"] == 1 and d["people"] == ["ana"] and d["of"] == 2
 
 
+def _ev(kind: str, login: str, uid: int | None = None, **kw) -> dict:
+    return {"kind": kind, "login": login, "id": uid, "bot": False, "hangar": False, "at": at(14), **kw}
+
+
+def _activity(store: Store, n: int, events: list[dict], author: dict | None = None,
+              committers: list[dict] | None = None) -> None:
+    j = store.list_where(Job, **{"result.pr_number": n})[0]
+    j.landing.review_activity = {"at": at(18), "author": author or {"login": "sean", "id": 1},
+                                 "committers": committers or [], "events": events}
+    store.put(j)
+
+
+def test_reviewer_attention_counts_human_reviews_and_review_comments_per_merged_pr(fixture):
+    """KAN-70: PR 1 was opened as its delegator (sean), who reviewed it with carol; the agent committed as its own
+    account (acme-agent) and replied, and hangar's AI review commented: neither counts. PR 2 was reviewed by bots
+    only. PR 3 isn't read yet, so it is left out of the rate and said so."""
+    from hangar import people
+
+    sean, agent = {"login": "sean", "id": 1}, {"login": "acme-agent", "id": 50}
+    _activity(fixture.store, 1, [_ev("review", "sean", 1), _ev("review_comment", "Sean", 1),
+                                 _ev("review", "carol", 3), _ev("review_comment", "acme-agent", 50),
+                                 _ev("review", "ops", 4, hangar=True), _ev("issue_comment", "erin", 5)],
+              author=sean, committers=[sean, agent])
+    _activity(fixture.store, 2, [_ev("review", "dependabot[bot]", 7, bot=True),
+                                 _ev("review_comment", "coderabbitai[bot]", 8, bot=True)])
+    ra = _metrics(fixture)["reviewer_attention"]
+    assert (ra["events"], ra["reviews"], ra["review_comments"]) == (3, 2, 1)
+    assert (ra["merged"], ra["measured"], ra["unreviewed"], ra["reviewers"]) == (3, 2, 1, 2)
+    assert ra["events_per_merged_pr"] == 1.5 and (ra["p50"], ra["p90"]) == (0.0, 3.0)
+    assert ra["active_minutes"] is None and ra["active_minutes_note"].startswith("unavailable")
+    assert "note" in ra
+    # PR 3: dana pushed a fix to the branch from her own account, linked to a hangar person: a person, not the agent
+    people.add(fixture.store, "dana")
+    people.link(fixture.store, "dana", "github", "60")
+    _activity(fixture.store, 3, [_ev("review_comment", "dana", 60)], committers=[{"login": "dana", "id": 60}])
+    ra = _metrics(fixture)["reviewer_attention"]
+    assert ra["events"] == 4 and ra["measured"] == 3 and ra["unreviewed"] == 1 and "note" not in ra
+    assert ra["events_per_merged_pr"] == round(4 / 3, 4) and ra["reviewers"] == 3
+    assert _metrics(fixture, person="bo")["reviewer_attention"]["merged"] == 0
+
+
+def test_the_agents_account_is_its_commit_identity_not_the_prs_author(tmp_path):
+    """KAN-70: whichever account opened the PR counts as a reviewer; one the agent committed as, and nobody linked
+    to a hangar person, doesn't (by GitHub id: a renamed login is the same account)."""
+    j = Job(title="t", instructions="x", environment="py")
+    j.landing.review_activity = {"author": {"login": "sean", "id": 1}, "committers": [
+        {"login": "sean", "id": 1}, {"login": "acme-agent", "id": 50}, {"login": None, "id": None}], "events": [
+        _ev("review", "sean", 1), _ev("review_comment", "acme-agent-renamed", 50),
+        _ev("review", "x[bot]", 9, bot=True)]}
+    store = Store(tmp_path / "db")
+    assert [e["login"] for e in weekly.attention(j, store)] == ["sean"]
+    assert weekly.agent_accounts(store, j.landing.review_activity) == {"id:50"}
+    j.landing.review_activity = None
+    assert weekly.attention(j, store) is None
+
+
+def test_reviewer_attention_in_a_week_with_no_merged_agent_prs(fixture):
+    ra = weekly.weekly(fixture, "2026-W30")["metrics"]["reviewer_attention"]
+    assert ra["events_per_merged_pr"] is None and (ra["merged"], ra["measured"], ra["events"]) == (0, 0, 0)
+    assert ra["p50"] is None and ra["active_minutes"] is None and "note" not in ra
+
+
+def test_the_weekly_cli_prints_reviewer_attention(fixture, monkeypatch):
+    from typer.testing import CliRunner
+
+    from hangar import cli
+
+    report = weekly.weekly(fixture, WEEK)
+    monkeypatch.setattr(cli, "_call", lambda *a, **kw: json.loads(json.dumps(report)))
+    out = CliRunner().invoke(cli.app, ["metrics", "weekly"])
+    assert out.exit_code == 0, out.output
+    assert "review attention - review events per merged PR (0 over 0/3 merged PRs read" in out.output
+    assert "review minutes   - (unavailable:" in out.output
+
+
 def test_per_person_and_per_repo(fixture):
     bo = _metrics(fixture, person="bo")
     assert bo["abandon_rate"]["abandoned"] == 2 and bo["yield"]["value"] == 0.0 and bo["yield"]["terminal"] == 3
@@ -240,10 +315,10 @@ async def test_the_revert_pass_finds_a_revert_of_an_agent_prs_squash_sha(fleet, 
     t = weekly.now()
     iso = datetime.fromtimestamp(t - 3600).astimezone().isoformat()
     squash = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
 
     def handler(r: httpx.Request) -> httpx.Response:
-        calls.append(r.url.path)
+        calls.append((r.method, r.url.path))
         if r.url.path == "/repos/o/r/pulls":
             return httpx.Response(200, json=[
                 {"number": 7, "merged_at": iso, "updated_at": iso, "merge_commit_sha": squash,
@@ -274,7 +349,60 @@ async def test_the_revert_pass_finds_a_revert_of_an_agent_prs_squash_sha(fleet, 
     cache = svc.store.kv_get_json(weekly.KV_MERGED + "o/r")
     assert sorted(p["number"] for p in cache["prs"]) == [7, 12]
     assert (await weekly.nightly(svc))["reverted"] == 0  # once
-    assert all(not c.startswith("/repos/o/r/pulls/") for c in calls)  # read-only listings
+    assert {m for m, _ in calls} == {"GET"}  # read-only
+
+
+async def test_the_nightly_pass_reads_a_merged_agent_prs_reviews_once(fleet, settings, broker):
+    """KAN-70: the PR's author, its commits' authors, reviews and review comments, raw, from the PR itself (not the
+    nightly merged list, which may not hold it); a bot, the agent's account and hangar's AI review don't count, the
+    delegator who opened the PR does."""
+    t = weekly.now()
+    iso = datetime.fromtimestamp(t - 3600).astimezone().isoformat()
+    calls: list[str] = []
+    sean, agent = {"login": "Sean-Koval", "id": 1, "type": "User"}, {"login": "acme-agent", "id": 50, "type": "User"}
+
+    def handler(r: httpx.Request) -> httpx.Response:
+        calls.append(r.url.path)
+        if r.url.path == "/repos/o/r/pulls":
+            return httpx.Response(200, json=[])  # PR 7 isn't in the merged list: it is read the same way
+        if r.url.path == "/repos/o/r/pulls/7":
+            return httpx.Response(200, json={"number": 7, "user": sean})
+        if r.url.path == "/repos/o/r/pulls/7/commits":
+            return httpx.Response(200, json=[{"sha": "a" * 40, "author": agent}, {"sha": "b" * 40, "author": None},
+                                             {"sha": "c" * 40, "author": sean}])
+        if r.url.path == "/repos/o/r/pulls/7/reviews":
+            return httpx.Response(200, json=[
+                {"id": 1, "state": "COMMENTED", "user": {"login": "ops", "id": 4}, "submitted_at": iso, "body": "AI"},
+                {"id": 2, "state": "CHANGES_REQUESTED", "user": sean, "submitted_at": iso},
+                {"id": 3, "state": "APPROVED", "user": {"login": "lint[bot]", "type": "Bot"}, "submitted_at": iso},
+                {"id": 4, "state": "PENDING", "user": {"login": "dave", "id": 6}}])
+        if r.url.path == "/repos/o/r/pulls/7/comments":
+            return httpx.Response(200, json=[
+                {"id": 10, "pull_request_review_id": 1, "user": {"login": "ops", "id": 4}, "created_at": iso},
+                {"id": 11, "pull_request_review_id": 2, "user": sean, "created_at": iso},
+                {"id": 12, "pull_request_review_id": 5, "user": agent, "created_at": iso}])
+        if r.url.path == "/repos/o/r/commits":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={})
+
+    broker.put("gh", "git", CredentialKind.GIT_TOKEN, "ghp_control")
+    settings.github_token_credential, settings.github_repos = "gh", {"o/r": "jobenv"}
+    svc = JobService(fleet, None, transport=httpx.MockTransport(handler))  # noqa: F811
+    job = pr_job(svc)
+    job.landing.pr_state, job.landing.merged_at = "merged", t - 7200
+    job.landing.ai_review = {"verdict": "comment", "review_id": 1}
+    svc.store.put(job)
+    await weekly.nightly(svc)
+    ra = job.landing.review_activity
+    assert ra["author"] == {"login": "Sean-Koval", "id": 1}
+    assert ra["committers"] == [{"login": "acme-agent", "id": 50}, {"login": "Sean-Koval", "id": 1}]
+    assert len(ra["events"]) == 6  # the pending review is nobody's attention yet
+    got = weekly.attention(job, svc.store)
+    assert [(e["kind"], e["login"]) for e in got] == [("review", "Sean-Koval"), ("review_comment", "Sean-Koval")]
+    assert svc.store.get(Job, job.id).landing.review_activity == ra
+    n = len(calls)
+    await weekly.nightly(svc)
+    assert not any(c.startswith("/repos/o/r/pulls/7") for c in calls[n:])  # once
 
 
 # ====================================================================== the standup line
