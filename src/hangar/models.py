@@ -828,6 +828,9 @@ class SessionTurn(BaseModel):
     # --- KAN-77: calls Tower allowed while the session was suspended for them, each allowed once by the driver
     # ({tool, args_hash, receipt, approval}; spec 0015 §5)
     preclear: list[dict[str, str]] = Field(default_factory=list)
+    # --- KAN-78: the turn ran with hangar's managed Tower hook (govhook.py): {runtime, source, path, digest, matcher,
+    # url, wait_seconds, timeout_seconds, fail, policy (the approval policy asked for; the driver ran deny-risky)}
+    governance_hook: dict[str, Any] | None = None
 
 
 class Checkpoint(BaseModel):

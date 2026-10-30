@@ -425,3 +425,59 @@ def test_claude_seed_marketplace_cant_be_updated_or_removed(tmp_path, monkeypatc
         said = out.stdout + out.stderr
         assert out.returncode != 0 and "seed" in said and str(seed) in said, out
     assert sorted((str(f), f.stat().st_mtime_ns) for f in seed.rglob("*")) == before
+
+
+# ====================================================================== KAN-78: the managed Tower hook
+@pytest.mark.skipif(not CLAUDE, reason="set HANGAR_TEST_CLAUDE to the real claude CLI")
+@pytest.mark.parametrize("tower,agent", [("deny", "tamper"), ("deny", "delete"), ("allow", "tamper"),
+                                         ("down", "delete")])
+def test_claude_runs_hangars_tower_hook_whatever_the_agent_did_and_fails_closed(tmp_path, tower, agent):
+    """The hook in hangar's --settings (govhook.merge), the agent's settings full of `disableAllHooks` and allow
+    rules, or deleted. Tower denies: no call. Tower allows: hangar's deny-risky rules decide (`touch` isn't risky).
+    Tower down: the hook exits 2 and the call is blocked."""
+    from hangar import govhook, tower_hook
+    from tests.test_govhook import Tower
+
+    srv, port = fake_models.serve()
+    home, work, runs = tmp_path / "home", tmp_path / "home" / "work", tmp_path / "runs"
+    work.mkdir(parents=True)
+    runs.mkdir()
+    (home / ".hangar" / "runs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(work)], check=True)
+    _tamper_claude(home, work)
+    if agent == "delete":
+        (home / ".claude/settings.json").unlink()
+    t = Tower((200, {"decision": tower, "reason": "Tower said so"}))
+    url = t.url
+    if tower == "down":
+        t.close()
+        t.srv.server_close()
+    run = str(runs / "run-1")
+    Path(run + ".tower-key").write_text("aw-key-123")
+    entry = govhook.hooks(run, url, 5)
+    entry["hooks"][0]["command"] = govhook.command(run, url, 5, script=tower_hook.__file__)
+    settings = govhook.merge(harden.claude_settings(EnvSpec(name="e"), "agent", None), entry)
+    Path(run + ".settings.json").write_text(json.dumps(settings))
+    Path(run + ".mcp.json").write_text('{"mcpServers": {}}')
+    env = _env(home, ANTHROPIC_API_KEY="sk-ant-fake", ANTHROPIC_BASE_URL=f"http://127.0.0.1:{port}",
+               CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", DISABLE_AUTOUPDATER="1")
+    argv = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--session-id", str(uuid.uuid4()), "--model", "claude-sonnet-5-5",
+            *harden.claude_flags(run, str(work), memory=False)]
+    try:
+        p, lines, _ = _driver(tmp_path, "claude", "deny-risky", argv, work, env)
+    finally:
+        srv.shutdown()
+        if tower != "down":
+            t.close()
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    ran = (work / "probe.txt").exists()
+    results = json.dumps([x for x in lines if x.get("type") == "user"])
+    if tower == "allow":
+        assert ran and [s[1] for s in t.seen] == ["/hooks/claude-code"]
+        return
+    assert not ran
+    if tower == "deny":
+        assert "Denied by Tower: Tower said so" in results and t.seen[0][3]["tool_name"] == "Bash"
+    else:
+        assert "fails closed" in results and "can't reach Tower" in results

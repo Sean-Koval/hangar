@@ -252,6 +252,15 @@ class RepoSpec(BaseModel):
     bake: bool = False  # clone + setup at image build time
 
 
+class GovernanceSpec(BaseModel):
+    """--- KAN-78: `governance:` in an environment (spec 0015 §9; docs/governance-hook.md)."""
+
+    model_config = {"extra": "forbid"}
+    # required: Claude Code turns run with hangar's managed Tower hook, failing closed, or are refused where hangar
+    # can't own it (govhook.py). off (or unset): HANGAR_GOVERNANCE_HOOK decides; an environment can't loosen it.
+    hook: Literal["off", "required"] | None = None
+
+
 class EnvSpec(BaseModel):
     name: str
     description: str = ""
@@ -313,6 +322,7 @@ class EnvSpec(BaseModel):
     # --- workstream steer: how agents' tool permission prompts are answered in this environment's sessions and
     # jobs (auto | ask | deny-risky | governed; docs/steering.md). Unset: HANGAR_APPROVALS.
     approvals: Literal["auto", "ask", "deny-risky", "governed"] | None = None
+    governance: GovernanceSpec | None = None  # --- KAN-78: {hook: required} (GovernanceSpec)
     # --- overnight/cache: prompt-cache TTL for this environment's sessions and jobs (auto | 5m | 1h | off; cache.py).
     # Unset: HANGAR_CACHE.
     cache: Literal["auto", "5m", "1h", "off"] | None = None

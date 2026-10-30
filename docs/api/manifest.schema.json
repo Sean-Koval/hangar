@@ -120,7 +120,7 @@
         }
       }
     },
-    "hooks": {"type": "array", "items": {"type": "object", "required": ["event", "source"], "properties": {"event": {"type": "string"}, "source": {"type": "string"}}}},
+    "hooks": {"type": "array", "items": {"type": "object", "required": ["event", "source"], "properties": {"event": {"type": "string"}, "source": {"type": "string", "description": "hangar:verify_gate, hangar:tower_hook (KAN-78: the managed Tower hook; docs/governance-hook.md) or environment:<path>."}, "digest": {"type": ["string", "null"], "description": "hangar:tower_hook: sha256 of the hook script hangar installed and checked as the turn started. environment:<path>: of the settings file."}}}},
     "permissions": {
       "type": "object",
       "required": ["approvals", "harness_permission_checks"],

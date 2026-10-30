@@ -59,6 +59,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
+  in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
+  own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps
+  only its `deny-risky` rules, so a call never raises two approvals. The script's digest is checked at each turn's
+  start and kept in the manifest. Turns are refused where the agent could remove the hook: GKE, E2B, Docker without
+  the uid split, and Codex.
 - **`HANGAR_UID_SPLIT` unset means `required` on E2B** (KAN-189, security review H-1). An E2B sandbox is one microVM
   with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200

@@ -493,6 +493,13 @@ class Settings(BaseSettings):
     governance_credential: str | None = None
     governance_webhook_secret: str | None = None
     governance_suspend_after_seconds: int = Field(60, ge=5, le=3600)
+    # --- KAN-78: the managed Tower hook (govhook.py, docs/governance-hook.md). `required`: every Claude Code turn runs
+    # with hangar's PreToolUse hook asking Tower's /hooks/claude-code, failing closed, or is refused where hangar can't
+    # own the hook; an environment's `governance.hook` can require it too. The vault credential of the coding agent's
+    # key in Tower the hook sends, and how long the hook waits for a person to sign before it denies.
+    governance_hook: Literal["off", "required"] = "off"
+    governance_hook_credential: str | None = None
+    governance_hook_wait_seconds: int = Field(300, ge=0, le=540)
     # --- KAN-33 (#174, spec 0015 §9): how the control plane proves itself to Tower. key: the service key in
     # `governance_credential` (phase 1). passport: a token hangar mints itself (`sub: hangar:control-plane`, from its
     # OIDC issuer) exchanged at Tower's token endpoint (default `<governance_url>/oauth/token`) for a passport,

@@ -134,6 +134,7 @@ nav:
           - Sessions: sessions.md
           - Steering: steering.md
           - Governed approvals: governed-approvals.md
+          - The Tower hook: governance-hook.md
           - Job release and landing through Tower: tower-release-landing.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
