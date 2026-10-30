@@ -114,7 +114,7 @@ class BestOfNPolicy(BaseModel):
     """--- KAN-231: this repo's best-of-N jobs (strategies.py). `sequential`: attempt 1 runs alone and the others
     start only if it falls short (a job's own `sequential` comes first). `escalate_at`: the fraction of the job
     budget attempt 1 may use before the others start. `max_n`: the most attempts per risk tier (the job's
-    `hangar.risk` label, which a ticket's "Touches risk paths?" answer sets); a job that names no `n` gets it."""
+    `hangar.risk` label, which only its submitter sets, never ticket text); a job that names no `n` gets it."""
 
     model_config = ConfigDict(extra="forbid")
     sequential: bool | None = None

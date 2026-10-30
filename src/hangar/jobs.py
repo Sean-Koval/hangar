@@ -596,6 +596,8 @@ class JobService:
             self._event(job, f"queued by {requester} via {source}{best}")
         if defaults.notes:  # --- frontdoor
             self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
+        if note := strategies.cap_note(req, attempts, self.settings.best_of_n_max, policy):  # --- KAN-231
+            self._event(job, note)
         if lock_note:  # --- #138
             self._event(job, lock_note)
         if branch_note:  # --- change sets (G7)

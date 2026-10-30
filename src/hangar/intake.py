@@ -299,22 +299,6 @@ def parse_ticket(text: str | None) -> dict[str, Any]:
     return {"acceptance": acceptance, "verify": verify}
 
 
-def ticket_risk(text: str | None) -> str | None:
-    """--- KAN-231: the ticket's answer under *Touches risk paths?*: "high" for yes, "normal" for no, else None. It
-    only caps a best-of-N job's attempts (the repo policy's `best_of_n.max_n`); landing judges risk by the files."""
-    want = False
-    for line in (text or "")[:TICKET_MAX].replace("\r\n", "\n").split("\n"):
-        heading, known = _section(line)
-        if heading:
-            want = known == "risk"
-            continue
-        if want and (v := _norm(line).strip("`[] ")):
-            if v in _NO_RESPONSE:
-                return None
-            return "high" if v.startswith("y") else "normal" if v.startswith("n") else None
-    return None
-
-
 # --- KAN-229: what a ticket job's agent reports, for the review packet's evidence table and reading order
 START_HERE_MAX = 3
 EVIDENCE_SCHEMA: dict[str, Any] = {
@@ -382,12 +366,9 @@ def apply_ticket(svc: JobService, req: SubmitJob, text: str | None, ticket: str)
     `acceptance.md` with the criteria and the suggested check, and `verify` when `verify_allowed` matches. Returns
     parse_ticket's answer with `verify_used`."""
     from hangar.models import ContextItem
-    from hangar.strategies import RISK_LABEL  # --- KAN-231
 
     got = parse_ticket(text)
     req.labels = {**req.labels, ACCEPTANCE: str(len(got["acceptance"]))}
-    if RISK_LABEL not in req.labels and (tier := ticket_risk(text)):
-        req.labels[RISK_LABEL] = tier
     used = req.verify is None and verify_allowed(svc, req.repo, got["verify"])
     if used:
         req.verify = got["verify"]
