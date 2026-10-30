@@ -42,6 +42,7 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
+          "diff_budget_lines",  # --- KAN-229: the review packet's size warning
           "require_stale_dismissal",  # --- trust
           "verify_reports", "rerun_flaky",  # --- testresults
           "heavy", "profile", "max_profile",  # --- heavy
@@ -156,6 +157,8 @@ class RepoPolicy(BaseModel):
     approvers: list[str] | None = Field(None, max_length=100)
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = Field(None, max_length=100)
+    # --- KAN-229: changed lines (insertions plus deletions) above which the review packet warns that the PR is big
+    diff_budget_lines: int | None = Field(None, ge=1, le=1_000_000)
     # --- trust: auto-merge is armed only on a base branch that dismisses stale approvals on a push (landing.py);
     # false opts the repo out of that check. None: required.
     require_stale_dismissal: bool | None = None
@@ -429,6 +432,7 @@ class PolicyUpdate(BaseModel):
     approvers: list[str] | None = None
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = None
+    diff_budget_lines: int | None = Field(None, ge=1, le=1_000_000)  # --- KAN-229
     require_stale_dismissal: bool | None = None  # --- trust
     verify_reports: list[str] | None = None  # --- testresults
     rerun_flaky: bool | None = None

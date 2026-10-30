@@ -184,7 +184,8 @@ def test_cli_with_files_and_shards(tmp_path):
     r = run("--files", "src/hangar/providers/e2b.py")
     assert "tests/test_e2b_provider.py" in r.stdout.split() and "test file(s)" in r.stderr
     assert json.loads(run("--files", "docs/ci.md", "--e2e").stdout) == []
-    assert run("--files", "docs/ci.md").stdout.strip() == "tests/test_editorial.py"  # the editorial rule
+    # the editorial rule, and subscription logins only in interactive sections (KAN-219)
+    assert run("--files", "docs/ci.md").stdout.split() == ["tests/test_editorial.py", "tests/test_onboarding_docs.py"]
 
 
 def test_durations_from_junit(tmp_path):
