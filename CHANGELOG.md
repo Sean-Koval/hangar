@@ -45,6 +45,8 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
+- **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
+  different approval id, hangar treats it as a contract failure, not a decision.
 
 ### Fixed
 
