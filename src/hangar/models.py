@@ -480,6 +480,10 @@ class LandingState(BaseModel):
     revert_sha: str | None = None
     fix_forward_pr: int | None = None  # a later merged PR whose body says `Fixes-forward: #<this PR>`
     fix_forward_at: float | None = None
+    # --- KAN-70: reviewer attention (weekly.attention): what the nightly pass read of the merged PR, once, raw:
+    # {"at", "author": {login, id}, "committers": [{login, id}], "events": [{kind, login, id, bot, hangar, at}]};
+    # None: not read yet
+    review_activity: dict[str, Any] | None = None
 
 
 class JobApproval(BaseModel):

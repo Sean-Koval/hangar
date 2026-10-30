@@ -217,6 +217,33 @@ class GitHub:
                 break
         return out
 
+    async def pull_reviews(self, repo: str, number: int, pages: int = 10) -> list[dict[str, Any]]:
+        """--- KAN-70: a PR's submitted reviews, oldest first, paged."""
+        return await self._listing(f"/repos/{repo}/pulls/{int(number)}/reviews", pages)
+
+    async def pull_review_comments(self, repo: str, number: int, pages: int = 10) -> list[dict[str, Any]]:
+        """--- KAN-70: a PR's review comments (on lines of the diff, replies included), oldest first, paged."""
+        return await self._listing(f"/repos/{repo}/pulls/{int(number)}/comments", pages)
+
+    async def pull(self, repo: str, number: int) -> dict[str, Any]:
+        """--- KAN-70: one PR (its author is `user`)."""
+        return await self._req("GET", f"/repos/{repo}/pulls/{int(number)}") or {}
+
+    async def pull_commits(self, repo: str, number: int, pages: int = 3) -> list[dict[str, Any]]:
+        """--- KAN-70: a PR's commits, oldest first (GitHub lists at most 250), paged."""
+        return await self._listing(f"/repos/{repo}/pulls/{int(number)}/commits", pages)
+
+    async def _listing(self, path: str, pages: int) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for page in range(1, pages + 1):
+            got = await self._req("GET", path, params={"per_page": 100, "page": page})
+            if not isinstance(got, list) or not got:
+                break
+            out += [x for x in got if isinstance(x, dict)]
+            if len(got) < 100:
+                break
+        return out
+
     async def issue_comments(self, repo: str, number: int, limit: int = 20) -> list[dict[str, Any]]:
         out = await self._req("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})
         return [c for c in out if MARKER not in (c.get("body") or "")][-limit:]
