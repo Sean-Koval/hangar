@@ -100,7 +100,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "security/threat-model.md": (56, 34, "one table: every goal of an attacker in a sandbox, read as a whole"),
     "security/vault-key.md": (965, 18, LATER + "the mechanism, its settings, its limits"),
     "sessions.md": (2293, 20, LATER + "checkpoints, resume"),
-    "slack.md": (1661, 20, LATER + "the app, the commands"),
+    "slack.md": (1650, 18, LATER + "the app, the commands"),
     "specs/0001-agent-runs.md": (5059, 30, SPEC),
     "specs/0002-results-and-landing.md": (5384, 27, SPEC),
     "specs/0003-sandbox-security.md": (5798, 30, SPEC),
