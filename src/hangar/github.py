@@ -225,6 +225,14 @@ class GitHub:
         """--- KAN-70: a PR's review comments (on lines of the diff, replies included), oldest first, paged."""
         return await self._listing(f"/repos/{repo}/pulls/{int(number)}/comments", pages)
 
+    async def pull(self, repo: str, number: int) -> dict[str, Any]:
+        """--- KAN-70: one PR (its author is `user`)."""
+        return await self._req("GET", f"/repos/{repo}/pulls/{int(number)}") or {}
+
+    async def pull_commits(self, repo: str, number: int, pages: int = 3) -> list[dict[str, Any]]:
+        """--- KAN-70: a PR's commits, oldest first (GitHub lists at most 250), paged."""
+        return await self._listing(f"/repos/{repo}/pulls/{int(number)}/commits", pages)
+
     async def _listing(self, path: str, pages: int) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for page in range(1, pages + 1):

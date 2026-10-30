@@ -38,7 +38,7 @@ On `job.landing` ([landing.md](landing.md#what-hangar-records)):
 | `abandon_reason`, `abandon_by`, `abandon_at` | Why a closed PR was abandoned: one of `wrong_approach`, `bad_ticket`, `flaky_env`, `too_big`, `superseded`, `other`. |
 | `reverted_at`, `revert_sha` | A commit on the default branch reverts `merge_commit_sha`: `Revert "…"` / `This reverts commit <sha>`. |
 | `fix_forward_pr`, `fix_forward_at` | A later merged PR whose body says `Fixes-forward: #N`. |
-| `review_activity` | The merged PR's reviews and review comments, read once by the nightly pass: who, when, and whether a bot or hangar wrote it. |
+| `review_activity` | The merged PR's author, commit authors, reviews and review comments, read once by the nightly pass. |
 
 **Abandon reasons.** A trusted person comments `/hangar abandon <reason>` on the agent PR, or adds the label `agent-abandon:<reason>`. hangar refuses an unknown reason and replies with the list. The inbox lists agent PRs closed without a reason in the last week (kind `abandon`), and so does the digest (#158). Each reason is audited (`landing.abandon_reason`).
 
@@ -63,9 +63,10 @@ Reviewer attention is the scarce resource, so hangar counts what agent PRs cost 
 | --- | --- |
 | Primary measure | `events_per_merged_pr`: review events on the week's merged agent PRs, divided by the merged agent PRs whose reviews were read (`measured`). Also `p50`, `p90`, `unreviewed` and `reviewers`. |
 | A review event | A submitted review (any state) or a review comment on the diff. Conversation comments don't count. |
-| Left out | Bots (`type: Bot` or a `[bot]` login), the PR's author (the agent's account) and hangar's own AI review. |
+| Left out | Bots (`type: Bot` or a `[bot]` login) and hangar's own AI review. Also the agent's account: one the PR's commits are attributed to, unless it opened the PR or is linked to a hangar person. |
+| The PR's author | Counts as a reviewer. hangar often opens PRs with the delegator's own account, and their reviews are human attention. |
 | Secondary measure | `active_minutes`: active review minutes. Always `null` with a note today: GitHub records when a review was submitted, not how long it took. |
-| Data source | The GitHub API: `pulls/N/reviews` and `pulls/N/comments`, read by the nightly pass into `landing.review_activity`. |
+| Data source | The GitHub API: `pulls/N`, `pulls/N/commits`, `pulls/N/reviews` and `pulls/N/comments`, read by the nightly pass into `landing.review_activity`. |
 | Until it is read | A merged PR the nightly pass hasn't read yet is left out of the rate, and `note` says so. |
 
 The definition is the ticket owner's default and may change. It lives in one place, `weekly.attention`, over the raw events kept. Take [a repo's baseline](metrics-baseline.md) before hangar works there.
