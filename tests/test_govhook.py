@@ -293,7 +293,7 @@ async def test_an_auto_turn_gets_the_hook_and_hangars_settings_too(
 async def test_no_split_refuses_the_turn_whatever_the_uid_split_setting(svc, live, hook_on):  # noqa: F811
     new(svc, live, "gh3", "hello")
     s = await settle(svc, "gh3")
-    assert hook_on.uid_split == "auto"
+    assert hook_on.uid_split != "required"  # unset (KAN-189) or auto: the hook refuses anyway
     with pytest.raises(steering.SteerError, match="only where the agent can't remove it"):
         await steering.prepare(svc, s, SessionTurn(message="x"), svc.fleet.get(s.sandbox_id),
                                HARNESSES["live-claude"])
