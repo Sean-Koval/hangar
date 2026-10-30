@@ -796,3 +796,56 @@ async def test_the_packet_names_the_model_that_ran_and_its_price(svc, gh, settin
     (_, body), = gh.comments.items()
     assert "model `claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)" in body, body
     assert "no job budget" in body
+
+
+# ====================================================================== KAN-232: outcome labels on pr.merge
+async def test_a_merge_waits_for_its_outcome_labels_then_goes_to_the_outbox(svc, gh, settings):
+    """The pr.merge event carries what the merge kept of the agent's diff, the human commits on the branch and the
+    review rounds; while GitHub can't answer, the event waits instead of going out without them."""
+    from hangar import outbox
+
+    base = "0" * 40
+    agent = {"files": [{"filename": "src/app.py", "additions": 4, "deletions": 1,
+                        "patch": "@@ -1,1 +1,4 @@\n-old\n+a = 1\n+b = 2\n+\n+c = 3"}],
+             "commits": [{"sha": HEAD, "commit": {"author": {"email": "hangar@localhost"}}, "author": None}]}
+    final = {"files": [{"filename": "src/app.py", "patch": "@@ -1,1 +1,3 @@\n-old\n+a = 1\n+c = 4\n+d = 5"}],
+             "commits": [*agent["commits"], {"sha": NEW, "commit": {"author": {"email": "a@x.io"}}, "author": {
+                 "login": "alice", "type": "User"}}, {"sha": "d" * 40, "commit": {"author": {"email": "d@x.io"}},
+                                                      "author": {"login": "dependabot[bot]", "type": "Bot"}}]}
+    gh.head = lambda: NEW  # alice pushed on top of the agent's head
+    gh.reviews = [{"user": {"login": "alice"}, "state": "COMMENTED", "commit_id": HEAD},
+                  {"user": {"login": "alice"}, "state": "CHANGES_REQUESTED", "commit_id": HEAD},
+                  {"user": {"login": "bob"}, "state": "APPROVED", "commit_id": NEW},
+                  {"user": {"login": "hangar-ai[bot]", "type": "Bot"}, "state": "COMMENTED", "commit_id": NEW}]
+    down, gh_call = [True], gh.__call__
+
+    def github(r: httpx.Request) -> httpx.Response:
+        if r.url.path.startswith("/repos/o/r/compare/"):
+            if down[0]:
+                return httpx.Response(502, json={"message": "Server Error"})
+            return httpx.Response(200, json={f"{base}...{HEAD}": agent, f"{base}...{NEW}": final}[
+                r.url.path.rsplit("/", 1)[1]])
+        got = gh_call(r)
+        if r.url.path == "/repos/o/r/pulls/7" and r.method == "GET" and got.status_code == 200:
+            return httpx.Response(200, json={**json.loads(got.content), "merge_commit_sha": "e" * 40})
+        return got
+
+    svc.transport = httpx.MockTransport(github)
+    settings.outbox_url = str(settings.data_dir / "bucket")
+    svc.store.kv_set(outbox.KV_SINCE, "0")
+    o = outbox.Outbox(svc.fleet)
+    o.jobs = svc
+    job = pr_job(svc)
+    job.result.base_sha = base
+    job.landing.pr_state, job.landing.merged_at, job.landing.merged_by = "merged", time.time(), "bob"
+    svc.store.put(job)
+    assert await o.merge_outcomes() == 0 and o.scan_jobs() == 1  # pr.open; pr.merge waits for GitHub
+    down[0] = False
+    assert await o.merge_outcomes() == 1 and o.scan_jobs() == 0
+    await o.drain_once()
+    bucket = Path(settings.outbox_url)
+    ev = next(e for p in bucket.rglob("*.json") if (e := json.loads(p.read_bytes()))["kind"] == "pr.merge")
+    assert ev["data"] == {"by": "bob", "green_to_merge_seconds": None, "agent_head_sha": HEAD, "merged_sha": "e" * 40,
+                          "final_head_sha": NEW, "agent_diff_lines": 5, "agent_added_lines": 3,
+                          "merged_added_lines": 3, "surviving_lines": 1, "survival_at_merge": 0.3333,
+                          "human_commits": 1, "review_rounds": 2}

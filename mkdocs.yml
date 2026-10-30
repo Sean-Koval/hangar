@@ -179,6 +179,7 @@ nav:
           - hangar-envd: envd.md
           - Trace export (hangar.trace/v1): api/traces.md
           - Run capture (hangar.run/v1): api/outbox.md
+          - "Outcome labels on a merged PR": api/outcome-labels.md
           - Trials and pin sets (hangar.pinset/v1): api/trials.md
           - Tower's events (POST /api/governance/events): api/governance-events.md
           - Model gateway and tapes: model-gateway.md
