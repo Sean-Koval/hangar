@@ -70,6 +70,7 @@ from hangar import shadows as shadows  # --- #183: shadow runs of sampled real j
 from hangar import slolog as slolog  # --- KAN-144: the SLO signals
 from hangar import teamcreds as teamcreds  # --- review: only a job's person continues it from a front door
 from hangar import testresults as testresults  # --- testresults: structured results of every check
+from hangar import trialiso as trialiso  # --- KAN-234: eval jobs' egress defaults
 from hangar import turnlogin as turnlogin  # --- #293: a turn refused for want of a login
 from hangar import turnsummary as turnsummary  # --- KAN-137: a stopped turn's summary, from its events
 from hangar.events import resolve_budget, total_usage, usage_line
@@ -558,7 +559,8 @@ class JobService:
             verify_source=defaults.verify_source, deliver=req.deliver,  # --- frontdoor
             context=context, callback_url=req.callback_url, callback_secret=callback_secret,
             idempotency_key=req.idempotency_key,
-            labels=posture.mark(req.labels, stance) if stance is not None else req.labels,  # --- intake posture
+            labels=trialiso.for_job(req.queue_class, spec,  # --- KAN-234: an eval job's egress defaults closed
+                                    posture.mark(req.labels, stance) if stance is not None else req.labels),
             timeout_minutes=req.timeout_minutes or self.settings.job_timeout_minutes,
             keep_minutes=req.keep_minutes if req.keep_minutes is not None else self.settings.job_keep_minutes,
             output_schema=output_schema,

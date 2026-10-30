@@ -257,7 +257,8 @@ def _presets_for(e: EgressSpec | None, mode: str) -> list[str]:
 def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, harness: str | None = None,
             approved: list[dict[str, Any]] | None = None,
             mcp_trusted: set[tuple[str, int | None]] | None = None, sealed: bool = False,
-            mirror: bool = False, setup_hosts: tuple[str, ...] = (), floor: str | None = None) -> Policy:
+            mirror: bool = False, setup_hosts: tuple[str, ...] = (), floor: str | None = None,
+            floor_reason: str = "intake") -> Policy:
     """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests.
     `mcp_trusted` (from `trusted_mcp`) limits which of the spec's remote MCP servers count; None takes them all,
     for a spec the caller vouches for. `floor` (--- intake posture, #123: the sandbox's `hangar.egress.floor`) raises
@@ -269,7 +270,8 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     the MCP servers' or the cloud's, and no approval, whatever the environment and the repo policy say. Always on the
     proxy-only network. `mirror` (`Grader.network: mirror`) adds hangar's read-only package mirror when it is on.
     `setup_hosts`: the repo's git host while the sandbox is set up without the git gateway, before any of the code it
-    grades runs (for_sandbox; delivery.lock_sealed ends it)."""
+    grades runs (for_sandbox; delivery.lock_sealed ends it). `floor_reason`: `eval` for an eval job's floor
+    (trialiso.py, KAN-234), else `intake`."""
     if sealed:
         from hangar.pkgmirror import available
 
@@ -288,7 +290,10 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     env = getattr(spec, "egress", None)
     base = floored(env_mode(settings, spec), floor)
     mode, notes = base, []
-    if base != env_mode(settings, spec):
+    if base != env_mode(settings, spec) and floor_reason == "eval":  # --- KAN-234
+        notes.append(f"egress {base} (eval default): environment {spec.name} sets no egress, and this sandbox runs an "
+                     "eval job (docs/security/graders.md#what-a-trial-can-reach)")
+    elif base != env_mode(settings, spec):
         notes.append(f"egress {base} (intake floor): environment {spec.name} is {env_mode(settings, spec)}, and this "
                      "sandbox runs an intake-triggered job (docs/security/front-doors.md#intake-posture)")
     if repo is not None and repo.mode:
@@ -421,8 +426,11 @@ def for_sandbox(fleet: Fleet, sb: Sandbox, spec: EnvSpec | None = None) -> Polic
     approved = approvals(fleet.store, environment=sb.environment, session=session)
     from hangar.posture import floor_of  # --- intake posture (#123)
 
+    from hangar.trialiso import LABEL  # --- KAN-234: an eval job's floor says so
+
     return resolve(fleet.settings, spec, repo_egress(fleet.store, sb.repo), sb.info.get("harness"), approved,
-                   trusted_mcp(fleet, sb.environment), floor=floor_of(sb.labels))
+                   trusted_mcp(fleet, sb.environment), floor=floor_of(sb.labels),
+                   floor_reason="eval" if sb.labels.get(LABEL) else "intake")
 
 
 # ============================================================================ approvals
@@ -502,6 +510,9 @@ async def attach(fleet: Fleet, prov: Provider, sb: Sandbox, spec: EnvSpec) -> di
 
     if (floor := floor_of(sb.labels)) is not None:
         info.update({"floor": floor, "floor_reason": "intake"})
+    from hangar import trialiso  # --- KAN-234: an eval sandbox's record: where its egress came from, GitHub or not
+
+    trialiso.note_egress(sb, spec, pol, info)
     for n in pol.notes:
         sb.info.setdefault("warnings", []).append(n)
     if not pol.proxied:  # open, or tightened by a repo policy in an open environment (the note says so)

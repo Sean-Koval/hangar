@@ -70,6 +70,7 @@
           }
         }},
         "egress": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Each environment's egress policy at the start (canonical JSON); a change stops new trials."},
+        "trial_egress": {"type": "object", "description": "KAN-234: what the trials reach. source: closed (hangar's default for an environment that sets no egress: allowlist, no GitHub) or environment; github: whether GitHub is reachable, with a warning when it is.", "properties": {"source": {"enum": ["closed", "environment"]}, "mode": {"type": "string"}, "github": {"type": "boolean"}, "warning": {"type": "string"}}},
         "pinned_at": {"type": "number"}
       }
     },

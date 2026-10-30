@@ -391,11 +391,14 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
         # --- #125: a subscription login in the sandbox (teamcreds), with the turn's own
         "warnings": list(dict.fromkeys([*(turn.warnings if turn is not None else []),
                                         *(info.get("credential_warnings") or []),
+                                        *((info.get("egress") or {}).get("warnings") or []),  # --- KAN-234
                                         *(s.warnings if s is not None else [])])),
     }
     if s is not None:
         m["repo"] = {"url": _url(s.repo) if s.repo and "://" in s.repo else s.repo, "base_branch": s.base_branch,
                      "base_sha": s.base_sha, "branch": s.branch}
+        if iso := info.get("trial_isolation"):  # --- KAN-234: a trial's clone, stopped at its base
+            m["repo"]["isolation"] = iso
     return seal(m, fleet.broker.redact)
 
 
