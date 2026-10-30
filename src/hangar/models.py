@@ -619,7 +619,7 @@ class Job(BaseModel):
     # --- overnight/autofix: the verify gate inside the turn, and the PR auto-fix loop (None: the defaults)
     verify_in_loop: bool | None = None
     max_verify_rounds: int | None = None
-    autofix: str | None = None  # "ci,reviews" | "ci" | "reviews" | "off"
+    autofix: str | None = None  # "ci,conflicts,reviews", a subset, or "off"
     autofix_state: AutofixState = Field(default_factory=AutofixState)
     person: str | None = None  # --- identity: the person it runs for (None: GitHub, Slack, webhooks, older jobs)
     # --- reconciler: times the job resumed on its own after a control-plane restart interrupted it (restarts.py)

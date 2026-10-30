@@ -724,8 +724,8 @@ def job_submit(
     # --- overnight/autofix
     verify_in_loop: bool | None = typer.Option(None, "--verify-in-loop/--no-verify-in-loop",
                                                help="Also run --verify inside the agent's turn (default: on)."),
-    autofix: str | None = typer.Option(None, "--autofix", help="React to the PR's CI and reviews: ci,reviews "
-                                       "(default) | ci | reviews | off."),
+    autofix: str | None = typer.Option(None, "--autofix", help="React to the PR's CI, conflicts and "
+                                       "reviews: ci,conflicts,reviews (default), a subset, or off."),
     profile: str | None = typer.Option(None, "--profile", help="--- heavy: standard | large | xlarge: the job's "
                                        "sandbox size, up to what the repo's policy allows (label hangar.profile)."),
     changeset: str | None = typer.Option(None, "--changeset", help="A change-set profile: one agent across its "

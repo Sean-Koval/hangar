@@ -50,6 +50,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
 - **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
   different approval id, hangar treats it as a contract failure, not a decision.
+- **Auto-fix merges the base into a job's PR when it conflicts** ([docs/jobs/conflicts.md](docs/jobs/conflicts.md)).
+  When any PR merges, hangar checks its other open PRs on that base. One GitHub marks `dirty` gets a round: the agent
+  merges the base in, resolves the conflicts, reruns the check, and hangar pushes without force. `autofix` gains
+  `conflicts`, on by default.
 
 ### Fixed
 
