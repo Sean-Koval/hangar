@@ -31,6 +31,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 - **`pr.merge` carries outcome labels** (KAN-232, [docs/api/outcome-labels.md](docs/api/outcome-labels.md)): the
   agent head, the merge commit, the agent's diff lines, how many of its added lines the merge kept, human commits on
   the branch and review rounds, read from GitHub before the event goes out. Added within `hangar.job_event/v1`.
+  Follow-up: the merged diff and human commits are the PR's own, so an update from main or a rebase isn't a human
+  edit, and an owner's fix counts though hangar pushes as the owner. Long lists are paged, a capped one is named in
+  `outcome_truncated`, and the labels are read as the GitHub App, with backoff, off the upload loop.
 - **`evals/` is gone** (KAN-86, #145). The semver kit moved to flightdeck: the task to `tasks/smoke/semver/`, the
   process metrics and rule labeller to its data plane. hangar's experiment tests grade
   `tests/fixtures/experiments/semver-mini/`, five of its hidden cases.
