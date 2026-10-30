@@ -155,8 +155,7 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
                  scope: list[str] = typer.Option(["admin"], "--scope",
                                                  help="admin (everything), jobs (only /api/jobs, for services), "
                                                       "mcp (only /mcp, for MCP clients), metrics (only GET /metrics, "
-                                                      "for a Prometheus scraper) or sandboxes (only the E2B API, "
-                                                      "docs/e2b.md). Repeatable."),
+                                                      "for a Prometheus scraper). Repeatable."),
                  callback_secret: str | None = typer.Option(
                      None, "--callback-secret",
                      help="jobs tokens: 'webhook' credential that signs this token's job callbacks."),

@@ -40,7 +40,6 @@ from hangar.store import Store
 PREFIX = "hgr_"
 # admin: everything; jobs: only /api/jobs* (service callers); mcp: only /mcp; metrics: only GET /metrics (--- observe)
 SCOPES = ("admin", "jobs", "mcp", "metrics")
-SCOPES += ("sandboxes",)  # --- e2b-api: only the E2B-compatible API (/e2b) for the sandboxes it creates
 SCOPES += ("user",)  # --- identity: a person's own login: /mcp, and their own tokens and credentials over REST
 # --- relay: a bot acting for the linked person each request names (X-Hangar-On-Behalf-Of); relay_approve: it may also
 # approve and reject jobs as them. Admin persons' tokens only (not in people.MEMBER_SCOPES), and nothing else beside.

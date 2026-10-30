@@ -58,7 +58,7 @@ from hangar import experiments as experiments  # --- interfaces: experiment jobs
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: a failed or slow job's flight record
 from hangar import harness_thaw as harness_thaw  # --- harness locks (#134)
-from hangar import intake as intake  # --- intake: trackers (Jira, GitHub Projects) follow their jobs
+from hangar import intake as intake  # --- intake: trackers (Jira) follow their jobs
 from hangar import outbox as outbox  # --- outbox (#163): each turn's run, once checked and delivered
 from hangar import outcomes as outcomes  # --- #166: agent or infrastructure
 from hangar import people as people  # --- teamcreds: GitHub senders linked to people
@@ -1679,10 +1679,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
 
     if event == "ping":
         return {"ok": True, "pong": True}
-    if event == "projects_v2_item":  # --- intake: an organization webhook for GitHub Projects (ghprojects.py)
-        from hangar import ghprojects
-
-        return await ghprojects.handle(svc, delivery, payload)
+    if event == "projects_v2_item":  # --- KAN-217: the GitHub Projects door is gone (docs/upgrading.md)
+        return {"ignored": "projects_v2_item: GitHub Projects intake was removed (KAN-217)"}
     repo = (payload.get("repository") or {}).get("full_name") or ""
     if event == "push":  # --- #138: a push to the team harness repo refreshes hangar's checkout of it now
         from hangar import harness_repo

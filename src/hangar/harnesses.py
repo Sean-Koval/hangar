@@ -372,34 +372,6 @@ HARNESSES: dict[str, Harness] = {
         mcp_format="antigravity",
         verify="agy --version",
     ),
-    "gemini": Harness(
-        name="gemini",
-        title="Gemini CLI",
-        deprecated="Google is retiring Gemini CLI for AI Pro/Ultra accounts in favour of Antigravity (agy)",
-        install=(
-            'mkdir -p "$PREFIX/bin" "$PREFIX/node/bin" && install -m 755 "$(command -v node)" "$PREFIX/node/bin/node"\n'
-            'npm install -g --prefix "$PREFIX/lib" "@google/gemini-cli@$VERSION"\n'
-            "printf '#!/bin/sh\\nexec \"%s/node/bin/node\" \"%s/lib/bin/gemini\" \"$@\"\\n' \"$PREFIX\" \"$PREFIX\" "
-            "> \"$PREFIX/bin/gemini\"\n"
-            'chmod 755 "$PREFIX/bin/gemini"'
-        ),
-        env={"NO_BROWSER": "true"},
-        credentials=[
-            CredentialSlot(kind=CredentialKind.API_KEY, env_var="GEMINI_API_KEY"),
-            CredentialSlot(kind=CredentialKind.AUTH_FILE, file_path=".gemini/oauth_creds.json", exclusive=True),
-        ],
-        logins=[
-            LoginFlow(
-                command="gemini",
-                captures=CredentialKind.AUTH_FILE,
-                capture_file=".gemini/oauth_creds.json",
-                notes="Choose 'Login with Google'; NO_BROWSER prints a URL and asks for the code.",
-            )
-        ],
-        run='gemini -p "$(cat "$HANGAR_PROMPT_FILE")" --yolo ${HANGAR_MODEL:+-m "$HANGAR_MODEL"}',
-        instructions_file=".gemini/GEMINI.md",
-        verify="gemini --version",
-    ),
     "git": Harness(
         name="git",
         title="Git / GitHub",

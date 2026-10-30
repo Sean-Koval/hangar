@@ -1,7 +1,7 @@
-"""Intake: what the tracker front doors share (GitHub issues, Slack, Jira, GitHub Projects).
+"""Intake: what the tracker front doors share (GitHub issues, Slack, Jira).
 
 Each front door verifies its own signatures and reads its own payloads (github.py and jobs.handle_github, slack.py,
-jira.py, ghprojects.py). What they have in common lives here, so a new tracker only maps its payload:
+jira.py). What they have in common lives here, so a new tracker only maps its payload:
 
 * **Who.** An outside account (a GitHub user, a Slack user, a Jira account) is a hangar person only when someone
   linked it (`people.resolve_external`). A linked sender's job is theirs: their caps, their credentials, their

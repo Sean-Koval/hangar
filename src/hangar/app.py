@@ -25,7 +25,6 @@ from hangar import evalqueue as evalqueue  # --- #181: the eval queue class
 from hangar import exchange, observe  # --- observe
 from hangar import fairness as fairness  # --- review capacity (#159)
 from hangar import fleet_api as fleet_api  # KAN-140: GET /api/fleet
-from hangar import ghprojects as ghprojects  # --- intake: registers the GitHub Projects write-back
 from hangar import harness_repo as harness_repo  # --- #138: the team harness repo
 from hangar import harness_review as harness_review  # --- #169: the Friday harness review
 from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #158)
@@ -35,7 +34,6 @@ from hangar import people as people  # --- teamcreds
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar import weekly as weekly  # --- #168: weekly adoption metrics and the standup line
-from hangar.a2a import A2AServer
 from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
@@ -428,7 +426,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        surface="sandbox")
     mcp_sb_asgi = mcp_sb.streamable_http_app(streamable_http_path="/", stateless_http=stateless, host="0.0.0.0")
     h.mcp_servers = {"/mcp": mcp, "/mcp/sandbox": mcp_sb}  # --- #140: the doctor lists both
-    a2a = A2AServer(h.jobs, h.auth, h.vault, h.settings) if h.settings.a2a_enabled else None  # workstream G
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -450,8 +447,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.jobs.start()
         await h.triggers.start()  # after jobs: it expires approvals and submits scheduled jobs
         h.governance_events.start()  # --- KAN-77: after sessions: re-reads what waits on Tower, then follows it
-        if a2a:
-            await a2a.start()
         pre = h.settings.prebuild_environments
         if pre is None:
             pre = [e.strip() for v in h.settings.github_repos.values() for e in v.split(",") if e.strip()]
@@ -494,13 +489,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             prebuild.cancel()
         await h.triggers.stop()
         await h.governance_events.stop_loop()  # --- KAN-77
-        if a2a:
-            await a2a.stop()
         await h.jobs.stop()
         await h.sessions.stop()
         await h.fleet.gateway.stop()  # workstream F
-        if e2b := getattr(app.state, "e2b", None):  # --- e2b-api
-            await e2b.close()
         await h.fleet.stop()
         await observe.stop()  # --- observe: flush spans
 
@@ -537,17 +528,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if h.settings.gateway_url and not h.settings.gateway_port:
         for i, r in enumerate(h.fleet.gateway.routes()):
             app.router.routes.insert(i, r)
-    if a2a:
-        a2a.mount(app)  # /.well-known/agent-card.json and JSON-RPC at /a2a (docs/a2a.md)
-    # --- e2b-api: the E2B-compatible API at HANGAR_E2B_API_PATH, and sandbox URLs in front of everything (docs/e2b.md)
-    if e2b_path := h.settings.e2b_api_path.rstrip("/"):
-        from hangar.e2b_api import E2BService, build_api
-        from hangar.sandbox_router import SandboxRouter
-
-        app.state.e2b = E2BService(h)
-        h.rotation.resealers.append(app.state.e2b.reseal)  # --- durable: its sandboxes' envVars are sealed
-        app.mount(e2b_path, build_api(app.state.e2b))
-        app.add_middleware(SandboxRouter, svc=app.state.e2b)  # outermost: sandbox traffic skips the body caps
     if h.settings.preview_domain:  # --- envbuilds: preview ports, for each sandbox's owner (preview.py)
         from hangar.preview import PreviewRouter
 
@@ -652,7 +632,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f'claude mcp add --transport http hangar {url} --header "Authorization: Bearer $HANGAR_TOKEN"'
             ),
             "oauth": app.state.oauth is not None,
-            "a2a_agent_card": (base.rstrip("/") + "/.well-known/agent-card.json") if a2a else None,
             "chatgpt": (
                 f"In ChatGPT: Settings → Connectors → Create. MCP server URL: {url}. Authentication: OAuth. "
                 "ChatGPT registers itself and opens hangar's approval page, where you paste a hangar token."

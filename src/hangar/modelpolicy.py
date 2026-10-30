@@ -48,8 +48,7 @@ log = logging.getLogger("hangar.modelpolicy")
 
 POLICIES = ("frontier", "balanced")
 VENDORS = ("anthropic", "openai", "google")
-PROVIDER = {"claude-code": "anthropic", "codex": "openai", "pi": "openrouter", "antigravity": "google",
-            "gemini": "google"}
+PROVIDER = {"claude-code": "anthropic", "codex": "openai", "pi": "openrouter", "antigravity": "google"}
 LISTS = {
     "anthropic": "https://api.anthropic.com/v1/models",
     "openai": "https://api.openai.com/v1/models",

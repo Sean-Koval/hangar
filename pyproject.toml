@@ -37,13 +37,12 @@ hangar = "hangar.cli:app"
 github = "hangar.app:GITHUB_PLUGIN"
 slack = "hangar.slack:PLUGIN"
 jira = "hangar.jira:PLUGIN"
-ghprojects = "hangar.ghprojects:PLUGIN"
 webhook = "hangar.events_out:PLUGIN"
 command = "hangar.deliverers.command:PLUGIN"
 image-ready = "hangar.deliverers.image_ready:PLUGIN"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "a2a-sdk>=1.2,<2",  # a2a-sdk: interop tests only
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6",
        "opentelemetry-sdk>=1.30", "opentelemetry-exporter-otlp-proto-http>=1.30",  # observe: span tests
        "pytest-xdist>=3.8", "pytest-rerunfailures>=16"]  # CI: parallel shards; one rerun on main (docs/ci.md)
 

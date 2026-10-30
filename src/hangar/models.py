@@ -108,7 +108,7 @@ class Credential(BaseModel):
     """Metadata only. Secret material lives encrypted in the vault, never in this model."""
 
     name: str
-    harness: str  # claude-code | codex | antigravity | gemini | git | custom
+    harness: str  # claude-code | codex | pi | antigravity | git | custom
     kind: CredentialKind
     description: str | None = None
     exclusive: bool = False  # only one sandbox may hold it at a time (rotating refresh tokens)
@@ -561,6 +561,7 @@ class Job(BaseModel):
     id: str = Field(default_factory=lambda: new_id("job"))
     title: str
     instructions: str
+    # "a2a" and "github-projects": doors removed after v0.2.0 (KAN-217), kept so their jobs still load
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
                     "jira", "github-projects",
                     "env-setup",

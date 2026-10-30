@@ -12,8 +12,8 @@ token lives, nor on another sandbox's. Nothing is public:
   the sandbox, the port and the person, valid HANGAR_PREVIEW_SESSION_HOURS. Every request checks it again, with the
   sandbox's owner as it is then. A hangar bearer token works too (`curl -H "Authorization: Bearer ..."`).
 * **Nothing of hangar's reaches the app.** The proxy drops the Authorization header and its own cookie before
-  forwarding, and reaches the port at the address the sandbox's hangar-envd proved (sandbox_router, as for E2B's
-  sandbox URLs): never loopback, link-local or another sandbox's.
+  forwarding, and reaches the port at the address the sandbox's hangar-envd proved (sandbox_router): never loopback,
+  link-local or another sandbox's.
 
 Needs hangar-envd (Docker and Kubernetes sandboxes) and wildcard DNS for the domain pointing at hangar (on a laptop,
 `HANGAR_PREVIEW_DOMAIN=localhost`: browsers resolve `*.localhost` to 127.0.0.1).
@@ -128,7 +128,7 @@ class Previews:
 class PreviewRouter(SandboxRouter):
     """ASGI middleware: `<port>-<sandbox>.<HANGAR_PREVIEW_DOMAIN>` is a sandbox's preview; anything else goes on."""
 
-    def __init__(self, app, h: Hangar):  # noqa: D107 - SandboxRouter's own needs an E2BService
+    def __init__(self, app, h: Hangar):  # noqa: D107
         self.app, self.h = app, h
         self.previews = Previews(h)
         self.svc = _Svc(h)
@@ -161,7 +161,7 @@ class PreviewRouter(SandboxRouter):
             return await self.app(scope, receive, send)
         if route[0] == "sb" and scope["type"] == "http" and scope["path"] == HANDSHAKE:
             return await self._handshake(scope, send, *route[1][:2])
-        await self._observed(dict(scope, route=_Label("/preview"), **{"hangar.e2b": route}), receive, send)
+        await self._observed(dict(scope, route=_Label("/preview"), **{"hangar.sandbox": route}), receive, send)
 
     async def _handshake(self, scope, send, sid: str, port_s: str) -> None:
         """A link from `GET /api/sandboxes/{ref}/previews`: its ticket for a session cookie on this origin."""
@@ -180,7 +180,7 @@ class PreviewRouter(SandboxRouter):
             (b"cache-control", b"no-store"), (b"content-length", b"0")]})
         await send({"type": "http.response.body", "body": b""})
 
-    def _authorize(self, scope, sid: str, port: int, raw_path: bytes) -> tuple[Sandbox, dict[str, Any], int, bool]:
+    def _authorize(self, scope, sid: str, port: int, raw_path: bytes) -> Sandbox:
         """Deny by default: the sandbox's owner's cookie or bearer token first (so nobody else learns whether a sandbox
         or a port exists), then a live sandbox and a port it declared. The credentials are then taken out of the
         request, so the app never sees them."""
@@ -199,7 +199,7 @@ class PreviewRouter(SandboxRouter):
         if sb.state != SandboxState.RUNNING:
             raise _gone(sid, f"the sandbox is {sb.state.value}")
         scope["headers"] = self._strip(scope.get("headers", []))
-        return sb, {}, port, False
+        return sb
 
     def _person(self, scope, sid: str, port: int) -> str | None:
         for k, v in scope.get("headers", []):
@@ -240,7 +240,7 @@ class PreviewRouter(SandboxRouter):
 
 
 class _Svc:
-    """What SandboxRouter's proxying needs from its service (E2BService has it for E2B's URLs)."""
+    """What SandboxRouter's proxying needs from its service: settings, the store, the fleet and an HTTP client."""
 
     def __init__(self, h: Hangar):
         self.h, self.settings, self.fleet, self.store = h, h.settings, h.fleet, h.store

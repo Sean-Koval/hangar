@@ -7,14 +7,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --- KAN-74 (#223): the warn switches of the safe release (v0.2.0), and `off`, are gone; the next release enforces.
 # A removed value is refused wherever it is set: in the environment (Settings() fails, so `hangar serve` refuses to
 # start, naming it), with `hangar config set`, and, stored before the upgrade, `hangar doctor` fails on it.
 _UPGRADE_DOC = "docs/upgrading.md#removed-switches"
-_POSTURE_FIX = ("jobs from GitHub, GitHub Projects, Jira, Slack and inbound webhooks always need the git gateway and "
+_POSTURE_FIX = ("jobs from GitHub, Jira, Slack and inbound webhooks always need the git gateway and "
                 "get at least allowlist egress. Instead: set HANGAR_GATEWAY_URL (and HANGAR_EGRESS_URL on GKE), then "
                 "remove HANGAR_INTAKE_POSTURE where it is set (the hangar-site config map, .env, or "
                 f"`hangar config unset HANGAR_INTAKE_POSTURE`); {_UPGRADE_DOC}")
@@ -36,6 +36,34 @@ def removed_switch(name: str, value: Any) -> str | None:
     """What to say about a setting value that no longer exists (KAN-74), or None."""
     v = value.strip().lower() if isinstance(value, str) else value
     return REMOVED_SWITCHES.get((name, v)) if isinstance(v, str) else None
+
+
+# --- KAN-217: settings of the surfaces removed after v0.2.0 (the A2A endpoint, the E2B-compatible API at /e2b and
+# the GitHub Projects door). As with KAN-74's switches, one set in the environment stops hangar from starting, `hangar
+# config set` refuses it, and one stored before the upgrade isn't applied and fails `hangar doctor` until it is unset.
+_REMOVED_DOC = "docs/upgrading.md#removed-surfaces"
+_UNSET = ("remove it where it is set (the hangar-site config map, .env, or `hangar config unset {key}`); "
+          + _REMOVED_DOC)
+_A2A = "the A2A endpoint (/a2a and /.well-known/agent-card.json) was removed after v0.2.0 (KAN-217)"
+_E2B = ("the E2B-compatible API (/e2b and its sandbox URLs) was removed after v0.2.0 (KAN-217); the e2b provider "
+        "stays, experimental (docs/microvm.md)")
+_PROJECTS = ("the GitHub Projects door was removed after v0.2.0 (KAN-217): take work in from Jira (HANGAR_JIRA, "
+             "docs/intake.md) or GitHub issues")
+REMOVED_SETTINGS: dict[str, str] = {
+    **{n: _A2A for n in ("a2a_enabled", "a2a_default_repo", "a2a_poll_seconds", "a2a_max_wait_seconds",
+                         "a2a_max_request_bytes", "a2a_max_push_configs", "a2a_max_streams_per_owner")},
+    **{n: _E2B for n in ("e2b_api_path", "e2b_api_domain", "e2b_templates", "e2b_trusted_environments",
+                         "e2b_max_timeout_seconds", "e2b_max_sandboxes_per_owner", "e2b_rate_per_minute",
+                         "e2b_rate_burst", "e2b_create_per_minute", "e2b_create_burst")},
+    "e2b_max_streams_per_sandbox": _E2B + "; preview ports' cap is HANGAR_PREVIEW_MAX_STREAMS_PER_SANDBOX",
+    "github_projects": _PROJECTS,
+}
+
+
+def removed_setting(name: str) -> str | None:
+    """What to say about a setting that no longer exists (KAN-217), or None."""
+    key = f"HANGAR_{name.upper()}"
+    return f"{key}: {REMOVED_SETTINGS[name]}. Instead: " + _UNSET.format(key=key) if name in REMOVED_SETTINGS else None
 
 
 class Settings(BaseSettings):
@@ -127,7 +155,7 @@ class Settings(BaseSettings):
     e2b_api_url: str | None = None  # the control API; default https://api.<domain>. Cube: http://<cubeapi>:3000
     # Where sandboxes' envd answers. Unset: the SDK's rule (https://sandbox.<domain> on E2B's own domains, else
     # https://49983-<id>.<domain>). A URL with {sandbox_id} (and {port}) is filled in per sandbox; without, every
-    # sandbox is reached there and routed by the E2b-Sandbox-Id header (one host, or hangar's own /e2b/sandbox).
+    # sandbox is reached there and routed by the E2b-Sandbox-Id header (one host).
     e2b_sandbox_url: str | None = None
     # CubeSandbox returns no envd access token: its envd answers anyone who reaches it. Off: such sandboxes are
     # refused (and killed). On: use them, on a private network only (docs/microvm.md, "Security").
@@ -164,22 +192,6 @@ class Settings(BaseSettings):
     # --- envd: in-sandbox daemon for exec, files and terminals (docs/envd.md) ---
     envd: Literal["auto", "off"] = "auto"  # auto: Docker and Kubernetes sandboxes use it when it can be reached
     envd_dir: Path | None = None  # holds hangar-envd-<arch>; default /usr/local/lib/hangar, then envd/dist
-
-    # --- e2b-api: E2B-compatible API and sandbox URLs for the e2b SDKs (docs/e2b.md) ---
-    e2b_api_path: str = "/e2b"  # where the control API is mounted; "" turns the API and sandbox routing off
-    # What E2B clients set as E2B_DOMAIN: the API also answers at api.<domain>, sandboxes at <port>-<id>.<domain>.
-    e2b_api_domain: str | None = None
-    e2b_templates: dict[str, str] = Field(default_factory=dict)  # E2B template name -> environment, e.g. base
-    # Environments a `sandboxes` token gets with their credentials, secrets and gateway grant (admin tokens always
-    # do). Any other environment is created for such tokens with no credentials, or refused if it needs secrets.
-    e2b_trusted_environments: list[str] = Field(default_factory=list)
-    e2b_max_timeout_seconds: int = 86400  # E2B's own limit (24 h on Pro)
-    e2b_max_sandboxes_per_owner: int = 20  # running and paused, per `sandboxes` token; 0 = off
-    e2b_rate_per_minute: float = 600  # control API requests per `sandboxes` token (a token bucket); 0 = off
-    e2b_rate_burst: int = 120
-    e2b_create_per_minute: float = 30  # sandbox creations per `sandboxes` token
-    e2b_create_burst: int = 10
-    e2b_max_streams_per_sandbox: int = 256  # requests in flight through the sandbox router, per sandbox
 
     # --- fleet defaults -----------------------------------------------------
     default_ttl_minutes: int = 240
@@ -436,19 +448,12 @@ class Settings(BaseSettings):
     # (at most half the period) before it signs; where the JWKS is uploaded (GCP --jwk-json-path), upload it again
     # after the `cloud.key.next` audit entry.
     oidc_key_rotation_days: int = Field(0, ge=0, le=3650)
-    # --- workstream G: a2a (spec 0011, docs/a2a.md) -------------------------
-    a2a_enabled: bool = True  # agent card at /.well-known/agent-card.json, JSON-RPC at /a2a
-    a2a_default_repo: str | None = None  # repo for A2A tasks that don't name one in their metadata
-    a2a_poll_seconds: float = 1.0  # how often streams and push notifications look for job changes
-    a2a_max_wait_seconds: int = 1800  # a blocking SendMessage returns the task as it stands after this long
-    a2a_max_request_bytes: int = 4_000_000  # base64 attachments are ~4/3 of HANGAR_JOB_MAX_CONTEXT_BYTES
-    a2a_max_push_configs: int = 5  # push notification configs per task
     # --- front-door-auth: rate limits, caps and replay protection (docs/security/README.md) ------------
     # Job submissions and follow-ups per caller (a jobs token, a GitHub or Slack user, a webhook source): a token
     # bucket refilling at this rate. Admin tokens and schedules are exempt. 0 = off.
     job_rate_per_minute: float = 30
     job_rate_burst: int = 10
-    # The same per front door (github, slack, webhook, a2a, api, mcp), across all its callers.
+    # The same per front door (github, slack, webhook, api, mcp), across all its callers.
     job_source_rate_per_minute: float = 120
     job_source_rate_burst: int = 60
     job_max_active_per_owner: int = 10  # unfinished jobs (incl. waiting for approval or input) per caller; 0 = off
@@ -456,7 +461,6 @@ class Settings(BaseSettings):
     webhook_replay_hours: float = 168  # how long a signed delivery is remembered so a replay is recognised
     audit_rejections_per_minute: int = 30  # refused requests audited per client address or caller; more are counted
     slack_teams: list[str] = Field(default_factory=list)  # other workspaces (Enterprise Grid) whose members count
-    a2a_max_streams_per_owner: int = 20  # open A2A streams and blocking sends per caller
     # --- workstream mcp-modern (docs/mcp.md) --------------------------------
     # Serve pre-2026 MCP clients statelessly (no Mcp-Session-Id). Only for several replicas without sticky routing:
     # it costs those clients elicitation (hangar asking you an agent's question) and resource notifications.
@@ -549,7 +553,7 @@ class Settings(BaseSettings):
     # else a token's or an approved OAuth connector's name (fairness.person_of); hangar's own actors are exempt.
     # 0 = off.
     person_max_sessions: int = 15  # live sessions (each holds a sandbox); suspended ones don't count
-    person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST, the E2B API); sessions' are above
+    person_max_sandboxes: int = 20  # sandboxes started directly (MCP, REST); sessions' are above
     person_max_running_jobs: int = 0  # jobs running at once; 0 = half the job slots, at least 4. Others' jobs go first
     # --- review capacity (#159): a person's new jobs wait (reason awaiting_capacity) while this many agent PRs await
     # their review; 0 = off. A repo policy's `max_open_agent_prs` overrides it for that repo's jobs, and
@@ -605,9 +609,6 @@ class Settings(BaseSettings):
     # "secret_credential": ..., "events": ["pr.*"]}}, "deliverers": {"hangar-acme-bump": {...}}}. Read once at
     # startup; a plugin that isn't installed or settings that don't validate refuse to start (pluginhost.py).
     plugins: dict[str, Any] = Field(default_factory=dict)
-    # GitHub Projects boards, by "org/number": {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"],
-    # "statuses": {"started": "In progress", "delivered": "In review"}}} (ghprojects.Board).
-    github_projects: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # --- envbuilds: environments that live with the repo (docs/environments.md). Off: a repo's
     # .hangar/environment.yaml is ignored and sandboxes start from the environment's image, as before.
     env_builds: bool = True
@@ -634,6 +635,7 @@ class Settings(BaseSettings):
     # through hangar. Needs wildcard DNS pointing at hangar; `localhost` on a laptop. Unset: previews are off.
     preview_domain: str | None = None
     preview_session_hours: float = Field(12, gt=0, le=168)  # how long an opened preview stays signed in
+    preview_max_streams_per_sandbox: int = 256  # requests in flight through the preview proxy, per sandbox
     # --- ops: the sandbox node pools power down at night while hangar stays up (power.py, docs/gke.md). Providers
     # whose sandboxes run on those pools (add e2b when it runs on the microVM pool): while they are off, creates on
     # them answer at once with when they're back, and jobs wait queued.
@@ -702,6 +704,17 @@ class Settings(BaseSettings):
     # --- #182: monthly eval spend (evalbudget.py), per calendar month UTC: the team's (0: off) and each author's
     eval_budget_usd_month: float = Field(1500.0, ge=0)
     eval_author_cap_usd_month: float = Field(400.0, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _removed_settings(cls, data: Any) -> Any:
+        """KAN-217: a removed setting, in the environment or given directly, is refused naming the upgrade note
+        (the environment's HANGAR_* names would otherwise be ignored without a word)."""
+        given = {str(k).lower() for k in data} if isinstance(data, dict) else set()
+        given |= {k[7:].lower() for k in os.environ if k.upper().startswith("HANGAR_")}
+        if msgs := [m for n in sorted(given) if (m := removed_setting(n))]:
+            raise ValueError(" | ".join(msgs))
+        return data
 
     @field_validator("intake_posture", "subscription_logins", mode="before")
     @classmethod

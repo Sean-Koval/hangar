@@ -17,12 +17,6 @@ endpoints are the repository ones: GET /repos/{owner}/{repo}/hooks/{hook_id}/del
 first) and POST .../deliveries/{delivery_id}/attempts. The control plane's token already needs Webhooks read and write
 for setup (`setup_api.TOKEN_HELP`). GitHub keeps deliveries for 3 days and keeps the delivery's GUID across
 redeliveries, which is how a delivery that later succeeded is told apart.
-
---- trust: GitHub Projects' `projects_v2_item` comes only from an organization webhook (ghprojects.py), so the same
-pass covers each organization in HANGAR_GITHUB_PROJECTS: GET /orgs/{org}/hooks to find hangar's, then
-GET /orgs/{org}/hooks/{hook_id}/deliveries and POST .../deliveries/{delivery_id}/attempts (202), which take the
-organization's Webhooks read and write permission (classic tokens: `admin:org_hook`). Only `projects_v2_item` is
-redelivered from it: the repository hooks carry the rest.
 """
 
 from __future__ import annotations
@@ -46,8 +40,7 @@ log = logging.getLogger("hangar.redeliver")
 BOOT = secrets.token_hex(8)  # this process: a pending mark from any other one was left by a process that died
 PENDING = "pending:"
 DONE = "done"
-SINCE_KEY = "github:redeliver:since:"  # + repo (or "org:" + org): when the last pass over its deliveries started
-ORG_EVENTS = ("projects_v2_item",)  # --- trust: what an organization hook delivers that no repository hook does
+SINCE_KEY = "github:redeliver:since:"  # + repo: when the last pass over its deliveries started
 WINDOW = 3 * 86400  # GitHub keeps deliveries (and allows redelivery) for 3 days
 FIRST_WINDOW = 86400  # no pass recorded yet: the last day, like GitHub's own example script
 OVERLAP = 600.0  # seconds re-read before the last pass, for deliveries that finished failing while it ran
@@ -90,28 +83,12 @@ def _repos(mapping: dict[str, str]) -> list[str]:
     return out
 
 
-def _orgs(boards: dict[str, Any]) -> list[str]:
-    """--- trust: the organizations of HANGAR_GITHUB_PROJECTS' "org/number" boards, lower-cased, once each."""
-    out: list[str] = []
-    for key in boards:
-        org = key.split("/", 1)[0].lower()
-        if org and org not in out:
-            out.append(org)
-    return out
-
-
-async def _find_org_hook(gh: GitHub, org: str, url: str) -> dict[str, Any] | None:
-    hooks = await gh._req("GET", f"/orgs/{org}/hooks", params={"per_page": 100}) or []
-    return next((x for x in hooks if (x.get("config") or {}).get("url", "").rstrip("/") == url.rstrip("/")), None)
-
-
-async def _replay_repo(gh: GitHub, repo: str, hook_id: int, since: float, events: set[str],
-                       org: bool = False) -> int:
+async def _replay_repo(gh: GitHub, repo: str, hook_id: int, since: float, events: set[str]) -> int:
     newest: dict[str, dict[str, Any]] = {}  # guid -> its latest attempt
     succeeded: set[str] = set()
     cursor = None
     for _ in range(MAX_PAGES):
-        items, cursor = await gh.hook_deliveries(repo, hook_id, cursor, org=org)
+        items, cursor = await gh.hook_deliveries(repo, hook_id, cursor)
         for d in items:
             guid = str(d.get("guid") or d.get("id"))
             if 200 <= int(d.get("status_code") or 0) < 400:  # GitHub's own "success" range
@@ -124,7 +101,7 @@ async def _replay_repo(gh: GitHub, repo: str, hook_id: int, since: float, events
     for guid, d in newest.items():
         if guid in succeeded or d.get("event") not in events or _ts(d.get("delivered_at")) < since:
             continue
-        await gh.redeliver(repo, hook_id, int(d["id"]), org=org)
+        await gh.redeliver(repo, hook_id, int(d["id"]))
         n += 1
         log.info("asked GitHub to redeliver %s %s delivery %s (it got %s)", repo, d.get("event"), guid,
                  d.get("status_code") or d.get("status") or "no response")
@@ -137,29 +114,27 @@ async def replay_missed(h: Any) -> int:
 
     s = h.settings
     if not (s.github_redeliver_on_start and s.github_webhook_secret_credential
-            and (s.github_repos or s.github_projects)):  # --- trust: + organization hooks
+            and s.github_repos):
         return 0
     gh = h.jobs._github()
     if gh is None:
         return 0
     url, total = hook_url(h), 0
-    targets = [(repo, False) for repo in _repos(s.github_repos or {})] + \
-        [(org, True) for org in _orgs(s.github_projects or {})]  # --- trust: + organization hooks
     try:
-        for name, org in targets:
-            key = SINCE_KEY + ("org:" if org else "") + name
+        for name in _repos(s.github_repos or {}):
+            key = SINCE_KEY + name
             started = time.time()
             last = float(h.store.kv_get(key) or 0)
             since = max((last - OVERLAP) if last else started - FIRST_WINDOW, started - WINDOW + OVERLAP)
             try:
-                hook = await (_find_org_hook(gh, name, url) if org else find_hook(gh, name, url))
+                hook = await find_hook(gh, name, url)
                 if hook is None:
                     continue
                 total += await _replay_repo(gh, name, int(hook["id"]), since,
-                                            set(ORG_EVENTS if org else HOOK_EVENTS), org=org)
+                                            set(HOOK_EVENTS))
                 h.store.kv_set(key, str(started))
             except (GitHubError, httpx.HTTPError, KeyError, ValueError) as e:  # looked at again next time
-                log.warning("could not replay missed GitHub deliveries for %s%s: %s", "org " if org else "", name, e)
+                log.warning("could not replay missed GitHub deliveries for %s: %s", name, e)
     finally:
         await gh.close()
     if total:

@@ -37,7 +37,6 @@ BUILTINS: dict[str, str] = {
     "github": "hangar.app:GITHUB_PLUGIN",
     "slack": "hangar.slack:PLUGIN",
     "jira": "hangar.jira:PLUGIN",
-    "ghprojects": "hangar.ghprojects:PLUGIN",
     "webhook": "hangar.events_out:PLUGIN",
     "command": "hangar.deliverers.command:PLUGIN",
     "image-ready": "hangar.deliverers.image_ready:PLUGIN",

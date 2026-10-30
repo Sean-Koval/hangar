@@ -91,7 +91,6 @@ _GOOGLE = ("generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "
 HARNESS_HOSTS: dict[str, tuple[str, ...]] = {
     "claude-code": _ANTHROPIC,
     "codex": _OPENAI,
-    "gemini": _GOOGLE,
     "antigravity": _GOOGLE,
     "pi": (*_ANTHROPIC, *_OPENAI, *_GOOGLE, "openrouter.ai"),
 }

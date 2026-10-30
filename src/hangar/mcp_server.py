@@ -5,7 +5,7 @@ Tool design notes
 * Outputs are compact JSON-able dicts; long outputs are tail-truncated by the providers.
 * `terminal_*` tools give persistent tmux sessions for long-running or interactive work
   (dev servers, REPLs, other agents); `exec` is for one-shot commands with an exit code.
-* `run_agent` starts a headless coding agent (Claude Code / Codex / agy / Gemini) inside a
+* `run_agent` starts a headless coding agent (Claude Code / Codex / pi / agy) inside a
   sandbox, so one orchestrator session can fan work out across a fleet.
 """
 

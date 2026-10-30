@@ -16,7 +16,6 @@
 # - antigravity: the release list of agy's updater (antigravity-cli-auto-updater-....run.app/releases) names build
 #   5524738307653632 for 1.3.3, the version hangar was verified with on GKE; the sha512s are of those archives in
 #   gs://antigravity-public (the same method reproduces the updater's published sha512 for 1.3.5, the current one).
-# - gemini (deprecated): npm @google/gemini-cli@0.64.0 (dist-tag latest).
 claude-code:
   version: 2.1.296
   sha256:
@@ -32,5 +31,3 @@ antigravity:
   sha512:
     x86_64: abe3ddf5cf30d3adaa586acf505221aa19702f5ca71af3c8b1f9b1a5976bd8e5c151c41ea33b39c41675d25843462a3e8c382c054f580e9d7e1688919d3b5110
     aarch64: 1bfd3503576219a102176c13579665a2f39e84ac86a904b117d3b33f3dd751f194a862496bad6ffe914ad46d2c877ba12b6c07e6db07128b706d238262fe430c
-gemini:
-  version: 0.64.0
