@@ -89,7 +89,7 @@ git diff --binary HEAD > local.patch                      # plus untracked files
 - **Questions.** If `out/QUESTION.md` exists when the turn ends, the turn's `outcome` is `needs_input`:
   - a session goes idle with `needs_input` set to the question;
   - a job goes to state `needs_input` (not terminal). Nothing is verified or delivered yet: the agent's commits stay in the job's session (checkpointed) and are pushed when a later turn finishes. A GitHub job posts the question as a comment on the issue or PR; reply `/hangar <answer>` there (only a trusted person's answer is taken: it steers the agent). A `job.needs_input` callback is sent. Cancelling a job that waits for an answer posts the outcome to its issue or thread.
-  - The answer is an ordinary follow-up (`follow_up_job`, `send_to_session`, `hangar job follow-up`, `hangar session send`, a Slack thread reply, an A2A message), and the agent resumes its own conversation. The question survives a suspend and a control-plane restart; `needs_input` is cleared as soon as the answering turn starts.
+  - The answer is an ordinary follow-up (`follow_up_job`, `send_to_session`, `hangar job follow-up`, `hangar session send`, a Slack thread reply), and the agent resumes its own conversation. The question survives a suspend and a control-plane restart; `needs_input` is cleared as soon as the answering turn starts.
   - A turn that wrote a question but was then stopped (over budget, timed out, cancelled) doesn't wait for an answer: the job finishes with that reason and the question is not carried into the next prompt.
 
 ## Out

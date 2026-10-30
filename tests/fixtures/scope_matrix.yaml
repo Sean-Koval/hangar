@@ -5,7 +5,7 @@
 #   mcp:          the tool (null: none)       mcp_resource: hangar://... read paths     rest: "METHOD /path" (or a list)
 #   scope:        what the caller's token needs; {mcp: ..., rest: ...} when the surfaces differ
 #                   admin | user (a person's login) | jobs (service tokens) | mcp (any token /mcp accepts: admin,
-#                   mcp, user, OAuth grants) | sandboxes (E2B) | metrics | approvals.can_decide (approvals.py) |
+#                   mcp, user, OAuth grants) | metrics | approvals.can_decide (approvals.py) |
 #                   signed (a webhook signature) | ticket (single-use, minted by an admin or owner) | grant (a
 #                   sandbox's gateway grant or egress token) | link (a signed URL) | oauth | public
 #   owner:        guard (own records unless admin: people.Guard) | token (a jobs token's own jobs) | admin | any |
@@ -22,13 +22,6 @@
   scope: public
   owner: any
   enforced_by: 'app: the dashboard shell; its API calls carry the token'
-a2a.post:
-  server: hangar
-  mcp: null
-  rest: POST /a2a
-  scope: jobs
-  owner: token
-  enforced_by: 'a2a.A2AServer._caller: job_caller''s rule (admin, or a jobs token fenced to its own)'
 admin.delete_drain:
   server: hangar
   mcp: null
@@ -484,181 +477,6 @@ doctor.get:
   rest: GET /api/doctor
   scope: admin
   owner: admin
-e2b.delete:
-  server: hangar
-  mcp: null
-  rest: DELETE /e2b/{path:path}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.delete_sandboxes:
-  server: hangar
-  mcp: null
-  rest: DELETE /e2b/sandboxes/{sandbox_id}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/{path:path}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_health:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/health
-  scope: public
-  owner: any
-  enforced_by: 'e2b_api: liveness only'
-e2b.get_sandboxes:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/sandboxes
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_sandboxes_:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/sandboxes/{sandbox_id}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_sandboxes_logs:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/sandboxes/{sandbox_id}/logs
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_sandboxes_metrics:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/sandboxes/metrics
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_sandboxes_metrics_:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/sandboxes/{sandbox_id}/metrics
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_templates:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/templates
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_templates_:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/templates/{template_id}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_v2_sandboxes:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/v2/sandboxes
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_v2_sandboxes_logs:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/v2/sandboxes/{sandbox_id}/logs
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.get_v2_templates:
-  server: hangar
-  mcp: null
-  rest: GET /e2b/v2/templates
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.patch:
-  server: hangar
-  mcp: null
-  rest: PATCH /e2b/{path:path}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/{path:path}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_sandboxes:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/sandboxes
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_sandboxes_connect:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/sandboxes/{sandbox_id}/connect
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_sandboxes_pause:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/sandboxes/{sandbox_id}/pause
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_sandboxes_refreshes:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/sandboxes/{sandbox_id}/refreshes
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_sandboxes_resume:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/sandboxes/{sandbox_id}/resume
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_sandboxes_timeout:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/sandboxes/{sandbox_id}/timeout
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_v2_sandboxes:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/v2/sandboxes
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.post_v2_sandboxes_connect:
-  server: hangar
-  mcp: null
-  rest: POST /e2b/v2/sandboxes/{sandbox_id}/connect
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
-e2b.put:
-  server: hangar
-  mcp: null
-  rest: PUT /e2b/{path:path}
-  scope: sandboxes
-  owner: token
-  enforced_by: 'e2b_api.E2BService.principal/owned: an admin or sandboxes token; its own sandboxes'
 egress.delete_approvals:
   server: hangar
   mcp: null
@@ -2387,13 +2205,6 @@ usage.get:
   rest: GET /api/usage
   scope: admin
   owner: admin
-well_known.get_agent_card.json:
-  server: hangar
-  mcp: null
-  rest: GET /.well-known/agent-card.json
-  scope: public
-  owner: any
-  enforced_by: 'a2a.mount: the public agent card (no work, no data)'
 well_known.get_oauth_authorization_server:
   server: hangar
   mcp: null

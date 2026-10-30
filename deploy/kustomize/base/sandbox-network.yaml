@@ -18,8 +18,8 @@
 #   - the git gateway on hangar pods (gateway.yaml).
 # Nothing may connect *to* a sandbox pod: hangar reaches sandboxes through the Kubernetes API (exec), not the pod
 # network, so sandboxes can't reach each other either. The exceptions are hangar's own pods: envd-network.yaml (the
-# in-sandbox daemon's port) and e2b.yaml (app ports). Sandbox to sandbox is closed on both sides: no ingress from
-# them, and no egress to pod addresses (the VPC ranges above). tests/test_k8s_network.py holds every
+# in-sandbox daemon's port) and preview-network.yaml (app ports). Sandbox to sandbox is closed on both sides: no
+# ingress from them, and no egress to pod addresses (the VPC ranges above). tests/test_k8s_network.py holds every
 # manifest here to that.
 #
 # Not covered: a dual-stack cluster whose pods get global (non-ULA) IPv6 addresses. Sandboxes still can't reach each

@@ -292,7 +292,7 @@ the fix), and whether every channel in `channels.yaml` resolves to a lock. It fa
 set without a repo, or names a harness the repo doesn't have.
 
 **The default for intake jobs.** `HANGAR_DEFAULT_HARNESS=team-default@stable` (off by default) makes intake jobs
-(from GitHub, GitHub Projects, Jira, Slack and inbound webhooks) run from that lock when they name no harness, model
+(from GitHub, Jira, Slack and inbound webhooks) run from that lock when they name no harness, model
 or lock of their own, with an event saying which revision. A default that can't be claimed (the repo unreachable,
 the environment unable to run the lock) never blocks intake: the job runs as before, with a warning event. Jobs from
 the API, MCP and CLI are unchanged; they pass `harness_lock` themselves.

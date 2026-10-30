@@ -85,7 +85,7 @@ health` does: a person's login that expires, or stops working, during the deploy
 
 | | Checks |
 | --- | --- |
-| **Core** (`CORE` in gke.sh) | `doctor`, `sandbox`, `exec`, `stream`, `files`, `mcp`, `isolation`, `session`, `e2b`, `backup`, `metrics`, `power` |
+| **Core** (`CORE` in gke.sh) | `doctor`, `sandbox`, `exec`, `stream`, `files`, `mcp`, `isolation`, `session`, `backup`, `metrics`, `power` |
 | Reported | `k8s`, `model`, `steer`, `gateway`, `computer`, `egress`, `services`, `heavy`, `envbuild`, `secrets`, `landing`, `intake`, `scale-smoke`, `prepull`, `warmstart`, `status`, `clouddoctor` |
 
 Core checks exercise the control plane's own paths, run in minutes and depend on nothing outside hangar, so a core
@@ -222,7 +222,7 @@ or the REST views named. `--keep` leaves what the run made, so you can look at t
 | `files`, `mcp` | MCP works within claude.ai's 230 s; a dropped client's create still comes up | `HANGAR_MCP_TOOL_WAIT_SECONDS` too high; a regression of #86 | the sandbox's `stage` in `hangar sb ls`; the MCP version line |
 | `isolation` | sandboxes can't reach each other, the metadata server or hangar | a NetworkPolicy not applied | `hangar doctor`; [security/README.md](security/README.md) |
 | `session` | checkpoint, suspend and resume restore the work | the session store (bucket) unreachable | `hangar session get <name>` (its `reason`); `hangar doctor` |
-| `e2b`, `backup`, `metrics` | the E2B API, backups, `/metrics` and its scope | `e2b` extra missing (it skips); the backup bucket; `HANGAR_METRICS_ENABLED` | the check's line; `hangar admin backups` |
+| `backup`, `metrics` | backups, `/metrics` and its scope | the backup bucket; `HANGAR_METRICS_ENABLED` | the check's line; `hangar admin backups` |
 | `computer` | Chromium runs (under gVisor on GKE), a page screenshot is a whole PNG of the display's size and not blank, the display is captured, 3 s of video record, the screen opens through a one-time ticket, a view-only viewer's pointer and keys never arrive and a control viewer's do | the image build failed (no Chromium), gVisor missing on the pool (`runtime runc`), `/dev/shm` or the display didn't start, the websocket blocked by the load balancer | `hangar env list` (`accept-computer`); `hangar-agent computer status` and `env doctor` in a `--keep` sandbox; `GET /api/audit` for `screen.*` |
 | `egress` | an allowlist sandbox reaches the allowed host through the proxy, gets 403 for another, has no direct route and no DNS; with `--with-model`, the agent's `env request egress` reaches its owner as pending | `HANGAR_EGRESS_URL` unset (no proxy in the sandbox); the `sandbox-egress-proxied` NetworkPolicy missing (direct route); a resolver left in the pod (#97: `dnsPolicy: None`); the proxy refusing the allowed host (its address resolves privately) | `GET /api/egress/sandboxes/<id>` (mode, `enforced`, warning); `GET /api/audit` for `egress.deny`; `hangar requests ls` |
 | `services` | a Postgres sidecar answers at `postgres:5432` | the image refused by `HANGAR_ENV_SERVICE_IMAGES`, over the services budget, or not pulled | the sandbox's `info.setup_failures` (`hangar sb ls --json`); `hangar-agent svc status` in it |

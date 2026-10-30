@@ -561,7 +561,6 @@ class Job(BaseModel):
     id: str = Field(default_factory=lambda: new_id("job"))
     title: str
     instructions: str
-    # "a2a" and "github-projects": doors removed after v0.2.0 (KAN-217), kept so their jobs still load
     source: Literal["api", "mcp", "cli", "github", "webhook", "schedule", "slack", "a2a",
                     "jira", "github-projects",
                     "env-setup",

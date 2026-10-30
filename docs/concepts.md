@@ -58,11 +58,11 @@ outcome class says whether the agent, a person or the infrastructure ended it. S
 
 ## Front doors
 
-Every way work reaches hangar: MCP clients, the CLI and REST; GitHub issues and `/hangar` comments; Jira and GitHub
-Projects; Slack, signed webhooks and schedules; A2A from other agents.
+Every way work reaches hangar: MCP clients, the CLI and REST; GitHub issues and `/hangar` comments; Jira; Slack,
+signed webhooks and schedules.
 
 Each becomes a job or a session. Work from outside (an issue, a ticket, a thread) is an *intake job* with stricter
-defaults. See [intake](intake.md), [Slack](slack.md), [triggers](triggers.md) and [A2A](a2a.md).
+defaults. See [intake](intake.md), [Slack](slack.md) and [triggers](triggers.md).
 
 ## Repo policy
 

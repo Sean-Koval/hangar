@@ -126,8 +126,6 @@ def test_codexs_pack_has_no_wrapper_and_pis_launcher_runs_nothing_from_the_agent
     launcher = pi[pi.index("<<SH\n") + 5:pi.index("\nSH\n")]
     # the heredoc isn't quoted: $PREFIX, $PKG and $ENTRY are written in when the pack is built; \$@ is the launcher's
     assert launcher == '#!/bin/sh\nexec "$PREFIX/node/bin/node" "$PKG/$ENTRY" "\\$@"' and "$(" not in launcher
-    gemini = HARNESSES["gemini"].install
-    assert "readlink" not in gemini and "dirname" not in gemini
     assert "grep -q '\\$(' \"$b\"" in isolation.SETUP
 
 

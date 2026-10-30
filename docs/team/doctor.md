@@ -18,7 +18,7 @@ that would start with no login. The setup it checks is on [team setup](../team.m
   whether every channel resolves.
 - **inbox delivery**: with the Slack app configured, warns for people who get DMs (`--dm` isn't `off`) but have no
   linked Slack account: "inbox not delivered".
-- **unlinked senders**: GitHub, Slack, Jira and GitHub Projects accounts linked to nobody that started 3 or more jobs
+- **unlinked senders**: GitHub, Slack and Jira accounts linked to nobody that started 3 or more jobs
   in the last 14 days. Each comes with its `hangar person link` command.
 
 ## A turn with no login

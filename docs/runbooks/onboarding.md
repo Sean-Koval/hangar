@@ -5,7 +5,7 @@ weeks 3–4 with all 6 on 3 repos. Every step names the command and the page it 
 main. It ends, for each repo, with `hangar repo check` green.
 
 Read it with [team setup](../team.md) (people and credentials), [landing](../landing.md) (the App and branch
-protection), [intake](../intake.md) (Jira and GitHub Projects) and [the security model](../security/README.md) (the
+protection), [intake](../intake.md) (Jira) and [the security model](../security/README.md) (the
 gateway).
 
 | Part | Page |

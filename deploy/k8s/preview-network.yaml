@@ -1,0 +1,23 @@
+# Preview ports on GKE (docs/environments/previews.md). Optional, and not in kustomization.yaml: apply it with
+# HANGAR_PREVIEW_DOMAIN set. sandbox-network.yaml denies all ingress and envd-network.yaml opens only 49983, so without
+# this hangar's pods reach a sandbox's daemon and none of its apps. NetworkPolicies add up, and sandboxes still can't
+# reach each other.
+#
+# (--- KAN-217: this policy was part of e2b.yaml, with the Gateway for the E2B-compatible API's sandbox URLs. That API
+# was removed after v0.2.0; delete the old Gateway and route with
+# `kubectl -n hangar delete gateway,httproute hangar-e2b`.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-hangar-sandbox-ports
+  namespace: hangar-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: hangar}
+          podSelector:
+            matchLabels: {app: hangar}
+      ports: [{protocol: TCP, port: 1, endPort: 65535}]

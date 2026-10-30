@@ -39,9 +39,9 @@ Jobs from every front door get the repo's defaults (`verify`, environment, harne
 
 `/hangar <instructions>` or `@hangar <instructions>` in a mapped channel starts a job on the channel's repo. hangar replies in a thread when the agent starts, needs input and finishes, and a reply in the thread is a follow-up. Setup (app manifest, credentials, channel map) is in [slack.md](../slack.md).
 
-## 4b. Trigger from Jira or GitHub Projects
+## 4b. Trigger from Jira <span id="4b-trigger-from-jira-or-github-projects"></span>
 
-Planned work comes in through Jira: moving an issue to **Ready for agent** in a mapped project is the default door (`hangar setup jira`), and a configured label works too. Repo-local chores come in through a GitHub label (`hangar`) or a GitHub Projects column of the same name. hangar comments on the issue when it queues the job (saying when it starts if the sandbox pools are powered down), when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](../intake.md).
+Planned work comes in through Jira: moving an issue to **Ready for agent** in a mapped project is the default door (`hangar setup jira`), and a configured label works too. Repo-local chores come in through a GitHub label (`hangar`). hangar comments on the issue when it queues the job (saying when it starts if the sandbox pools are powered down), when the agent starts, asks its questions there (a comment answers), and moves the ticket's status as the job goes. Setup is in [intake.md](../intake.md).
 
 Write the ticket from the [agent ticket template](../intake.md#agent-tickets): *Goal*, *Acceptance criteria*, *Verify command*, *Out of scope*, *Touches risk paths?*. hangar hands the criteria to the agent as untrusted `acceptance.md` and counts them (`intake.acceptance`); the ticket's verify command is a suggestion unless the repo policy's `verify_allowed` matches it. A ticket without criteria still starts, and the queued comment says to add them.
 

@@ -115,12 +115,12 @@ class SandboxRouter:
             sid, port_s, raw_path = arg
             if not _SID.match(sid) or not port_s.isdigit() or not 0 < int(port_s) < 65536:
                 raise Refused(400, {"message": "Invalid sandbox ID or port", "code": 400})
-            if int(port_s) == ENVD_PORT:  # hangar-envd's own port is never proxied
-                raise Refused(404, {"message": "no such port", "code": 404})
             if not raw_path.startswith(b"/"):  # absolute-form, `@host`, `*`: uvicorn's h11 server passes them on
                 raise Refused(400, {"message": "the request target must be a path", "code": 400})
-            sb = self._authorize(scope, sid, int(port_s), raw_path)
+            sb = self._authorize(scope, sid, int(port_s), raw_path)  # first: nobody else learns which ports exist
             port = int(port_s)
+            if port == ENVD_PORT:  # hangar-envd's own port is never proxied
+                raise Refused(404, {"message": "no such port", "code": 404})
             if observe.enabled() and scope["type"] == "http":
                 from opentelemetry import trace
 

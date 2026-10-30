@@ -1,6 +1,6 @@
 # Repo policy: the defaults every front door applies
 
-Work reaches hangar through many doors: MCP, REST, the CLI, GitHub issues, Slack, A2A, inbound webhooks and schedules. A **repo policy** is one record per repository with the defaults its jobs get, whichever door they came through. A new kind of intake only has to name the repo.
+Work reaches hangar through many doors: MCP, REST, the CLI, GitHub issues, Slack, inbound webhooks and schedules. A **repo policy** is one record per repository with the defaults its jobs get, whichever door they came through. A new kind of intake only has to name the repo.
 
 ```bash
 hangar repo set acme/app --verify "uv run pytest -q" --env python
@@ -47,7 +47,7 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `ai_review_budget_usd` | What one review job may spend. Unset: $1.50 (`--ai-review-budget`). |
 | `max_open_agent_prs` | [Review capacity](team-scale.md#review-capacity): open agent PRs awaiting a person before their new jobs on this repo wait as `awaiting_capacity`; `0` turns it off. Unset: `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` (5) (`--max-open-agent-prs`). |
 | `verify_allowed` | Globs (`make test*`, `pytest tests/*`) a ticket's own *Verify command* ([agent tickets](intake.md#agent-tickets)) must match to become that job's `verify` (`--verify-allowed`, repeated). Unset: a ticket's command is only ever a suggestion to the agent, and the job's check stays the policy's or the environment's. A matched command is the job's own check (`verify_source: job`), so the [base check](#the-check-on-the-base-commit) is skipped for it, as for any acceptance test a job brings. `*` alone is refused. |
-| `overnight` | `true`: the repo's intake jobs (Jira, GitHub, Slack, GitHub Projects) run at night in the overnight lane instead of waiting for 10:00 (`--overnight`; [gke.md](gke.md#the-overnight-lane), #186). A job from any repo can ask for it with the label `lane: overnight`. |
+| `overnight` | `true`: the repo's intake jobs (Jira, GitHub, Slack) run at night in the overnight lane instead of waiting for 10:00 (`--overnight`; [gke.md](gke.md#the-overnight-lane), #186). A job from any repo can ask for it with the label `lane: overnight`. |
 | `branch_template` | The repo's job branches, e.g. `feature/{ticket_key}-{job}`. It must contain `{job}`, or the set is refused and nothing changes. Unset: `hangar/<job>` (`--branch-template`; `''` clears it). See [change sets](changesets.md#company-conventions-in-the-repo-policy). |
 | `require_ticket` | `true` refuses a job for the repo without a `ticket` (`jira:PAY-412`) (`--require-ticket`, `--no-require-ticket`). |
 | `title_template` | The title of the repo's agent PRs, e.g. `{ticket_key}: {title}` (`--title-template`; `''` clears it). Placeholders: `{job}`, `{ticket}`, `{ticket_key}`, `{title}`, `{role}`. |

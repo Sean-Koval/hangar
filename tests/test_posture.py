@@ -241,7 +241,7 @@ def test_a_fresh_laptop_without_intake_doors_is_not_a_doctor_failure(fleet, monk
     s = fleet.settings
     s.intake_posture, s.gateway_url, s.gateway_host = "enforce", None, None
     s.github_repos, s.github_webhook_secret_credential, s.slack_signing_secret_credential = {}, None, None
-    s.jira, s.github_projects, s.inbound_webhooks = {}, {}, {}
+    s.jira, s.inbound_webhooks = {}, {}
     monkeypatch.setattr("sys.platform", "linux")
     h = SimpleNamespace(settings=s, fleet=fleet)
     gw = {c["name"]: c for c in posture.doctor_checks(h)}["intake posture: gateway"]

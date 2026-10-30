@@ -1,13 +1,12 @@
 """Wave 3 review findings (--- trust): who may start an auto-fix round and how reviewers' text reaches the agent,
-Slack's commit-after-handle dedupe, a restart during the base check, Jira deliveries over the 1 MB cap, and the
-startup redelivery of missed organization-webhook deliveries. Each test failed on build/ops before its fix."""
+Slack's commit-after-handle dedupe, a restart during the base check and Jira deliveries over the 1 MB cap. Each test
+failed on build/ops before its fix."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
 import json
-import time
 from types import SimpleNamespace as NS
 
 import httpx
@@ -20,7 +19,6 @@ from tests.test_autofix import _attachment, _turns, gh  # noqa: F401 - fixtures
 from tests.test_frontdoor import _runs, repo  # noqa: F401 - fixtures
 from tests.test_intake import DANA, door, fixture, post, sign, until  # noqa: F401 - fixtures
 from tests.test_jobs import DONE, _until, jobs, sessions, world  # noqa: F401 - fixtures
-from tests.test_reconciler import _iso
 from tests.test_slack import event, slack, until_posted  # noqa: F401 - fixtures
 
 
@@ -285,39 +283,4 @@ def test_the_body_cap_lets_jira_through_to_its_own_reader(settings):
     assert mw._fixed_cap("/api/hooks/github") > 0
 
 
-# ====================================================================== 5: org webhook redelivery (#92's Projects)
-async def test_missed_org_webhook_deliveries_are_redelivered(settings, store):
-    from hangar.github import GitHub
 
-    t = time.time()
-    settings.github_webhook_secret_credential = "gh-hook"
-    settings.github_repos = {}
-    settings.github_projects = {"Acme/7": {"trigger": "Ready"}, "acme/9": {"trigger": "Ready"}}
-    settings.public_url = "https://hangar.example"
-    redelivered, seen = [], []
-
-    def handle(req: httpx.Request) -> httpx.Response:
-        seen.append((req.method, req.url.path))
-        if req.url.path == "/orgs/acme/hooks":
-            return httpx.Response(200, json=[{"id": 3, "config": {"url": "https://other.example/x"}},
-                                             {"id": 8, "config": {"url": "https://hangar.example/api/hooks/github"}}])
-        if req.url.path == "/orgs/acme/hooks/8/deliveries":
-            return httpx.Response(200, json=[
-                {"id": 21, "guid": "p1", "event": "projects_v2_item", "status_code": 0, "delivered_at": _iso(t - 7200)},
-                {"id": 22, "guid": "p2", "event": "projects_v2_item", "status_code": 202,
-                 "delivered_at": _iso(t - 3600)},
-                {"id": 23, "guid": "p3", "event": "issues", "status_code": 502, "delivered_at": _iso(t - 600)}])
-        if req.method == "POST" and req.url.path.startswith("/orgs/acme/hooks/8/deliveries/"):
-            redelivered.append(int(req.url.path.split("/")[-2]))
-            return httpx.Response(202, json={})
-        return httpx.Response(404, json={"message": "Not Found"})
-
-    audits = []
-    h = NS(settings=settings, store=store, fleet=NS(audit=lambda *a, **kw: audits.append((a, kw))),
-           jobs=NS(_github=lambda: GitHub("tok", transport=httpx.MockTransport(handle)), transport=True))
-    assert await redeliver.replay_missed(h) == 1
-    assert redelivered == [21]  # the org hook carries Projects items; its other events come through repo hooks
-    assert seen.count(("GET", "/orgs/acme/hooks")) == 1  # one org, two boards
-    assert float(store.kv_get(redeliver.SINCE_KEY + "org:acme")) >= t
-    redelivered.clear()
-    assert await redeliver.replay_missed(h) == 0 and not redelivered

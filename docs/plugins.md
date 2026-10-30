@@ -1,6 +1,6 @@
 # Plugins and events out
 
-hangar's doors, trackers, notifiers and deliverers are plugins. Its own (GitHub, Slack, Jira, GitHub Projects, the events webhook) are built in. A package of your own adds more without changing hangar: a chat bot's door, a company tracker, a deliverer that bumps your deploy repo. The surface is `hangar.plugin/v1`, in `hangar.ext`.
+hangar's doors, trackers, notifiers and deliverers are plugins. Its own (GitHub, Slack, Jira, the events webhook) are built in. A package of your own adds more without changing hangar: a chat bot's door, a company tracker, a deliverer that bumps your deploy repo. The surface is `hangar.plugin/v1`, in `hangar.ext`.
 
 Events out are the other half. Every change to a job becomes a [`hangar.event/v1`](#events) that each notifier hears once: queued, needs input, a tool approval, PR opened, approved, landed. The built-in [webhook notifier](#the-webhook) signs each event and POSTs it. So a bot in a room (the Symphony bot, for example) needs no code inside hangar.
 
@@ -146,7 +146,6 @@ def verify(key: bytes, body: bytes, headers) -> bool:
 | `github` | Door `/api/hooks/github` (issues, comments, landing, checks, Projects items) | `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL` ([jobs/README.md](jobs/README.md)) |
 | `slack` | Door `/api/hooks/slack/*`, replies in `slack:` threads | `HANGAR_SLACK_*` ([slack.md](slack.md)) |
 | `jira` | Door `/api/hooks/jira`, comments on `jira:` issues, tracker `jira` | `HANGAR_JIRA` ([intake.md](intake.md)) |
-| `ghprojects` | Tracker `ghproject` | `HANGAR_GITHUB_PROJECTS` ([intake.md](intake.md)) |
 | `webhook` | Notifier `webhook` | `HANGAR_PLUGINS.notifiers.webhook` ([above](#the-webhook)) |
 | `command`, `image-ready` | Deliverers for a [change set's deploy step](changesets.md#deliverers) | Always on; a profile's `deploy` names them |
 

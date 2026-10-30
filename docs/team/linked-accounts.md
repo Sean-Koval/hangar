@@ -1,6 +1,6 @@
 # Linked accounts and inbox delivery
 
-Work reaches hangar from GitHub (issue labels, `/hangar` comments), Slack, and Jira and GitHub Projects intake. Each
+Work reaches hangar from GitHub (issue labels, `/hangar` comments), Slack, and Jira intake. Each
 sender is an account there, not a hangar person, until an admin links them. This page links them, says what a link
 changes, and how the inbox reaches a person. The rest of the setup is on [team setup](../team.md).
 

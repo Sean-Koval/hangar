@@ -20,7 +20,7 @@ This page gets a first job through: log in, a token for the service, submit, cal
 
 | Page | What it covers |
 | --- | --- |
-| [After you submit a job](after-submit.md) | States and reasons, following it, the CLI and MCP, questions, A2A |
+| [After you submit a job](after-submit.md) | States and reasons, following it, the CLI and MCP, questions, from another agent |
 | [Jobs from GitHub, Slack and Jira](from-github-slack-jira.md) | `/hangar` on an issue or PR, a Slack thread, a ticket moved to a column |
 | [Working with the agent](working-with-the-agent.md) | Follow along, reply, take over; the pull request; forks and best-of-N |
 | [An agent loop that finishes the job](agent-loop.md) | The verify gate inside the turn; PR auto-fix |

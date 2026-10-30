@@ -67,7 +67,7 @@ To look around first without Docker or a key, run the demo hangar the recording 
 
 | Feature | What it gives your team | Status |
 | --- | --- | --- |
-| **Many front doors** | MCP clients, the CLI, REST, GitHub issues and Projects, Jira, Slack, webhooks, schedules and A2A all become [jobs](docs/jobs/README.md) or [sessions](docs/sessions.md), with one [repo policy](docs/repo-policy.md) for each repo. | Shipped |
+| **Many front doors** | MCP clients, the CLI, REST, GitHub issues, Jira, Slack, webhooks and schedules all become [jobs](docs/jobs/README.md) or [sessions](docs/sessions.md), with one [repo policy](docs/repo-policy.md) for each repo. | Shipped |
 | **Isolated sandboxes** | Each has its own files, tools, checkout and agent configuration, from [environments](docs/environments.md) you prepare once; fork a prepared one into parallel attempts. Docker, gVisor or Kata, GKE or E2B. | Shipped |
 | **Any agent** | Claude Code, Codex, pi and Antigravity as [harnesses](docs/harnesses.md), pinned by version; a Codex client can ask for Claude Code and the other way round. A team shares one harness (instructions, skills, Claude Code plugins) frozen from a good run into a [harness repo](docs/harness-lock.md#the-team-harness-repo). | Shipped |
 | **Verified delivery** | The repo's own check runs before anything is pushed; hangar pushes through the git gateway and opens a draft PR with a review packet; with [landing](docs/landing.md), an approval lands it. | Shipped |

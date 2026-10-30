@@ -4,6 +4,20 @@
 
 ### Before you upgrade
 
+**Four surfaces are removed** (KAN-217, decided on KAN-84). A hangar that still sets one of their settings refuses
+to start, naming it and [the upgrade note](docs/upgrading.md#removed-surfaces). Stored with `hangar config`, it isn't
+applied, `hangar config set` refuses it and `hangar doctor` fails until `hangar config unset` clears it.
+
+| Removed | Routes, flags and files | Settings |
+| --- | --- | --- |
+| The A2A endpoint (`a2a.py`) | `POST /a2a`, `GET /.well-known/agent-card.json` (now 404); `a2a_agent_card` in `GET /api/connect` | `HANGAR_A2A_ENABLED`, `HANGAR_A2A_DEFAULT_REPO`, `HANGAR_A2A_POLL_SECONDS`, `HANGAR_A2A_MAX_WAIT_SECONDS`, `HANGAR_A2A_MAX_REQUEST_BYTES`, `HANGAR_A2A_MAX_PUSH_CONFIGS`, `HANGAR_A2A_MAX_STREAMS_PER_OWNER` |
+| The E2B-compatible API (`e2b_api.py`) | `/e2b/*` (now 404) and its sandbox URLs (`api.<domain>`, `sandbox.<domain>`, `<port>-<id>.<domain>`); the `sandboxes` token scope (`hangar token create --scope sandboxes`); `deploy/k8s/e2b.yaml` (its NetworkPolicy moved to `deploy/k8s/preview-network.yaml`); the acceptance check `e2b`; `scripts/bench/e2b_router.py` | `HANGAR_E2B_API_PATH`, `HANGAR_E2B_API_DOMAIN`, `HANGAR_E2B_TEMPLATES`, `HANGAR_E2B_TRUSTED_ENVIRONMENTS`, `HANGAR_E2B_MAX_TIMEOUT_SECONDS`, `HANGAR_E2B_MAX_SANDBOXES_PER_OWNER`, `HANGAR_E2B_RATE_PER_MINUTE`, `HANGAR_E2B_RATE_BURST`, `HANGAR_E2B_CREATE_PER_MINUTE`, `HANGAR_E2B_CREATE_BURST`, `HANGAR_E2B_MAX_STREAMS_PER_SANDBOX` (preview ports: `HANGAR_PREVIEW_MAX_STREAMS_PER_SANDBOX`, 256) |
+| The GitHub Projects door (`ghprojects.py`) | `projects_v2_item` deliveries are ignored; the `ghprojects` plugin and `ghproject` tracker; startup redelivery from organization webhooks | `HANGAR_GITHUB_PROJECTS` |
+| The deprecated `gemini` harness (Gemini CLI) | `harness: gemini` and its lock entry; `hangar connect gemini` (an MCP client) stays | none |
+
+`sandbox_router.py` stays, trimmed to the proxy preview ports use. The `e2b` provider stays, experimental and outside
+1.0 ([docs/microvm.md](docs/microvm.md)). Jobs recorded with the `a2a` or `github-projects` source still load.
+
 **This release enforces #123–#125 with no way back** (KAN-74, #223). The safe release's warn switches are gone, and
 `HANGAR_INTAKE_POSTURE=off` with them. A hangar that still sets one breaks on deploy
 ([the steps](docs/releases/enforce.md#before-you-upgrade)):

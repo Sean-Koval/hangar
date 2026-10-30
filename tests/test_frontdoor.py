@@ -129,7 +129,7 @@ async def test_every_front_door_applies_the_policy_and_the_job_still_wins(jobs, 
     jobs.fleet.catalog.reload()
     jobs.settings.github_repos = {repo["url"]: "otherenv,redenv"}
     update(jobs, PolicyUpdate(repo=repo["url"], verify="make test", environment="redenv"), "admin")
-    for source in ("slack", "a2a", "webhook", "schedule"):  # each builds a SubmitJob and calls submit
+    for source in ("slack", "webhook", "schedule"):  # each builds a SubmitJob and calls submit
         restricted = source in ("slack", "webhook")
         job = jobs.submit(SubmitJob(instructions="x", repo=repo["url"], deliver="none"),
                           Caller(f"{source}:x", f"{source}:x", restricted=restricted), source=source)

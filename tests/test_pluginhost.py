@@ -125,15 +125,15 @@ def test_the_built_ins_load_as_plugins(settings):
     paths = {getattr(r, "path", "") for r in app.routes}
     assert {"/api/hooks/github", "/api/hooks/slack/events", "/api/hooks/slack/commands",
             "/api/hooks/slack/interactions", "/api/hooks/jira"} <= paths
-    from hangar import ghprojects, jira, slack
+    from hangar import jira, slack
 
     assert jobs.NOTIFIERS["slack"] is slack.notify and jobs.NOTIFIERS["jira"] is jira.notify
-    assert intake.TRACKERS["jira"] is jira.update and intake.TRACKERS["ghproject"] is ghprojects.update
+    assert intake.TRACKERS["jira"] is jira.update and "ghproject" not in intake.TRACKERS  # --- KAN-217
     with TestClient(app) as c:
         views = {p["name"]: p for p in c.get("/api/admin/plugins", headers=ADMIN).json()["plugins"]}
         assert views["slack"]["adds"] == ["door:slack"] and views["slack"]["builtin"]
         assert views["jira"]["adds"] == ["door:jira", "tracker:jira"]
-        assert views["ghprojects"]["adds"] == ["tracker:ghproject"]
+        assert "ghprojects" not in views  # --- KAN-217: removed
         assert views["github"]["adds"] == ["door:github"]
         assert "webhook" not in views  # not configured: not loaded
         # off until configured, as before

@@ -1,6 +1,6 @@
 # Who is trusted
 
-One rule for every front door: GitHub issues and PRs, Slack, Jira, GitHub Projects. It says whose work starts without
+One rule for every front door: GitHub issues and PRs, Slack, Jira. It says whose work starts without
 approval, who may continue a job, and which text is an instruction. Linking accounts is on
 [linked accounts](linked-accounts.md).
 
@@ -19,7 +19,6 @@ approval, who may continue a job, and which text is an instruction. Linking acco
 3. **An account linked to nobody acts for the team**, and is trusted only by its source's own rule:
     - GitHub issues and PRs: author association owner, member or collaborator, or `HANGAR_GITHUB_TRUSTED` when set
       ([who can start work from GitHub](../triggers.md#1-who-can-start-work-from-github));
-    - GitHub Projects: `HANGAR_GITHUB_TRUSTED` only, since project item events carry no association;
     - Slack: a member of the workspace in a mapped channel, within `HANGAR_SLACK_USERS` when that's set. Another
       organization's user is trusted only when listed there;
     - Jira: never. Anyone who can move an issue could otherwise start work, so their job waits for a linked
@@ -55,5 +54,5 @@ Intake that adds a source calls `people.resolve_external(store, source, external
 or `None`, and the intake passes `Caller(..., person=p.id)` (`None` for the team), trusted when it isn't `None`.
 
 The ids are a GitHub user's numeric id (`sender.id`), a Slack `TEAM/USER`, a Jira account id or Data Center user
-key, or an email. `github_projects` is the same as `github`, and a `jira` id with an `@` is looked up as an email. A
+key, or an email. A `jira` id with an `@` is looked up as an email. A
 follow-up passes `front_door=True, sender_person=…` to `JobService.follow_up`.

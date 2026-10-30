@@ -385,8 +385,8 @@ pending with its command.
 
 **While the pools are off**, hangar keeps working on everything that doesn't need a sandbox:
 
-- GitHub, Slack and Jira events (and GitHub Projects, schedules, A2A, MCP `submit_job`) are accepted and queued as usual. Queued jobs wait with the status `waiting: sandboxes power on at 10:00 EDT (in 8 h 12 min)`, and start a few at a time (`HANGAR_JOB_RESTART_STAGGER_SECONDS` apart) once the pools are up.
-- A create (`create_sandbox`, REST, the E2B API, `new_session`, a message to a suspended session) answers at once with a plain message and when sandboxes are back, instead of waiting for a node that won't come: REST answers `503` with `Retry-After`. Nothing is left half made.
+- GitHub, Slack and Jira events (and schedules, MCP `submit_job`) are accepted and queued as usual. Queued jobs wait with the status `waiting: sandboxes power on at 10:00 EDT (in 8 h 12 min)`, and start a few at a time (`HANGAR_JOB_RESTART_STAGGER_SECONDS` apart) once the pools are up.
+- A create (`create_sandbox`, REST, `new_session`, a message to a suspended session) answers at once with a plain message and when sandboxes are back, instead of waiting for a node that won't come: REST answers `503` with `Retry-After`. Nothing is left half made.
 - Sessions and the dashboard are readable; suspended sessions resume when their next message arrives after power-up.
 
 `down` tells hangar first (`POST /api/admin/power/state`), so new creates are refused from that moment, then drains (`POST /api/admin/drain`): queued jobs wait instead of starting, and running experiment trials are cancelled as `infra_error` / `power_down` and run again in the next eval window (20:00, not at power-up: [team-scale.md](team-scale.md#the-eval-queue-class)); queued eval jobs wait for that window too. It suspends idle sessions and waits up to 10 minutes for running agent turns to finish. Turns still running then get a fresh checkpoint, and it waits up to 3 more minutes for sandbox creates, destroys and suspends already under way. Only then do the pools go. A job turn the pools take away anyway resumes from its checkpoint after power-up (at most `HANGAR_JOB_RESTART_RESUMES` times), as after a restart, and so does each best-of-N attempt. Each pool's autoscaling range (or a fixed pool's node count, for the microVM pool) is saved as a label on the cluster, and `up` restores it; a range a `terraform apply` set while the pools were down wins over the saved one.
@@ -501,48 +501,13 @@ To restore one, create a disk from the snapshot, then a PV and PVC for it (or sw
 
 ## Shutdown
 
-`kubectl rollout restart`, a deploy (`set image`) and node upgrades stop hangar with SIGTERM (`power.sh down` no longer does: hangar stays up). Requests that wait (MCP `agent_status` with `wait_seconds`, `wait_for_turn`, a blocking A2A send) answer at once with the state as it is, and their clients ask again. Event streams and terminals are cut after `HANGAR_SHUTDOWN_GRACE_SECONDS` (15). Then hangar stops its loops and closes its connections. The pod's `terminationGracePeriodSeconds` is 45 to cover that.
+`kubectl rollout restart`, a deploy (`set image`) and node upgrades stop hangar with SIGTERM (`power.sh down` no longer does: hangar stays up). Requests that wait (MCP `agent_status` with `wait_seconds`, `wait_for_turn`) answer at once with the state as it is, and their clients ask again. Event streams and terminals are cut after `HANGAR_SHUTDOWN_GRACE_SECONDS` (15). Then hangar stops its loops and closes its connections. The pod's `terminationGracePeriodSeconds` is 45 to cover that.
 
 Sandboxes, agent turns and sessions don't stop with the control plane. A new pod re-attaches to them. Shutdown takes no checkpoints. A checkpoint, destroy or backup cut off by it is redone after the restart (the idle check and the reaper run again), so the 300 s pre-destroy budget doesn't need to fit in the grace period.
 
-## 8. E2B SDK clients (optional)
+## 8. E2B SDK clients (removed) <span id="8-e2b-sdk-clients-optional"></span>
 
-hangar answers E2B's API, so the e2b SDKs and the tools built on them can use GKE sandboxes ([e2b.md](e2b.md)). They need two things from the cluster: hangar-envd reachable in each sandbox (`envd-network.yaml`, already applied) and a way to reach sandbox URLs. There are two ways.
-
-**No new DNS (the sslip.io install, or any single host).** Clients route every sandbox call by header through the URL you already have, its certificate and its Ingress:
-
-```bash
-hangar token create my-agents --scope sandboxes      # E2B_API_KEY
-export E2B_API_KEY=hgr_... E2B_API_URL=https://<ip>.sslip.io/e2b E2B_SANDBOX_URL=https://<ip>.sslip.io/e2b/sandbox
-```
-
-Everything the SDKs do works this way, including code-interpreter's port 49999. What doesn't is a browser opening `sandbox.get_host(port)`, which needs per-sandbox host names.
-
-**Your own domain, with `*.<domain>`.** Then `E2B_DOMAIN=<domain>` is all a client sets, and apps in sandboxes get URLs like `https://3000-sb-1a2b3c4d.e2b.example.com`. That needs a wildcard certificate, which takes a few extra resources:
-
-- **Google-managed certificates on GKE Ingress don't support wildcards**, and GKE Ingress doesn't take Certificate Manager certificates ("GKE Ingress does not support certificates managed by Certificate Manager. To use certificates managed by Certificate Manager, use the Gateway API").
-- **Certificate Manager with DNS authorization does.** One DNS authorization covers a domain and its wildcard, one level deep: `*.e2b.example.com` covers `49983-sb-1a2b3c4d.e2b.example.com`, which is all a sandbox host needs. Load-balancer authorization doesn't do wildcards.
-- **sslip.io can't get one**, since nobody can add the `_acme-challenge` record under it; use the header mode above there.
-
-With `E2B_DOMAIN=e2b.example.com`:
-
-```bash
-gcloud container clusters update hangar --location <zone> --gateway-api=standard   # once; up to 45 min
-gcloud compute addresses create hangar-e2b-ip --global
-gcloud certificate-manager dns-authorizations create hangar-e2b --domain=e2b.example.com
-gcloud certificate-manager dns-authorizations describe hangar-e2b   # add its dnsResourceRecord (a CNAME) to your DNS
-gcloud certificate-manager certificates create hangar-e2b \
-  --domains="e2b.example.com,*.e2b.example.com" --dns-authorizations=hangar-e2b
-gcloud certificate-manager maps create hangar-e2b
-gcloud certificate-manager maps entries create hangar-e2b-wild --map=hangar-e2b \
-  --hostname="*.e2b.example.com" --certificates=hangar-e2b
-sed 's/E2B_DOMAIN/e2b.example.com/' deploy/k8s/e2b.yaml | kubectl apply -f -
-hangar config set e2b_api_domain e2b.example.com     # then: kubectl -n hangar rollout restart deploy/hangar
-```
-
-Point `*.e2b.example.com` (an A record) at `gcloud compute addresses describe hangar-e2b-ip --global`. `deploy/k8s/e2b.yaml` holds the Gateway and route for `*.<domain>`, a one-hour backend timeout and the `/healthz` health check for it, and a NetworkPolicy that lets hangar's pods reach apps' ports in sandboxes; without that policy only envd is reachable. The dashboard, MCP and the REST API stay on the Ingress.
-
-Long streams (a command's output, a terminal) end after the backend timeout (one hour, on both the Ingress and the Gateway); the process keeps running, and `commands.connect(pid)` picks it up again.
+hangar's E2B-compatible API was removed after v0.2.0 ([removed surfaces](upgrading.md#removed-surfaces)). If you applied the old `deploy/k8s/e2b.yaml`, delete its Gateway and route: `kubectl -n hangar delete gateway,httproute hangar-e2b`. Preview ports still need its NetworkPolicy, now `deploy/k8s/preview-network.yaml`.
 
 ## Notes
 

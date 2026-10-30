@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from hangar import modelpolicy, pins
-from hangar.modelpolicy import Resolver, parse, pick
+from hangar.modelpolicy import Resolver, parse, pick, rank_google
 from hangar.models import CredentialKind
 from hangar.repopolicy import RepoPolicy
 from hangar.sessions import NewSession
@@ -63,12 +63,11 @@ def test_policy_names_and_pinned_ids():
     ("codex", "frontier", "gpt-6-astra"),
     ("codex", "balanced", "gpt-6.1-sol"),
     # Google: stable before preview: 3.8 Flash leads 3.1 Pro Preview; image and embedding models never
-    ("gemini", "frontier", "gemini-3.8-flash"),
-    ("gemini", "balanced", "gemini-3.8-flash"),
     ("antigravity", "frontier", "gemini-3.8-flash-high"),  # agy's id: no -preview, a thinking level
 ])
 def test_each_provider_ranks_its_recorded_list(harness, policy, want):
     assert pick(harness, recorded(modelpolicy.PROVIDER[harness]), policy) == want
+    assert rank_google(recorded("google"), policy) == "gemini-3.8-flash"  # the raw Gemini id under agy's
 
 
 def test_pi_on_openrouter_picks_per_vendor_and_skips_aliases_and_batch_ids():
@@ -83,11 +82,11 @@ def test_pi_on_openrouter_picks_per_vendor_and_skips_aliases_and_batch_ids():
 
 def test_google_newest_version_then_stable_then_tier_and_agy_drops_the_preview_suffix():
     pro = [{"id": "gemini-3.1-pro-preview"}, {"id": "gemini-2.5-flash"}]
-    assert pick("gemini", pro, "frontier") == "gemini-3.1-pro-preview", "a newer version beats an older stable one"
+    assert rank_google(pro, "frontier") == "gemini-3.1-pro-preview", "a newer version beats an older stable one"
     assert pick("antigravity", pro, "frontier") == "gemini-3.1-pro-high"
-    assert pick("gemini", [{"id": "gemini-3.8-pro-preview"}, {"id": "gemini-3.8-flash"}], "frontier") == \
+    assert rank_google([{"id": "gemini-3.8-pro-preview"}, {"id": "gemini-3.8-flash"}], "frontier") == \
         "gemini-3.8-flash", "same version: the stable one"
-    assert pick("gemini", [{"id": "gemini-3.8-flash"}, {"id": "gemini-3.8-pro"}], "frontier") == "gemini-3.8-pro"
+    assert rank_google([{"id": "gemini-3.8-flash"}, {"id": "gemini-3.8-pro"}], "frontier") == "gemini-3.8-pro"
 
 
 def test_nothing_qualifies():
@@ -340,11 +339,11 @@ def test_a_newer_lite_model_is_never_frontier():
     """Version first would make Google's next flash-lite (its cheapest tier) the `frontier` pick over a stronger
     flash or pro; a lite model is frontier only when nothing else is listed."""
     models = recorded("google") + [{"id": "gemini-3.9-flash-lite"}]
-    assert pick("gemini", models, "frontier") == "gemini-3.8-flash"
+    assert rank_google(models, "frontier") == "gemini-3.8-flash"
     assert pick("antigravity", models, "frontier") == "gemini-3.8-flash-high"
-    assert pick("gemini", [{"id": "gemini-3.5-flash-lite"}, {"id": "gemini-3.1-pro-preview"}], "frontier") == \
+    assert rank_google([{"id": "gemini-3.5-flash-lite"}, {"id": "gemini-3.1-pro-preview"}], "frontier") == \
         "gemini-3.1-pro-preview"
-    assert pick("gemini", [{"id": "gemini-3.5-flash-lite"}], "frontier") == "gemini-3.5-flash-lite"
+    assert rank_google([{"id": "gemini-3.5-flash-lite"}], "frontier") == "gemini-3.5-flash-lite"
     ors = recorded("openrouter") + [{"id": "google/gemini-3.9-flash-lite"}]
     assert pick("pi", ors, "frontier", "google") == "openrouter/google/gemini-3.8-flash"
 

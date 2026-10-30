@@ -195,6 +195,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import pluginhost  # --- plugin host: each plugin, its version and what it added
 
     out += await pluginhost.doctor_checks(h)
+    cfg = getattr(h, "config", None)  # --- KAN-217: a removed setting stored with `hangar config` before the upgrade
+    for key, msg in (cfg.removed_settings() if hasattr(cfg, "removed_settings") else []):
+        out.append(_check(f"removed setting {key}", False, msg, f"hangar config unset {key}"))
 
     # checkpoint storage is writable
     key = f"_doctor/{now():.0f}"
@@ -230,9 +233,6 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import posture  # --- intake posture (#123): gateway, egress proxy, intake environments' modes
 
     out += posture.doctor_checks(h)
-    cfg = getattr(h, "config", None)  # --- KAN-217: a removed setting stored with `hangar config` before the upgrade
-    for key, msg in (cfg.removed_settings() if hasattr(cfg, "removed_settings") else []):
-        out.append(_check(f"removed setting {key}", False, msg, f"hangar config unset {key}"))
     from hangar import power  # --- ops: the pools' power state, the last deploy, the background loops
 
     out += power.doctor_checks(h)

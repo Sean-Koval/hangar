@@ -1,4 +1,4 @@
-"""Tracker intake (docs/intake.md): Jira and GitHub Projects, and what they share with GitHub issues and Slack.
+"""Tracker intake (docs/intake.md): Jira, and what it shares with GitHub issues and Slack.
 
 Jira's REST API and GitHub's REST and GraphQL APIs are faked with httpx.MockTransport. The inbound payloads are
 recorded shapes (tests/fixtures/intake), following Atlassian's webhook docs and GitHub's webhook and GraphQL schemas;
@@ -19,10 +19,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from hangar import ghprojects, identity, intake, jira, people, redeliver
+from hangar import identity, intake, jira, people, redeliver
 from hangar.frontdoor import ReplayGuard
 from hangar.github import verify_signature
-from hangar.jobs import Caller, JobService, SubmitJob, handle_github
+from hangar.jobs import Caller, JobService, SubmitJob
 from hangar.models import Credential, CredentialKind, Job, JobState, Person
 from hangar.triggers import new_approval
 
@@ -42,15 +42,13 @@ def fixture(name: str) -> dict:
 
 # ============================================================================ fakes
 class FakeAPIs:
-    """Jira Cloud's REST v3 (acme.atlassian.net) and GitHub's REST and GraphQL APIs (api.github.com)."""
+    """Jira Cloud's REST v3 (acme.atlassian.net) and GitHub's REST API (api.github.com)."""
 
     def __init__(self):
         self.calls: list[httpx.Request] = []
         self.jira_fail: int | None = None
         self.ratelimit = 0
         self.statuses = ["In Progress", "Blocked", "In Review", "Done"]
-        self.item = fixture("gh_graphql_item.json")
-        self.field = fixture("gh_graphql_field.json")
         # --- review: the issue's history (Cloud's changelog, oldest first): who moved it where
         # (#128: just before the fixture deliveries' timestamp, so an Automation request finds a recent transition)
         self.history = [{"id": "1", "created": "2025-10-14T11:06:00.000+0000",
@@ -100,12 +98,6 @@ class FakeAPIs:
     def github(self, r: httpx.Request) -> httpx.Response:
         if r.headers.get("authorization") != f"Bearer {GH_TOKEN}":
             return httpx.Response(401, json={"message": "Bad credentials"})
-        if r.url.path == "/graphql":
-            q = json.loads(r.content)["query"]
-            if "updateProjectV2ItemFieldValue" in q:
-                return httpx.Response(200, json={"data": {"updateProjectV2ItemFieldValue": {
-                    "projectV2Item": {"id": json.loads(r.content)["variables"]["item"]}}}})
-            return httpx.Response(200, json=self.field if "field(name:" in q else self.item)
         if r.url.path.endswith("/comments") and r.method == "POST":
             return httpx.Response(201, json={"id": 1})
         if r.url.path.endswith("/comments"):
@@ -121,13 +113,6 @@ class FakeAPIs:
         return [json.loads(c.content)["transition"]["id"] for c in self.calls
                 if c.url.host == "acme.atlassian.net" and c.method == "POST" and c.url.path.endswith("/transitions")]
 
-    def mutations(self) -> list[dict]:
-        return [json.loads(c.content)["variables"] for c in self.calls if c.url.path == "/graphql"
-                and "updateProjectV2ItemFieldValue" in json.loads(c.content)["query"]]
-
-    def gh_comments(self) -> list[str]:
-        return [json.loads(c.content)["body"] for c in self.calls
-                if c.url.host == "api.github.com" and c.method == "POST" and c.url.path.endswith("/comments")]
 
 
 def link(monkeypatch, links: dict[tuple[str, str], str]) -> None:
@@ -162,8 +147,6 @@ def configure(svc: JobService, repo: str, env: str) -> None:
     cfg["projects"]["ABC"]["repo"] = repo
     s.jira = cfg
     s.github_repos = {repo: env, "acme/api": env}
-    s.github_projects = {"acme/7": {"trigger": "Ready for agent", "repos": ["acme/api"], "statuses": {
-        "started": "In progress", "needs_input": "Blocked", "delivered": "In review", "failed": "Todo"}}}
 
 
 async def until(pred, timeout: float = 20.0, what: str = "") -> None:
@@ -224,12 +207,6 @@ def test_config_validation(settings):
     settings.jira = {**ok, "email": None}
     with pytest.raises(jira.JiraConfigError):
         jira.load(settings)
-    settings.github_projects = {"acme/7": {"trigger": "Ready", "statuses": {"failed": "ready"}}}
-    with pytest.raises(ghprojects.ProjectsConfigError):
-        ghprojects.boards(settings)
-    settings.github_projects = {"acme": {"trigger": "Ready"}}
-    with pytest.raises(ghprojects.ProjectsConfigError):
-        ghprojects.boards(settings)
 
 
 def test_jira_credentials_never_reach_a_sandbox(settings):
@@ -308,35 +285,11 @@ async def test_jira_api_retries_and_never_leaks_the_token():
     await api.close()
 
 
-async def test_graphql_client():
-    assert ghprojects.graphql_url("https://api.github.com") == "https://api.github.com/graphql"
-    assert ghprojects.graphql_url("https://ghe.acme.com/api/v3/") == "https://ghe.acme.com/api/graphql"
-    seen: list[httpx.Request] = []
-    answers = [httpx.Response(502), httpx.Response(200, json={"data": {"node": {"id": "x"}}}),
-               httpx.Response(200, json={"errors": [{"message": "Resource not accessible by integration"}]}),
-               httpx.Response(401, json={"message": "Bad credentials"})]
-
-    def reply(r: httpx.Request) -> httpx.Response:
-        seen.append(r)
-        return answers.pop(0)
-
-    gql = ghprojects.GraphQL(GH_TOKEN, "https://api.github.com", transport=httpx.MockTransport(reply))
-    assert await gql("query($item: ID!) { node(id: $item) { id } }", item="x") == {"node": {"id": "x"}}
-    assert len(seen) == 2 and json.loads(seen[1].content)["variables"] == {"item": "x"}
-    with pytest.raises(Exception, match="not accessible"):
-        await gql("query { viewer { login } }")
-    with pytest.raises(Exception, match="HTTP 401") as e:
-        await gql("query { viewer { login } }")
-    assert GH_TOKEN not in str(e.value)
-    await gql.close()
-
-
 # ============================================================================ Jira (no agent runs)
 @pytest.fixture
 async def door(fleet, settings, monkeypatch):
     """A JobService that queues but doesn't run jobs, with Jira configured, and the Jira route mounted."""
     fake = FakeAPIs()
-    ghprojects._fields.clear()
     svc = JobService(fleet, None, transport=httpx.MockTransport(fake))
     configure(svc, "https://github.com/acme/api.git", "base")
     link(monkeypatch, {("jira", DANA): "dana", ("github", "4242"): "dana"})  # --- review: GitHub user ids
@@ -761,17 +714,14 @@ async def test_only_the_jobs_person_continues_it_from_jira(door, monkeypatch):
 
 
 async def test_intake_uses_the_real_people_links(door, monkeypatch):
-    """Integration (#91 + #92): Jira and GitHub Projects senders resolve through #91's people links, not a stub
-    that would silently shadow them."""
+    """Integration (#91 + #92): Jira senders resolve through #91's people links, not a stub that would silently
+    shadow them."""
     monkeypatch.setattr(people, "resolve_external", REAL_RESOLVE)
     svc, client = door["svc"], door["client"]
     people.add(svc.store, "dana")
     people.link(svc.store, "dana", "jira", DANA)
-    people.link(svc.store, "dana", "github", "4242")
     job = svc.get((await post(client, fixture("jira_issue_updated.json"))).json()["job"])
     assert job.person == "dana" and job.state == JobState.QUEUED
-    res = await handle_github(svc, "projects_v2_item", "d-int", fixture("gh_projects_v2_item_edited.json"))
-    assert svc.get(res["job"]).person == "dana"
 
 
 async def test_jira_write_back_failures_land_on_the_job(door):
@@ -795,96 +745,6 @@ async def test_jira_write_back_failures_land_on_the_job(door):
     assert json.loads(link_.content)["object"]["url"] == "https://github.com/acme/api/pull/9"
     final = fake.jira_comments()[-1]
     assert final.startswith(f"[hangar] Done: hangar job {job.id}") and "PR: https://github.com/acme/api/pull/9" in final
-
-
-# ============================================================================ GitHub Projects (no agent runs)
-async def test_projects_item_moved_to_the_trigger_column_queues_the_issue(door):
-    svc, fake = door["svc"], door["fake"]
-    payload = fixture("gh_projects_v2_item_edited.json")
-    res = await handle_github(svc, "projects_v2_item", "d-1", payload)
-    assert res.get("ok"), res
-    job = svc.get(res["job"])
-    assert job.source == "github-projects" and job.source_ref == "github:acme/api#12" and job.person == "dana"
-    assert job.labels[intake.TRACKER] == "ghproject:PVT_kwDOBUjMRs4AqZ1T:PVTI_lADOBUjMRs4AqZ1Tzgz_RAs"
-    assert job.labels["github.kind"] == "issue" and job.idempotency_key == "ghproject-delivery:d-1"
-    issue, comments = job.context
-    assert "never retried" in issue.content and not issue.untrusted  # dana (user id 4242) wrote it
-    assert comments.untrusted and "IGNORE PREVIOUS" in comments.content and "Queued as" not in comments.content
-    await until(lambda: fake.gh_comments(), what="queued comment")
-    assert "Queued as hangar job" in fake.gh_comments()[0]
-    # a second move while the job is open doesn't start another
-    assert "already" in (await handle_github(svc, "projects_v2_item", "d-2", payload))["ignored"]
-
-    # the board follows the job: once per stage, by the column's option id
-    job.state = JobState.RUNNING
-    await svc._comment(job, job.source_ref, "Agent started on hangar job")
-    await svc._comment(job, job.source_ref, "still going")
-    job.state = JobState.NEEDS_INPUT
-    await svc._comment(job, job.source_ref, "**Question** — which?")
-    job.state = JobState.SUCCEEDED
-    await svc._comment(job, "github:acme/api#99", "done", kind="final")  # answered on the PR: the board still moves
-    await until(lambda: len(fake.mutations()) == 3, what="three column moves")
-    assert [m["option"] for m in fake.mutations()] == ["98236657", "0c1b4d5e", "4d2c9a11"]  # in order
-    m = fake.mutations()[0]
-    assert m["project"] == "PVT_kwDOBUjMRs4AqZ1T" and m["item"] == "PVTI_lADOBUjMRs4AqZ1Tzgz_RAs"
-    assert m["field"] == "PVTSSF_lADOBUjMRs4AqZ1Tzgh1yvc"
-    assert sum("field(name:" in json.loads(c.content)["query"] for c in fake.calls if c.url.path == "/graphql") == 1
-
-
-async def test_projects_ignores_what_isnt_a_move_into_the_trigger_column(door):
-    svc, fake = door["svc"], door["fake"]
-    base = fixture("gh_projects_v2_item_edited.json")
-
-    def variant(**changes) -> dict:
-        p = copy.deepcopy(base)
-        for path, value in changes.items():
-            cur = p
-            *head, last = path.split("__")
-            for k in head:
-                cur = cur[k]
-            cur[last] = value
-        return p
-
-    cheap = [
-        (variant(action="created"), "projects_v2_item created"),
-        (variant(projects_v2_item__content_type="DraftIssue"), "not an issue"),
-        (variant(changes__field_value__field_name="Priority"), "not the status field"),
-        (variant(changes__field_value__to={"id": "x", "name": "Done"}), "not the trigger column"),
-        (variant(changes__field_value__project_number=99), "not configured"),
-        (variant(changes__field_value__field_type="date"), "not a status change"),
-    ]
-    for p, why in cheap:
-        assert why in (await handle_github(svc, "projects_v2_item", None, p))["ignored"]
-    assert not fake.calls  # decided from the payload alone
-    fake.item["data"]["node"]["fieldValues"]["nodes"][1]["name"] = "In progress"  # moved on since
-    assert "not 'Ready for agent'" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
-    fake.item = fixture("gh_graphql_item.json")
-    fake.item["data"]["node"]["content"]["repository"]["nameWithOwner"] = "acme/other"
-    assert "not one of this board's repos" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
-    fake.item = fixture("gh_graphql_item.json")
-    fake.item["data"]["node"]["content"]["state"] = "CLOSED"
-    assert "closed" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
-    svc.settings.github_projects = {}
-    assert "no GitHub Projects board" in (await handle_github(svc, "projects_v2_item", None, base))["ignored"]
-    assert not svc._jobs
-
-
-async def test_projects_untrusted_mover_waits_for_approval_on_the_issue(door, monkeypatch):
-    """Review: someone who registered "dana" after Dana renamed her account is not Dana: links are by user id."""
-    svc, fake = door["svc"], door["fake"]
-    payload = fixture("gh_projects_v2_item_edited.json")
-    payload["sender"]["id"] = 9999
-    fake.item["data"]["node"]["content"]["author"]["databaseId"] = 9999
-    res = await handle_github(svc, "projects_v2_item", "d-9", payload)
-    job = svc.get(res["job"])
-    assert res["awaiting_approval"] and job.state == JobState.AWAITING_APPROVAL and job.person is None
-    assert job.context[0].untrusted
-    await until(lambda: any("/hangar approve" in c for c in fake.gh_comments()), what="approval comment")
-    # the issue's own /hangar approve path decides it, as for any issue job
-    res = await handle_github(svc, "issue_comment", "d-10", {
-        "action": "created", "repository": {"full_name": "acme/api"}, "issue": {"number": 12, "title": "t"},
-        "comment": {"body": "/hangar approve", "author_association": "MEMBER", "user": {"login": "sean", "id": 1}}})
-    assert res == {"ok": True, "approved": job.id} and job.state == JobState.QUEUED
 
 
 # ============================================================================ Jira end to end (a scripted agent runs)
@@ -930,7 +790,7 @@ async def test_jira_question_answered_by_a_comment_then_delivered(fleet, xsessio
         await jobs.stop()
 
 
-def test_routes_doctor_and_project_items_through_the_github_route(settings, monkeypatch):
+def test_routes_doctor_and_ignores_project_items(settings, monkeypatch):
     from fastapi.testclient import TestClient
 
     from hangar.app import create_app
@@ -959,15 +819,13 @@ def test_routes_doctor_and_project_items_through_the_github_route(settings, monk
 
         h.broker.put("gh-hook", "webhook", CredentialKind.GENERIC, "gh-secret")
         settings.github_webhook_secret_credential = "gh-hook"
-        body = json.dumps(fixture("gh_projects_v2_item_edited.json")).encode()
+        # --- KAN-217: the GitHub Projects door is gone: an organization's projects_v2_item starts nothing
+        body = json.dumps({"action": "edited", "projects_v2_item": {"content_type": "Issue"}}).encode()
         headers = {"X-Hub-Signature-256": "sha256=" + hmac.new(b"gh-secret", body, hashlib.sha256).hexdigest(),
                    "X-GitHub-Event": "projects_v2_item", "X-GitHub-Delivery": "g-1",
                    "Content-Type": "application/json"}
         r = c.post("/api/hooks/github", content=body, headers=headers)
-        assert r.status_code == 202 and r.json()["ok"], r.json()
-        assert h.jobs.get(r.json()["job"]).source == "github-projects"
-        again = c.post("/api/hooks/github", content=body, headers={**headers, "X-GitHub-Delivery": "g-2"})
-        assert again.status_code == 200 and again.json() == {"ignored": "duplicate delivery"}
+        assert "GitHub Projects intake was removed" in r.json()["ignored"], r.json()
 
 
 # test_exchange's scripted agent asks "Use A or B?" for TASK-ASK and answers TASK-USE-B

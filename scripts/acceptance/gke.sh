@@ -19,11 +19,11 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HELPER="$ROOT/scripts/acceptance/hangar_accept.py"
-CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway e2b backup metrics computer
+CHECKS="doctor k8s sandbox exec stream files mcp isolation session model steer gateway backup metrics computer
 egress services heavy envbuild secrets landing intake scale-smoke power prepull warmstart status clouddoctor"
 # The core checks: the control plane's own paths, quick and with nothing outside hangar to depend on. With --gate core
 # (deploy.yml) only these decide the exit status and so a rollback; the others are reported.
-CORE="doctor sandbox exec stream files mcp isolation session e2b backup metrics power"
+CORE="doctor sandbox exec stream files mcp isolation session backup metrics power"
 VALUE_OPTS=" --env --session-env --repo --gateway-repo --model --exec-calls --internet-probe --mcp-env --warm-env
  --doctor-baseline --test-env-prefix --egress-allow --egress-deny --egress-direct --dns-probe --service-image
  --service-wait --test-repo --fixture-repo --fixture-push-url --build-timeout --landing-timeout --jira-project
@@ -38,7 +38,7 @@ usage() {
   cat <<EOF
 usage: $0 [options]
 
-  --env NAME            environment for plain sandboxes, the E2B check, and what the test environments extend
+  --env NAME            environment for plain sandboxes and what the test environments extend
                         (default: minimal)
   --session-env NAME    environment for sessions; needs an agent harness, and a model credential for
                         --with-model (default: claude-python)
@@ -89,7 +89,7 @@ usage: $0 [options]
   More tuning (timeouts, the egress hosts, the services image, ...): python3 $HELPER --help
 
 Environment: HANGAR_URL and HANGAR_TOKEN override \`hangar login\`. HANGAR_ACCEPT_PYTHON is the Python that runs
-the checks (default: uv run python, from the repo, so httpx, mcp and, if installed, e2b are there). Secrets for the
+the checks (default: uv run python, from the repo, so httpx and mcp are there). Secrets for the
 checks come from the environment only: HANGAR_ACCEPT_GITHUB_TOKEN (pushes to the test and fixture repos; else gh's
 login), HANGAR_ACCEPT_APPROVER_TOKEN (a second GitHub account that approves the landing check's PR),
 HANGAR_ACCEPT_JIRA_WEBHOOK_SECRET (signs the intake check's delivery).
@@ -232,7 +232,6 @@ check session     "session: checkpoint, suspend, resume in a new sandbox with th
 check model       "a real short agent turn"
 check steer       "a live turn: a write outside the repo held as an approval until allowed, a steer message delivered"
 check gateway     "git gateway: push to hangar/accept-<run> works, a push outside the grant is refused"
-check e2b         "the e2b SDK with a sandboxes token: create, run, files, list, kill"
 check backup      "back up the database now and list the backups"
 check metrics     "/metrics, and a metrics-scoped token that reaches nothing else"
 check computer    "computer: Chromium screenshot, display, 3 s of video, a screen ticket; view-only drops input"

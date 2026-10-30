@@ -58,7 +58,7 @@ Untrusted people's `/hangar` comments on a PR that a job opened are ignored: onl
 
 GitHub signs only the body, so hangar treats the body as the delivery: a second copy of an `issues` or `issue_comment` delivery it has already handled (GitHub's *Redeliver*, or a captured request sent again with another `X-GitHub-Delivery`) is answered `200 {"ignored": "duplicate delivery"}` and does nothing. Deliveries are remembered in the store for `HANGAR_WEBHOOK_REPLAY_HOURS` (7 days), across restarts. A delivery that failed or was rate limited is forgotten, so a redelivery runs. A delivery counts as handled only once its handler returns: one that a dying pod (a deploy, the nightly power-down) left half handled runs again when GitHub redelivers it.
 
-GitHub never retries a failed delivery on its own. So at startup hangar lists each repo's webhook deliveries since its last start (`GET /repos/{owner}/{repo}/hooks/{hook_id}/deliveries`, at most the 3 days GitHub keeps) and asks GitHub to redeliver every one with no successful attempt (`POST …/deliveries/{id}/attempts`). That covers everything sent while the cluster was down. It does the same for the organization webhook of each organization in `HANGAR_GITHUB_PROJECTS` (`GET /orgs/{org}/hooks/{hook_id}/deliveries`, `projects_v2_item` only), which needs the organization's Webhooks read and write permission ([intake.md](intake.md#2-the-token)). The redeliveries come in through the webhook route like any other delivery. The control plane's token already has the Webhooks read and write permission this needs (`hangar setup github`). Turn it off with `HANGAR_GITHUB_REDELIVER_ON_START=false`.
+GitHub never retries a failed delivery on its own. So at startup hangar lists each repo's webhook deliveries since its last start (`GET /repos/{owner}/{repo}/hooks/{hook_id}/deliveries`, at most the 3 days GitHub keeps) and asks GitHub to redeliver every one with no successful attempt (`POST …/deliveries/{id}/attempts`). That covers everything sent while the cluster was down. The redeliveries come in through the webhook route like any other delivery. The control plane's token already has the Webhooks read and write permission this needs (`hangar setup github`). Turn it off with `HANGAR_GITHUB_REDELIVER_ON_START=false`.
 
 Each GitHub user is a caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits). Past a rate limit the webhook answers 429; a trusted person gets a comment saying so, someone untrusted gets none (so a flood of `/hangar` comments can't become a flood of hangar comments). The same goes for the active-job cap. Submissions that wait for approval are counted in a source bucket of their own, so outsiders can't use up the one trusted people need. Jobs waiting for approval count toward their requester's cap.
 
@@ -74,7 +74,7 @@ The prompt also tells the agent to ignore requests in that text to reveal creden
 
 ## 2. Inbound webhooks
 
-Systems that can only send webhooks (Sentry, PagerDuty, internal services) start jobs at `POST /api/hooks/inbound/<source>`. Jira and GitHub Projects have their own front doors, which also write back to the ticket and attribute the job to the linked person: see [intake.md](intake.md). Each source is configured in `HANGAR_INBOUND_WEBHOOKS`, a JSON mapping from source name to its settings:
+Systems that can only send webhooks (Sentry, PagerDuty, internal services) start jobs at `POST /api/hooks/inbound/<source>`. Jira has its own front door, which also writes back to the ticket and attribute the job to the linked person: see [intake.md](intake.md). Each source is configured in `HANGAR_INBOUND_WEBHOOKS`, a JSON mapping from source name to its settings:
 
 ```json
 {
@@ -115,7 +115,6 @@ Formats verified against the providers' docs (October 2026):
 
 - **Sentry:** `Sentry-Hook-Signature`, hex HMAC-SHA256 of the body; `Sentry-Hook-Timestamp`; `Request-ID` as the delivery id.
 - **Jira Cloud** (an admin webhook with a secret): `X-Hub-Signature` with `prefix: "sha256="`, hex HMAC-SHA256 of the body; `X-Atlassian-Webhook-Identifier` as the delivery id (the same across retries). Jira signs no timestamp.
-- **GitHub Projects** (an organization webhook sending `projects_v2_item`): `X-Hub-Signature-256` with `prefix: "sha256="`; `X-GitHub-Delivery`.
 - **PagerDuty v3:** `X-PagerDuty-Signature` with `prefix: "v1="`, one or more comma-separated hex HMAC-SHA256 signatures of the body. PagerDuty documents no delivery id header, so the body hash is used.
 
 Responses:

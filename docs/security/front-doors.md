@@ -2,11 +2,11 @@
 
 Who may start work through each front door, and the fences every one of them ends in. Part of the [security model](README.md).
 
-Work enters hangar through REST, MCP, A2A, GitHub webhooks, Slack, signed inbound webhooks and schedules. Each one decides who may start work, and every one of them ends in the same job service, which applies the limits below.
+Work enters hangar through REST, MCP, GitHub webhooks, Slack, signed inbound webhooks and schedules. Each one decides who may start work, and every one of them ends in the same job service, which applies the limits below.
 
 | Front door | Who can start or steer work | Fence |
 | --- | --- | --- |
-| REST, A2A | An admin token: anything. A `jobs` token: its own jobs only (another token's job id or A2A `contextId`/`taskId` is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
+| REST | An admin token: anything. A `jobs` token: its own jobs only (another token's job id is "not found") | `jobs` tokens: repos in `HANGAR_GITHUB_REPOS` and their environments, no provider choice, their `max_budget` |
 | MCP | Admin tokens, and people's `user` and `mcp` tokens; an OAuth grant acts as the token that approved it | A member's tokens reach only their own work ([People](people.md#people)); `mcp` tokens can't set `secrets`, `image`, `base`, `runtime_class` or `credential_mode: direct` on an environment, call admin-only tools, or approve jobs |
 | GitHub | Linked accounts and trusted people ([triggers.md](../triggers.md#1-who-can-start-work-from-github)); anyone else's trigger waits for approval, and their comments can't continue a job or answer its question. A person's job is continued only by that person's linked account | mapped repos, their environments |
 | Slack | Linked accounts; members of your workspace in a mapped channel (or `HANGAR_SLACK_USERS`); Slack Connect guests from other organizations only when listed. A person's job is continued only by them | like a `jobs` token |
@@ -32,7 +32,7 @@ No setting turns either off. `HANGAR_INTAKE_POSTURE=warn` and `off` were removed
 
 **Warm pools.** A warm sandbox of an `open` environment is on the open network, so it is never claimed for an intake job: the job cold-starts, 30–60 s more. Where that matters, declare a proxied pool: an environment with `egress: {mode: allowlist}` and `warm_pool:` for intake work (map it in `HANGAR_GITHUB_REPOS`), whose warm sandboxes are proxied already. Hosts outside the allowlist go through [egress requests](egress.md), answered by a person.
 
-**Where it can't run.** The floor needs hangar's egress proxy: `HANGAR_EGRESS_URL` on GKE, hangar on the Linux Docker host itself (not inside Docker Desktop's VM, and not in the Compose container) on Docker. Elsewhere an enforced intake job in an `open` environment fails to start with a message that says so, rather than run unfenced; run intake work on a Linux Docker host or GKE. `hangar doctor` reports the posture, the gateway, the egress proxy per provider, and each environment mapped for intake work with its effective mode. Under `enforce` without the gateway it fails once an intake front door is configured (a GitHub webhook secret, Slack's signing secret, `HANGAR_JIRA`, `HANGAR_GITHUB_PROJECTS` or `HANGAR_INBOUND_WEBHOOKS`), naming the doors whose jobs it refuses; before any is, as on a fresh `hangar up`, nothing is refused and it only warns. Either way its fix is the command that turns the gateway on where hangar runs ([turning it on](git-gateway.md#turning-it-on)): on a Linux laptop that is `HANGAR_GATEWAY_URL` and `HANGAR_GATEWAY_HOST` (the gateway binds loopback otherwise, out of the sandboxes' reach) and a restart. A job queued while the pools are powered down gets the floor when it claims its sandbox.
+**Where it can't run.** The floor needs hangar's egress proxy: `HANGAR_EGRESS_URL` on GKE, hangar on the Linux Docker host itself (not inside Docker Desktop's VM, and not in the Compose container) on Docker. Elsewhere an enforced intake job in an `open` environment fails to start with a message that says so, rather than run unfenced; run intake work on a Linux Docker host or GKE. `hangar doctor` reports the posture, the gateway, the egress proxy per provider, and each environment mapped for intake work with its effective mode. Under `enforce` without the gateway it fails once an intake front door is configured (a GitHub webhook secret, Slack's signing secret, `HANGAR_JIRA` or `HANGAR_INBOUND_WEBHOOKS`), naming the doors whose jobs it refuses; before any is, as on a fresh `hangar up`, nothing is refused and it only warns. Either way its fix is the command that turns the gateway on where hangar runs ([turning it on](git-gateway.md#turning-it-on)): on a Linux laptop that is `HANGAR_GATEWAY_URL` and `HANGAR_GATEWAY_HOST` (the gateway binds loopback otherwise, out of the sandboxes' reach) and a restart. A job queued while the pools are powered down gets the floor when it claims its sandbox.
 
 ## Signed requests
 
@@ -43,7 +43,7 @@ No setting turns either off. `HANGAR_INTAKE_POSTURE=warn` and `off` were removed
 
 ## Outbound webhooks (SSRF)
 
-Job callbacks and A2A push notifications go only to public `https` hosts unless the host is in `HANGAR_JOB_CALLBACK_HOSTS`. Just before each send, the name is resolved, every address is checked, and the connection is made to the checked address itself (TLS still verifies the name). A name that re-resolves to `127.0.0.1` or a metadata address between the check and the connection (DNS rebinding) reaches nothing. Redirects aren't followed, and proxy environment variables are ignored for these requests.
+Job callbacks go only to public `https` hosts unless the host is in `HANGAR_JOB_CALLBACK_HOSTS`. Just before each send, the name is resolved, every address is checked, and the connection is made to the checked address itself (TLS still verifies the name). A name that re-resolves to `127.0.0.1` or a metadata address between the check and the connection (DNS rebinding) reaches nothing. Redirects aren't followed, and proxy environment variables are ignored for these requests.
 
 ## Scopes
 
@@ -56,18 +56,17 @@ Every MCP tool and resource and every REST route is listed, by verb, with the to
 | REST approve / reject | [who may approve](../triggers.md#who-may-approve) | as MCP |
 | REST `/api/me`, tokens, credentials, inbox, env requests, envbuilds, records | admin, or a person's `user` login | own records unless admin |
 | The rest of REST | admin | everything |
-| Webhooks, `/e2b`, the gateway's `/git`, `/pkg`, `/cache`, `/registry` | their own credentials (signatures, `sandboxes` tokens, sandbox grants) | the source's or the sandbox's own |
+| Webhooks, the gateway's `/git`, `/pkg`, `/cache`, `/registry` | their own credentials (signatures, sandbox grants) | the source's or the sandbox's own |
 
 ## Front-door limits
 
 | Limit | Default | Applies to |
 | --- | --- | --- |
 | `HANGAR_JOB_RATE_PER_MINUTE`, `HANGAR_JOB_RATE_BURST` | 30, 10 | Job submissions and follow-ups per caller: a `jobs` token, a GitHub user, a Slack user, a webhook source. A token bucket: `BURST` at once, refilling at `PER_MINUTE`. |
-| `HANGAR_JOB_SOURCE_RATE_PER_MINUTE`, `HANGAR_JOB_SOURCE_RATE_BURST` | 120, 60 | The same per front door (`github`, `slack`, `webhook`, `a2a`, `api`), across all its callers. Submissions that wait for approval (untrusted GitHub people) have a bucket of their own per front door, so outsiders can't use up the one trusted people need. |
+| `HANGAR_JOB_SOURCE_RATE_PER_MINUTE`, `HANGAR_JOB_SOURCE_RATE_BURST` | 120, 60 | The same per front door (`github`, `slack`, `webhook`, `api`), across all its callers. Submissions that wait for approval (untrusted GitHub people) have a bucket of their own per front door, so outsiders can't use up the one trusted people need. |
 | `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` | 10 | Unfinished jobs per caller, counting those waiting for approval or input |
-| `HANGAR_A2A_MAX_STREAMS_PER_OWNER` | 20 | Open A2A streams and blocking sends per token |
-| `HANGAR_MAX_REQUEST_MB` | 100 | Request bodies from a token on a route it may use: an `admin` token anywhere on `/api` and `/mcp`, a `jobs` token on `/api/jobs*`, an `mcp` token (or an OAuth token) on `/mcp` (jobs can carry git bundles); `/a2a` uses `HANGAR_A2A_MAX_REQUEST_BYTES` for `admin` and `jobs` tokens |
-| | 64 KB | Request bodies without a valid token on `/api`, `/mcp` and `/a2a` (they get a 401 anyway), from a token on a route its scope doesn't reach (it gets a 403 anyway), and the OAuth endpoints |
+| `HANGAR_MAX_REQUEST_MB` | 100 | Request bodies from a token on a route it may use: an `admin` token anywhere on `/api` and `/mcp`, a `jobs` token on `/api/jobs*`, an `mcp` token (or an OAuth token) on `/mcp` (jobs can carry git bundles) |
+| | 64 KB | Request bodies without a valid token on `/api` and `/mcp` (they get a 401 anyway), from a token on a route its scope doesn't reach (it gets a 403 anyway), and the OAuth endpoints |
 | | 2 MB, 1 MB | `/api/hooks/github`, `/api/hooks/slack/*`; inbound webhooks keep their own setting. GitHub sends up to 25 MB, but the events hangar acts on (`issues`, `issue_comment`) carry bodies of at most 65,536 characters; a bigger delivery of another event gets a 413, which changes nothing since hangar would ignore it |
 
 Admin tokens and schedules aren't rate limited or capped: an admin token can run anything already. Set a rate to 0 to turn it off. REST answers a rate-limited request with `429` and `Retry-After`; other front doors say so in their own way (a JSON-RPC error, a message in the Slack thread, a 429 to the webhook sender). Buckets live in memory, so a restart refills them.

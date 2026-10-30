@@ -44,7 +44,7 @@ DEPENDENCY_SCOPES = {
     "admin_job_caller": ("admin", "admin"),
     "approver": ("approvals.can_decide", "guard"),
 }
-SCOPES = {"admin", "user", "jobs", "mcp", "sandboxes", "metrics", "approvals.can_decide", "signed", "ticket",
+SCOPES = {"admin", "user", "jobs", "mcp", "metrics", "approvals.can_decide", "signed", "ticket",
           "grant", "link", "oauth", "public"}
 OWNERS = {"admin", "guard", "token", "any", "own_grant"}
 PRIVILEGED = re.compile(r"^(admin|approvals\..+)$")
@@ -52,7 +52,7 @@ PRIVILEGED = re.compile(r"^(admin|approvals\..+)$")
 
 # ====================================================================== introspection
 def build_app(settings) -> Any:
-    """The app with every optional router mounted: OAuth, A2A, E2B, the git gateway on the main port (and with it
+    """The app with every optional router mounted: OAuth, the git gateway on the main port (and with it
     the GitHub proxy, package mirrors, the registry mirror and the build caches), previews, metrics."""
     from hangar.app import create_app
 

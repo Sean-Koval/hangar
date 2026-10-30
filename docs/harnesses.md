@@ -22,7 +22,7 @@ config fragments, MCP servers and hooks, pinned by digest) is a harness director
 
 `src/hangar/harnesses.lock.yaml` pins every harness hangar installs: an exact version, plus the vendor's checksums where the
 vendor publishes the binary directly (Claude Code's sha256 per platform from its release manifest; Antigravity's
-build id and sha512 per archive). npm packages (Codex, pi, Gemini) are checked by npm against the registry's sha512
+build id and sha512 per archive). npm packages (Codex, pi) are checked by npm against the registry's sha512
 integrity at install. A pack build fails unless the CLI reports the locked version ([gke.md](gke.md#3-environment-images)).
 
 A sandbox records the locked version its pack was built for (`harness_lock`) next to what the CLI reported
@@ -66,7 +66,7 @@ Every night `harness-canary.yml`:
 
 1. **Resolves the newest stable release of each harness** from the sources the lock was verified against:
    - Claude Code: `downloads.claude.ai/claude-code-releases/stable`, then that version's `manifest.json`;
-   - Codex, pi and Gemini: npm's `latest` dist-tag (for Codex, the linux-x64 and linux-arm64 builds must be published);
+   - Codex and pi: npm's `latest` dist-tag (for Codex, the linux-x64 and linux-arm64 builds must be published);
    - Antigravity: the updater's `manifests/linux_{amd64,arm64}.json`, with the build id from its `/releases` list.
 
    A harness only moves forward. Claude Code's stable channel can trail the lock (2.1.292 against the locked 2.1.296
@@ -80,8 +80,7 @@ Every night `harness-canary.yml`:
    - **Codex and pi (npm):** `npm audit signatures` checks the registry's signatures and the Sigstore provenance
      attestations of everything the candidate installs (with `--ignore-scripts`, for linux-x64 and, for Codex,
      linux-arm64). Each package the recipe installs must also carry SLSA provenance naming it, built from its own
-     repository (`github.com/openai/codex`, `github.com/earendil-works/pi`). Gemini publishes no provenance; it gets
-     the registry-signature check only.
+     repository (`github.com/openai/codex`, `github.com/earendil-works/pi`).
    - **Antigravity:** Google publishes no signature (no `.sig`, `.asc` or checksum file beside the archives, checked
      2026-10-14). The sha512 comes from the updater's manifest, a separate service from the bucket that serves the
      archives, and each archive must match it. That is the whole of it, and the packet says so.

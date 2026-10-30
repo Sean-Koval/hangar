@@ -1,11 +1,8 @@
 """The e2b provider in each flavour (cloud, selfhosted, cube), without KVM (docs/microvm.md).
 
-Two backends stand in for E2B and CubeSandbox:
-- `FakeE2B`, a small control API with each flavour's quirks (CubeAPI's 405 on the v2 routes and its missing envd
-  token, a CubeProxy-like traffic-token check), whose sandboxes each run a real hangar-envd daemon. hangar-envd takes
-  E2B's X-Access-Token, so commands and files cross the real envd wire protocol.
-- hangar itself: its /e2b API (e2b_api.py) and sandbox router in front of local hangar-envd daemons
-  (tests/test_e2b_api.py's fixture), so the provider and hangar's E2B server are tested against each other.
+`FakeE2B` stands in for E2B and CubeSandbox: a small control API with each flavour's quirks (CubeAPI's 405 on the v2
+routes and its missing envd token, a CubeProxy-like traffic-token check), whose sandboxes each run a real hangar-envd
+daemon. hangar-envd takes E2B's X-Access-Token, so commands and files cross the real envd wire protocol.
 
     uv run --extra e2b pytest tests/test_e2b_provider.py
 """
@@ -20,7 +17,6 @@ import secrets
 import subprocess
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -620,97 +616,3 @@ async def test_other_errors_do_not_fall_back(tier_envs):
     with pytest.raises(FleetError, match="template not found"):
         await fleet.create("fast")
     assert not fleet.tier_down
-
-
-# ---------------------------------------------------------------------------- hangar as the E2B backend
-@pytest.fixture
-def hangar_backend(settings):
-    pytest.importorskip("e2b")
-    from hangar.app import create_app
-    from tests.test_e2b_api import ADMIN, DOMAIN, EnvdFake
-    from tests.test_mcp_modern import AppThread
-
-    settings.admin_token = ADMIN
-    settings.e2b_api_domain = DOMAIN
-    envs = settings.data_dir / "server-envs"
-    envs.mkdir()
-    (envs / "fastenv.yaml").write_text("name: fastenv\ntier: fast\n")
-    settings.env_dirs = [envs, *settings.env_dirs]
-    app = create_app(settings)
-    srv = AppThread(app)
-    h = app.state.hangar
-    prov = EnvdFake(settings)
-    h.fleet.providers["docker"] = prov
-    h.fleet.provider_errors.pop("docker", None)
-    url = f"http://127.0.0.1:{srv.port}"
-    key, _ = h.auth.create("provider", ["sandboxes"])
-    yield SimpleNamespace(h=h, url=url, key=key, prov=prov, settings=settings)
-    srv.stop()
-    prov.stop()
-
-
-def client(backend, flavor: str, tmp: Path, templates: dict[str, str] | None = None) -> E2BProvider:
-    """hangar's e2b provider aimed at another hangar's /e2b API and sandbox router. Its user is E2B's `user`, which
-    hangar's router maps to the sandbox's own; its workspace is a directory every local daemon can see."""
-    return E2BProvider(Settings(data_dir=tmp, e2b_flavor=flavor, e2b_api_key=backend.key,
-                                e2b_api_url=f"{backend.url}/e2b", e2b_sandbox_url=f"{backend.url}/e2b/sandbox",
-                                e2b_domain="e2b.test", e2b_environment_templates=templates or {"plain": "plain"},
-                                sandbox_user="user", workspace_dir="/tmp"))
-
-
-@needs_binary
-@pytest.mark.parametrize("flavor", ["selfhosted", "cube"])
-async def test_against_hangars_own_e2b_api(hangar_backend, tmp_path, flavor):
-    prov = client(hangar_backend, flavor, tmp_path)
-    sb = sandbox("plain")
-    await prov.create(sb, prov.image_ref("reg/plain:abc"))
-    server_sb = hangar_backend.h.fleet.get(sb.provider_ref)
-    assert server_sb.environment == "plain" and server_sb.labels["hangar_id"] == sb.id
-    sb.state = SandboxState.RUNNING
-    assert await prov.status(sb) == SandboxState.RUNNING
-
-    box = hangar_backend.prov.boxes[sb.provider_ref] / "workspace"
-    r = await prov.exec(sb, "echo $((6*7)); pwd", cwd=str(box))
-    assert (r.exit_code, r.stdout) == (0, f"42\n{box}\n")
-    await prov.write_file(sb, f"{box}/x/hello.txt", b"from the provider")
-    assert (box / "x" / "hello.txt").read_bytes() == b"from the provider"
-    assert await prov.read_file(sb, f"{box}/x/hello.txt") == b"from the provider"
-    assert await prov.read_file(sb, f"{box}/x/hello.txt", limit=4) == b"from "
-
-    await prov.pause(sb)
-    sb.state = SandboxState.PAUSED
-    assert hangar_backend.h.fleet.get(sb.provider_ref).state == SandboxState.PAUSED
-    assert await prov.status(sb) == SandboxState.PAUSED
-    await prov.resume(sb)
-    sb.state = SandboxState.RUNNING
-    assert (await prov.exec(sb, "echo back", cwd=str(box))).stdout == "back\n"
-    assert sb.provider_ref in (await prov.list_refs() or {})
-    await prov.set_expiry(sb, sb.created_at + 3600)
-
-    with pytest.raises(ProviderError, match="501"):  # hangar's E2B API has no snapshots yet
-        await prov.snapshot(sb, "s")
-    await prov.destroy(sb)
-    assert hangar_backend.h.fleet.get(sb.provider_ref).state == SandboxState.STOPPED
-    assert await prov.status(sb) == SandboxState.STOPPED
-    await prov.close()
-
-
-@needs_binary
-async def test_hangar_as_its_own_backend_does_not_loop(hangar_backend, tmp_path):
-    """A fast-tier environment created through hangar's E2B API stays on hangar's default provider (the one with
-    hangar-envd), and a hangar whose default provider is its own e2b API refuses, rather than calling itself."""
-    h = hangar_backend.h
-    loopback = client(hangar_backend, "selfhosted", tmp_path, {"fastenv": "fastenv"})
-    h.fleet.providers["e2b"] = loopback  # the fast tier, pointed at this very hangar
-    sb = sandbox("fastenv")
-    await loopback.create(sb, loopback.image_ref("reg/fastenv:abc"))
-    assert h.fleet.get(sb.provider_ref).provider == "docker"
-    await loopback.destroy(sb)
-
-    h.settings.default_provider = "e2b"
-    try:
-        with pytest.raises(ProviderError, match="no hangar-envd"):
-            await loopback.create(sandbox("plain"), "plain")
-    finally:
-        h.settings.default_provider = "docker"
-    await loopback.close()

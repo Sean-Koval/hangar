@@ -1,6 +1,6 @@
 """Per-repo policy (--- frontdoor): the defaults every front door applies to a repo's jobs.
 
-Work reaches hangar through many doors (MCP, REST, the CLI, GitHub issues, Slack, inbound webhooks, schedules,
+Work reaches hangar through many doors (MCP, REST, the CLI, GitHub issues, Slack, A2A, inbound webhooks, schedules,
 and tracker intake next). Each used to carry its own idea of a job's defaults, and most carried none: a job from a
 GitHub issue or Slack never had a `verify`. A `RepoPolicy` is one record per repo that `JobService.submit` applies
 to every submission, whichever door it came through, so a new intake only has to name the repo.

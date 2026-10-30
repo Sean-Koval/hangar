@@ -23,7 +23,7 @@ To onboard the team itself (people, credentials, and each repo's App, branch pro
 | `HANGAR_MAX_SANDBOXES` | 120 (was 50) | The whole fleet: 60 sessions, job slots (8, or up to 24 set by hand), best-of-N attempts, forks, logins |
 | `HANGAR_JOB_CONCURRENCY` | 0 = auto (was 4) | 4 on Docker; elsewhere `max_sandboxes / 5`, between 4 and 8. Set 24 by hand once job budgets and daily spend caps are set ([repo-policy.md](repo-policy.md#budgets)) |
 | `HANGAR_PERSON_MAX_SESSIONS` | 15 | Live sessions per person (each holds a sandbox); new, resumed (`send`/`open`) and forked ones count. Suspended ones don't |
-| `HANGAR_PERSON_MAX_SANDBOXES` | 20 | Sandboxes a person starts directly (MCP, REST, the E2B API). Sessions' and jobs' own sandboxes are capped by the two caps around this one |
+| `HANGAR_PERSON_MAX_SANDBOXES` | 20 | Sandboxes a person starts directly (MCP, REST). Sessions' and jobs' own sandboxes are capped by the two caps around this one |
 | `HANGAR_PERSON_MAX_RUNNING_JOBS` | 0 = half the job slots, at least 4 | Jobs one person runs at once. Queued jobs past it wait while others' run |
 | `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` | 5 (0 = off) | Open agent PRs awaiting a person before their new jobs wait as `awaiting_capacity` ([review capacity](#review-capacity)). A repo policy's `max_open_agent_prs` overrides it for that repo's jobs; `HANGAR_PERSON_MAX_OPEN_AGENT_PRS_OVERRIDES` (`{"alice": 8}`) raises or lowers it for one person |
 | `HANGAR_SANDBOX_RETENTION_DAYS` / `HANGAR_SANDBOX_ARCHIVE_DAYS` | 7 / 180 | When settled records move to the archive, and when archived ones are deleted (0 = never) |
@@ -33,7 +33,7 @@ To onboard the team itself (people, credentials, and each repo's App, branch pro
 `GET /api/overview` reports the per-person sandbox and session caps as `person_caps`; the web UI's **Fleet → Owners**
 view shows each person's use of them, with their sandboxes by environment and what they spent today.
 
-A cap reached answers 429 over REST and the E2B API, and an error naming the cap over MCP. Every cap is per
+A cap reached answers 429 over REST, and an error naming the cap over MCP. Every cap is per
 **person**, the person hangar records on each token and on the work it starts ([security/people.md](security/people.md#people)):
 all of a person's tokens, MCP and REST calls, and the OAuth connectors they approved count together, and the
 admin's existing tokens all count as `owner`. `fairness.person_of` is the one place that maps who acted to a person;

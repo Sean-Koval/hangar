@@ -10,7 +10,7 @@ Where hangar's sandboxes can run, how each place isolates them, and what has bee
 | Your Linux or WSL2 box | `sudo bash deploy/local/kata-install.sh`, then `HANGAR_DOCKER_RUNTIME=kata hangar serve` | Kata microVMs |
 | Single Linux VM | `deploy/terraform/single-vm`: a GCE VM with nested virt, running Compose | gVisor (`runsc`) or Kata microVMs |
 | GKE | `deploy/terraform/gke` + `deploy/k8s` | Agent Sandbox with gVisor; optional Kata pool |
-| E2B | `HANGAR_ENABLED_PROVIDERS='["docker","e2b"]'` with `HANGAR_E2B_API_KEY` | Firecracker microVMs |
+| E2B (experimental, outside 1.0) | `HANGAR_ENABLED_PROVIDERS='["docker","e2b"]'` with `HANGAR_E2B_API_KEY` | Firecracker microVMs ([microvm.md](../microvm.md)) |
 
 You can enable several providers on one control plane and pick one per sandbox. See [Running on GKE](../gke.md) for
 the cluster walkthrough, [local microVMs](../local-microvms.md) for Kata on your own box and
@@ -28,9 +28,6 @@ instead of 70 on Docker.
 
 It speaks E2B's envd protocol. Build it with `envd/build.sh` (the control-plane image includes it); without it, or
 with `HANGAR_ENVD=off`, hangar uses exec as before.
-
-Because of that, hangar also answers E2B's API. The e2b SDKs, and the agent frameworks built on them, run in your
-hangar sandboxes after you change `E2B_API_KEY` and a URL. See [the E2B-compatible API](../e2b.md).
 
 ## Known limits
 

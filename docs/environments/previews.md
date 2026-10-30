@@ -21,8 +21,8 @@ $ hangar sb preview my-sandbox
 - **Deny by default.** Only declared ports, never hangar-envd's, only while the sandbox runs. Links and refusals are
   audited (`preview.link`, `preview.denied`, `preview.port.denied`).
 - **Nothing of hangar's reaches the app:** the proxy drops the `Authorization` header and its own cookie. It reaches
-  the port at the address the sandbox's hangar-envd proved, never loopback, link-local or another sandbox's. It is the
-  same proxy as [E2B's sandbox URLs](../e2b.md). HTTP and WebSockets both work.
+  the port at the address the sandbox's hangar-envd proved, never loopback, link-local or another sandbox's. HTTP and
+  WebSockets both work.
 
 ## Setting it up
 
@@ -32,7 +32,7 @@ ingress: a preview's host is one label under the domain. Then set, for example,
 
 On a laptop, `HANGAR_PREVIEW_DOMAIN=localhost` is enough: browsers resolve `*.localhost` to 127.0.0.1. Dev servers must
 listen on 0.0.0.0, and the agent is told so. Previews need hangar-envd (Docker and Kubernetes sandboxes). On
-Kubernetes they also need the `allow-hangar-sandbox-ports` NetworkPolicy (`deploy/k8s/e2b.yaml`), since sandbox pods
+Kubernetes they also need the `allow-hangar-sandbox-ports` NetworkPolicy (`deploy/k8s/preview-network.yaml`), since sandbox pods
 take no other ingress.
 
 **Give previews a registrable domain of their own**, not a subdomain of your company's or of hangar's host. 
