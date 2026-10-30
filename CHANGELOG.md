@@ -28,6 +28,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`pr.merge` carries outcome labels** (KAN-232, [docs/api/outcome-labels.md](docs/api/outcome-labels.md)): the
+  agent head, the merge commit, the agent's diff lines, how many of its added lines the merge kept, human commits on
+  the branch and review rounds, read from GitHub before the event goes out. Added within `hangar.job_event/v1`.
 - **`evals/` is gone** (KAN-86, #145). The semver kit moved to flightdeck: the task to `tasks/smoke/semver/`, the
   process metrics and rule labeller to its data plane. hangar's experiment tests grade
   `tests/fixtures/experiments/semver-mini/`, five of its hidden cases.
@@ -50,6 +53,8 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   keeps one only with a reproducing command or a quoted diff line. At most `ai_review_inline_max` (default 5, was 20)
   inline comments go out, most severe first, and the packet counts the rest. `blocking` needs a confirmed major or
   critical finding.
+- **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
+  different approval id, hangar treats it as a contract failure, not a decision.
 
 ### Fixed
 
