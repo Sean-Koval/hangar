@@ -40,7 +40,7 @@ Turn the gate off per job with `"verify_in_loop": false` (`--no-verify-in-loop`)
 
 ## PR auto-fix
 
-After hangar opens a job's PR, it reacts to the PR's CI results and reviews. It does this by starting a follow-up turn on the job's session, as a `/hangar` comment would:
+After hangar opens a job's PR, it reacts to the PR's CI results, reviews and [conflicts](conflicts.md). It does this by starting a follow-up turn on the job's session, as a `/hangar` comment would:
 
 - **CI:** a `check_run` or `check_suite` that completes as `failure`, `timed_out` or `startup_failure`, or a commit `status` of `failure` or `error`. It counts only on the commit hangar last pushed to the PR (the job's `result.head_sha`).
   - The agent gets `ci-failures.md` with each failing check's output and annotations, and, for GitHub Actions, the end of the job's log (`HANGAR_AUTOFIX_LOG_BYTES`, plus the `##[error]` lines before it).
@@ -63,9 +63,9 @@ Loop control:
 
 Settings:
 
-- **Per repo:** `HANGAR_GITHUB_AUTOFIX='{"acme/app": "ci"}'`, with the values `ci,reviews`, `ci`, `reviews` or `off`.
+- **Per repo:** `HANGAR_GITHUB_AUTOFIX='{"acme/app": "ci"}'`: any of `ci`, `conflicts` and `reviews`, or `off`.
 - **Per job:** `"autofix"` in the request (`--autofix` on the CLI, `autofix` in MCP `submit_job`). A job's setting can only narrow its repo's.
-- **Default:** `ci,reviews` for every PR hangar opens. PRs that hangar didn't open are never touched.
+- **Default:** `ci,conflicts,reviews` on every hangar PR. PRs that hangar didn't open are never touched.
 - **The job view:** `autofix_state` shows the rounds, the pending triggers and why the loop stopped.
 
 The webhook needs the `pull_request_review`, `check_run`, `check_suite` and `status` events ([jobs from GitHub](from-github-slack-jira.md#4-trigger-from-github)): run `hangar setup github` again, or `hangar doctor --fix`.

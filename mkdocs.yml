@@ -128,6 +128,7 @@ nav:
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
               - Working with the agent: jobs/working-with-the-agent.md
               - An agent loop that finishes the job: jobs/agent-loop.md
+              - When a job's PR conflicts with main: jobs/conflicts.md
               - Test results: jobs/test-results.md
               - Experiments: jobs/experiments.md
               - "Reference: labels, outcomes, settings": jobs/reference.md

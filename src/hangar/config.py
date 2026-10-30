@@ -522,9 +522,10 @@ class Settings(BaseSettings):
     # reporter variables (PYTEST_ADDOPTS --junitxml, GOTESTSUM_JUNITFILE, JEST_JUNIT_OUTPUT_DIR) and read the reports
     # the check writes; collect: only read the reports (the repo's `verify_reports`, the usual paths); off: neither.
     test_reports: Literal["inject", "collect", "off"] = "inject"
-    # The PR auto-fix loop: a failing CI check on the job's own head, or a trusted reviewer's changes requested or
-    # inline comments, start a follow-up turn on the job's session. Per repo: {"owner/repo": "ci"} ("ci,reviews",
-    # "ci", "reviews" or "off"); a job's own `autofix` can only narrow it. Default "ci,reviews".
+    # The PR auto-fix loop: a failing CI check on the job's own head, a trusted reviewer's changes requested or
+    # inline comments, or a merge into its base that leaves it conflicted, start a follow-up turn on the job's
+    # session. Per repo: {"owner/repo": "ci"} (a comma-separated subset of "ci", "conflicts" and "reviews", or
+    # "off"); a job's own `autofix` can only narrow it. Default "ci,conflicts,reviews".
     github_autofix: dict[str, str] = Field(default_factory=dict)
     autofix_max_rounds: int = Field(3, ge=0, le=20)  # per PR
     autofix_cooldown_seconds: float = 120  # at least this long between two rounds on one PR
