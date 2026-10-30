@@ -134,6 +134,7 @@ nav:
           - Sessions: sessions.md
           - Steering: steering.md
           - Governed approvals: governed-approvals.md
+          - The Tower hook: governance-hook.md
           - Job release and landing through Tower: tower-release-landing.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
@@ -199,6 +200,7 @@ nav:
           - The git credential gateway: security/git-gateway.md
           - Who may continue a custom session branch: security/branch-creators.md
           - Egress allowlists: security/egress.md
+          - The GKE egress default: security/egress-default.md
           - Package mirrors: security/package-mirrors.md
           - Sandbox networking on Docker: security/docker-network.md
           - Secret scanning and redaction: security/secret-scanning.md

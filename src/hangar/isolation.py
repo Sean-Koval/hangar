@@ -80,7 +80,8 @@ SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 RELAY_TIMEOUT = 90  # the relay waits up to 60 s for the driver (driver.RELAY_WAIT), then connects
 _RELAY_TOKENS: dict[str, str] = {}  # run id -> its relay token, from steer.prepare to start (one process, one turn)
 # --- harden: a hardened turn's harness files hold its environment and MCP servers' secrets: only while it runs
-CLEANUP = "rm -rf {r}.agent-env {r}.settings.json {r}.mcp.json {r}.memory"
+# --- KAN-78: and the Tower hook's key (govhook.py)
+CLEANUP = "rm -rf {r}.agent-env {r}.settings.json {r}.mcp.json {r}.memory {r}.tower-key"
 
 # Run as root in the sandbox. Exit 3 with a reason: this sandbox stays single-user.
 SETUP = r"""u={user}

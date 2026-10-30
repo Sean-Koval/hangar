@@ -172,12 +172,17 @@ def declared_skills(spec: EnvSpec, harness: str | None) -> list[dict[str, Any]]:
     return out
 
 
-def _hooks(spec: EnvSpec, harness: str | None, env: dict[str, str]) -> list[dict[str, Any]]:
+def _hooks(spec: EnvSpec, harness: str | None, env: dict[str, str],
+           turn: SessionTurn | None = None) -> list[dict[str, Any]]:
     """Hooks the harness runs: hangar's verify gate (a Stop hook in --settings for Claude Code, the driver for
-    Codex), and any the environment's own config files declare (Claude Code's settings.json `hooks`)."""
+    Codex), hangar's managed Tower hook with its script's digest (KAN-78), and any the environment's own config files
+    declare (Claude Code's settings.json `hooks`)."""
+    from hangar import govhook
     from hangar.verifyloop import CLAUDE_ENV, GATE_ENV
 
     out: list[dict[str, Any]] = []
+    if entry := govhook.manifest_entry(turn, harness):
+        out.append(entry)
     if raw := env.get(CLAUDE_ENV):
         with contextlib.suppress(ValueError, AttributeError):
             for event, entries in (json.loads(raw).get("hooks") or {}).items():
@@ -331,7 +336,8 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
     permissions = {"approvals": approvals, "live": turn.live if turn is not None else None,
                    "harness_permission_checks": "off" if approvals == "auto" else "on",
                    "uid_split": split if turn is not None else None,
-                   "hardened": bool(split and approvals != "auto") if turn is not None else None,
+                   "hardened": bool(split and (approvals != "auto" or turn.governance_hook))
+                   if turn is not None else None,
                    "isolation": {k: iso.get(k) for k in ("mode", "split", "backend") if k in iso} or None,
                    # --- #124: the environment's sudo, and whether the sandbox ran with no-new-privileges (Docker
                    # jobs under HANGAR_INTAKE_POSTURE=enforce; GKE pods always, allowPrivilegeEscalation: false)
@@ -378,7 +384,7 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
                    "dir": f"~/{h.skills_dir}" if h and h.skills_dir else None},
         "plugins": plugins.manifest(spec, harness),  # --- #136: the read-only seed's
         "mcp_servers": mcp_servers(spec, harness),
-        "hooks": _hooks(spec, harness, env or {}),
+        "hooks": _hooks(spec, harness, env or {}, turn),
         "permissions": permissions,
         "egress": egress,
         "environment": environment,
