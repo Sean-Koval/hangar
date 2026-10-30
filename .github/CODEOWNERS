@@ -69,7 +69,8 @@
 /src/hangar/frontdoor.py           @Sean-Koval
 /src/hangar/app.py                 @Sean-Koval
 
-# Approvals and governance: who may release, approve, steer or land an agent's work.
+# Approvals and governance: who may release, approve, steer or land an agent's work, and the verdicts they rely on
+# (AI review, test results, grades, trusted senders, review-triggered fix rounds, the MCP front door).
 /src/hangar/approvals.py           @Sean-Koval
 /src/hangar/governance.py          @Sean-Koval
 /src/hangar/governed.py            @Sean-Koval
@@ -83,7 +84,24 @@
 /src/hangar/harden.py              @Sean-Koval
 /src/hangar/steer.py               @Sean-Koval
 /src/hangar/steer_api.py           @Sean-Koval
+/src/hangar/aireview.py            @Sean-Koval
+/src/hangar/autofix.py             @Sean-Koval
+/src/hangar/intake.py              @Sean-Koval
+/src/hangar/mcp_server.py          @Sean-Koval
+/src/hangar/mcp_steer.py           @Sean-Koval
+/src/hangar/testresults.py         @Sean-Koval
+/src/hangar/testreports.py         @Sean-Koval
+/src/hangar/experiments.py         @Sean-Koval
+
+# Code hangar loads or hands an agent (plugins, harness locks and where they resolve, service images), and the
+# harness review's export of ticket text.
+/src/hangar/plugins.py             @Sean-Koval
 /src/hangar/codex_plugins.py       @Sean-Koval
+/src/hangar/pluginhost.py          @Sean-Koval
+/src/hangar/harness_lock.py        @Sean-Koval
+/src/hangar/harness_repo.py        @Sean-Koval
+/src/hangar/harness_review.py      @Sean-Koval
+/src/hangar/repoenv.py             @Sean-Koval
 
 # The git gateway.
 /src/hangar/gateway.py             @Sean-Koval

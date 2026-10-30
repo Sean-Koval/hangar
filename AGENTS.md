@@ -29,3 +29,9 @@
   - It is a `lane:agent` ticket's PR, or a Dependabot PR.
   - Its CI is green: every required check passed on its head commit.
   - It touches no path `.github/CODEOWNERS` owns.
+- Branch protection can't enforce this yet. Sean is the sole code owner, and hangar job PRs are opened under his account. GitHub never lets a PR's author approve it, and an App's review is not a code-owner review. So requiring code-owner review, with no bypass, would block every PR that touches an owned path.
+- Workable options, for the owner to pick:
+  - hangar opens PRs as its GitHub App (`HANGAR_GITHUB_APP_CREDENTIAL`, docs/landing.md), so Sean can approve them as code owner.
+  - Sean is on the bypass list until a second approver is named. Any merge made with his credentials then bypasses the gate too.
+  - Required approvals 0 and code-owner review on, once PRs are no longer authored by Sean.
+- Recommended: the App opens agent PRs and merges under the rule, and is never on the bypass list. Sean bypasses only for his own `lane:pair` PRs, until a second approver is named. It is the only option where the gate binds Claude while Sean can still land his own work.

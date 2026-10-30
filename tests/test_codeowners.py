@@ -1,13 +1,15 @@
 """.github/CODEOWNERS keeps owning hangar's security-relevant code (KAN-220): the proposed auto-merge rule (AGENTS.md,
 "Merging") skips a PR that touches a code-owned path, so a security module missing from the file would merge unread.
 
-hangar's security code is flat in src/hangar, so no directory rule catches a new module. Two signals find one: its
-name (egress, vault, token, webhook...) or its code (it signs, verifies a signature or a secret, or encrypts). A module
-either signal flags needs a CODEOWNERS entry, or a line in EXEMPT saying why not; this file is code-owned too, so
+hangar's security code is flat in src/hangar, so no directory rule catches a new module. Three signals find one: its
+name (egress, vault, token, webhook, review, plugin...), its code (it signs, verifies a signature or a secret,
+encrypts, or loads code by name), or a function it defines that decides trust, approval, scope or admin rights. A
+module any signal flags needs a CODEOWNERS entry, or a line in EXEMPT saying why not; this file is code-owned too, so
 an exemption gets the owner's review."""
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -18,8 +20,10 @@ OWNER = "@Sean-Koval"
 
 NAME = re.compile(r"auth|cred|secret|vault|key|token|login|egress|tls|proxy|mirror|gateway|gw|broker|isolat|sandbox"
                   r"|relay|sidecar|envd|preview|harden|taint|canar|sign|webhook|trigger|gov|approv|trust|posture"
-                  r"|polic|identit|redact|scan|crypt|hmac")
-CODE = re.compile(r"\bcompare_digest\(|\bhmac\.new\(|\b(Multi)?Fernet\(|\bverify_signature\b")
+                  r"|polic|identit|redact|scan|crypt|hmac|review|plugin|intake|fix|lock|result|report")
+CODE = re.compile(r"\bcompare_digest\(|\bhmac\.new\(|\b(Multi)?Fernet\(|\bverify_signature\b"
+                  r"|\bentry_points\(|\bimport_module\(|\bspec_from_file_location\(|\bexec_module\(")
+DECIDES = re.compile(r"trust|approv|authori[sz]|scope|may_|allowed|admin|privileg")  # a function or method name
 
 # Modules a signal flags that need no code owner, and why.
 EXEMPT = {
@@ -28,6 +32,13 @@ EXEMPT = {
     "src/hangar/sandbox_computer.py": "runs inside the sandbox as the agent: holds nothing the agent lacks",
     "src/hangar/sandbox_env.py": "runs inside the sandbox as the agent: reports its own environment",
     "src/hangar/jobs.py": "the job hub; it signs an outbound callback with the submitter's own secret (vault-held)",
+    "src/hangar/cli.py": "a client of the REST API and of keys.py and approvals (owned): the decisions are theirs",
+    "src/hangar/computer_cli.py": "a client of computer_api's REST routes; the server decides who may answer",
+    "src/hangar/steer_cli.py": "a client of steer_api's REST routes (owned); the server decides who may approve",
+    "src/hangar/review_cli.py": "a client of harness_review's REST routes (owned); the server checks visibility",
+    "src/hangar/events.py": "the event hub; it records approvals the driver (owned) wrote and decides none",
+    "src/hangar/envspec.py": "parses an environment spec; its `allowed` validator checks harness names, not trust",
+    "src/hangar/sessions.py": "the session hub; taint.py (owned) decides what an untrusted context file means",
 }
 
 
@@ -54,7 +65,8 @@ def owned(path: str, entries: list[tuple[str, list[str]]] | None = None) -> bool
 
 
 def flagged(path: str, text: str) -> bool:
-    return bool(NAME.search(Path(path).stem) or CODE.search(text))
+    defs = (n.name for n in ast.walk(ast.parse(text)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    return bool(NAME.search(Path(path).stem) or CODE.search(text) or any(DECIDES.search(d) for d in defs))
 
 
 def unowned(modules: dict[str, str], entries: list[tuple[str, list[str]]]) -> list[str]:
@@ -104,7 +116,10 @@ def test_the_paths_the_ticket_names_are_owned():
                  ".github/CODEOWNERS", "tests/test_codeowners.py", "src/hangar/providers/kubernetes.py",
                  *(f"src/hangar/{m}.py" for m in ["isolation", "steer", "harden", "egress", "egress_proxy",
                                                   "egress_tls", "egressapi", "gateway", "broker", "teamcreds",
-                                                  "taint", "triggers", "events_out", "auth", "oauth", "vault"])]:
+                                                  "taint", "triggers", "events_out", "auth", "oauth", "vault",
+                                                  # the PR #415 review's gaps
+                                                  "aireview", "autofix", "intake", "testresults", "plugins",
+                                                  "pluginhost", "mcp_server", "harness_lock", "harness_review"])]:
         assert owned(path), f"{path} has no code owner"
 
 
@@ -114,9 +129,12 @@ def test_a_new_security_module_without_an_entry_fails():
         "src/hangar/webhook_inbox.py": "",  # by name
         "src/hangar/notes.py": "import hmac\nok = hmac.compare_digest(a, b)\n",  # by what it does
         "src/hangar/egress_dns.py": "",  # a name the egress*.py glob already owns
-        "src/hangar/weekly2.py": "def f():\n    return 1\n",  # neither
+        "src/hangar/loader.py": "import importlib\nm = importlib.import_module(name)\n",  # it loads code by name
+        "src/hangar/merging.py": "def may_merge(pr):\n    return pr.green\n",  # it decides who may do what
+        "src/hangar/weekly2.py": "def f():\n    return 1\n",  # none of them
     }
-    assert unowned(new, entries) == ["src/hangar/notes.py", "src/hangar/webhook_inbox.py"]
+    assert unowned(new, entries) == ["src/hangar/loader.py", "src/hangar/merging.py", "src/hangar/notes.py",
+                                     "src/hangar/webhook_inbox.py"]
 
 
 def test_agents_md_proposes_the_auto_merge_rule():
@@ -124,3 +142,5 @@ def test_agents_md_proposes_the_auto_merge_rule():
     section = agents.split("## Merging", 1)[1].split("\n## ", 1)[0]
     assert "Proposed" in section and "lane:agent" in section and "Dependabot" in section
     assert ".github/CODEOWNERS" in section
+    # the sole code owner authors hangar's PRs, so the settings must say how a PR gets approved at all (PR #415)
+    assert "never lets a PR's author approve it" in section and "bypass" in section and "Recommended" in section
