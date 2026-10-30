@@ -42,6 +42,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`pr.merge` carries outcome labels** (KAN-232, [docs/api/outcome-labels.md](docs/api/outcome-labels.md)): the
+  agent head, the merge commit, the agent's diff lines, how many of its added lines the merge kept, human commits on
+  the branch and review rounds, read from GitHub before the event goes out. Added within `hangar.job_event/v1`.
 - **`evals/` is gone** (KAN-86, #145). The semver kit moved to flightdeck: the task to `tasks/smoke/semver/`, the
   process metrics and rule labeller to its data plane. hangar's experiment tests grade
   `tests/fixtures/experiments/semver-mini/`, five of its hidden cases.
@@ -59,6 +62,8 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
+- **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
+  different approval id, hangar treats it as a contract failure, not a decision.
 
 ### Fixed
 

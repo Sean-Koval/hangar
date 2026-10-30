@@ -1,0 +1,120 @@
+# Code owners (KAN-220): hangar's security-relevant code, its deployment and its CI.
+#
+# A PR that touches any path below needs a code owner's review once branch protection on main requires it, and the
+# proposed auto-merge rule (AGENTS.md, "Merging") never merges one by itself.
+# tests/test_codeowners.py fails when a module that looks security-relevant (by name, or because it signs, verifies
+# or encrypts) is added to src/hangar without an entry here, or when an entry here matches nothing.
+#
+# A second approver will be added to every entry once one is named.
+
+# This file, and the test that keeps it complete (its exemption list decides what needs no owner).
+/.github/CODEOWNERS                @Sean-Koval
+/tests/test_codeowners.py          @Sean-Koval
+
+# CI and deployment: the checks a merge waits on, and what runs in the cluster.
+/.github/                          @Sean-Koval
+/scripts/ci/                       @Sean-Koval
+/deploy/                           @Sean-Koval
+
+# Sandboxing and isolation: the boundary between the agent and the control plane.
+/src/hangar/isolation.py           @Sean-Koval
+/src/hangar/relay.py               @Sean-Koval
+/src/hangar/driver.py              @Sean-Koval
+/src/hangar/delivery.py            @Sean-Koval
+/src/hangar/tiers.py               @Sean-Koval
+/src/hangar/heavy.py               @Sean-Koval
+/src/hangar/docker_agent.py        @Sean-Koval
+/src/hangar/providers/             @Sean-Koval
+/src/hangar/envd.py                @Sean-Koval
+/src/hangar/envdoctor.py           @Sean-Koval
+/envd/                             @Sean-Koval
+/src/hangar/sandbox_router.py      @Sean-Koval
+/src/hangar/sandbox_streams.py     @Sean-Koval
+/src/hangar/preview.py             @Sean-Koval
+/src/hangar/computer.py            @Sean-Koval
+/src/hangar/uiheaders.py           @Sean-Koval
+
+# Egress: what a sandbox may reach, and the read-only mirrors and gateways it reaches instead.
+/src/hangar/egress*.py             @Sean-Koval
+/src/hangar/pkgmirror.py           @Sean-Koval
+/src/hangar/regmirror.py           @Sean-Koval
+/src/hangar/ghapi.py               @Sean-Koval
+/src/hangar/modelgw.py             @Sean-Koval
+/src/hangar/envrequests.py         @Sean-Koval
+
+# Credentials and brokering: where secrets live, which reach a sandbox, and scanning for the ones that leak.
+/src/hangar/broker.py              @Sean-Koval
+/src/hangar/vault.py               @Sean-Koval
+/src/hangar/keys.py                @Sean-Koval
+/src/hangar/keys/                  @Sean-Koval
+/src/hangar/teamcreds.py           @Sean-Koval
+/src/hangar/cloudcreds.py          @Sean-Koval
+/src/hangar/buildsecrets.py        @Sean-Koval
+/src/hangar/credhealth.py          @Sean-Koval
+/src/hangar/authident.py           @Sean-Koval
+/src/hangar/turnlogin.py           @Sean-Koval
+/src/hangar/buildcache.py          @Sean-Koval
+/src/hangar/cachestore.py          @Sean-Koval
+/src/hangar/redaction.py           @Sean-Koval
+/src/hangar/secretscan.py          @Sean-Koval
+/src/hangar/pushscan.py            @Sean-Koval
+
+# Auth and tokens: who is calling and what they may do.
+/src/hangar/auth.py                @Sean-Koval
+/src/hangar/oauth.py               @Sean-Koval
+/src/hangar/identity.py            @Sean-Koval
+/src/hangar/identity_api.py        @Sean-Koval
+/src/hangar/people.py              @Sean-Koval
+/src/hangar/e2b_api.py             @Sean-Koval
+/src/hangar/frontdoor.py           @Sean-Koval
+/src/hangar/app.py                 @Sean-Koval
+
+# Approvals and governance: who may release, approve, steer or land an agent's work, and the verdicts they rely on
+# (AI review, test results, grades, trusted senders, review-triggered fix rounds, the MCP front door).
+/src/hangar/approvals.py           @Sean-Koval
+/src/hangar/governance.py          @Sean-Koval
+/src/hangar/governed.py            @Sean-Koval
+/src/hangar/govevents.py           @Sean-Koval
+/src/hangar/govrelease.py          @Sean-Koval
+/src/hangar/reviewtrust.py         @Sean-Koval
+/src/hangar/posture.py             @Sean-Koval
+/src/hangar/repopolicy.py          @Sean-Koval
+/src/hangar/landing.py             @Sean-Koval
+/src/hangar/branchowners.py        @Sean-Koval
+/src/hangar/harden.py              @Sean-Koval
+/src/hangar/steer.py               @Sean-Koval
+/src/hangar/steer_api.py           @Sean-Koval
+/src/hangar/aireview.py            @Sean-Koval
+/src/hangar/autofix.py             @Sean-Koval
+/src/hangar/intake.py              @Sean-Koval
+/src/hangar/mcp_server.py          @Sean-Koval
+/src/hangar/mcp_steer.py           @Sean-Koval
+/src/hangar/testresults.py         @Sean-Koval
+/src/hangar/testreports.py         @Sean-Koval
+/src/hangar/experiments.py         @Sean-Koval
+
+# Code hangar loads or hands an agent (plugins, harness locks and where they resolve, service images), and the
+# harness review's export of ticket text.
+/src/hangar/plugins.py             @Sean-Koval
+/src/hangar/codex_plugins.py       @Sean-Koval
+/src/hangar/pluginhost.py          @Sean-Koval
+/src/hangar/harness_lock.py        @Sean-Koval
+/src/hangar/harness_repo.py        @Sean-Koval
+/src/hangar/harness_review.py      @Sean-Koval
+/src/hangar/repoenv.py             @Sean-Koval
+
+# The git gateway.
+/src/hangar/gateway.py             @Sean-Koval
+
+# Taint: untrusted content, and the canaries that catch injection.
+/src/hangar/taint.py               @Sean-Koval
+/src/hangar/canaries.py            @Sean-Koval
+
+# Signing and webhooks: signed deliveries in and out.
+/src/hangar/triggers.py            @Sean-Koval
+/src/hangar/events_out.py          @Sean-Koval
+/src/hangar/github.py              @Sean-Koval
+/src/hangar/slack.py               @Sean-Koval
+/src/hangar/jira.py                @Sean-Koval
+/src/hangar/a2a.py                 @Sean-Koval
+/src/hangar/setup_api.py           @Sean-Koval

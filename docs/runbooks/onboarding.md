@@ -25,6 +25,18 @@ gateway).
   GitHub token, and hangar never lands such a job: landing is off for it
   ([what landing doesn't cover](../landing.md#what-it-doesnt-cover)).
 
+## Two limits on GKE today
+
+Tell each engineer these on day one:
+
+- **Approvals are `auto` only.** GKE sets `HANGAR_UID_SPLIT=required`, so a job or session with `approvals: ask`
+  (or `deny-risky`, `governed`) has its turns refused. Interactive approvals wait for the driver sidecar
+  ([KAN-186](https://seanmkoval.atlassian.net/browse/KAN-186), [the driver sidecar](../security/driver-sidecar.md)).
+- **No jobs run 01:00–10:00 ET.** The sandbox pools power down at 01:00 and are ready at 10:00
+  (`deploy/terraform/gke/power.tf`). A job sent in that window queues until 10:00, and a session resumes on its next
+  message after it ([infra states](../cicd.md#infra-states)). The [overnight lane](../gke.md#the-overnight-lane), off by default,
+  is the only exception.
+
 ## Engineer-hours
 
 The product lead's question: how long does one repo take to onboard? Record it here when the per-repo checklist is

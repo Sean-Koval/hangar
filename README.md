@@ -97,7 +97,7 @@ For an existing deployment, read [the upgrade guide](docs/upgrading.md) before u
 | Topic | Guide |
 | --- | --- |
 | First task, everyday commands, deployment and limits | [Getting started](docs/guide.md) · [Where it runs](docs/guide/where-it-runs.md) · [Concepts](docs/concepts.md) |
-| Environments and onboarding a team | [Environments](docs/environments.md) · [Onboarding runbook](docs/runbooks/onboarding.md) |
+| Environments and onboarding a team | [Environments](docs/environments.md) · [Onboarding runbook](docs/runbooks/onboarding.md) · [Runbooks](docs/runbooks/README.md) |
 | Clients, OAuth and MCP tools | [Connecting clients](docs/clients.md) · [Using MCP](docs/mcp.md) |
 | Jobs, sessions, steering, landing | [Jobs](docs/jobs/README.md) · [Sessions](docs/sessions.md) · [Steering](docs/steering.md) · [Landing](docs/landing.md) |
 | A team on one hangar, and GKE | [Team setup](docs/team.md) · [Running on GKE](docs/gke.md) · [Upgrading](docs/upgrading.md) |

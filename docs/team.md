@@ -60,7 +60,7 @@ by accident. Control-plane credentials belong to neither: they never reach a san
 bot tokens, GitHub App keys and hangar's own GitHub token. Members can't add team credentials.
 
 **A team credential is an API key, or another credential the vendor's terms allow for automation. A subscription
-login never is.** A Claude Pro or Max login (`--kind oauth_token`), a ChatGPT `auth.json`, a Google sign-in and the
+login never is.** A Claude Pro or Max login (`claude setup-token`), a ChatGPT `auth.json`, a Google sign-in and the
 other sign-in files are refused as team credentials.
 
 They are refused whether added with `--team`, stored over with `team: true`, or moved with
@@ -81,13 +81,21 @@ Each person adds their own, an API key first: it serves their jobs, schedules an
 ```bash
 hangar cred add claude-alice --harness claude-code --kind api_key --file anthropic-key.txt
 hangar cred add codex-alice --harness codex --kind api_key --file openai-key.txt
-# optional, for her own interactive sessions only (see below):
-claude setup-token | hangar cred add claude-alice-max --harness claude-code --kind oauth_token
 ```
 
 A member's credential is always their own. It goes only into their sandboxes, replacing the team's for that harness,
 and naming someone else's is refused. An admin stores one for someone with `--person alice`, or moves one with
 `hangar cred owner NAME alice`.
+
+### Your own interactive sessions
+
+Optional, and never for team work. A person may also store their own subscription login. Only the sessions and
+sandboxes they start themselves use it, with a warning. Every job refuses it and uses their API key
+([subscription logins](team/subscription-logins.md)).
+
+```bash
+claude setup-token | hangar cred add claude-alice-max --harness claude-code --kind oauth_token
+```
 
 ## Whose login a job uses
 
