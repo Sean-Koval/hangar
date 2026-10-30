@@ -136,7 +136,7 @@ async def test_the_verdict_is_one_comment_review_from_the_app(svc, gh, settings)
     job = agent_job(svc)
     # 30 findings, all confirmed: most severe first, at most 5 inline, the rest counted in the packet
     sev = ["minor", "info", "critical", "major", "minor", "info"] * 5
-    found = [{**RESULT["findings"][0], "line": i + 1, "severity": s} for i, s in enumerate(sev)]
+    found = [{**RESULT["findings"][0], "line": i % 8 + 1, "severity": s} for i, s in enumerate(sev)]  # near 3
     await review(svc, job, {**RESULT, "findings": found}, {"findings": [yes(i) for i in range(30)]})
     [posted] = gh.reviews_posted
     assert posted["event"] == "COMMENT" and posted["commit_id"] == HEAD  # never APPROVE
@@ -195,7 +195,8 @@ async def test_only_findings_with_evidence_are_kept_and_the_packet_counts_the_dr
     assert [f["evidence_kind"] for f in r["findings"]] == ["quote", "command"]
     [posted] = gh.reviews_posted
     assert len(posted["comments"]) == 2 and "3 more finding(s) dropped" in posted["body"]
-    assert "evidence (command)" in posted["body"]
+    assert "evidence (command, unverified: hangar didn't run it)" in posted["body"]  # the checker's word
+    assert [f["verified"] for f in r["findings"]] == [True, False]
     assert "2 confirmed finding(s) (2 inline, 0 in the review body only), 3 unconfirmed finding(s) dropped" \
         in svc.landing.packet(job)
 
@@ -206,33 +207,211 @@ async def test_blocking_needs_a_confirmed_high_severity_finding(svc, gh, setting
     reviews_on(svc)
     job = agent_job(svc)
     found = [{**RESULT["findings"][0], "severity": severity}, {**RESULT["findings"][0], "severity": "critical"}]
-    await review(svc, job, {**RESULT, "verdict": "blocking", "findings": found}, {"findings": [yes(0)]})
+    no = {"id": 1, "confirmed": False, "kind": "command", "evidence": "couldn't reproduce"}
+    await review(svc, job, {**RESULT, "verdict": "blocking", "findings": found}, {"findings": [yes(0), no]})
     r = job.landing.ai_review
     assert r["verdict"] == verdict and r["unconfirmed"] == 1  # the critical one wasn't confirmed
     assert aireview.counts_for(job.landing, HEAD) == (verdict != "blocking")
 
 
-async def test_a_failed_check_confirms_nothing_and_cant_block(svc, gh, settings):  # noqa: F811
+CRITICAL = {**RESULT, "verdict": "blocking", "findings": [{**RESULT["findings"][0], "severity": "critical"}]}
+
+
+def still_blocking(job, note: str) -> None:
+    r = job.landing.ai_review
+    assert r["verdict"] == "blocking" and r["findings"] == [] and note in (r.get("confirm_note") or "")
+    assert not aireview.counts_for(job.landing, HEAD)  # no self-approval on it
+
+
+@pytest.mark.parametrize(("state", "reason"), [(JobState.FAILED, "agent_failed"), (JobState.FAILED, "timeout"),
+                                               (JobState.CANCELLED, "cancelled")])
+async def test_a_check_that_didnt_complete_never_lifts_a_block(svc, gh, settings, state, reason):  # noqa: F811
     reviews_on(svc)
     job = agent_job(svc)
-    found = [{**RESULT["findings"][0], "severity": "critical"}]
-    await review(svc, job, {**RESULT, "verdict": "blocking", "findings": found}, None)
+    rj = await aireview.submit(svc, job, HEAD)
+    rj.result.data, rj.result.base_sha, rj.state = CRITICAL, HEAD, JobState.SUCCEEDED
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    cj = svc._jobs[job.landing.ai_review["confirm_job"]]
+    cj.state, cj.reason = state, reason
+    cj.result.data = {"findings": [{"id": 0, "confirmed": False, "kind": "quote", "evidence": "x"}]}  # partial
+    aireview.job_done(svc, cj)
+    await settle(svc)
+    still_blocking(job, "the check produced no result")
     r = job.landing.ai_review
-    assert r["verdict"] == "comment" and r["findings"] == [] and r["unconfirmed"] == 1
-    assert "the check produced no result" in r["confirm_note"]
+    assert r["unconfirmed"] == 1 and r["unchecked"]
     [posted] = gh.reviews_posted
-    assert "comments" not in posted and "1 more finding(s) dropped" in posted["body"]
+    assert "comments" not in posted and "the check didn't complete" in posted["body"]
+    assert "1 unchecked finding(s) dropped" in svc.landing.packet(job)
 
 
-async def test_no_findings_need_no_check_and_no_budget_means_no_check(svc, gh, settings):  # noqa: F811
+async def test_a_check_with_no_answer_never_lifts_a_block(svc, gh, settings):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    await review(svc, job, CRITICAL, {"findings": []})  # it ran, but said nothing about the critical finding
+    still_blocking(job, "")
+    job2 = agent_job(svc)
+    await review(svc, job2, CRITICAL, {"findings": [{"id": 0, "kind": "quote", "evidence": "x"}]})  # no `confirmed`
+    still_blocking(job2, "")
+
+
+async def test_a_check_of_another_head_never_lifts_a_block(svc, gh, settings):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    rj = await aireview.submit(svc, job, HEAD)
+    rj.result.data, rj.result.base_sha, rj.state = CRITICAL, HEAD, JobState.SUCCEEDED
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    cj = svc._jobs[job.landing.ai_review["confirm_job"]]
+    assert cj.labels[aireview.HEAD_LABEL] == HEAD  # what pin_head checks out
+    cj.result.data, cj.result.base_sha, cj.state = {"findings": [{"id": 0, "confirmed": False, "kind": "quote",
+                                                                  "evidence": "x"}]}, NEW, JobState.SUCCEEDED
+    aireview.job_done(svc, cj)
+    await settle(svc)
+    still_blocking(job, "not the reviewed head")
+
+
+async def test_a_skipped_check_or_no_findings_never_lifts_a_block(svc, gh, settings):  # noqa: F811
     reviews_on(svc, ai_review_budget_usd=0.06)  # the first pass may spend 0.04: the check gets 0.02, too little
     job = agent_job(svc)
-    assert await review(svc, job, {**RESULT, "verdict": "blocking", "findings": []}) is None
-    assert job.landing.ai_review["verdict"] == "comment" and len(gh.reviews_posted) == 1
+    assert await review(svc, job, {**RESULT, "verdict": "blocking", "findings": []}) is None  # zero findings
+    assert job.landing.ai_review["verdict"] == "blocking" and len(gh.reviews_posted) == 1
+    assert not aireview.counts_for(job.landing, HEAD)
     job2 = agent_job(svc)
-    assert await review(svc, job2, RESULT) is None
-    r = job2.landing.ai_review
+    assert await review(svc, job2, CRITICAL) is None  # skipped: no budget left for it
+    still_blocking(job2, "no budget left")
+    job3 = agent_job(svc)
+    assert await review(svc, job3, RESULT) is None  # a comment stays a comment
+    r = job3.landing.ai_review
     assert r["verdict"] == "comment" and r["unconfirmed"] == 1 and "no budget left" in r["confirm_note"]
+
+
+async def test_a_check_that_couldnt_start_never_lifts_a_block(svc, gh, settings, monkeypatch):  # noqa: F811
+    from hangar.jobs import JobError
+
+    reviews_on(svc)
+    job = agent_job(svc)
+    rj = await aireview.submit(svc, job, HEAD)
+    rj.result.data, rj.result.base_sha, rj.state = CRITICAL, HEAD, JobState.SUCCEEDED
+
+    def refuse(*a, **kw):
+        raise JobError("queue full")
+
+    monkeypatch.setattr(svc, "_submit", refuse)
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    still_blocking(job, "the check couldn't start")
+
+
+# ====================================================================== after a restart
+async def first_pass(svc, job, result):  # noqa: F811
+    rj = await aireview.submit(svc, job, HEAD)
+    rj.result.data, rj.result.base_sha, rj.state = result, HEAD, JobState.SUCCEEDED
+    return rj
+
+
+async def test_restore_sends_unchecked_candidates_to_the_check(svc, gh, settings):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    rj = await first_pass(svc, job, CRITICAL)
+    r = job.landing.ai_review
+    r.update(candidates=aireview._findings(CRITICAL), proposed_verdict="blocking")  # down before _confirm ran
+    aireview.restore(svc)
+    await settle(svc)
+    r = job.landing.ai_review
+    assert r["verdict"] is None and r["confirm_job"] and r["job"] == rj.id
+    cj = svc._jobs[r["confirm_job"]]
+    cj.result.data, cj.result.base_sha, cj.state = {"findings": [yes(0)]}, HEAD, JobState.SUCCEEDED
+    aireview.restore(svc)  # the check ended while hangar was down
+    await settle(svc)
+    r = job.landing.ai_review
+    assert r["verdict"] == "blocking" and len(r["findings"]) == 1 and len(gh.reviews_posted) == 1
+
+
+def gone(svc, job_id: str) -> None:  # noqa: F811
+    from hangar.models import Job
+
+    svc._jobs.pop(job_id)
+    svc.store.delete(Job, job_id)
+
+
+async def test_a_missing_check_job_record_times_out_to_an_error(svc, gh, settings, monkeypatch):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    rj = await first_pass(svc, job, CRITICAL)
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    cid = job.landing.ai_review["confirm_job"]
+    gone(svc, cid)  # its record is gone: nothing will ever answer
+    monkeypatch.setattr(aireview, "MISSING_SECONDS", 0.05)
+    aireview.restore(svc)
+    assert job.landing.ai_review["verdict"] is None  # not at once: it waits MISSING_SECONDS from the check's start
+    for _ in range(100):
+        if job.landing.ai_review.get("verdict"):
+            break
+        await asyncio.sleep(0.01)
+    for t in list(svc._background):  # the new review it asks for waits out the debounce
+        t.cancel()
+    r = job.landing.ai_review
+    assert r["verdict"] == "error" and cid in r["error"] and not aireview.counts_for(job.landing, HEAD)
+    assert "candidates" not in r and "AI review:** failed" in svc.landing.packet(job)
+    assert not gh.reviews_posted
+
+
+async def test_a_long_missing_review_job_record_is_an_error_at_once(svc, gh, settings):  # noqa: F811
+    reviews_on(svc)
+    job = agent_job(svc)
+    rj = await first_pass(svc, job, CRITICAL)
+    gone(svc, rj.id)
+    job.landing.ai_review["requested_at"] -= aireview.MISSING_SECONDS + 1
+    aireview.restore(svc)
+    r = job.landing.ai_review
+    assert r["verdict"] == "error" and svc.landing._ai_due.get(job.id) == HEAD  # and a new review is asked for
+    assert any(f"the review job {rj.id} is gone" in e.message for e in job.events)
+    for t in list(svc._background):
+        t.cancel()
+
+
+class _Sh:
+    def __init__(self, code=0):
+        self.code, self.commands = code, []
+
+    async def __call__(self, job, command, cwd=None, timeout=120):
+        self.commands.append((command, cwd))
+        return type("R", (), {"exit_code": self.code, "stdout": "", "stderr": "no such commit"})()
+
+
+async def test_the_check_checks_out_the_reviewed_head_not_the_tip():
+    from types import SimpleNamespace
+
+    from hangar.jobs import JobError
+    from hangar.models import Job
+
+    sb = SimpleNamespace(info={"repo_path": "/w/r"})
+    sh = _Sh()
+    svc_ = SimpleNamespace(fleet=SimpleNamespace(get=lambda _id: sb), _sh=sh)
+    cj = Job(title="c", instructions="x", environment="e", source="review", sandbox_id="sb",
+             labels={aireview.PHASE_LABEL: "confirm", aireview.HEAD_LABEL: HEAD})
+    s = SimpleNamespace(base_sha=NEW, branch="hangar/job-c")  # the tip moved on after the first pass
+    await aireview.pin_head(svc_, cj, s)
+    [(cmd, cwd)] = sh.commands
+    assert cwd == "/w/r" and f"git checkout -q -B hangar/job-c {HEAD}" in cmd
+    assert s.base_sha == cj.result.base_sha == HEAD
+    await aireview.pin_head(svc_, cj, s)  # already there: nothing to do
+    first = Job(title="r", instructions="x", environment="e", source="review", sandbox_id="sb",
+                labels={aireview.HEAD_LABEL: HEAD})
+    await aireview.pin_head(svc_, first, SimpleNamespace(base_sha=NEW, branch="b"))  # the first pass: untouched
+    assert len(sh.commands) == 1
+    svc_._sh = _Sh(code=1)
+    with pytest.raises(JobError, match="reviewed head"):
+        await aireview.pin_head(svc_, cj, SimpleNamespace(base_sha=NEW, branch="b"))
+
+
+async def test_a_tiny_budget_runs_no_review_and_doesnt_crash(svc, gh, settings):  # noqa: F811
+    reviews_on(svc, ai_review_budget_usd=0.005)  # 70% rounds to $0.00
+    job = agent_job(svc)
+    assert await aireview.submit(svc, job, HEAD) is None
+    assert job.landing.ai_review is None and "too small for a review" in job.events[-1].message
 
 
 async def test_the_policy_sets_the_inline_cap(svc, gh, settings):  # noqa: F811
@@ -246,19 +425,27 @@ async def test_the_policy_sets_the_inline_cap(svc, gh, settings):  # noqa: F811
         RepoPolicy(repo="o/r", ai_review_inline_max=21)
 
 
-def test_a_quote_must_be_a_line_of_the_diff():
-    diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old = 1\n+new = 2\n ctx()\n"
-    assert aireview._quoted("new = 2", diff) and aireview._quoted("+new = 2", diff)
-    assert aireview._quoted("old = 1\n new = 2", diff) and aireview._quoted("ctx()", diff)
-    assert not aireview._quoted("new = 3", diff) and not aireview._quoted("new", diff)
-    assert not aireview._quoted("  ", diff) and not aireview._quoted("+++ b/x", diff)
+def test_a_quote_must_be_an_added_line_of_the_findings_file_near_its_line():
+    diff = ("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-old = 1\n+new = 2\n+more = 3\n ctx()\n"
+            "@@ -40 +41,2 @@\n tail()\n+far = 4\n"
+            "diff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -0,0 +1 @@\n+other = 5\n"
+            "diff --git a/z b/z\n--- a/z\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone = 6\n")
+    q = aireview._quoted
+    assert q("new = 2", diff, "x", 1) and q("+new = 2", diff, "x", 1) and q("new = 2\n+more = 3", diff, "x", 2)
+    assert q("far = 4", diff, "x", 42) and q("far = 4", diff, "./x", None)  # no line: anywhere in its file
+    assert not q("far = 4", diff, "x", 1)  # 41 lines away from the finding
+    assert not q("other = 5", diff, "x", 1) and q("other = 5", diff, "y", 1)  # another file's line
+    assert not q("old = 1", diff, "x", 1) and not q("-old = 1", diff, "x", 1)  # a removed line
+    assert not q("ctx()", diff, "x", 3) and not q("gone = 6", diff, "z", 1)  # context, a deleted file
+    assert not q("new = 3", diff, "x", 1) and not q("new", diff, "x", 1)
+    assert not q("  ", diff, "x", 1) and not q("+++ b/x", diff, "x", 1)
 
 
 async def test_an_inline_comment_outside_the_diff_falls_back_to_the_body(svc, gh, settings):  # noqa: F811
     reviews_on(svc)
     job = agent_job(svc)
     await review(svc, job, {**RESULT, "findings": [{**RESULT["findings"][0], "line": 999}]},
-                 {"findings": [yes(0)]})
+                 {"findings": [yes(0, "command", "pytest -k app\nFAILED")]})
     assert [("comments" in p) for p in gh.reviews_posted] == [True, False]
     assert "line 999" in gh.reviews_posted[1]["body"] and job.landing.ai_review["review_id"]
     assert "(0 inline, 1 in the review body only)" in svc.landing.packet(job)
@@ -345,6 +532,7 @@ async def test_a_review_job_runs_fenced_and_its_spend_shows_under_source_review(
     assert len(r["findings"]) == 1 and r["findings"][0]["evidence_kind"] == "command"  # the check confirmed it
     cj = jobs.store.get(type(rj), r["confirm_job"])
     assert cj is not None and cj.state == JobState.SUCCEEDED and cj.labels[aireview.PHASE_LABEL] == "confirm"
+    assert cj.result.base_sha == r["head_sha"]  # it read the head the first pass reviewed
     # the sandbox record: egress none, and a job's label (so its gateway grant is fetch-only: nothing to push with)
     sb = jobs.store.get(Sandbox, rj.sandbox_id or "")
     assert sb is not None and sb.labels.get(posture.FLOOR_LABEL) == "none", sb
