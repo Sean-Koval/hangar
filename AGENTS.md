@@ -21,3 +21,11 @@
 - Work is tracked in Jira project KAN (<https://seanmkoval.atlassian.net>). GitHub Projects is retired; GitHub Issues are for outside reports only.
 - Work tied to a ticket carries its key, so the GitHub for Jira app links it: the branch starts with it (`KAN-35-apply-atomic`), the PR title starts with it (`KAN-35: make hangar apply all or nothing`) and the PR body has a `Jira: KAN-35` line. Commits may mention it. Work without a ticket (typo fixes, outside contributions) needs no key.
 - Lanes: only `lane:agent` tickets (job-sized: one repo or one change-set profile, acceptance criteria, a verify command) start a hangar job, when moved to "Ready for agent". `lane:pair` is Sean with Claude Code; `lane:human` is Sean only.
+
+## Merging
+
+- `.github/CODEOWNERS` lists hangar's security-relevant code (sandboxing, egress, credentials, auth, approvals, the gateway, taint, signing and webhooks), plus `deploy/`, `.github/` and `scripts/ci/`. `tests/test_codeowners.py` fails when a module that looks security-relevant has no entry.
+- Proposed auto-merge rule (KAN-220; not in force until the owner adopts it): Claude may merge a PR itself only when all of these hold. Otherwise a person merges it.
+  - It is a `lane:agent` ticket's PR, or a Dependabot PR.
+  - Its CI is green: every required check passed on its head commit.
+  - It touches no path `.github/CODEOWNERS` owns.

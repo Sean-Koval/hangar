@@ -52,8 +52,10 @@ PATHS: list[tuple[str, list[str] | str]] = [
     ("docs/index.md", ["tests/test_front_page.py", "tests/test_editorial.py"]),
     ("docs/gke.md", ["tests/test_sweep_durability.py", "tests/test_editorial.py"]),
     ("docs/*", ["tests/test_editorial.py"]),  # the editorial rule: every page, the nav
+    ("AGENTS.md", ["tests/test_codeowners.py", "tests/test_editorial.py"]),  # the merge rule, the editorial rule
     ("*.md", []),
     ("LICENSE", []),
+    (".github/CODEOWNERS", ["tests/test_codeowners.py"]),  # KAN-220: the security modules' owners
     ("bench/*", []),
     ("Dockerfile", ["tests/test_image_supply_chain.py", "tests/test_apt_versions.py"]),  # and the build, on main
     (".dockerignore", []),
