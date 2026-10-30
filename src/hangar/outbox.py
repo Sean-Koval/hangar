@@ -80,6 +80,11 @@ DIFF_FILES = 1000
 KV_SCAN = "outbox:jobs-scanned-at"
 KV_EVENT = "outbox:job-event:"  # + <job id>:<kind>[:<when>] -> the object key
 KV_SINCE = "outbox:enabled-at"
+# --- KAN-232: a merged PR's outcome labels, read from GitHub before its pr.merge event goes out (merge_outcome)
+KV_OUTCOME = "outbox:merge-outcome:"  # + <job id> -> the fields pr.merge's data gains
+KV_OUTCOME_WAIT = "outbox:merge-outcome-wait"  # job id -> merged_at: merges whose pr.merge waits for them
+OUTCOME_WAIT = 6 * 3600.0  # past this, pr.merge goes out with `outcome_error` instead
+BOT_EMAILS = ("hangar@localhost",)  # the identity hangar commits as when the sandbox has no GitHub user
 PENDING_DELETE = "pending-delete"
 TYPES = {".json": "application/json", ".diff": "text/x-diff"}
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -706,7 +711,8 @@ class Outbox:
                         "review.first"))
         if land.merged_at:
             out.append(("pr.merge", land.merged_at, {"by": land.merged_by,
-                                                     "green_to_merge_seconds": land.green_to_merge_seconds},
+                                                     "green_to_merge_seconds": land.green_to_merge_seconds,
+                                                     **(self.store.kv_get_json(KV_OUTCOME + job.id) or {})},
                         "pr.merge"))
         if land.pr_state == "closed" and land.closed_at:
             out.append(("pr.close", land.closed_at, {}, f"pr.close:{int(land.closed_at)}"))
@@ -724,11 +730,55 @@ class Outbox:
         since = float(self.store.kv_get(KV_SCAN) or self.store.kv_get(KV_SINCE) or now())
         t = now()
         n = 0
+        waiting = self.store.kv_get_json(KV_OUTCOME_WAIT) or {}
         for job in self.store.list_where(Job, updated_at=Ge(since - 120)):
             for kind, ts, data, once in self.lifecycle(job):
+                if kind == "pr.merge" and job.id in waiting:  # --- KAN-232: merge_outcomes sends it
+                    continue
                 if self.job_event(job, kind, ts, data, once=once):
                     n += 1
         self.store.kv_set(KV_SCAN, str(t))
+        return n
+
+    async def merge_outcomes(self) -> int:
+        """--- KAN-232: each new merge's outcome labels from GitHub (merge_outcome), then its pr.merge event. A merge
+        waits, retried each scan, until GitHub answers or OUTCOME_WAIT passes; then it goes with `outcome_error`.
+        Returns the pr.merge events sent."""
+        from hangar.models import Job
+        from hangar.store import Ge
+
+        if not self.enabled or self.jobs is None:
+            return 0
+        since = float(self.store.kv_get(KV_SCAN) or self.store.kv_get(KV_SINCE) or now())
+        waiting: dict[str, float] = self.store.kv_get_json(KV_OUTCOME_WAIT) or {}
+        for job in self.store.list_where(Job, updated_at=Ge(since - 120)):
+            if (job.landing.merged_at and job.result.pr_number and self.store.kv_get(KV_OUTCOME + job.id) is None
+                    and self.store.kv_get(f"{KV_EVENT}{job.id}:pr.merge") is None):
+                waiting.setdefault(job.id, job.landing.merged_at)
+        if not waiting:
+            return 0
+        gh, n = self.jobs._github(), 0
+        try:
+            for jid, merged_at in list(waiting.items()):
+                if (job := self.store.get(Job, jid)) is None:
+                    waiting.pop(jid)
+                    continue
+                try:
+                    got = await merge_outcome(gh, job) if gh else {"outcome_error": "no GitHub token credential"}
+                except Exception as e:  # noqa: BLE001 - asked again next scan, until OUTCOME_WAIT
+                    if now() < merged_at + OUTCOME_WAIT:
+                        continue
+                    got = {"outcome_error": str(e)[:300]}
+                self.store.kv_set_json(KV_OUTCOME + jid, got)
+                waiting.pop(jid)
+                for kind, ts, data, once in self.lifecycle(job):
+                    if kind == "pr.merge" and self.job_event(job, kind, ts, data, once=once):
+                        n += 1
+        finally:
+            self.store.kv_set_json(KV_OUTCOME_WAIT, waiting)
+            if gh is not None:
+                with contextlib.suppress(Exception):
+                    await gh.close()
         return n
 
     # ------------------------------------------------------------------ draining
@@ -795,6 +845,7 @@ class Outbox:
                 full = sum(got.values()) >= BATCH
                 if time.monotonic() - last_scan >= SCAN_EVERY:
                     last_scan = time.monotonic()
+                    await self.merge_outcomes()  # --- KAN-232: before the scan, which leaves these merges to it
                     await asyncio.to_thread(self.scan_jobs)
                 if time.monotonic() - last_sweep >= SWEEP_EVERY:
                     last_sweep = time.monotonic()
@@ -967,6 +1018,49 @@ def failure(job: Job) -> bool:
 
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
+
+
+async def merge_outcome(gh: Any, job: Job) -> dict[str, Any]:
+    """--- KAN-232 (docs/api/outbox.md#job-events): a merged PR's outcome labels. The agent's diff is base...the
+    head hangar last pushed (`agent_head_sha`); the merged diff is base...the PR's head at merge. An added line
+    survives when the merged diff adds the same (file, stripped text); blank lines don't count. A human commit is
+    one on the branch not authored by hangar's identity (the agent head's author, hangar@localhost, a `[bot]`). A
+    review round is a head commit that got a human review."""
+    from collections import Counter
+
+    from hangar import reviewtrust
+    from hangar.github import parse_repo
+
+    repo, r = parse_repo(job.repo), job.result
+    if not (repo and r.base_sha and r.head_sha and r.pr_number):
+        return {"outcome_error": "no repo, base, agent head or PR number recorded"}
+    pr = await gh._req("GET", f"/repos/{repo}/pulls/{r.pr_number}")
+    final = str((pr.get("head") or {}).get("sha") or r.head_sha)
+    mine = await gh.compare(repo, r.base_sha, r.head_sha)
+    merged = mine if final == r.head_sha else await gh.compare(repo, r.base_sha, final)
+    reviews = await gh._req("GET", f"/repos/{repo}/pulls/{r.pr_number}/reviews", params={"per_page": 100}) or []
+
+    def added(cmp: dict[str, Any]) -> Counter:
+        return Counter((f.get("filename"), ln[1:].strip()) for f in cmp.get("files") or []
+                       for ln in (f.get("patch") or "").splitlines() if ln.startswith("+") and ln[1:].strip())
+
+    def who(c: dict[str, Any]) -> set[str]:
+        return {x for x in (str(((c.get("commit") or {}).get("author") or {}).get("email") or "").lower(),
+                            str((c.get("author") or {}).get("login") or "").lower()) if x}
+
+    ours, kept = added(mine), added(merged)
+    head = next((c for c in mine.get("commits") or [] if c.get("sha") == r.head_sha), {})
+    bots = {*BOT_EMAILS, *who(head)}
+    humans = [c for c in merged.get("commits") or []
+              if not (who(c) & bots) and not reviewtrust.is_bot(c.get("author") or {})]
+    n, survived = sum(ours.values()), sum((ours & kept).values())
+    return {"agent_head_sha": r.head_sha, "merged_sha": pr.get("merge_commit_sha"), "final_head_sha": final,
+            "agent_diff_lines": sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0)
+                                    for f in mine.get("files") or []),
+            "agent_added_lines": n, "merged_added_lines": sum(kept.values()), "surviving_lines": survived,
+            "survival_at_merge": round(survived / n, 4) if n else None, "human_commits": len(humans),
+            "review_rounds": len({x.get("commit_id") for x in reviews if str(x.get("state")).upper() != "PENDING"
+                                  and not reviewtrust.is_bot(x.get("user") or {})})}
 
 
 def backoff(attempts: int) -> float:
