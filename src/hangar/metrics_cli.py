@@ -29,7 +29,7 @@ def weekly(week: str = typer.Option(None, "--week", help="An ISO week, e.g. 2026
            person: str = typer.Option(None, "--person", help="One person (yourself, unless you are an admin)."),
            json_out: bool = typer.Option(False, "--json", help="Every metric, as JSON.")):
     """The week's agent PR yield, agent share, review wait, green-to-merge, steer, abandon and revert rates, cost
-    per merged PR and active delegators."""
+    per merged PR, reviewer attention per merged PR and active delegators."""
     cli = _cli()
     params = {k: v for k, v in {"week": week, "repo": repo, "person": person}.items() if v}
     got = cli._call("GET", "/api/metrics/weekly", params=params)
@@ -40,7 +40,7 @@ def weekly(week: str = typer.Option(None, "--week", help="An ISO week, e.g. 2026
     scope = " ".join(x for x in (got.get("repo"), got.get("person") and f"person {got['person']}") if x)
     typer.echo(f"week {got['week']} ({got['timezone']})" + (f", {scope}" if scope else ""))
     y = m["yield"]
-    typer.echo(f"  yield            {_pct(y['value'])} ({y['merged']}/{y['opened']} agent PRs, {y['window_days']} d)")
+    typer.echo(f"  yield            {_pct(y['value'])} ({y['merged']}/{y['terminal']} counted terminal agent jobs)")
     a = m["agent_share"]
     typer.echo(f"  agent share      {_pct(a['value'])} ({a['agent_merged']}/{_num(a['all_merged'])} merged PRs)")
     r = m["review_wait"]
@@ -51,13 +51,18 @@ def weekly(week: str = typer.Option(None, "--week", help="An ISO week, e.g. 2026
                f"unclassified {s['unclassified']})")
     ab = m["abandon_rate"]
     reasons = ", ".join(f"{k} {v}" for k, v in ab["by_reason"].items())
-    typer.echo(f"  abandon rate     {_pct(ab['value'])} ({ab['abandoned']}/{ab['closed']})"
+    typer.echo(f"  abandon rate     {_pct(ab['value'])} ({ab['abandoned']}/{ab['terminal']})"
                + (f": {reasons}" if reasons else ""))
     rv = m["revert_rate"]
-    typer.echo(f"  revert rate      {_pct(rv['value'])} ({rv['reverted']}/{rv['merged']})"
-               + ("" if rv["settled"] else " (not settled: 14 days haven't passed)"))
+    typer.echo(f"  revert rate      {_pct(rv['value'])} ({rv['reverted']}/{rv['cohort']} merged 14 days earlier)")
     c = m["cost_per_merged_pr"]
     typer.echo(f"  cost / merged PR {'$' + format(c['usd'], '.2f') if c['usd'] is not None else '-'}")
+    ra = m["reviewer_attention"]
+    typer.echo(f"  review attention {_num(ra['events_per_merged_pr'])} review events per merged PR "
+               f"({ra['events']} over {ra['measured']}/{ra['merged']} merged PRs read; p50 {_num(ra['p50'])}, "
+               f"p90 {_num(ra['p90'])})")
+    typer.echo(f"  review minutes   {_num(ra['active_minutes'])}" + (f" ({ra['active_minutes_note']})"
+                                                                     if ra["active_minutes"] is None else ""))
     typer.echo(f"  active delegators {m['active_delegators']['value']}")
     if m["excluded_infra_error"]:
         typer.echo(f"  ({m['excluded_infra_error']} infra_error job(s) left out)")

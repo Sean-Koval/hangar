@@ -16,7 +16,9 @@ What it records for that, beyond what landing already kept (models.LandingState)
 * `reverted_at` / `revert_sha` / `fix_forward_pr`: a nightly pass reads each mapped repo's default branch for the last
   14 days (the control token, read-only) for `Revert "…"` / `This reverts commit <sha>` commits of a merged agent PR's
   merge commit, and merged PRs whose body says `Fixes-forward: #N`; the same pass caches every merged PR of the repo
-  (humans' too), which `agent_share` divides by.
+  (humans' too), which `agent_share` divides by;
+* `review_activity` (--- KAN-70): the same pass reads each agent PR merged in the last ATTENTION_DAYS once, its
+  reviews and review comments, raw; `attention` decides which of them are a human reviewer's attention.
 
 `GET /api/metrics/weekly?week=2026-W43&repo=…&person=…`, `hangar metrics weekly [--repo] [--person] [--json]`. Per
 person: that person and admins only. The standup line goes to HANGAR_STANDUP_CHANNEL at 10:18 ET on weekdays
@@ -53,6 +55,14 @@ STANDUP_LATEST = (13, 0)  # past this, a missed standup line (hangar was down) i
 TICK = 60.0
 KV_MERGED = "weekly:merged:"  # + repo key -> {"at", "prs": [{number, merged_at, merge_commit_sha, bot}]}
 KV_NIGHTLY = "weekly:nightly-at"
+# --- KAN-70: reviewer attention per merged agent PR. The ticket owner's default definition, to change here:
+# review events are submitted reviews and review comments (ATTENTION_KINDS) by humans; bots, the PR's author (the
+# agent's account) and hangar's own AI review never count (attention()).
+ATTENTION_KINDS = ("review", "review_comment")
+ATTENTION_DAYS = YIELD_DAYS + 7  # merged agent PRs the nightly pass reads reviews for
+ATTENTION_MAX_PRS = 200  # per repo and night: bounds the API calls; the rest wait for the next night
+ACTIVE_MINUTES_NOTE = ("unavailable: hangar records when reviews and comments were submitted, not how long anyone "
+                       "spent reviewing")
 KV_STANDUP = "weekly:standup:"  # + local date -> when it was posted
 _REVERT_TITLE = re.compile(r'^Revert "(.+)"', re.M)
 _REVERTS = re.compile(r"This reverts commit ([0-9a-f]{7,40})", re.I)
@@ -299,10 +309,38 @@ def compute(svc: JobService, lo: float, hi: float, repo: str | None = None,
                         "cohort_start": cohort_lo, "cohort_end": cohort_hi},
         "cost_per_merged_pr": {"usd": round(cost / len(merged), 4) if merged else None,
                                "total_usd": round(cost, 4), "merged": len(merged)},
+        "reviewer_attention": reviewer_attention(merged),
         "active_delegators": {"value": len(delegators), "of": len(active), "min_merged": DELEGATOR_MIN,
                               **({"people": delegators} if person is None else {})},
         "excluded_infra_error": excluded,
     }
+
+
+def attention(job: Job) -> list[dict[str, Any]] | None:
+    """--- KAN-70: the review events of a PR that count as reviewer attention (ATTENTION_KINDS, by a human who isn't
+    the PR's author, not hangar's own AI review); None when the nightly pass hasn't read the PR yet."""
+    ra = job.landing.review_activity
+    if not isinstance(ra, dict):
+        return None
+    author = str(ra.get("author") or "").lower()
+    return [e for e in ra.get("events") or [] if isinstance(e, dict) and e.get("kind") in ATTENTION_KINDS
+            and not e.get("bot") and not e.get("hangar") and str(e.get("login") or "").lower() not in ("", author)]
+
+
+def reviewer_attention(merged: list[Job]) -> dict[str, Any]:
+    """--- KAN-70: review events per merged agent PR, over the merged PRs whose reviews were read (`measured`)."""
+    per = {j.id: got for j in merged if (got := attention(j)) is not None}
+    counts = [float(len(x)) for x in per.values()]
+    events = [e for x in per.values() for e in x]
+    kinds = Counter(e["kind"] for e in events)
+    return {"events_per_merged_pr": _rate(len(events), len(per)), "events": len(events),
+            "reviews": kinds.get("review", 0), "review_comments": kinds.get("review_comment", 0),
+            "p50": pct(counts, 50), "p90": pct(counts, 90), "merged": len(merged), "measured": len(per),
+            "unreviewed": sum(1 for c in counts if not c),
+            "reviewers": len({str(e["login"]).lower() for e in events}),
+            "active_minutes": None, "active_minutes_note": ACTIVE_MINUTES_NOTE,
+            **({"note": "the nightly pass hasn't read the reviews of every merged agent PR yet"}
+               if len(per) < len(merged) else {})}
 
 
 def _h(seconds: float | None) -> float | None:
@@ -369,6 +407,8 @@ def standup_line(svc: JobService, at: float | None = None) -> str:
         bits.append(f"yield {round(y['value'] * 100)}% ({y['merged']}/{y['terminal']})" if y["value"] is not None
                     else "yield -")
         bits.append(f"{m['active_delegators']['value']} active delegators")
+        ra = m["reviewer_attention"]["events_per_merged_pr"]
+        bits.append(f"{ra:g} review events per merged PR" if ra is not None else "review events per merged PR -")
     return f"{head}: " + ", ".join(bits)
 
 
@@ -448,6 +488,7 @@ async def _scan_repo(svc: JobService, gh: Any, repo: str) -> dict[str, int]:
     ours = {j.result.pr_number: live.get(j.id) or j for j in agent_prs(svc.store, repo) if j.landing.merged_at
             and j.landing.merged_at >= t - (REVERT_DAYS + 1) * 86400}
     got = {"merged": len(prs), "reverted": 0, "fixed_forward": 0}
+    await _read_reviews(svc, gh, repo, prs, live, t)
     if not ours:
         return got
     for p in prs:  # a later PR that says it fixes an agent PR forward
@@ -475,6 +516,42 @@ async def _scan_repo(svc: JobService, gh: Any, repo: str) -> dict[str, int]:
                     outbox.of(svc.fleet).job_event(j, "revert", when, {"sha": c.get("sha")})
                 got["reverted"] += 1
     return got
+
+
+async def _read_reviews(svc: JobService, gh: Any, repo: str, prs: list[dict[str, Any]], live: dict[str, Job],
+                        t: float) -> int:
+    """--- KAN-70: each agent PR merged in the last ATTENTION_DAYS whose reviews aren't read yet: its reviews and
+    review comments, raw, on `landing.review_activity` (read once, after the merge; read-only GETs)."""
+    from hangar.github import MARKER
+    from hangar.reviewtrust import is_bot
+
+    authors = {p.get("number"): str((p.get("user") or {}).get("login") or "") for p in prs}
+    todo = [live.get(j.id) or j for j in agent_prs(svc.store, repo) if j.landing.merged_at
+            and j.landing.merged_at >= t - ATTENTION_DAYS * 86400 and j.landing.review_activity is None]
+    n = 0
+    for j in sorted(todo, key=lambda x: x.landing.merged_at or 0, reverse=True)[:ATTENTION_MAX_PRS]:
+        num = j.result.pr_number
+        ai = (j.landing.ai_review or {}).get("review_id")
+        try:
+            read = (("review", await gh.pull_reviews(repo, num)),
+                    ("review_comment", await gh.pull_review_comments(repo, num)))
+        except Exception as e:  # noqa: BLE001 - the reverts still get read; the rest wait for the next night
+            log.warning("weekly: could not read the reviews of %s#%s: %s", repo, num, e)
+            break
+        events = []
+        for kind, items in read:
+            for x in items:
+                if kind == "review" and str(x.get("state") or "").upper() == "PENDING":
+                    continue  # a draft review nobody submitted
+                user = x.get("user") or {}
+                rid = x.get("id") if kind == "review" else x.get("pull_request_review_id")
+                events.append({"kind": kind, "login": user.get("login"), "bot": is_bot(user),
+                               "hangar": (ai is not None and rid == ai) or MARKER in (x.get("body") or ""),
+                               "at": _ts(x.get("submitted_at") if kind == "review" else x.get("created_at"))})
+        j.landing.review_activity = {"at": t, "author": authors.get(num) or None, "events": events}
+        svc._save(j)
+        n += 1
+    return n
 
 
 def _ts(iso: Any) -> float | None:
