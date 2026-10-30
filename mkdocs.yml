@@ -172,6 +172,7 @@ nav:
           - SLOs: slos.md
           - Alerting: alerting.md
           - Weekly adoption metrics: metrics.md
+          - Reviewer attention baseline: metrics-baseline.md
   - Reference:
       - APIs:
           - The Fleet API: api/fleet.md

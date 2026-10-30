@@ -67,7 +67,6 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "jobs/working-with-the-agent.md": (1356, 26, LATER + "questions, steering"),
     "landing.md": (3793, 62, LATER + "the GitHub App, approvals, review rounds"),
     "local-microvms.md": (262, 2, REWRITE),
-    "metrics.md": (526, 3, REWRITE),
     "microvm.md": (3221, 28, LATER + "by provider"),
     "model-gateway.md": (1160, 25, LATER + "the gateway, tapes"),
     "observability.md": (2530, 31, LATER + "events, metrics, traces"),
