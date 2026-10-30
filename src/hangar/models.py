@@ -467,6 +467,12 @@ class LandingState(BaseModel):
     first_review_at: float | None = None  # the first review a human submitted (any state; never a bot's)
     first_review_by: str | None = None
     merge_commit_sha: str | None = None  # what the merge put on the base branch (a squash's own commit)
+    # --- KAN-33 (#172, spec 0015 §11): Tower's approval of the approved head, its receipt (`receipt_sha`: the head
+    # it covers), and what was asked and answered in shadow or enforce (govrelease.record)
+    workspace_approval: str | None = None
+    receipt: str | None = None
+    receipt_sha: str | None = None
+    governance: dict[str, Any] | None = None
     abandon_reason: str | None = None  # closed unmerged: weekly.ABANDON_REASONS
     abandon_by: str | None = None
     abandon_at: float | None = None
@@ -474,6 +480,10 @@ class LandingState(BaseModel):
     revert_sha: str | None = None
     fix_forward_pr: int | None = None  # a later merged PR whose body says `Fixes-forward: #<this PR>`
     fix_forward_at: float | None = None
+    # --- KAN-70: reviewer attention (weekly.attention): what the nightly pass read of the merged PR, once, raw:
+    # {"at", "author": {login, id}, "committers": [{login, id}], "events": [{kind, login, id, bot, hangar, at}]};
+    # None: not read yet
+    review_activity: dict[str, Any] | None = None
 
 
 class JobApproval(BaseModel):
@@ -493,6 +503,11 @@ class JobApproval(BaseModel):
     # the decider's words (REST `reason`): required by the console to reject, optional to approve; sent to the
     # requester where the job was asked for, and kept here with the decision
     decision_reason: str | None = None
+    # --- KAN-33 (#172, spec 0015 §5, §11): Tower's approval this release waits on, the receipt of Tower's allow, and
+    # what was asked and answered in shadow or enforce (govrelease.record)
+    workspace_approval_id: str | None = None
+    receipt: str | None = None
+    governance: dict[str, Any] | None = None
 
 
 # --- workstream D: forks/best-of-N

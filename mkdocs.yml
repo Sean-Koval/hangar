@@ -135,6 +135,7 @@ nav:
           - Steering: steering.md
           - Governed approvals: governed-approvals.md
           - The Tower hook: governance-hook.md
+          - Job release and landing through Tower: tower-release-landing.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
           - Landing: landing.md
@@ -161,6 +162,7 @@ nav:
               - Agent-led setup: environments/agent-led-setup.md
               - "Agent-led setup: re-runs, budget and safety": environments/agent-led-setup-safety.md
               - Root, plugins and MCP trust: environments/sudo-plugins-mcp.md
+              - Plugins from a git marketplace: environments/git-plugins.md
           - Harnesses: harnesses.md
           - Harness locks: harness-lock.md
           - Computer use: computer-use.md
@@ -171,6 +173,7 @@ nav:
           - SLOs: slos.md
           - Alerting: alerting.md
           - Weekly adoption metrics: metrics.md
+          - Reviewer attention baseline: metrics-baseline.md
   - Reference:
       - APIs:
           - The Fleet API: api/fleet.md
@@ -178,6 +181,7 @@ nav:
           - hangar-envd: envd.md
           - Trace export (hangar.trace/v1): api/traces.md
           - Run capture (hangar.run/v1): api/outbox.md
+          - "Outcome labels on a merged PR": api/outcome-labels.md
           - Trials and pin sets (hangar.pinset/v1): api/trials.md
           - Tower's events (POST /api/governance/events): api/governance-events.md
           - Model gateway and tapes: model-gateway.md
@@ -205,6 +209,7 @@ nav:
           - People and OAuth connectors: security/people.md
           - Sealed graders: security/graders.md
           - The driver sidecar on GKE: security/driver-sidecar.md
+          - The driver's own user on E2B: security/e2b-driver-user.md
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md
           - The vault key ring: security/vault-key.md
@@ -227,6 +232,8 @@ nav:
           - 0014 Sister tool interfaces: specs/0014-sister-tool-interfaces.md
           - 0015 Governance decision point: specs/0015-governance-decision-point.md
       - Research - Google AX: research/ax.md
+      - Research - Test-first acceptance: research/test-first.md
+      - Research - Test-first isolation: research/test-first-isolation.md
   - Operations:
       - Running on GKE: gke.md
       - Deploying from CI/CD: cicd.md

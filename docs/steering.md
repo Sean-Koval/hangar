@@ -220,7 +220,7 @@ Nothing is built into images, so existing environments get the split without a r
 
 - **environments with `sudo: true`.** The agent is root whenever it likes, so a second user would protect nothing. `sudo` is `false` by default (#124), so default environments get the split. A job's Docker sandbox under `HANGAR_INTAKE_POSTURE=enforce` runs with `no-new-privileges`, so sudo fails there even where the image has it. The split execs as each user with `docker exec --user`, with no setuid binary, so it keeps working there.
 - **Kubernetes.** GKE Sandbox's policy runs each pod as one non-root user with no capabilities and no privilege escalation. No process in the pod can switch users, and a second container wouldn't share the agent's filesystem.
-- **E2B.** Its envd can run commands as another user, but this isn't wired up.
+- **E2B.** One microVM, one user. Unset, `HANGAR_UID_SPLIT` is `required` there ([E2B](security/e2b-driver-user.md)).
 - **`HANGAR_UID_SPLIT=off`.**
 
 A turn under any policy but `auto` in a single-user sandbox carries a warning. The warning says what isn't protected: code the person allows can change the harness's settings, environment and binary so later turns don't ask, and can fake the run log, approval requests and exit status hangar reads. With `HANGAR_UID_SPLIT=required` the turn fails instead, saying why. The same applies when the sandbox is split but hangar can't own the harness's settings there.

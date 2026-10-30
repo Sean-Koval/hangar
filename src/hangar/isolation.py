@@ -22,7 +22,8 @@ settings (harden.py), where the setup found the harness and the managed settings
 
 Only Docker can do this: its exec picks the uid (runc, gVisor and Kata alike), with no setuid binary in the sandbox.
 GKE's sandbox policy runs a pod as one non-root user without capabilities, so there is no second user to switch to;
-E2B is not wired up. A sandbox whose agent can become root (an environment that sets `sudo: true`; the default is
+E2B is not wired up, so there HANGAR_UID_SPLIT defaults to `required` (`policy`, KAN-189). A sandbox whose agent
+can become root (an environment that sets `sudo: true`; the default is
 false since #124) gains nothing from it, unless the sandbox runs with no-new-privileges (a job's on Docker under
 HANGAR_INTAKE_POSTURE=enforce, posture.no_new_privs), where sudo fails. Everything else runs as before, in one user,
 with a warning; HANGAR_UID_SPLIT=required makes `ask` and `deny-risky` turns fail there instead.
@@ -146,6 +147,34 @@ def run_split(sb: Sandbox, run_id: str | None) -> bool:
     return any(r.get("id") == run_id and r.get("split") for r in sb.info.get("runs") or [])
 
 
+def policy(settings: Settings, provider: str) -> str:
+    """HANGAR_UID_SPLIT as it applies to a sandbox of `provider`. Unset, it is `auto`, except on E2B: `required`
+    (--- KAN-189). An E2B sandbox is one microVM with one user and no second container, so a turn that asks would
+    always share the driver's user there (docs/security/e2b-driver-user.md). Set to `auto`, E2B warns, and
+    `hangar doctor` flags it."""
+    if settings.uid_split is not None:
+        return settings.uid_split
+    return "required" if provider == "e2b" else "auto"
+
+
+def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """--- KAN-189: on E2B, a HANGAR_UID_SPLIT set to `auto` or `off` lets `ask`, `deny-risky` and `governed` turns run
+    with the driver in the agent's reach (security review H-1). Unset or `required`, they are refused there."""
+    from hangar.doctor import _check
+
+    if "e2b" not in h.fleet.providers:
+        return []
+    mode = h.settings.uid_split
+    if mode in ("auto", "off"):
+        return [_check("uid split on e2b", None,
+                       f"HANGAR_UID_SPLIT={mode}: ask, deny-risky and governed turns on E2B run with hangar's driver "
+                       "as the agent's own user, so the agent can answer its own approvals (H-1)",
+                       "unset HANGAR_UID_SPLIT (hangar config unset HANGAR_UID_SPLIT, or remove it from the "
+                       "environment) so E2B refuses those turns; docs/security/e2b-driver-user.md")]
+    return [_check("uid split on e2b", True, "ask, deny-risky and governed turns are refused on E2B "
+                   f"(HANGAR_UID_SPLIT {'unset: required there' if mode is None else '=' + str(mode)})")]
+
+
 def why_not(settings: Settings, sb: Sandbox) -> str:
     """Why turns in the sandbox run single-user."""
     if settings.uid_split == "off":
@@ -186,7 +215,9 @@ def supported(prov: Provider) -> bool:
 async def _probe(settings: Settings, prov: Provider, sb: Sandbox) -> dict[str, Any]:
     if not supported(prov):
         why = ("Kubernetes sandboxes run as one non-root user without capabilities (GKE Sandbox's policy)"
-               if prov.name == "kubernetes" else f"the {prov.name} provider doesn't support it yet")
+               if prov.name == "kubernetes" else
+               "an E2B sandbox is one microVM with one user, and hangar doesn't add a second (KAN-189)"
+               if prov.name == "e2b" else f"the {prov.name} provider doesn't support it yet")
         if prov.name == "kubernetes" and settings.k8s_driver_sidecar:  # --- KAN-83: a prototype, not wired to turns
             why = "the pod has the driver sidecar (HANGAR_K8S_DRIVER_SIDECAR), but turns don't use it yet (KAN-186)"
         return {"mode": "shared", "why": why, "v": VERSION}

@@ -12,17 +12,19 @@ Each is tracked in Jira. What remains open, with its owner and reason, is on
 
 | Finding | Severity | Ticket | Status |
 | --- | --- | --- | --- |
-| Approvals inside a turn on GKE and E2B | High | KAN-165 | Mitigated: refused under `required`; the sidecar is KAN-83 |
+| Approvals inside a turn on GKE and E2B | High | KAN-165, KAN-189 | Mitigated: refused under `required`, the default on E2B; the sidecar is KAN-83 |
 | Codex rules in hardened turns | Medium | KAN-169 | Fixed at turn start; a file written during the turn is accepted |
 | Login files written back from a sandbox | Medium | KAN-168, KAN-178 | Fixed for team logins; a person's own login is accepted |
 | The image ignores `uv.lock`, uses `uv:latest`, runs as root | Medium | KAN-170 | Fixed |
 | GitHub Actions pinned by tag | Medium | KAN-171 | Fixed |
 | hangar's Google roles are project-wide | Medium | KAN-172 | Fixed in hangar; Tower's own registry is its half |
-| The console: no CSP, the admin token in browser storage | Low (L-7) | KAN-174 | Open |
-| The control-plane pod's security context and NetworkPolicy | Low (L-8) | KAN-174 | Open; non-root is fixed (KAN-170) |
-| GKE ships with `open` egress | Low (L-9) | KAN-174 | Waiting on a decision |
-| Git grants in plain HTTP between nodes | Low (L-10) | KAN-180 | Open |
-| Tower is not consulted yet | Low (L-1) | KAN-77 to KAN-79 | Accepted until wired |
+| The console: no CSP, the admin token in browser storage | Low (L-7) | KAN-174 | Fixed: a strict CSP, audited sinks, the token in `sessionStorage`; an `HttpOnly` cookie is accepted as later work |
+| The control-plane pod's security context and NetworkPolicy | Low (L-8) | KAN-174, KAN-170 | Fixed; IAP stays off, with the [reason](control-plane-pod.md) |
+| GKE ships with `open` egress | Low (L-9) | KAN-174 | Decided: `allowlist`, in review (#387) |
+| Git grants in plain HTTP between nodes | Low (L-10) | KAN-180 | Fixed: [inter-node encryption](gke-cluster.md) |
+| Tower is not consulted yet | Low (L-1) | KAN-77 to KAN-79, KAN-33 | Wired and off by default; release and landing are KAN-33 |
+| Predictable custom session branches | Known gap 8 | KAN-174 | Fixed: [checked against their creator](branch-creators.md) |
+| E2B buffers a command's whole output | Known gap 9 | KAN-174 | Closed: hangar's envd client keeps a bounded tail, re-tested |
 | The gateway has no connection cap | Known gap 10 | KAN-174 | Fixed: a per-peer cap |
 | NAT64 and 6to4 addresses pass the callback check | Q-2, Q-3 | KAN-174 | Fixed |
 
@@ -30,7 +32,7 @@ Each is tracked in Jira. What remains open, with its owner and reason, is on
 
 On GKE and E2B there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent could allow itself or answer its own approval.
 
-Elsewhere the default (`HANGAR_UID_SPLIT=auto`) only warns. The Kubernetes manifests set `required`, which refuses those turns instead; `auto` turns are unaffected. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
+`HANGAR_UID_SPLIT=required` refuses those turns instead; `auto` turns are unaffected. The Kubernetes manifests set it. On E2B it is the default when the setting is unset (KAN-189), and `hangar doctor` flags an explicit `auto`. The gateway, the egress proxy and the landing checks still hold. The sidecar that would let them run is KAN-83.
 
 ## Codex rules in hardened turns (Medium)
 
@@ -56,10 +58,10 @@ Fixed. The image installs from `uv.lock` with hashes, pins every base image by d
 
 ## Low
 
-- **The console** sends no Content-Security-Policy, and it keeps the admin token in browser storage. One missed escape in agent text would leak it.
-- **The control-plane pod** runs as non-root, but without a restricted security context. No NetworkPolicy limits who reaches its ports.
-- **GKE ships with `open` egress.** Set `HANGAR_EGRESS_DEFAULT=allowlist` for untrusted work.
-- **Grants and keys cross the pod network in plain HTTP.** KAN-180 turns on GKE's inter-node encryption.
-- **Tower is not consulted yet.** The governance client exists, but no turn calls it and hangar has no events route. `HANGAR_GOVERNANCE` changes nothing yet.
+- **The console** sends a strict Content-Security-Policy. An audit replaced the riskiest HTML sinks, and a test fails on a new one. The admin token is in `sessionStorage`; an `HttpOnly` cookie needs CSRF checks first.
+- **The control-plane pod** runs non-root with a restricted security context. An ingress NetworkPolicy limits who reaches its ports ([control-plane pod](control-plane-pod.md)).
+- **GKE ships with `open` egress.** #387 makes it `allowlist`. Until it merges, set `HANGAR_EGRESS_DEFAULT=allowlist` for untrusted work.
+- **Grants and keys crossed the pod network in plain HTTP.** GKE's inter-node encryption now covers them (KAN-180).
+- **Tower decides only when governance is on.** Tool calls, egress and secret requests can ask it; the default mode is `off`. Job release and landing are KAN-33. hangar refuses an answer about a different approval.
 
 These are tracked in KAN-174, with the review's notes on each known gap in [what is not covered](not-covered.md).

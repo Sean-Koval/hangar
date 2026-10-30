@@ -22,8 +22,18 @@
 
 People's own interactive sessions and sandboxes keep using their own subscription logins, with a warning, as before.
 
+**E2B refuses `ask`, `deny-risky` and `governed` turns by default** (KAN-189). Run them on Docker, or set
+`HANGAR_UID_SPLIT=auto` to keep the old warning, which `hangar doctor` flags
+([why](docs/security/e2b-driver-user.md)).
+
 ### Changed
 
+- **`pr.merge` carries outcome labels** (KAN-232, [docs/api/outcome-labels.md](docs/api/outcome-labels.md)): the
+  agent head, the merge commit, the agent's diff lines, how many of its added lines the merge kept, human commits on
+  the branch and review rounds, read from GitHub before the event goes out. Added within `hangar.job_event/v1`.
+- **`evals/` is gone** (KAN-86, #145). The semver kit moved to flightdeck: the task to `tasks/smoke/semver/`, the
+  process metrics and rule labeller to its data plane. hangar's experiment tests grade
+  `tests/fixtures/experiments/semver-mini/`, five of its hidden cases.
 - **No setting relaxes the intake posture or interactive-only subscription logins** (KAN-74). `posture.py` and
   `teamcreds.py` drop the `warn`, `off` and `any` paths, with the `posture.warn` event, audit entry and review-packet
   line. `hangar config set` refuses the removed values. A job's sandbox is automated even when its caller names
@@ -40,6 +50,16 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   only its `deny-risky` rules, so a call never raises two approvals. The script's digest is checked at each turn's
   start and kept in the manifest. Turns are refused where the agent could remove the hook: GKE, E2B, Docker without
   the uid split, and Codex.
+- **`HANGAR_UID_SPLIT` unset means `required` on E2B** (KAN-189, security review H-1). An E2B sandbox is one microVM
+  with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
+  split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
+  ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
+- **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
+  different approval id, hangar treats it as a contract failure, not a decision.
+
+### Fixed
+
+- A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
 
 ## v0.2.0: the safe release
 

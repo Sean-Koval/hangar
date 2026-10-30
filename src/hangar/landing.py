@@ -22,7 +22,10 @@ after a person approves. GitHub's branch protection stays the gate; hangar only 
 * **The end.** A merged or closed PR ends the job's session: a final checkpoint, then the sandbox goes.
 * **The packet.** One comment on each agent PR, from the job record: verification, cost, harness and model,
   files, risk tier, the AI review (#161, aireview.py), who may land it, and links to the session and recorded demos.
-  It is edited, not reposted, as the PR changes.
+  It is edited, not reposted, as the PR changes. --- KAN-229: a ticket job's packet has a table of its acceptance
+  criteria (intake.criteria) with the evidence the agent reported (intake.EVIDENCE_SCHEMA), a cited test proven only
+  when it passed in hangar's own check; the agent's "start here" files lead the file list, tests last; and a PR over
+  the policy's `diff_budget_lines` gets a size warning.
 """
 
 from __future__ import annotations
@@ -152,6 +155,127 @@ def owners_of(codeowners: str, path: str) -> list[str]:
 
 _TESTS = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|_test\.[^/]+$|\.(test|spec)\.[^/]+$")
 _DOCS = re.compile(r"(^|/)docs?/|\.(md|mdx|rst|txt|adoc)$", re.I)
+
+
+# ====================================================================== KAN-229: evidence, reading order, size
+_STAT = re.compile(r"(\d+) (insertion|deletion)s?\([+-]\)")
+
+
+def _cell(text: Any, limit: int = 200) -> str:
+    """Untrusted text (a ticket's criterion, an agent's test id or command) as inline code in a table cell: no
+    Markdown, HTML, link or @mention in it renders, and a pipe can't end the cell."""
+    t = " ".join(str(text).split()).replace("`", "'")
+    t = t if len(t) <= limit else t[: limit - 1] + "…"
+    return "`" + t.replace("|", "\\|") + "`"
+
+
+def reported(job: Job) -> dict[str, Any]:
+    """The agent's latest structured result that reports evidence or a reading order (an auto-fix turn without a
+    schema leaves the earlier one standing), or {}."""
+    for d in [*(t.result for t in reversed(job.turns)), job.result.data]:
+        if isinstance(d, dict) and ("evidence" in d or "start_here" in d):
+            return d
+    return {}
+
+
+def changed_lines(diffstat: str | None) -> int | None:
+    """Insertions plus deletions from `git diff --stat`'s last line, or None without one."""
+    last = diffstat.strip().splitlines()[-1] if diffstat and diffstat.strip() else ""
+    got = _STAT.findall(last)
+    return sum(int(n) for n, _ in got) if got else None
+
+
+def _rel(path: Any) -> str:
+    return str(path).strip().removeprefix("./").lstrip("/") if isinstance(path, str) else ""
+
+
+def start_here(job: Job, files: list[str]) -> tuple[list[str], int]:
+    """(the files the agent said to read first that are in the diff, at most 3; how many it named that aren't)."""
+    from hangar.intake import START_HERE_MAX
+
+    named = reported(job).get("start_here")
+    named = [_rel(p) for p in named if _rel(p)] if isinstance(named, list) else []
+    inside = set(files)
+    kept = list(dict.fromkeys(p for p in named if p in inside))[:START_HERE_MAX]
+    return kept, len({p for p in named if p not in inside})
+
+
+def reading_order(files: list[str], first: list[str]) -> list[str]:
+    """`first`, then the other files in path order, tests last."""
+    rest = sorted(f for f in files if f not in first)
+    return [*first, *[f for f in rest if not _TESTS.search(f)], *[f for f in rest if _TESTS.search(f)]]
+
+
+def _test_forms(test_id: str) -> set[str]:
+    """A cited test id and its JUnit spelling: `tests/test_x.py::TestA::test_y` is `tests.test_x.TestA::test_y` in
+    pytest's report (testreports.py names a case `classname::name`)."""
+    t = test_id.strip()
+    forms = {t}
+    parts = t.split("::")
+    if len(parts) >= 2 and parts[0].endswith(".py"):
+        mod = parts[0][:-3].removeprefix("./").replace("/", ".")
+        forms.add(".".join([mod, *parts[1:-1]]) + "::" + parts[-1])
+    return forms
+
+
+def passed_tests(svc: JobService, job: Job) -> set[str] | None:
+    """The test ids that passed in the job's last check, a run hangar made (never the agent's in-turn one), or None
+    when there is none to check against (no reports, or its cases were pruned)."""
+    from hangar import testresults
+
+    t = job.result.tests
+    run = svc.store.get(testresults.TestRun, t.run) if t is not None else None
+    if run is None or not run.trusted or run.kind not in testresults.TRUSTED or run.job_id not in (None, job.id):
+        return None
+    cases = testresults.decode(run)
+    return None if cases is None else {k for k, v in cases.items() if v == "passed"}
+
+
+def evidence_lines(svc: JobService, job: Job, base: str) -> list[str]:
+    """The acceptance-criteria table: one row per criterion of the ticket, the evidence the agent cites for it, and
+    whether hangar could check it. Empty for a job without criteria (its packet is as before)."""
+    from hangar import intake
+
+    crit = intake.criteria(job)
+    if not crit:
+        return []
+    cited: dict[int, dict[str, list[str]]] = {}
+    items = reported(job).get("evidence")
+    for it in items if isinstance(items, list) else []:
+        n = it.get("criterion") if isinstance(it, dict) else None
+        if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= len(crit):
+            continue
+        row = cited.setdefault(n, {"tests": [], "command": [], "artifact": []})
+        tests = it.get("tests")
+        row["tests"] += [x for x in tests if isinstance(x, str) and x.strip()][:10] if isinstance(tests, list) else []
+        for k in ("command", "artifact"):
+            if isinstance(it.get(k), str) and it[k].strip():
+                row[k].append(it[k])
+    passed = passed_tests(svc, job) if any(r["tests"] for r in cited.values()) else None
+    arts = {a.path: a for a in job.result.artifacts}
+    rows, proven = [], 0
+    for n, text in enumerate(crit, 1):
+        row = cited.get(n) or {"tests": [], "command": [], "artifact": []}
+        shown = [_cell(x) for x in row["tests"][:5]] + [_cell(x, 120) for x in row["command"][:2]]
+        for path in row["artifact"][:2]:
+            a = arts.get(_rel(path))
+            shown.append(f"[{_cell(a.path)}]({base}/api/jobs/{job.id}/artifacts/{a.turn}/{quote(a.path)})" if a
+                         else _cell(path) + " (not handed back)")
+        missing = [x for x in row["tests"] if passed is None or not (_test_forms(x) & passed)]
+        if row["tests"] and not missing:
+            status = "proven: the tests passed"
+            proven += 1
+        elif row["tests"]:
+            status = ("unproven: no test results to check" if passed is None
+                      else "unproven: not passed in the check: " + ", ".join(_cell(x) for x in missing[:3]))
+        elif shown:
+            status = "claimed: hangar can't check a command or artifact"
+        else:
+            status = "unproven"
+        rows.append(f"| {n} | {_cell(text)} | {', '.join(shown) or '-'} | {status} |")
+    return [f"- **Acceptance criteria:** {proven} of {len(crit)} proven by passing tests. The criteria come from the "
+            "ticket and the evidence from the agent: both are untrusted", "",
+            "| # | Criterion | Evidence | Status |", "| --- | --- | --- | --- |", *rows, ""]
 
 
 def risk(files: list[str], globs: list[str] | None) -> tuple[str, list[str]]:
@@ -621,6 +745,9 @@ class Landing:
             if why := await self._review_gone(gh, repo, int(number), st):
                 self.svc._event(job, f"{why}: not landing")
                 self._unapprove(st)
+                return self._note(job, why)
+            gate = getattr(svc, "release_gate", None)  # --- KAN-33: Tower decides whether this approval lands it
+            if gate is not None and (why := await gate.landing(job)):
                 return self._note(job, why)
             # Nothing the agent left running can push past the approval once armed: its sandbox (and with it the
             # gateway grant) goes first. A follow-up resumes from the checkpoint, and disarms before it starts.
@@ -1191,8 +1318,18 @@ class Landing:
         from hangar import adr  # --- #170: an agent-drafted ADR: provenance, the path guard, numbering
 
         out += adr.packet_lines(svc, job)
-        shown = ", ".join(_code(f) for f in st.files[:15]) + (f" and {len(st.files) - 15} more"
-                                                                if len(st.files) > 15 else "")
+        base = self.settings.public_url.rstrip("/")
+        out += evidence_lines(svc, job, base)  # --- KAN-229: the criteria, the evidence, what hangar checked
+        budget = policy.diff_budget_lines if policy else None
+        if budget and (lines := changed_lines(r.diffstat)) is not None and lines > budget:
+            out.append(f"- **Size:** {lines:,} changed lines, over the repo's budget of {budget:,} "
+                       "(`diff_budget_lines`): a change this big hides more; consider splitting it")
+        first, outside = start_here(job, st.files)
+        files = reading_order(st.files, first) if first else st.files
+        if first:
+            out.append("- **Start here:** " + ", ".join(_code(f) for f in first) + ", then the rest, tests last"
+                       + (f" ({outside} named file(s) not in the diff left out)" if outside else ""))
+        shown = ", ".join(_code(f) for f in files[:15]) + (f" and {len(files) - 15} more" if len(files) > 15 else "")
         stat = r.diffstat.splitlines()[-1].strip() if r.diffstat else ""
         out.append(f"- **Files:** {len(st.files)}" + (f" ({stat})" if stat else "") + (f": {shown}" if shown else ""))
         cost = f"- **Cost:** {usage_line(svc.usage(job))}"
@@ -1224,7 +1361,6 @@ class Landing:
         if s:
             out.append(f"- **Session:** `{s.name}`: `hangar session pull {s.name}` checks it out locally; reply "
                        "`/hangar <message>` here to have the agent continue")
-        base = self.settings.public_url.rstrip("/")
         demos = [a for a in r.artifacts if a.media_type.startswith("video/") or a.media_type == "image/gif"
                  or "demo" in a.path.lower()]
         if demos:
@@ -1245,6 +1381,9 @@ class Landing:
         elif aireview.wanted(svc, job) is not None:
             out.append("- **AI review:** pending")
         out.append(self.landing_rule(job, policy))  # --- self-approval (#160)
+        if st.receipt and st.receipt_sha:  # --- KAN-33 (spec 0015 §11): Tower's receipt for landing this head
+            out.append(f"  - Tower allowed landing {_short(st.receipt_sha)}: receipt `{st.receipt}`"
+                       + (f" (approval `{st.workspace_approval}`)" if st.workspace_approval else ""))
         if policy and policy.land == "auto_after_approval":
             who = ", ".join(f"@{a}" for a in policy.approvers or []) or "a code owner"
             out.append(f"- **Landing:** an approval from {who}" + (" or a code owner" if policy.approvers else "")

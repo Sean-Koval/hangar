@@ -479,8 +479,9 @@ class Settings(BaseSettings):
     # runs can't reach the driver, its key or its control files (docs/steering.md). auto: wherever the sandbox allows
     # it (Docker, an agent without sudo), else one user, with a warning; off: always one user; required: like auto,
     # and `ask` and `deny-risky` turns fail where the agent would share the driver's user, or where hangar can't own
-    # the harness's settings (--- harden).
-    uid_split: Literal["auto", "off", "required"] = "auto"
+    # the harness's settings (--- harden). Unset: `auto`, except on E2B, where it is `required` (--- KAN-189: an E2B
+    # sandbox is one microVM with one user, so those turns would always share the driver's user; isolation.policy).
+    uid_split: Literal["auto", "off", "required"] | None = None
     # --- governance (spec 0015; docs/runbooks/tower.md): Tower, the Govern plane. The default mode for every kind
     # (off: hangar's own rules, Tower isn't asked), per-kind overrides, Tower's URL and the vault credentials of
     # hangar's service key and of the secret Tower signs its events with. KAN-77: POST /api/governance/events is
@@ -499,6 +500,12 @@ class Settings(BaseSettings):
     governance_hook: Literal["off", "required"] = "off"
     governance_hook_credential: str | None = None
     governance_hook_wait_seconds: int = Field(300, ge=0, le=540)
+    # --- KAN-33 (#174, spec 0015 §9): how the control plane proves itself to Tower. key: the service key in
+    # `governance_credential` (phase 1). passport: a token hangar mints itself (`sub: hangar:control-plane`, from its
+    # OIDC issuer) exchanged at Tower's token endpoint (default `<governance_url>/oauth/token`) for a passport,
+    # checked against Tower's JWKS before use (phase 2: no stored key).
+    governance_auth: Literal["key", "passport"] = "key"
+    governance_token_url: str | None = None
     # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
     # neither the session nor its environment says: auto (1h when the session waits on people for more than
     # 5 min, else 5m), 5m, 1h or off. And how long best-of-N attempts and forks started together hold back for the

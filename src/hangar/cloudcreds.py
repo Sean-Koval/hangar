@@ -294,6 +294,30 @@ class Issuer:
         sig = key.sign(f"{head}.{body}".encode(), padding.PKCS1v15(), hashes.SHA256())  # type: ignore[union-attr]
         return f"{head}.{body}.{_b64url(sig)}", float(exp)
 
+    def mint_service(self, sub: str, audience: str, lifetime_seconds: int = 300, now_: float | None = None
+                     ) -> tuple[str, float]:
+        """--- KAN-33 (#174, spec 0015 §9): an RS256 token for hangar's own control plane, not a sandbox (`sub`:
+        `hangar:control-plane`), for one audience (Tower's token endpoint), five minutes by default. It carries no
+        sandbox, person or job claims: the control plane speaks for itself. Returns (token, expiry)."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        if not sub.startswith("hangar:") or sub.startswith("hangar:env:"):
+            raise CloudError("a control-plane subject is hangar:<name>, never an environment's")
+        if not 30 <= lifetime_seconds <= 900:
+            raise CloudError("a control-plane token lives 30 s to 15 minutes")
+        t = int(now_ if now_ is not None else time.time())
+        k = self.signing_key(t)
+        exp = t + lifetime_seconds
+        claims = {"iss": self.url, "sub": sub, "aud": audience, "iat": t - 30, "nbf": t - 30, "exp": exp,
+                  "jti": secrets.token_hex(12)}
+        head = _b64url(json.dumps({"alg": "RS256", "typ": "JWT", "kid": k["kid"]}, separators=(",", ":")).encode())
+        body = _b64url(json.dumps(claims, separators=(",", ":")).encode())
+        key = load_pem_private_key(k["pem"].encode(), password=None)
+        sig = key.sign(f"{head}.{body}".encode(), padding.PKCS1v15(), hashes.SHA256())  # type: ignore[union-attr]
+        return f"{head}.{body}.{_b64url(sig)}", float(exp)
+
     # ------------------------------------------------------------------ sandboxes
     def _home(self) -> str:
         return f"/home/{self.settings.sandbox_user}"

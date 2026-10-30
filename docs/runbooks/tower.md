@@ -13,7 +13,7 @@ Tower, the Govern plane, runs on hangar's GKE cluster in its own namespace, `tow
 | `HANGAR_GOVERNANCE_CREDENTIAL` | `tower` | The vault credential holding Tower's service key |
 | `HANGAR_GOVERNANCE_WEBHOOK_SECRET` | `tower-webhook` | The vault credential holding the secret Tower signs its events with |
 
-[Tower's events](../api/governance-events.md) use these settings, and so do [governed approvals](../governed-approvals.md): flagged tool calls, egress and secret requests. Job release and landing read them once [#172](https://github.com/Sean-Koval/hangar/issues/172) wires the client.
+[Tower's events](../api/governance-events.md) use these settings, and so do [governed approvals](../governed-approvals.md) and [job release and landing](../tower-release-landing.md). `HANGAR_GOVERNANCE_AUTH=passport` replaces the service key with a passport once Tower takes one.
 
 ## In order
 

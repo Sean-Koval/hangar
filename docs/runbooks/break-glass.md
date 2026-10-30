@@ -5,10 +5,8 @@ back from `enforce` to `shadow` or `off`. The design is [spec 0015](../specs/001
 hangar enforces, Tower decides whether a person or a policy allows something, and nothing that goes wrong on the way
 is ever an allow.
 
-**Most of this isn't built yet.** Read [what is built today](#today-hangar-decides-alone) first: today hangar never
-asks Tower, so Tower being down or denying changes nothing in hangar. The
-[planned procedure](break-glass-tower.md) is spec 0015's, kept so the runbook exists before the first kind goes to
-`enforce`.
+**Break-glass itself isn't built yet.** Read [what is built today](#today-hangar-decides-alone) first. With every
+kind `off` (the default), hangar never asks Tower. The [procedure](break-glass-tower.md) covers a kind in `enforce`.
 
 ## Today: hangar decides alone
 
@@ -23,22 +21,18 @@ What is built (spike #171, PR #208):
 - `tests/test_governance.py`, the contract tests against a fake Tower: every failure fails closed for every kind, and
   shadow never changes an outcome. Break-glass needs two admins and lasts at most 24 hours.
 
+Every approval path calls it through `HANGAR_GOVERNANCE` and `HANGAR_GOVERNANCE_MODES`:
+[job release and landing](../tower-release-landing.md) and [governed approvals](../governed-approvals.md).
+
 What isn't built:
 
-- **No approval path calls it.** These are open:
-    - job release and landing (#172);
-    - tool calls, and egress and secret requests (#173);
-    - Tower's events and per-run stop (#190);
-    - passports (#174) and trace correlation (#176).
-- **No settings.** `HANGAR_GOVERNANCE`, `HANGAR_GOVERNANCE_MODES` and `HANGAR_GOVERNANCE_URL` are spec 0015's names.
-  hangar doesn't read them yet, and `hangar config set` refuses them as unknown settings.
 - **No command, no doctor check.** `hangar governance local` (break-glass) and the doctor's `governance` check are
   planned.
 
-So every approval is decided by hangar's own rules, as before. That is an admin or a linked repo approver, never on
+With every kind `off`, every approval is decided by hangar's own rules, as before. That is an admin or a linked repo approver, never on
 their own job (`approvals.decide`, #121), the taint gate (#130) and the self-approval rule (#160).
 
-If Tower is down, or denies, **there is nothing to do in hangar**: no job waits on Tower and no landing is held by it.
+If every kind is `off` and Tower is down, or denies, **there is nothing to do in hangar**: nothing waits on Tower.
 Tower's side (its outage behaviour, its decisions API) is in Tower's own docs.
 
 ## Moved from this page

@@ -3,7 +3,7 @@
 !!! note "Design record"
     Written 2026-10-12; **deferred**. The current behaviour is on [experiments](../jobs/experiments.md) and [repo-policy.md](../repo-policy.md); the status line below says what shipped.
 
-Status: deferred (2026-10-15): the MCP gateway, the `policy:` block and labels are not scheduled; experiments shipped in [0014](0014-sister-tool-interfaces.md)'s shape (#114); §5.4–5.6 moved to flightdeck (decision 17). Was: draft. · Date: 2026-10-12 · Builds on: 0003 (gateway, egress), 0004 (performance, supervisor), 0005 (traces, decisions, evals), 0006 (environments, harness packs) · Evidence: the semver harness eval of 2026-10-12 (`evals/semver/`, PR #28)
+Status: deferred (2026-10-15): the MCP gateway, the `policy:` block and labels are not scheduled; experiments shipped in [0014](0014-sister-tool-interfaces.md)'s shape (#114); §5.4–5.6 moved to flightdeck (decision 17). Was: draft. · Date: 2026-10-12 · Builds on: 0003 (gateway, egress), 0004 (performance, supervisor), 0005 (traces, decisions, evals), 0006 (environments, harness packs) · Evidence: the semver harness eval of 2026-10-12 (PR #28)
 
 > Part of a set. Ownership, cross-spec decisions and the combined build order are in [docs/README.md](README.md); where this spec conflicts with that page, the page wins.
 
@@ -148,7 +148,7 @@ Rules, extending 0005 §5.8:
 3. **Interleaved, concurrent.** Trials of different variants on the same task run at the same time, so provider latency and rate limits hit all variants alike.
 4. **Paired analysis per task** (0005 rule 2): difference in each metric across trials, a paired bootstrap over tasks, effect size with a 95% interval, n, and the power statement. Process metrics (calls, cost, time, labels) are reported the same way, because outcomes saturate (evidence #1).
 5. **Task sets with headroom.** A task where every variant scores 100% is flagged "saturated" and reported, but excluded from the outcome comparison. Task sources:
-   - graded synthetic tasks like `evals/semver`;
+   - graded synthetic tasks like semver;
    - real tickets replayed at their `base_sha`, graded by the merged fix's tests;
    - SWE-style repo tasks.
 6. **Cost gate** (0005 rule 7): projected runs × tokens × price and plan-quota use, confirmed before start.
@@ -167,8 +167,8 @@ Rules, extending 0005 §5.8:
 | --- | --- | --- |
 | Claude Code stream-json + OTel | 0001 M3, 0005 M2 | planned |
 | Codex `exec --json` | new | planned |
-| pi `--mode json` | `evals/semver/spans.py` → `runevents.py` | prototype |
-| Antigravity `stream-json` | `evals/semver/spans.py` → `runevents.py` | prototype |
+| pi `--mode json` | `src/hangar/events.py` | built |
+| Antigravity `stream-json` | `src/hangar/events.py` | built |
 | MCP gateway | §5.1 | new |
 | git, CI, PR review, merge, revert | 0002 collector + GitHub webhooks | planned |
 
@@ -254,7 +254,7 @@ Sizes: S ≤ 1 day, M ≈ 2–3 days, L ≈ 4–6 days.
 | M3 | `policy:` block, schema and resolution, stored on runs; `packs: selected`; budgets in the run watcher | M | 0001 M2 |
 | M4 | Harness permission rendering for four harnesses; model allowlist | M | M3 |
 | M5 | MCP gateway sidecar (Docker MCP gateway or own), credentials out of the sandbox, tool allowlists, `mcp.call` spans; E2B native mapping | L | M3, 0003 M2 |
-| M6 | Parsers for Codex, pi and Antigravity into `run_events` (from `evals/semver/spans.py`). **Built in another shape: `src/hangar/events.py` parses Claude Code, Codex, pi and Antigravity streams (`Parser`, `FORMATS`); `evals/semver/spans.py` is no longer the starting point and moves to flightdeck (#145).** | M | 0001 M3 |
+| M6 | Parsers for Codex, pi and Antigravity into `run_events`. **Built in another shape: `src/hangar/events.py` parses Claude Code, Codex, pi and Antigravity streams (`Parser`, `FORMATS`); the prototype's parser is gone (#145).** | M | 0001 M3 |
 | M7 | `run_experiment`: variants and overlays, pinning, interleaving, grader injection ~~, paired report~~; absorbs 0005 M10. **Built as the experiment job kind (0014); the paired report moved to the sister tool.** | L | M1, M3, M6 |
 | M8 | Label taxonomy, rules and Decision-1 cascade, gold-set labeling UI, κ dashboard. **Moved to the sister tool (0014), on hangar's trace export.** | L | 0005 M4–M5, M6 |
 | M9 | Lifecycle links: ticket and objective refs, outcome back-propagation (merge, review rounds, revert) | M | 0002 M2 |
