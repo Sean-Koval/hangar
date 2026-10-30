@@ -108,7 +108,11 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     # --- harden: `required` covers deny-risky too: its rules answer prompts, and the agent could switch those off.
     # --- KAN-79: and governed: Tower deciding doesn't stop an agent sharing the driver's user forging its answer
     guarded = pol != "auto"
-    required = svc.settings.uid_split == "required"
+    # --- KAN-189: unset, `required` on E2B (isolation.policy)
+    mode = isolation.policy(svc.settings, prov.name)
+    required = mode == "required"
+    because = ("HANGAR_UID_SPLIT=required" if svc.settings.uid_split == "required" else
+               "HANGAR_UID_SPLIT=required, the default on E2B (docs/security/e2b-driver-user.md)")
     # --- KAN-186: under the driver sidecar only a turn that asks runs split; an `auto` one keeps its per-edit trees
     # and verify gate, which need the checkout, in the agent's container as before (KAN-187)
     side = split and isolation.sidecar(sb)
@@ -118,7 +122,8 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
         why = isolation.why_not(svc.settings, sb)
         if required:
             raise SteerError(f"approvals={pol} needs hangar's driver to run as a user of its own, and this sandbox "
-                             f"can't ({why}); HANGAR_UID_SPLIT=required (docs/steering.md)")
+                             f"can't ({why}); {because} (docs/steering.md). Use approvals=auto, or a Docker "
+                             "sandbox")
         turn.warnings.append(f"hangar's driver runs as the agent's own user here ({why}): code you allow to run can "
                              "tamper with later turns: change the harness's settings, environment and binary so it "
                              "doesn't ask, and fake the run log, approval requests and exit status hangar reads "
@@ -130,7 +135,7 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     if isinstance(hard, str):
         if required:
             raise SteerError(f"approvals={pol} needs hangar to own the harness's settings, and it can't in this "
-                             f"sandbox ({hard}); HANGAR_UID_SPLIT=required (docs/steering.md)")
+                             f"sandbox ({hard}); {because} (docs/steering.md)")
         turn.warnings.append(f"the agent's own harness settings apply here ({hard}): code you allow to run can change "
                              "them so that later turns don't ask (docs/steering.md#hangar-owned-harness-settings)")
         hard = None

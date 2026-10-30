@@ -66,6 +66,7 @@ MAX_REQUEST = 32 * 1024 * 1024  # a request body; Claude Code's biggest are a fe
 MAX_RECORDED = 64 * 1024 * 1024  # a response kept for the tape; past it the tape says `truncated`
 RECENT = 8  # earlier requests of a run a new one may be a delta of (subagents interleave conversations)
 RECORDED_PATHS = ("/messages", "/responses", "/chat/completions")
+SETTLE_TIMEOUT = 30.0  # seconds settle() waits for tape writes (KAN-197); one write is milliseconds
 
 
 class ProviderInfo(NamedTuple):
@@ -284,6 +285,18 @@ class RunTape:
         self.bytes += len(data)
 
 
+class _Relay(StreamingResponse):
+    """--- KAN-197: a StreamingResponse that closes its stream however the response ends. Starlette leaves the
+    generator suspended when the client disconnects or the call is cancelled, so its `finally` (which records the
+    call) ran only when the garbage collector got to it: after settle() had returned, or never."""
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.body_iterator.aclose()  # type: ignore[attr-defined]  # stream()'s finally awaits nothing
+
+
 class ModelGateway:
     def __init__(self, fleet: Fleet):
         self.fleet = fleet
@@ -469,23 +482,48 @@ class ModelGateway:
                     yield chunk
                 ok = True
             finally:
-                await resp.aclose()
-                if record:
-                    self._spawn(self.record(grant, request.method, "/" + rest, dict(request.headers), body,
-                                            resp.status_code, dict(resp.headers), bytes(kept), truncated or not ok,
-                                            time.monotonic() - started))
+                # --- KAN-197: nothing awaited here. A cancelled call (anyio cancels again at every await) used to
+                # lose its entry in `await resp.aclose()`; the spawned task closes the upstream and then records.
+                entry = (grant, request.method, "/" + rest, dict(request.headers), body, resp.status_code,
+                         dict(resp.headers), bytes(kept), truncated or not ok, time.monotonic() - started)
+                self._spawn(self._finish(resp, entry if record else None))
 
-        return StreamingResponse(stream(), status_code=resp.status_code, headers=out)
+        return _Relay(stream(), status_code=resp.status_code, headers=out)
+
+    async def _finish(self, resp: Any, entry: tuple | None) -> None:
+        try:
+            await resp.aclose()
+        except Exception:  # noqa: BLE001 - the upstream is gone either way
+            log.debug("model gateway: closing an upstream response failed", exc_info=True)
+        if entry is not None:
+            await self.record(*entry)
 
     def _spawn(self, coro: Any) -> None:
         t = asyncio.ensure_future(coro)
         self._pending.add(t)
         t.add_done_callback(self._pending.discard)
 
-    async def settle(self) -> None:
-        """Wait for the entries being written (tests, a turn's end)."""
-        while self._pending:
-            await asyncio.gather(*list(self._pending), return_exceptions=True)
+    async def settle(self, timeout: float = SETTLE_TIMEOUT) -> None:
+        """Wait for the entries being written (tests, a turn's end), for at most `timeout` seconds.
+
+        --- KAN-197: this was `while pending: await gather(*pending)`, with no deadline. A finished task still in
+        the set made gather return at once, so it spun; and a gather of finished tasks ignores cancel(), so no
+        timeout around it could stop it. Now finished tasks are dropped first, asyncio.wait always yields, and
+        past the deadline it raises with what is still pending."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            self._pending.difference_update([t for t in self._pending if t.done()])
+            if not self._pending:
+                return
+            left = deadline - loop.time()
+            if left <= 0:
+                n = len(self._pending)
+                msg = (f"model gateway: {n} tape write{'' if n == 1 else 's'} still pending after {timeout:g} s; "
+                       "the tape may be missing entries")
+                log.error(msg)
+                raise ModelGatewayError(msg)
+            await asyncio.wait(list(self._pending), timeout=left)
 
     # ------------------------------------------------------------------ writing the tape
     def _run_of(self, sandbox_id: str) -> tuple[str, str | None, str | None, float]:

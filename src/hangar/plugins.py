@@ -25,6 +25,13 @@ plugins. Verified with 2.1.296 (tests/test_harden_real_clis.py):
   one of hangar's: it is a new, unguessable path Claude Code creates as it starts, which nothing the agent left
   behind can be in.
 
+A plugin can also come from a git marketplace (#222, KAN-76): `{git, ref, path?, name, marketplace?}`. The control
+plane fetches it before the image is built (`prefetch`, from Fleet.build), from the git gateway's upstream for its
+host (HANGAR_GATEWAY_UPSTREAMS) with the gateway's own credential, never a sandbox's, into `<data>/plugin-git/`.
+`ref` must be a full commit id: a branch or a tag can move between two builds, so it is refused, naming the commit
+it points at now, the way a floating model alias is (#167). The commit's tree is then a local marketplace like any
+other, and the manifest records its `git` and `commit` beside the digest. The image build itself never runs git.
+
 Codex has no seed: an environment's plugins load in Claude Code only, and Codex's skills stay in ~/.codex/skills
 (#139). A Codex sandbox run from a harness lock installs the lock's plugins from their Codex forms (codex_plugins.py,
 #244).
@@ -32,18 +39,25 @@ Codex has no seed: an environment's plugins load in Claude Code only, and Codex'
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
+import io
 import json
+import os
 import re
 import shlex
+import shutil
+import subprocess
+import tarfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from hangar.envspec import EnvSpec
+    from hangar.fleet import Fleet
 
 SEED = "/opt/hangar/claude-seed"
 HARNESS = "claude-code"
@@ -56,18 +70,191 @@ RUN_CACHE = "/tmp/hangar-claude-plugins.$RANDOM$RANDOM$RANDOM.$$"
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 
+_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_GIT_URL = re.compile(r"^(https://[^/@\s]+/|git@[^:/\s]+:|ssh://git@[^/\s]+/|file:///)\S+$")
+GIT_TIMEOUT = 300
+
+
 class Plugin(BaseModel):
     """One Claude Code plugin an environment loads from its seed."""
 
-    path: str  # a marketplace directory (.claude-plugin/marketplace.json), relative to the spec file
+    # a marketplace directory (.claude-plugin/marketplace.json): relative to the spec file, or, with `git`, to the
+    # repo's root (unset: the root itself)
+    path: str | None = None
+    # --- #222: a git marketplace, fetched before the image build through the git gateway's upstream, pinned to `ref`
+    git: str | None = None
+    ref: str | None = None  # with `git`: a full commit id (a branch or a tag is refused, naming its commit)
     name: str = Field(pattern=f"^{_NAME.pattern}$")  # the plugin's name in that marketplace
     # the marketplace's name; read from its marketplace.json when unset (and checked against it at build)
     marketplace: str | None = Field(None, pattern=f"^{_NAME.pattern}$")
     enabled: bool = True  # false: installed in the seed, not loaded (`"<name>@<marketplace>": false`)
 
+    @model_validator(mode="after")
+    def _source(self) -> Plugin:
+        if self.git is None:
+            if self.ref is not None:
+                raise ValueError(f"plugin {self.name}: ref goes with git")
+            if not self.path:
+                raise ValueError(f"plugin {self.name}: give path (a marketplace directory) or git and ref")
+            return self
+        if not _GIT_URL.match(self.git.strip()):
+            raise ValueError(f"plugin {self.name}: git must be an https://, git@host:, ssh://git@ or file:/// URL "
+                             "with no credential in it (hangar fetches it with the git gateway's own)")
+        if not self.ref:
+            raise ValueError(f"plugin {self.name}: git needs ref, the full commit id to install")
+        return self
+
     @property
     def id(self) -> str:
         return f"{self.name}@{self.marketplace}"
+
+
+# ====================================================================== git marketplaces (#222)
+_git_cache: Path | None = None
+
+
+def configure_git(cache: Path | None) -> None:
+    """Where fetched git marketplaces are kept (Fleet sets `<data>/plugin-git`)."""
+    global _git_cache
+    _git_cache = cache
+
+
+def git_cache() -> Path:
+    return _git_cache or Path.home() / ".hangar" / "plugin-git"
+
+
+def safe_url(url: str) -> str:
+    return re.sub(r"//[^/@]*@", "//", url)
+
+
+def _key(url: str) -> str:
+    return hashlib.sha256(url.strip().encode()).hexdigest()[:16]
+
+
+def pinned(p: Plugin) -> bool:
+    return bool(_SHA.fullmatch((p.ref or "").lower()))
+
+
+def git_tree(p: Plugin) -> Path:
+    """Where a git plugin's commit is laid out (complete once the directory exists)."""
+    return git_cache() / "trees" / _key(p.git or "") / (p.ref or "").lower()
+
+
+def _gitrun(args: list[str], env: dict[str, str] | None = None) -> tuple[bool, bytes]:
+    try:
+        r = subprocess.run(["git", *args], capture_output=True, timeout=GIT_TIMEOUT,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})})
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e).encode()
+    return r.returncode == 0, r.stdout if r.returncode == 0 else r.stderr.strip()[-400:]
+
+
+def pin_error(p: Plugin, url: str, env: dict[str, str] | None = None, look: bool = True) -> str:
+    """Why `p.ref` isn't a pin, naming the commit it points at now when the remote says (#167's way for models).
+    `look`: ask the remote (prefetch does, through the gateway's upstream); False names no commit."""
+    ref = p.ref or ""
+    ok, out = False, b""
+    if look:
+        ok, out = _gitrun(["ls-remote", "--", url, f"refs/heads/{ref}", f"refs/tags/{ref}",
+                            f"refs/tags/{ref}^{{}}", ref], env)
+    found: dict[str, str] = {}
+    for line in out.decode(errors="replace").splitlines() if ok else []:
+        sha, _, name = line.partition("\t")
+        found[name.strip()] = sha.strip()
+    head = found.get(f"refs/heads/{ref}") or (found.get(ref) if ref.startswith("refs/heads/") else None)
+    tag = found.get(f"refs/tags/{ref}^{{}}") or found.get(f"refs/tags/{ref}")
+    where = f"plugin {p.name}: ref `{ref}` of {safe_url(p.git or url)}"
+    if head:
+        return (f"{where} is a branch, which can move between two builds: an environment pins a plugin to a "
+                f"commit. Pin the one it names now: ref: {head}")
+    if tag:
+        return (f"{where} is a tag, which can be moved: an environment pins a plugin to a commit. Pin the one it "
+                f"names now: ref: {tag}")
+    if re.fullmatch(r"[0-9a-fA-F]{4,39}", ref):
+        return f"{where} is an abbreviated commit: pin the full commit id (git rev-parse {ref})"
+    if not look:  # a remote repo is read only through the gateway, when the image is built
+        return (f"{where} isn't a full commit id: an environment pins a plugin to a commit. Building the image names "
+                "the commit it points at now")
+    return f"{where} isn't a full commit id: an environment pins a plugin to a commit (git rev-parse <ref>)"
+
+
+def fetch(p: Plugin, url: str | None = None, env: dict[str, str] | None = None) -> Path:
+    """Fetch a git plugin's commit into the cache and lay out its tree (git_tree); returns that directory. Blocking.
+    `url`: where to fetch from (the gateway's upstream for the spec's URL); `env`: git's environment, carrying the
+    control plane's credential (never on a command line or in a config file)."""
+    url = url or (p.git or "").strip()
+    ref = (p.ref or "").lower()
+    if not pinned(p):
+        raise ValueError(pin_error(p, url, env))
+    tree = git_tree(p)
+    if tree.is_dir():
+        return tree
+    mirror = git_cache() / "repos" / f"{_key(p.git or '')}.git"
+    if not (mirror / "HEAD").exists():
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        ok, out = _gitrun(["init", "-q", "--bare", str(mirror)])
+        if not ok:
+            raise ValueError(f"plugin {p.name}: could not make its git cache: {out.decode(errors='replace')}")
+    have = ["-C", str(mirror), "cat-file", "-e", f"{ref}^{{commit}}"]
+    ok, out = True, b""
+    if not _gitrun(have)[0]:
+        ok, out = _gitrun(["-C", str(mirror), "fetch", "-q", "--depth", "1", "--", url, ref], env)
+        if not _gitrun(have)[0]:  # a server that won't serve a commit by id: its branches and tags, then look again
+            ok, out = _gitrun(["-C", str(mirror), "fetch", "-q", "--", url, "+refs/heads/*:refs/hangar/heads/*",
+                               "+refs/tags/*:refs/hangar/tags/*"], env)
+    if not _gitrun(have)[0]:
+        why = f"git fetch failed: {out.decode(errors='replace')}" if not ok else "no such commit"
+        raise ValueError(f"plugin {p.name}: {safe_url(p.git or url)} has no commit {ref} ({why})")
+    ok, out = _gitrun(["-C", str(mirror), "archive", "--format=tar", ref])
+    if not ok:
+        raise ValueError(f"plugin {p.name}: could not read commit {ref}: {out.decode(errors='replace')}")
+    tmp = tree.with_name(f"{tree.name}.tmp{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(out)) as t:
+        t.extractall(tmp, filter="data")  # nothing outside the tree, no device files
+    try:
+        tmp.rename(tree)
+    except OSError:  # another build laid it out first: the same commit, the same tree
+        shutil.rmtree(tmp, ignore_errors=True)
+    return tree
+
+
+def upstream_url(fleet: Fleet, p: Plugin) -> str:
+    """The URL the git gateway forwards the plugin's repo to (its host one of HANGAR_GATEWAY_UPSTREAMS), or why not."""
+    from hangar.gateway import parse_remote
+
+    ups = {h.lower(): base for h, base in fleet.settings.gateway_upstreams.items()}
+    remote = parse_remote(p.git, list(ups))
+    if remote is None:
+        raise ValueError(f"plugin {p.name}: {safe_url(p.git or '')} isn't on one of the git gateway's upstreams "
+                         f"({', '.join(sorted(ups)) or 'none'}; HANGAR_GATEWAY_UPSTREAMS): hangar fetches plugins "
+                         "only through it")
+    return f"{ups[remote[0]].rstrip('/')}/{remote[1]}.git"
+
+
+async def prefetch(fleet: Fleet, spec: EnvSpec) -> None:
+    """Before an image build: each git plugin's commit, fetched on the control plane from the gateway's upstream with
+    the gateway's credential (the team harness repo's way, harness_repo.py), never a sandbox's token. A local
+    `file:///` repo is read as it is. Raises ValueError: a floating ref, a host the gateway doesn't serve, a missing
+    commit."""
+    from hangar.harness_repo import _auth_env
+
+    for p in spec.plugins:
+        if p.git is None or (pinned(p) and git_tree(p).is_dir()):
+            continue
+        if p.git.startswith("file:///"):
+            url, env = p.git, {}
+        else:
+            url = upstream_url(fleet, p)
+            env = await _auth_env(fleet, p.git)
+        await asyncio.to_thread(fetch, p, url, env)
+
+
+def pending(spec: EnvSpec) -> list[str]:
+    """The remote git plugins whose commit isn't fetched yet (prefetch fetches them when the image is built)."""
+    return [p.name for p in spec.plugins
+            if p.git and not p.git.startswith("file:///") and pinned(p) and not git_tree(p).is_dir()]
 
 
 def applies(spec: EnvSpec, harness: str | None) -> bool:
@@ -75,10 +262,22 @@ def applies(spec: EnvSpec, harness: str | None) -> bool:
 
 
 def _root(spec: EnvSpec, p: Plugin) -> Path:
-    base = (spec.source_dir or Path(".")).resolve()
-    if Path(p.path).is_absolute():
+    if p.git is not None:  # --- #222: the commit's tree, laid out by prefetch (a local file:/// repo: here)
+        tree = git_tree(p)
+        if not tree.is_dir():
+            if not pinned(p):
+                raise ValueError(pin_error(p, p.git, look=p.git.startswith("file:///")))
+            if not p.git.startswith("file:///"):
+                raise ValueError(f"plugin {p.name}: {safe_url(p.git)}@{p.ref} isn't fetched yet: hangar fetches it "
+                                 "through the git gateway when it builds the image")
+            tree = fetch(p)
+        base = tree.resolve()
+    else:
+        base = (spec.source_dir or Path(".")).resolve()
+    rel = p.path or "."
+    if Path(rel).is_absolute():
         raise ValueError(f"plugin {p.name}: path must be relative to the spec directory: {p.path}")
-    target = (base / p.path).resolve()
+    target = (base / rel).resolve()
     if not target.is_relative_to(base):
         raise ValueError(f"plugin {p.name}: path escapes the spec directory: {p.path}")
     return target
@@ -249,6 +448,11 @@ def content_digest(entry: dict[str, Any], dir_digest: str) -> str:
     return "sha256:" + hashlib.sha256(f"{e}\n{dir_digest}".encode()).hexdigest()
 
 
+def _origin(p: Plugin) -> dict[str, Any]:
+    """--- #222: where a git plugin came from: its repo (no credential) and the commit it is pinned to."""
+    return {"git": safe_url(p.git), "commit": (p.ref or "").lower() or None} if p.git else {}
+
+
 def manifest(spec: EnvSpec, harness: str | None) -> list[dict[str, Any]] | None:
     """hangar.manifest/v1 `plugins` (part of harness_digest): null without any, else each declared plugin. `effective`
     is whether hangar's settings load it for the harness (a hardened turn's included: they come from the seed)."""
@@ -260,12 +464,13 @@ def manifest(spec: EnvSpec, harness: str | None) -> list[dict[str, Any]] | None:
             r = resolved(spec, p)
         except ValueError as e:
             out.append({"name": p.name, "marketplace": p.marketplace, "version": None, "path": None, "digest": None,
-                        "enabled": p.enabled, "effective": False, "source": "seed", "error": str(e)[:200]})
+                        "enabled": p.enabled, "effective": False, "source": "seed", **_origin(p),
+                        "error": str(e)[:200]})
             continue
         dig, n = _digest(r)
         out.append({"name": r["name"], "marketplace": r["marketplace"], "version": r["version"], "path": r["path"],
                     "digest": dig, "files": n, "enabled": p.enabled, "effective": p.enabled and harness == HARNESS,
-                    "source": "seed"})
+                    "source": "seed", **_origin(p)})
     return out
 
 

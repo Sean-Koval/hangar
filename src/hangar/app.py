@@ -91,6 +91,9 @@ class Hangar:
         from hangar.governed import Governed  # --- KAN-79: approvals=governed, egress and secret requests ask Tower
 
         self.governed = Governed(self.sessions, self.governance_events, self.env_requests)
+        from hangar.govrelease import Releases  # --- KAN-33: job release and landing ask Tower (#172)
+
+        self.releases = Releases(self.jobs, self.governance_events)
         from hangar.backup import Backups, backup_store  # --- overnight/sweep: database backups
 
         self.backups = Backups(self.settings, self.vault, backup_store(self.settings, self.sessions.blobs))

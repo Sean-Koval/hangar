@@ -39,7 +39,7 @@ Where a spec conflicts with this list, this list wins. Specs will be updated to 
     - **MCP gateway:** a second protocol on 0003's gateway grant model, not a separate trust system.
     - **Policy:** 0007's `policy:` block absorbs 0003's `network:` block as `policy.egress`.
     - **Experiments:** 0007's `run_experiment` replaces 0005 M10's two-config `POST /api/evals`, keeping all eight of 0005's evaluation rules.
-    - **Parsers:** the stream parsers for Claude Code, Codex, pi and Antigravity are built, in `src/hangar/events.py` (`Parser`, `FORMATS`); the trace export and taint read them. `evals/semver/spans.py` is no longer the starting point (it moves to flightdeck, #145).
+    - **Parsers:** the stream parsers for Claude Code, Codex, pi and Antigravity are built, in `src/hangar/events.py` (`Parser`, `FORMATS`); the trace export and taint read them. The semver prototype's parser is gone (#145).
 
 16. **hangar is a development control plane first; evals are a feature (owner, 2026-10-12; trajectories and tasks restated 2026-10-17, #142).**
     - **Priority:** sandboxes with agent harnesses for scaling coding work come first. Evals, labeling, the improvement loop and RL are built from the traces that real work produces. When the two conflict, development throughput and UX win.

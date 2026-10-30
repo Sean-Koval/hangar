@@ -1,5 +1,5 @@
-# The semver smoke experiment (evals/semver) as an overlay spec, for #135's freeze-variants round trip. The tests
-# point `repo` at a scratch repo and run it on the scripted agent; the task text is evals/semver/task.md's opening.
+# The semver smoke experiment (flightdeck's tasks/smoke/semver) as an overlay spec, for #135's freeze-variants round
+# trip. The tests point `repo` at a scratch repo and run it on the scripted agent; the task text is semver-mini/task.md's.
 name: semver-smoke
 environment: lockenv
 tasks:

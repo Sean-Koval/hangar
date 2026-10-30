@@ -38,9 +38,13 @@ Some tests need what a sandbox lacks. They say so with a marker, and `tests/conf
 | `needs("docker")` | a Docker daemon answers on `DOCKER_HOST` | the Docker e2e suites, which also need `HANGAR_E2E=1` |
 | `needs("kvm")` | `/dev/kvm` is usable | `test_e2e_kata.py`, which also needs `HANGAR_E2E_KATA=1` |
 | `needs("uid_split")` | not root, or root with `setpriv` and a scratch root other users can reach | `test_driver`'s run-key test |
+| `needs("quiet_cpu")` | not an xdist worker | `test_modelgw`'s latency bench |
 
 A missing capability skips the test, with a reason that starts `capability:`. CI sets `HANGAR_REQUIRE_CAPS=1`, which
 fails the test instead. So a test CI should run can't quietly start skipping there.
+
+`quiet_cpu` is the exception. Under `-n` it always skips, in CI too, since a bench beside other workers times the
+load. The `bench` job in `ci.yml` runs those tests alone instead.
 
 The run-key test drops to uid 65534 when it runs as root. Under `/root`, a 0700 home, that uid can't reach the
 scratch root. Set `HANGAR_TEST_ROOT=/dev/shm/hangar-tests` to run it as root.

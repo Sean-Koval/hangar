@@ -50,7 +50,7 @@ async def test_a_docker_sandbox_is_set_up_once_as_root_and_remembered():
 @pytest.mark.parametrize("prov,settings,why", [
     (Prov(name="kubernetes"), Settings(), "GKE Sandbox's policy"),
     (Prov(name="kubernetes"), Settings(), "HANGAR_K8S_DRIVER_SIDECAR is off"),  # KAN-186: the sidecar: its own tests
-    (Prov(name="e2b"), Settings(), "the e2b provider doesn't support it yet"),
+    (Prov(name="e2b"), Settings(), "an E2B sandbox is one microVM with one user"),  # KAN-189
     (Prov(out="agent can use sudo (the environment has sudo: true)", code=3), Settings(), "agent can use sudo"),
     (Prov(out="the image has no setpriv", code=3), Settings(), "the image has no setpriv"),
     (Prov(out="split nope 1"), Settings(), "split nope 1"),  # what the sandbox printed doesn't parse: not split
@@ -164,6 +164,82 @@ async def test_required_still_refuses_ask_where_the_pod_has_no_driver_sidecar(sv
     s.approvals = "deny-risky"
     with pytest.raises(steering.SteerError, match=r"has no hangar-driver container.*HANGAR_UID_SPLIT=required"):
         await steering.prepare(svc, s, SessionTurn(message="x"), sb, HARNESSES["live-claude"])
+
+
+@pytest.mark.parametrize("set_to,provider,mode", [
+    (None, "e2b", "required"),  # --- KAN-189: unset on E2B refuses
+    (None, "docker", "auto"), (None, "kubernetes", "auto"), (None, "fake", "auto"),  # unchanged elsewhere
+    ("auto", "e2b", "auto"), ("off", "e2b", "off"),  # an operator's explicit choice holds (the doctor flags it)
+    ("required", "docker", "required"), ("off", "kubernetes", "off"),
+])
+def test_the_split_policy_defaults_to_required_only_on_e2b(set_to, provider, mode):
+    assert isolation.policy(Settings(uid_split=set_to), provider) == mode
+
+
+def _on_e2b(svc, monkeypatch, sb):  # noqa: F811
+    monkeypatch.setattr(isolation, "supported", lambda prov: False)
+    monkeypatch.setattr(svc.fleet._running(sb.id)[1], "name", "e2b")
+    sb.info.pop("isolation", None)
+
+
+@pytest.mark.parametrize("pol", ["ask", "deny-risky", "governed"])
+async def test_e2b_refuses_guarded_turns_when_the_split_setting_is_unset(svc, live, monkeypatch, settings,  # noqa: F811
+                                                                         pol):
+    """--- KAN-189: one microVM, one user: unset, HANGAR_UID_SPLIT is `required` on E2B, and the refusal says so."""
+    new(svc, live, "eb", "hello")
+    s = await settle(svc, "eb")
+    sb = svc.fleet.get(s.sandbox_id)
+    _on_e2b(svc, monkeypatch, sb)
+    assert settings.uid_split is None
+    s.approvals = pol
+    with pytest.raises(steering.SteerError, match=r"one microVM with one user.*HANGAR_UID_SPLIT=required, the "
+                                                  r"default on E2B"):
+        await steering.prepare(svc, s, SessionTurn(message="x"), sb, HARNESSES["live-claude"])
+    s.approvals = "auto"  # nothing to protect: runs as before
+    run_id, command = await steering.prepare(svc, s, SessionTurn(message="x"), sb, HARNESSES["live-claude"])
+    assert "--as " not in command
+    steering.forget(svc, run_id)
+
+
+async def test_e2b_with_the_split_set_to_auto_warns_as_before(svc, live, monkeypatch, settings):  # noqa: F811
+    new(svc, live, "ea", "hello")
+    s = await settle(svc, "ea")
+    sb = svc.fleet.get(s.sandbox_id)
+    _on_e2b(svc, monkeypatch, sb)
+    settings.uid_split = "auto"
+    s.approvals = "ask"
+    turn = SessionTurn(message="x")
+    run_id, command = await steering.prepare(svc, s, turn, sb, HARNESSES["live-claude"])
+    assert "can tamper with later turns" in turn.warnings[0] and "one microVM" in turn.warnings[0]
+    steering.forget(svc, run_id)
+
+
+async def test_kubernetes_with_the_split_unset_still_warns(svc, live, monkeypatch, settings):  # noqa: F811
+    """Only E2B changed: an unset HANGAR_UID_SPLIT is still `auto` on Kubernetes (its manifests set `required`)."""
+    new(svc, live, "ku", "hello")
+    s = await settle(svc, "ku")
+    sb = svc.fleet.get(s.sandbox_id)
+    monkeypatch.setattr(isolation, "supported", lambda prov: False)
+    monkeypatch.setattr(svc.fleet._running(sb.id)[1], "name", "kubernetes")
+    sb.info.pop("isolation", None)
+    s.approvals = "ask"
+    turn = SessionTurn(message="x")
+    run_id, _ = await steering.prepare(svc, s, turn, sb, HARNESSES["live-claude"])
+    assert "can tamper with later turns" in turn.warnings[0]
+    steering.forget(svc, run_id)
+
+
+@pytest.mark.parametrize("providers,set_to,status", [
+    ({"docker": 1}, None, None), ({"docker": 1}, "auto", None),  # no E2B: nothing to say
+    ({"e2b": 1}, None, "ok"), ({"docker": 1, "e2b": 1}, "required", "ok"),
+    ({"e2b": 1}, "auto", "warn"), ({"e2b": 1}, "off", "warn"),
+])
+def test_the_doctor_flags_an_explicit_auto_on_e2b(providers, set_to, status):
+    h = SimpleNamespace(fleet=SimpleNamespace(providers=providers), settings=Settings(uid_split=set_to))
+    checks = isolation.doctor_checks(h)
+    assert [c["status"] for c in checks] == ([status] if status else [])
+    if status == "warn":
+        assert f"HANGAR_UID_SPLIT={set_to}" in checks[0]["detail"] and "unset HANGAR_UID_SPLIT" in checks[0]["fix"]
 
 
 async def test_a_split_run_is_stopped_as_hangars_user():

@@ -59,7 +59,7 @@ Not checked: that GKE's admission policy accepts the second container, and the l
 - **The sandbox kernel itself.** A gVisor escape reaches every container in the pod.
 - **Per-edit trees and the verify gate in turns that ask.** The driver's container doesn't have the checkout. Trees are off, with a `skipped: sidecar` line, and the gate is skipped with a note ([KAN-187](https://seanmkoval.atlassian.net/browse/KAN-187)). hangar's verify still runs after the turn.
 - **Graders.** A grade on GKE stays `trust: best_effort` until [graders](#graders) are built ([KAN-188](https://seanmkoval.atlassian.net/browse/KAN-188)).
-- **E2B.** One microVM, one container: [KAN-189](https://seanmkoval.atlassian.net/browse/KAN-189).
+- **E2B.** One microVM, one container. Those turns are refused there by default ([the driver's own user on E2B](e2b-driver-user.md)).
 - **Replays** don't depend on the uid split. Their sandbox has no credentials or egress, and the gateway compares outside it.
 
 ## Graders

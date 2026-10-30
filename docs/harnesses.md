@@ -170,6 +170,7 @@ plugins:
     name: workflow              # a plugin in it
     # marketplace: team         # read from its marketplace.json when left out
     # enabled: false            # installed in the seed, not loaded
+  - {git: https://github.com/acme/team-harness, ref: <full commit id>, path: plugins/team, name: review}
 ```
 
 - **The build.** The image build installs them with the locked Claude Code, in the pack's own build stage
@@ -177,7 +178,7 @@ plugins:
   and copies the seed into the image, root's and not writable by the sandbox user. Each marketplace sits at
   `/opt/hangar/claude-seed/marketplaces/<name>`: Claude Code skips a seed marketplace it can't find there (a
   `directory` marketplace is otherwise recorded where it was added from), and loads its plugins in place. A plugin's
-  content is a build input, so changing it rebuilds the image. A prebuilt `image:` can't have plugins.
+  content is a build input. A prebuilt `image:` can't have plugins. Git ones: [git marketplaces](environments/git-plugins.md).
 - **The run.** At claim, `CLAUDE_CODE_PLUGIN_SEED_DIR=/opt/hangar/claude-seed` and `CLAUDE_CODE_SYNC_PLUGIN_INSTALL=1`
   (so turn 1 doesn't race the install) join the harness's environment. Every run adds hangar's own settings to
   `--settings` (`HANGAR_CLAUDE_SETTINGS`), never to `~/.claude/settings.json`: `enabledPlugins` for exactly the declared

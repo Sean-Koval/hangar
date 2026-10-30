@@ -8,7 +8,7 @@ For Tower's `tower-down` alert and hangar's `tower-fail-closed` alert ([alerting
 - **hangar, for kinds in `enforce`.** Those decisions fail closed: jobs wait in `awaiting_approval`, and tool calls are denied with "approval service unavailable". In `shadow` (the default) hangar's own rules decide and nothing waits.
 - **Nothing else in hangar.** Jobs, sessions and sandboxes keep running.
 
-hangar asks Tower only once [#172](https://github.com/Sean-Koval/hangar/issues/172) wires its client. Until then hangar's alert can't fire, and Tower's uptime check is the only signal.
+hangar asks Tower for every kind not set to `off`: [job release and landing](../tower-release-landing.md), and [governed approvals](../governed-approvals.md). With every kind `off`, hangar's alert can't fire, and Tower's uptime check is the only signal.
 
 ## 1. Confirm it
 

@@ -198,6 +198,7 @@ class Fleet:
         self.closing = asyncio.Event()
         # --- workstream F: git gateway. Grants for sandboxes in credential_mode: gateway (spec 0003).
         self.gateway = Gateway(self)
+        plugins.configure_git(settings.data_dir / "plugin-git")  # --- #222: fetched git marketplaces
         self.egress = EgressProxy(self)  # --- egress: the hostname-allowlist proxy (egress_proxy.py)
         self.cloud = cloudcreds.Issuer(self)  # --- egress: short-lived cloud credentials (cloudcreds.py)
         self.tier_down: dict[str, float] = {}  # --- providers-e2b: provider -> monotonic time it may be tried again
@@ -309,7 +310,10 @@ class Fleet:
         scratch._raw = {**self.catalog._raw, name: (data, self.catalog.dirs[0] if self.catalog.dirs else None)}
         try:
             spec = scratch.get(name)
-            dockerfile = None if spec.image else render(
+            if waiting := plugins.pending(spec):  # --- #222: fetched when the image is built, not here
+                problems.append(f"plugins {', '.join(waiting)}: fetched through the git gateway when the image is "
+                                "built; the Dockerfile is shown once they are")
+            dockerfile = None if spec.image or waiting else render(
                 spec, self.settings.sandbox_user, self.settings.workspace_dir, self._extra_ca(),
                 docker_image=self.settings.heavy_docker_image).dockerfile  # --- heavy
         except Exception as e:  # noqa: BLE001 - reported to the caller
@@ -511,6 +515,7 @@ class Fleet:
         spec = self.catalog.get(env)
         if spec.image:
             raise FleetError(f"environment {env} uses the prebuilt image {spec.image}; there is nothing to build")
+        await self._prefetch_plugins(spec)  # --- #222
         tag, ctx = self._tag_for(spec, pname, self._bake_for(spec, pname, spec.pick_harness()))
         # --- deadlines (B17): asking again while this very build runs (as MCP clients do to see where it is) gets
         # that build back, not a second job queued behind it with an empty log, nor (force) a second Cloud Build. A
@@ -562,6 +567,13 @@ class Fleet:
             await job.task
         return job
 
+    async def _prefetch_plugins(self, spec: EnvSpec) -> None:
+        """--- #222: the environment's git plugins, fetched through the git gateway's upstream before the build."""
+        try:
+            await plugins.prefetch(self, spec)
+        except ValueError as e:
+            raise FleetError(str(e)) from None
+
     def build_context(self, env: str, provider: str | None = None) -> tuple[str, bytes]:
         """Image tag + build-context tar, for building on another machine (laptop/CI) and registering after."""
         pname = provider or self.settings.default_provider
@@ -591,6 +603,7 @@ class Fleet:
             return spec.image
         prov = self.provider(pname)
         bake = self._bake_for(spec, pname, harness)
+        await self._prefetch_plugins(spec)  # --- #222
         tag, ctx = self._tag_for(spec, pname, bake)
         registered = self.store.kv_get(f"image:{pname}:{spec.name}")
         if registered and registered == prov.image_ref(tag):

@@ -184,7 +184,8 @@ def test_cli_with_files_and_shards(tmp_path):
     r = run("--files", "src/hangar/providers/e2b.py")
     assert "tests/test_e2b_provider.py" in r.stdout.split() and "test file(s)" in r.stderr
     assert json.loads(run("--files", "docs/ci.md", "--e2e").stdout) == []
-    assert run("--files", "docs/ci.md").stdout.strip() == "tests/test_editorial.py"  # the editorial rule
+    # the editorial rule, and subscription logins only in interactive sections (KAN-219)
+    assert run("--files", "docs/ci.md").stdout.split() == ["tests/test_editorial.py", "tests/test_onboarding_docs.py"]
 
 
 def test_durations_from_junit(tmp_path):
@@ -494,6 +495,17 @@ def test_ci_never_lets_a_capability_skip():
     docker = [p.name for p in (ROOT / "tests").glob("test_e2e_*docker.py")
               if 'pytest.mark.needs("docker")' not in p.read_text()]
     assert docker == []  # every Docker suite says so: CI fails it, rather than skips it, without Docker
+
+
+def test_every_quiet_cpu_test_has_a_ci_job_that_runs_it_alone():
+    """KAN-197: needs("quiet_cpu") skips under xdist even in CI (conftest.SERIAL), so ci.yml's bench job, which runs
+    without -n, must name its file, or the test would only ever skip."""
+    bench = (ROOT / ".github/workflows/ci.yml").read_text().split("\n  bench:", 1)[1].split("\n  e2e:", 1)[0]
+    run = next(line for line in bench.splitlines() if "pytest" in line)
+    assert " -n " not in run
+    files = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").glob("test_*.py")
+                   if 'needs("quiet_cpu")' in p.read_text() and p.name != "test_ci.py")
+    assert files and all(f in run for f in files), (files, run)
 
 
 def test_fake_sandboxes_remap_their_paths_but_not_the_hosts(monkeypatch):
