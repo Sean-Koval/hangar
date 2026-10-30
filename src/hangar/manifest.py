@@ -338,7 +338,7 @@ def build(fleet: Fleet, spec: EnvSpec, harness: str | None, *, s: Session | None
                    "uid_split": split if turn is not None else None,
                    "hardened": bool(split and (approvals != "auto" or turn.governance_hook))
                    if turn is not None else None,
-                   "isolation": {k: iso.get(k) for k in ("mode", "split") if k in iso} or None,
+                   "isolation": {k: iso.get(k) for k in ("mode", "split", "backend") if k in iso} or None,
                    # --- #124: the environment's sudo, and whether the sandbox ran with no-new-privileges (Docker
                    # jobs under HANGAR_INTAKE_POSTURE=enforce; GKE pods always, allowPrivilegeEscalation: false)
                    "sudo": spec.sudo,

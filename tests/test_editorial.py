@@ -117,7 +117,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "specs/0015-governance-decision-point.md": (2463, 35, SPEC),
     "specs/README.md": (340, 22, "the index of design records, one entry per spec"),
     "specs/decisions.md": (1517, 15, SPEC),
-    "steering.md": (4891, 61, LATER + "the turn, approvals, the uid split"),
+    "steering.md": (4886, 61, LATER + "the turn, approvals, the uid split"),
     "streaming.md": (1095, 23, LATER + "the stream, the replay"),
     "team-scale.md": (4583, 86, LATER + "sizing, caps, the reconciler"),
     "templates/adr.md": (100, 1, "the ADR template: placeholder prose an author replaces"),

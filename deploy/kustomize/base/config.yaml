@@ -22,8 +22,9 @@ data:
   # give one environment `egress: {mode: open}` (docs/security/egress-default.md).
   HANGAR_EGRESS_DEFAULT: "allowlist"
   HANGAR_INTAKE_POSTURE: "enforce"
-  # No uid split on Kubernetes (KAN-165): `required` refuses an `ask` or `deny-risky` turn rather than run its driver
-  # as the agent's own user. `auto` turns are unaffected. Keep it until the driver sidecar lands (KAN-83).
+  # No uid split in one Kubernetes container (KAN-165): `required` refuses an `ask` or `deny-risky` turn rather than run
+  # its driver as the agent's own user. `auto` turns are unaffected. Keep it: with HANGAR_K8S_DRIVER_SIDECAR on (after
+  # docs/security/driver-sidecar-check.md), it lets those turns run where the pod's sidecar passes the probe.
   HANGAR_UID_SPLIT: "required"
   # Credentials whose value is a mounted file (docs/deploy-company.md#credentials-from-your-secret-manager): the
   # Deployment mounts Secret hangar-credentials here, and a credential may only reference a file in this directory.
