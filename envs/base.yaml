@@ -1,4 +1,8 @@
 # Shared foundation. Other environments `extends: base` and add harnesses, deps and repos.
+# Egress: no mode here, so sandboxes follow HANGAR_EGRESS_DEFAULT: `allowlist` on GKE, `open` on a laptop. Under
+# allowlist they reach their harness's model API, PyPI, npm and Go through hangar's read-only mirror, crates, and the
+# repo through the git gateway. A child that needs more adds `egress: {allow: [host]}`; one that needs the open
+# internet says `egress: {mode: open}` and why (docs/security/egress-default.md).
 name: base
 description: Ubuntu 24.04 + git, tmux, ripgrep, mise-managed Python 3.12 / uv / Node 22
 base: mirror.gcr.io/library/ubuntu:24.04  # Google's Docker Hub mirror: same image, no pull rate limits
