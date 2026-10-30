@@ -140,15 +140,16 @@ OVERLAY = r"""
       c.querySelector("b").textContent = step; c.querySelector("span").textContent = text; c.classList.add("on");
     },
     play(cast) {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         const s = document.createElement("script"); s.src = "%PLAYER%.min.js";
+        setTimeout(resolve, 15000);  // never hang the render, even if the player never loads or never ends
+        s.onerror = () => reject(new Error("the asciinema player did not load: " + s.src));
         s.onload = () => {
           const p = AsciinemaPlayer.create({ data: cast }, document.getElementById("fp-screen"),
             { autoPlay: true, fit: false, terminalFontSize: "14px", controls: false, idleTimeLimit: 1,
               terminalFontFamily: "'DM Mono', ui-monospace, monospace",
               theme: "asciinema" });
           p.addEventListener("ended", () => resolve());
-          setTimeout(resolve, 15000);
         };
         document.head.appendChild(s);
       });
@@ -339,7 +340,10 @@ def record_cast(path: Path) -> str:
 
 async def ui(pw, out: Path, work: Path) -> None:
     browser = await pw.chromium.launch()
-    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark")
+    # the overlay's terminal plays the asciinema player from jsdelivr, which the console's CSP (KAN-174) doesn't allow;
+    # the overlay is the recording's, not the console's, so this context alone skips the policy
+    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark",
+                                    bypass_csp=True)
     await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}')")
     await ctx.add_init_script(OVERLAY)
     page = await ctx.new_page()
