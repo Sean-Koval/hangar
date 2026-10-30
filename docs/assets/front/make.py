@@ -649,6 +649,15 @@ async def clip(pw, out: Path, work: Path, theme: str) -> None:
     clip_scene(fx, "queued")
     page = await ctx.new_page()
     await fx.wire(page)
+
+    async def frameable(route):  # the console refuses to be framed (KAN-174); the clip's own host page frames it
+        r = await route.fetch()
+        headers = {k: v for k, v in r.headers.items() if k.lower() != "x-frame-options"}
+        csp = r.headers.get("content-security-policy", "")
+        headers["content-security-policy"] = "; ".join(d for d in csp.split("; ") if not d.startswith("frame-ancestors"))
+        await route.fulfill(response=r, headers=headers)
+
+    await page.route(f"{demo.URL}/", frameable)
     host = (CLIP_HOST.replace("%THEME%", theme).replace("%FONTS%", FONTS).replace("%W%", str(w)).replace("%H%", str(h))
             .replace("%BAND%", str(CLIP_BAND)))
     await page.route(f"{demo.URL}/__clip", lambda r: r.fulfill(status=200, content_type="text/html", body=host))
