@@ -122,6 +122,17 @@ class GitHub:
     async def compare(self, repo: str, base: str, head: str) -> dict[str, Any]:
         return await self._req("GET", f"/repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}")
 
+    async def compare_first_page(self, repo: str, base: str, head: str) -> dict[str, Any]:
+        """--- KAN-216: `compare` with only its first 100 commits, the oldest (GitHub lists them oldest first), and the
+        total in `ahead_by`: enough to say how long the oldest commit `base` lacks has waited."""
+        return await self._req("GET", f"/repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}",
+                               params={"per_page": 100, "page": 1})
+
+    async def tags(self, repo: str) -> list[dict[str, Any]]:
+        """--- KAN-216: the newest 100 tags, each {"name", "commit": {"sha"}}."""
+        got = await self._req("GET", f"/repos/{repo}/tags", params={"per_page": 100})
+        return [t for t in got if isinstance(t, dict)] if isinstance(got, list) else []
+
     async def file_at(self, repo: str, path: str, ref: str) -> str | None:
         """A file's text at `ref`; None when it isn't there; `<symlink>` and the like for what isn't a file."""
         r = await self._client.get(f"/repos/{repo}/contents/{quote(path)}", params={"ref": ref})

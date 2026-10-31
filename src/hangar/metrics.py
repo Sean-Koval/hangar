@@ -143,6 +143,13 @@ class Metrics:
             "hangar_governance_disagreements", "Shadow decisions where Tower would have answered otherwise",
             ["kind"], registry=r)
         self.jobs_stuck = Gauge("hangar_jobs_stuck", "Live jobs that look stuck (slolog.stuck_jobs)", registry=r)
+        # --- KAN-216: how far production is behind main (deploylag.py); -1 while unknown
+        self.deploy_lag_commits = Gauge("hangar_deploy_lag_commits", "Commits main has that production lacks",
+                                        registry=r)
+        self.deploy_lag_working_days = Gauge("hangar_deploy_lag_working_days", "Working days the oldest commit "
+                                             "production lacks has been on main", registry=r)
+        self.deploy_lag_over = Gauge("hangar_deploy_lag_over", "1 while production is past the lag threshold and "
+                                     "the infra is up (the deploy-lag alert)", registry=r)
         # --- #181: the eval queue: each provider's observed token rate and the eval budget; eval jobs held, by why
         self.eval_tpm = Gauge("hangar_eval_observed_tpm", "Tokens per minute observed per provider (rolling 60 s)",
                               ["provider"], registry=r)

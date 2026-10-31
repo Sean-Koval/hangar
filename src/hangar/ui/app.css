@@ -125,6 +125,7 @@ fieldset.creds legend { padding: 0; margin-bottom: var(--af-space-8); font-famil
 #view-fleet > .af-page-head { margin-bottom: 0; align-items: end; }
 #view-fleet .af-page-head__title { font-size: 26px; max-width: 24ch; text-wrap: balance; }
 .fleet-sub { margin: var(--af-space-8) 0 0; color: var(--af-fg-muted); font-size: 14px; }
+.fleet-prod { margin: var(--af-space-4) 0 0; }  /* KAN-216: the deployed commit and its lag, an af-meta line */
 .fleet-views .af-ic { width: 14px; height: 14px; }
 .fleet-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--af-space-8) var(--af-space-16); margin-top: calc(-1 * var(--af-space-8)); }
 .fleet-filters:has(.fleet-owners:empty) { justify-content: flex-end; }

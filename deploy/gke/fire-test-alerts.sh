@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fire each of hangar's SLO alerts once, on purpose, after `terraform apply` with enable_alerting = true
+# Fire each of hangar's SLO alerts (and deploy-lag, KAN-216) once, on purpose, after `terraform apply` with enable_alerting = true
 # (deploy/terraform/gke/alerting.tf, docs/alerting.md). KAN-144's "alerts have fired at least once in a test".
 #
 #   bash deploy/gke/fire-test-alerts.sh            # every log-based alert
@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.."
 
 DRY=${DRY_RUN:-0}
 LOG=hangar-slo-test
-ALL="job-starts sandbox-creates queue-slow fail-closed stuck"
+ALL="job-starts sandbox-creates queue-slow fail-closed stuck deploy-lag"
 WHICH=${*:-$ALL}
 
 if [ -z "${PROJECT:-}" ]; then
@@ -57,6 +57,9 @@ for a in $WHICH; do
     stuck)
       echo "== hangar jobs-stuck: one stuck-job minute"
       write 1 "event=jobs_stuck n=1 oldest_s=4000 states=queued" ;;
+    deploy-lag)
+      echo "== hangar deploy-lag: production one minute too far behind main"
+      write 1 "event=deploy_lag commits=383 working_days=8 days=12" ;;
     *) echo "unknown alert: $a (one of: $ALL)" >&2; exit 2 ;;
   esac
 done

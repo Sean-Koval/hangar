@@ -42,6 +42,7 @@ AUDITED = Counter({
     "app.js: showGate: $(\"#gate-error\").innerHTML =": 1,  # errorLine: Airframe status() escapes
     "app.js: refreshMeta: $(\"#providers\").innerHTML =": 1,
     "app.js: refreshMeta: $(\"#more-providers\").innerHTML =": 1,
+    "app.js: drawProd: el.innerHTML =": 1,  # --- KAN-216: item() escapes every key, value and title with esc()
     "app.js: syncNewCreds: $(\"#new-creds\").innerHTML =": 1,
     "app.js: $(\"#new-form\").addEventListener(\"submit\", async: btn.innerHTML =": 1,  # its own markup
     "app.js: dialog: f.innerHTML =": 1,  # titles are idHtml or esc'd at the call; bodies are field() and static

@@ -37,6 +37,7 @@ Every policy goes to the `hangar-oncall` channels. A page means act now; a ticke
 | `restarts` | The control plane restarted 3 times in 15 minutes | Page | [Bad deploy](runbooks/bad-deploy.md) |
 | `data-disk` | The `hangar-data` disk is over 85% full for 15 minutes | Ticket | [Disk or quota](runbooks/disk-and-quota.md) |
 | `node-disk` | A node's ephemeral storage is over 90% for 15 minutes | Ticket | [Disk or quota](runbooks/disk-and-quota.md) |
+| `deploy-lag` | Production is over 2 working days behind main while the infra is up | Ticket | [A deploy waiting too long](runbooks/deploy.md) |
 | `api-down` | `/healthz` fails from two regions for 10 minutes; needs `domain` | Page | [Bad deploy](runbooks/bad-deploy.md) |
 
 With `alert_escalation_email` set, `tower-fail-closed` and `sandbox-creates-failing` have an escalated copy. It tells the escalation contact when the alert is still open after an hour. Tower's own alerts, such as Tower down, come from `tower.sh up`.
@@ -48,7 +49,7 @@ Installs that scrape `/metrics` apply `deploy/k8s/observability/prometheus-rules
 The acceptance test is that every alert has fired once. After the apply, at a quiet hour:
 
 ```bash
-bash deploy/gke/fire-test-alerts.sh              # the six log-based alerts
+bash deploy/gke/fire-test-alerts.sh              # the seven log-based alerts
 bash deploy/gke/fire-test-alerts.sh fail-closed  # or just one
 DRY_RUN=1 bash deploy/gke/fire-test-alerts.sh    # print the commands only
 ```

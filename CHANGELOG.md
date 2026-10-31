@@ -28,6 +28,11 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **How far production is behind main** (KAN-216). `hangar doctor` (`production lag`) and the Fleet page show the
+  deployed commit, its tag, and the commits and days it is behind `main`, from GitHub with hangar's own token ("unknown"
+  without one). A new `deploy-lag` alert (a ticket) fires past `HANGAR_DEPLOY_LAG_ALERT_WORKING_DAYS` (2) while the
+  infra is up; `terraform apply` adds it. [A deploy waiting too long](docs/runbooks/deploy.md) names the approvers and
+  how to reject a stale run.
 - **`pr.merge` carries outcome labels** (KAN-232, [docs/api/outcome-labels.md](docs/api/outcome-labels.md)): the
   agent head, the merge commit, the agent's diff lines, how many of its added lines the merge kept, human commits on
   the branch and review rounds, read from GitHub before the event goes out. Added within `hangar.job_event/v1`.

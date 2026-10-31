@@ -658,6 +658,11 @@ class Settings(BaseSettings):
     overnight_lane_sandboxes: int = Field(7, ge=0, le=200)
     overnight_min_yield: float = Field(0.6, ge=0.0, le=1.0)
     power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
+    # --- KAN-216: how far production is behind main (deploylag.py; doctor, the console, the `deploy-lag` alert). The
+    # repo deploy.yml deploys from (unset: the one in the newest deploy record's run URL), and the working days
+    # (Monday to Friday, in the power schedule's zone) the oldest undeployed commit on main may wait before it alerts.
+    deploy_repo: str | None = None
+    deploy_lag_alert_working_days: float = Field(2.0, ge=0)
     # --- clouddoctor: the nightly pass (opstatus.py): credential checks, then the Cloud Doctor (docs/doctor.md). A
     # cron in doctor_time_zone (unset: the power schedule's zone, else UTC); "off" turns it off. Half past midnight
     # in the power schedule's zone is before the sandbox pools power down at 01:00.
