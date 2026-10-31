@@ -126,6 +126,15 @@ async def test_status_failures_fail_closed_with_the_approval_kept():
     assert (d.outcome, d.failure) == ("deny", "unknown_approval")
 
 
+async def test_status_refuses_an_answer_about_another_approval():
+    # KAN-174 (L-1): an allow for A-1 is not an answer about A-7
+    d = await point(answer(200, ALLOW)).status("A-7", kind="landing.approve")
+    assert (d.outcome, d.approval_id, d.source, d.failure, d.retryable) == ("wait", "A-7", "fail_closed", "contract",
+                                                                            False)
+    d = await point(answer(200, ALLOW)).status("A-1", kind="landing.approve")
+    assert (d.outcome, d.approval_id, d.source) == ("allow", "A-1", "workspace")
+
+
 # ====================================================================== the happy paths and the wire
 async def test_decide_sends_the_contract_and_reads_the_answer():
     seen: list[httpx.Request] = []

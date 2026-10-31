@@ -10,13 +10,14 @@ A repo policy's `ai_review` picks the reviewer:
   its sandboxes get egress `none` (the intake floor label) and, being a job's, a fetch-only gateway grant: it can't
   push or reach anything. Its structured result (`SCHEMA`) gives each finding a `severity` and its `evidence`.
   --- KAN-230: a second, cheaper pass (the `balanced` policy, same harness and fence) then checks each finding and
-  keeps it only with a reproducing command or test it ran, or a line it quotes from the PR diff (hangar checks the
-  quote is there). Both passes share `ai_review_budget_usd` (default $1.50): the first may spend REVIEW_SHARE of it,
+  keeps it only with a reproducing command or test it ran (marked unverified: hangar doesn't rerun it), or a line it
+  quotes that the PR adds to the finding's own file near its line (hangar checks). It reads the head the first pass
+  reviewed (pin_head). Both passes share `ai_review_budget_usd` (default $1.50): the first may spend REVIEW_SHARE of it,
   the check what is left. The confirmed findings, most severe first, become one PR review from the App with `event:
   COMMENT` (never APPROVE: it must not satisfy branch protection) and at most `ai_review_inline_max` (default 5)
   inline comments; the packet counts the findings dropped as unconfirmed and those left out of the inline comments.
-  The verdict is `blocking` only with a confirmed high-severity (major or critical) finding. The spend counts in the
-  daily caps under the PR's person.
+  It fails closed: a `blocking` first pass becomes `comment` only when the check completed and dropped every
+  high-severity (major or critical) finding. The spend counts in the daily caps under the PR's person.
 * `check:<name>`: an org review bot's check run or status named `<name>` on the PR's head decides; no job runs.
 * `off` (or unset): nothing.
 
@@ -34,12 +35,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
+import shlex
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from hangar.github import GitHubError, parse_repo
-from hangar.models import JOB_TERMINAL, ContextItem, Job, JobBudget, now
+from hangar.models import JOB_TERMINAL, ContextItem, Job, JobBudget, JobState, now
 
 if TYPE_CHECKING:
     from hangar.jobs import JobService
@@ -56,6 +59,8 @@ DEFAULT_MODEL = "frontier"
 CONFIRM_MODEL = "balanced"  # --- KAN-230: modelpolicy's cheaper tier, resolved for the reviewing harness
 REVIEW_SHARE = 0.7  # of the budget, the most the first pass may spend; the confirmation pass gets what is left
 MIN_CONFIRM_USD = 0.05  # less left than this: no check, so no finding is confirmed
+MISSING_SECONDS = 600.0  # a pass whose job record is gone this long after it started: an error verdict
+NEAR = 5  # a quote must be within this many lines of its finding's line
 DEFAULT_INLINE_MAX = 5
 MAX_INLINE = 20  # the most ai_review_inline_max may ask for
 MAX_FINDINGS = 50
@@ -256,6 +261,10 @@ async def submit(svc: JobService, job: Job, head: str, why: str = "") -> Job | N
     if diff := await _diff(svc, job):
         context.insert(0, ContextItem(name="pr.diff", kind="diff", content=diff, untrusted=True))
     budget = budget_of(policy)
+    cap = round(budget * REVIEW_SHARE, 2)
+    if cap <= 0:  # JobBudget needs a positive cap: a budget this small runs no review
+        svc._event(job, f"AI review: ai_review_budget_usd ${budget} is too small for a review; no review")
+        return None
     attempts = [(harness, independent)] + ([(author, False)] if independent and author else [])
     last_error = ""
     for h, indep in attempts:
@@ -267,7 +276,7 @@ async def submit(svc: JobService, job: Job, head: str, why: str = "") -> Job | N
             title=f"AI review of PR #{number}: {job.title}"[:200], repo=job.repo, base_branch=job.branch,
             environment=job.environment, harness=h, model=model, deliver="none", verify="", context=context,
             labels={OF_LABEL: job.id, HEAD_LABEL: head, posture.FLOOR_LABEL: "none"}, output_schema=SCHEMA,
-            job_budget=JobBudget(max_cost_usd=round(budget * REVIEW_SHARE, 2)), autofix="off",
+            job_budget=JobBudget(max_cost_usd=cap), autofix="off",
             verify_in_loop=False, timeout_minutes=30)
         caller = Caller("hangar:review", job.owner or "admin", person=job.person)
         try:
@@ -315,12 +324,39 @@ def _findings(data: Any) -> list[dict[str, Any]]:
     return out[:MAX_FINDINGS]
 
 
-def _quoted(quote: str, diff: str) -> bool:
-    """--- KAN-230: every line of `quote` is a line of the diff (its +, - or context marker and spacing aside)."""
-    have = {ln[1:].strip() for ln in diff.splitlines()
-            if ln[:1] in ("+", "-", " ") and not ln.startswith(("+++", "---"))}
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _added(diff: str, path: str) -> dict[int, str]:
+    """The lines `diff` adds to `path`, by their line number in the new version (spacing aside)."""
+    want, out, cur, ln = path.removeprefix("./"), {}, None, 0
+    for row in diff.splitlines():
+        if row.startswith("+++ "):
+            name = row[4:].split("\t")[0].strip()
+            cur = name[2:] if name.startswith("b/") else None  # /dev/null: a deleted file
+        elif row.startswith("diff --git ") or row.startswith("--- "):
+            continue
+        elif m := _HUNK.match(row):
+            ln = int(m.group(1))
+        elif row.startswith("+"):
+            if cur == want:
+                out[ln] = row[1:].strip()
+            ln += 1
+        elif row.startswith(" "):
+            ln += 1
+    return out
+
+
+def _quoted(quote: str, diff: str, path: str, line: int | None) -> bool:
+    """--- KAN-230: every line of `quote` is a line the diff adds to the finding's own file, within NEAR lines of
+    the finding's line (anywhere in the file when it has none). Context and removed lines confirm nothing."""
+    added = _added(diff, path)
+    if line is not None:
+        want_n = len([q for q in quote.splitlines() if q.strip()])
+        added = {n: t for n, t in added.items() if line - NEAR <= n <= line + NEAR + want_n}
+    have = {t for t in added.values() if t}
     want = [q.strip() for q in quote.splitlines() if q.strip()]
-    return bool(want) and all(q in have or (q[:1] in ("+", "-") and q[1:].strip() in have) for q in want)
+    return bool(want) and all(q in have or (q[:1] == "+" and q[1:].strip() in have) for q in want)
 
 
 def _spent(svc: JobService, rj: Job, cap: float) -> float:
@@ -355,17 +391,12 @@ def job_done(svc: JobService, rj: Job) -> None:
     reviewed = rj.result.base_sha or r.get("head_sha")  # the commit its sandbox started from: what it read
     r.update(summary=str(data.get("summary") or "")[:4000] or None, head_sha=reviewed)
     if verdict == "error":
-        r.update(verdict="error", findings=[], at=now(),
-                 error=(rj.result.result_error or rj.reason or str(rj.state))[:300])
-        st.ai_review = r
-        svc._event(job, f"AI review of {str(reviewed)[:7]}: error")
-        svc._save(job)
-        svc._spawn(_post(svc, job.id))
+        _error(svc, job, r, rj.result.result_error or rj.reason or str(rj.state))
         return
     found = _findings(data)
     r["proposed_verdict"] = verdict
     if not found:
-        _finish(svc, job, r, [], None)
+        _finish(svc, job, r, [], None, set())  # nothing to check: the verdict stands
         return
     r["candidates"] = found
     st.ai_review = r
@@ -383,7 +414,7 @@ async def _confirm(svc: JobService, job_id: str, rj: Job) -> None:
         return
     got = _submit_confirm(svc, job, rj)
     if isinstance(got, str):
-        _finish(svc, job, r, [], got)
+        _finish(svc, job, r, [], got, None)
     else:
         await svc.landing.post_packet(job)
 
@@ -421,7 +452,7 @@ def _submit_confirm(svc: JobService, job: Job, rj: Job) -> Job | str:
                          source_ref=f"review:{job.id}")
     except (JobError, ValueError) as e:
         return f"the check couldn't start: {e}"[:300]
-    r.update(confirm_job=cj.id, confirm_model=model)
+    r.update(confirm_job=cj.id, confirm_model=model, confirm_at=now())
     job.landing.ai_review = r
     svc._event(job, f"AI review: checking {len(claims)} finding(s) in job {cj.id} on {harness} ({model}), "
                     f"up to ${left:.2f}")
@@ -433,43 +464,72 @@ def _confirmed(svc: JobService, job: Job, cj: Job, data: dict[str, Any]) -> None
     """The confirmation pass ended: keep the findings it showed, a quote only when the diff has it."""
     r = job.landing.ai_review or {}
     cands = r.get("candidates") or []
-    if not isinstance(cj.result.data, dict):
+    if cj.state != JobState.SUCCEEDED or not isinstance(cj.result.data, dict):
         why = (cj.result.result_error or cj.reason or str(cj.state))[:200]
-        _finish(svc, job, r, [], f"the check produced no result ({why})")
+        _finish(svc, job, r, [], f"the check produced no result ({why})", None)
+        return
+    if cj.result.base_sha and r.get("head_sha") and cj.result.base_sha != r["head_sha"]:
+        _finish(svc, job, r, [], f"the check read {cj.result.base_sha[:7]}, not the reviewed head", None)
         return
     diff = next((c.content or "" for c in cj.context if c.name == "pr.diff"), "")
     kept: dict[int, dict[str, Any]] = {}
+    answered: set[int] = set()
     for c in data.get("findings") or []:
-        if not isinstance(c, dict) or c.get("confirmed") is not True or c.get("kind") not in EVIDENCE_KINDS:
+        if not isinstance(c, dict) or not isinstance(c.get("confirmed"), bool):
             continue
         i, ev = c.get("id"), c.get("evidence")
-        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(cands) or not isinstance(ev, str) \
+        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(cands):
+            continue
+        answered.add(i)
+        if c["confirmed"] is not True or c.get("kind") not in EVIDENCE_KINDS or not isinstance(ev, str) \
                 or not ev.strip():
             continue
-        if c["kind"] == "quote" and not _quoted(ev, diff):
-            continue  # a quote the diff doesn't have confirms nothing
-        kept[i] = {**cands[i], "evidence": ev.strip()[:2000], "evidence_kind": c["kind"]}
-    _finish(svc, job, r, [kept[i] for i in sorted(kept)], None)
+        if c["kind"] == "quote" and not _quoted(ev, diff, cands[i]["path"], cands[i].get("line")):
+            continue  # a quote the finding's own lines of the diff don't have confirms nothing
+        # a command's output is the checker's word: hangar didn't run it, so the finding shows as unverified
+        kept[i] = {**cands[i], "evidence": ev.strip()[:2000], "evidence_kind": c["kind"],
+                   "verified": c["kind"] == "quote"}
+    _finish(svc, job, r, [kept[i] for i in sorted(kept)], None, answered)
 
 
-def _finish(svc: JobService, job: Job, r: dict[str, Any], confirmed: list[dict[str, Any]], note: str | None) -> None:
-    """Record the verdict: the confirmed findings, most severe first; `blocking` only with a confirmed high one."""
+def _finish(svc: JobService, job: Job, r: dict[str, Any], confirmed: list[dict[str, Any]], note: str | None,
+            answered: set[int] | None) -> None:
+    """Record the verdict: the confirmed findings, most severe first. `answered` holds the candidates the check gave
+    an answer for; None when it didn't run or didn't complete. Fail closed: a `blocking` first pass becomes
+    `comment` only when the check answered every major or critical candidate and kept none of them."""
     found = sorted(confirmed, key=lambda f: -SEVERITIES.index(f["severity"]))  # stable: the reviewer's order within
     proposed = r.pop("proposed_verdict", None) or "comment"
-    verdict = "comment" if proposed == "blocking" and not any(f["severity"] in HIGH for f in found) else proposed
-    n = len(r.pop("candidates", None) or [])
+    cands = r.pop("candidates", None) or []
+    high = {i for i, f in enumerate(cands) if f.get("severity") in HIGH}
+    dropped_all_high = answered is not None and bool(high) and high <= answered \
+        and not any(f["severity"] in HIGH for f in found)
+    verdict = "comment" if proposed == "blocking" and dropped_all_high else proposed
+    n = len(cands)
     r.update(verdict=verdict, findings=found, unconfirmed=max(0, n - len(found)), at=now(),
              inline=min(inline_max(svc.policies.get(job.repo)), sum(1 for f in found if f.get("line"))))
     if note:
         r["confirm_note"] = note
     if verdict != proposed:
         r["proposed"] = proposed
+    if answered is None and cands:
+        r["unchecked"] = True  # the findings were dropped because the check didn't complete, not as disproved
     job.landing.ai_review = r
     svc._event(job, f"AI review of {str(r.get('head_sha'))[:7]}: {verdict}"
                     + (f" ({len(found)} confirmed finding(s))" if found else "")
                     + (f", {r['unconfirmed']} unconfirmed dropped" if r["unconfirmed"] else "")
                     + (f" ({proposed} without a confirmed major or critical finding)" if verdict != proposed else "")
                     + (f"; {note}" if note else ""))
+    svc._save(job)
+    svc._spawn(_post(svc, job.id))
+
+
+def _error(svc: JobService, job: Job, r: dict[str, Any], why: str) -> None:
+    """An error verdict: no review of this head; it doesn't count for self-approval and the next push asks again."""
+    for k in ("candidates", "proposed_verdict"):
+        r.pop(k, None)
+    r.update(verdict="error", findings=[], at=now(), error=why[:300])
+    job.landing.ai_review = r
+    svc._event(job, f"AI review of {str(r.get('head_sha'))[:7]}: error ({why[:200]})")
     svc._save(job)
     svc._spawn(_post(svc, job.id))
 
@@ -503,6 +563,11 @@ def _one_line(text: str, cap: int = 300) -> str:
     return f"`{t[:cap]}`" + ("..." if len(t) > cap else "")
 
 
+def _kind(f: dict[str, Any]) -> str:
+    k = f.get("evidence_kind") or "claim"
+    return f"{k}, unverified: hangar didn't run it" if k == "command" else k
+
+
 def review_body(job: Job) -> str:
     r = job.landing.ai_review or {}
     head = f"**AI first-pass review** (advisory; it never approves) · {r.get('harness')} · {r.get('model')} · " \
@@ -516,11 +581,12 @@ def review_body(job: Job) -> str:
             lines.append(f"- [{f['severity']}] `{f['path'].replace('`', chr(39))}`"
                          + (f" line {f['line']}" if f["line"] else "") + f": {_neutral(f['text'])}")
             if f.get("evidence"):
-                lines.append(f"  - evidence ({f.get('evidence_kind') or 'claim'}): "
-                             f"{_neutral(_one_line(f['evidence']))}")
+                lines.append(f"  - evidence ({_kind(f)}): {_neutral(_one_line(f['evidence']))}")
     if r.get("unconfirmed"):
-        lines += ["", f"{r['unconfirmed']} more finding(s) dropped: no reproducing command or quoted diff line "
-                      f"confirmed them."]
+        lines += ["", f"{r['unconfirmed']} more finding(s) dropped: the check didn't complete, so none was confirmed."
+                  if r.get("unchecked") else
+                  f"{r['unconfirmed']} more finding(s) dropped: no reproducing command or quoted diff line "
+                  f"confirmed them."]
     if r.get("confirm_note"):
         lines += ["", f"_Check: {_neutral(r['confirm_note'])}._"]
     lines += ["", f"_hangar job `{r.get('job')}` reviewed {str(r.get('head_sha'))[:7]}"
@@ -546,7 +612,7 @@ async def _post(svc: JobService, job_id: str) -> None:
         body = svc.broker.redact(review_body(job))
         inline = [{"path": f["path"], "line": f["line"], "side": "RIGHT",
                    "body": svc.broker.redact(_neutral(f"[{f['severity']}] {f['text']}" + (
-                       f"\n\nEvidence ({f.get('evidence_kind')}): {_one_line(f['evidence'])}"
+                       f"\n\nEvidence ({_kind(f)}): {_one_line(f['evidence'])}"
                        if f.get("evidence") else "")))}
                   for f in r.get("findings") or [] if f.get("line")][:inline_max(svc.policies.get(job.repo))]
         r["inline"] = len(inline)
@@ -603,7 +669,8 @@ def packet_line(job: Job) -> str | None:
         inline = int(r.get("inline") or 0)
         counts = f", {n} confirmed finding(s) ({inline} inline, {n - inline} in the review body only)"
     if r.get("unconfirmed"):
-        counts += f", {r['unconfirmed']} unconfirmed finding(s) dropped"
+        counts += f", {r['unconfirmed']} " + ("unchecked finding(s) dropped (the check didn't complete)"
+                                             if r.get("unchecked") else "unconfirmed finding(s) dropped")
     return (f"- **AI review:** {r['verdict']} ({who}) on {str(r.get('head_sha'))[:7]}" + counts + indep + link)
 
 
@@ -622,5 +689,44 @@ def restore(svc: JobService) -> None:
                 job_done(svc, rj)
             elif rj is not None:
                 continue  # still queued or running
+            else:  # its job record is gone: nothing will ever answer; an error verdict once MISSING_SECONDS pass
+                since = r.get("confirm_at") if cid else r.get("requested_at")
+                wait = max(0.0, float(since or 0) + MISSING_SECONDS - now())
+                if wait:
+                    svc._spawn(_missing(svc, job.id, cid or r["job"], wait))
+                    continue
+                _error(svc, job, r, f"the review job {cid or r['job']} is gone")
         if wanted(svc, job) is not None:
             request(svc, job, "after a restart")
+
+
+async def _missing(svc: JobService, job_id: str, rid: str, wait: float) -> None:
+    await asyncio.sleep(wait)
+    job = svc._jobs.get(job_id)
+    r = (job.landing.ai_review or {}) if job is not None else {}
+    if job is None or r.get("verdict") is not None or (r.get("confirm_job") or r.get("job")) != rid \
+            or svc._jobs.get(rid) is not None:
+        return
+    _error(svc, job, r, f"the review job {rid} is gone")
+    if wanted(svc, job) is not None:
+        request(svc, job, "its review job was gone")
+
+
+# ====================================================================== the confirmation pass's checkout
+async def pin_head(jobs: JobService, job: Job, s: Any) -> None:
+    """From JobService._provision: the confirmation pass checks the head the first pass reviewed (the diff it was
+    given), not the branch tip, which a later push may have moved."""
+    from hangar.jobs import JobError
+
+    pin = job.labels.get(HEAD_LABEL)
+    if job.source != "review" or job.labels.get(PHASE_LABEL) != "confirm" or not pin or pin == s.base_sha:
+        return
+    repo = jobs.fleet.get(job.sandbox_id or "").info.get("repo_path")
+    if not repo:
+        return
+    q = shlex.quote
+    res = await jobs._sh(job, f"(git cat-file -e {q(pin)}^{{commit}} 2>/dev/null || git fetch -q origin {q(pin)}) && "
+                              f"git checkout -q -B {q(s.branch)} {q(pin)}", cwd=repo, timeout=300)
+    if res.exit_code != 0:
+        raise JobError(f"could not check out the reviewed head {pin[:12]}: {(res.stderr or res.stdout)[-300:]}")
+    s.base_sha = job.result.base_sha = pin

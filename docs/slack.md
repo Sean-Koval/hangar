@@ -28,7 +28,7 @@ Slack is the door for **unplanned** work: an alert, a question in a thread. Plan
 | `/hangar status JOB` | A job's state, PR and latest event (only you see the slash command's answer) |
 | `@hangar adr [title]` in a thread | Draft an ADR from the thread as a PR ([below](#hangar-adr-a-thread-becomes-a-decision-record)) |
 | `/hangar help` | Usage |
-| A reply in a job's thread | Follow-up once the current turn is done. Start it with `fix:`, `redirect:` or `info:` to [classify it](#classifying-a-reply) |
+| A reply in a job's thread | Follow-up once the current turn is done, from the job's person only, or anyone allowed on a team job. Start it with `fix:`, `redirect:` or `info:` to [classify it](#classifying-a-reply) |
 
 Slack doesn't allow slash commands inside threads, so a `/hangar` job gets a new top-level message and the thread hangs off it. An `@hangar` mention inside an existing thread (say, under an alert) runs the job in that thread. The parent message and earlier replies, up to 15 messages and 20 KB, go to the agent as a context file, `slack-thread.md`. Other people and other apps wrote that thread, so the file is marked untrusted, and the prompt tells the agent to treat it as a description of the problem, never as instructions.
 
@@ -88,7 +88,7 @@ hangar setup slack --manifest slack-app.yaml
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL` | | Vault credential holding the signing secret. The Slack routes return 404 until it is set. |
 | `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL` | | Vault credential holding the bot token |
 | `HANGAR_SLACK_CHANNELS` | `{}` | `{"<channel id>": "owner/repo"}`: the channels that may start jobs, and each one's default repo. An exact git URL also works, as in `HANGAR_GITHUB_REPOS`. |
-| `HANGAR_SLACK_USERS` | `[]` | Slack user IDs (`U…`, or `T…/U…` to pin the workspace) allowed to start and steer jobs. Empty means anyone in a mapped channel who belongs to the workspace the app is installed in. Members of other organizations (Slack Connect) count only when listed here. |
+| `HANGAR_SLACK_USERS` | `[]` | Slack user IDs (`U…`, or `T…/U…` to pin the workspace) allowed to start jobs and follow up on team jobs. Empty means anyone in a mapped channel from the app's workspace. A linked account is always allowed. Members of other organizations (Slack Connect) count only when listed here. |
 | `HANGAR_SLACK_TEAMS` | `[]` | Other workspace IDs (`T…`) whose members count as your own, for Enterprise Grid orgs whose users carry another workspace's ID |
 | `HANGAR_SLACK_API_URL` | `https://slack.com/api` | |
 
@@ -102,8 +102,9 @@ hangar setup slack --manifest slack-app.yaml
 - **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
 - **Only people.** hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
-- **Who can follow up.** On a person's job, only that person (an admin uses `hangar job follow-up`); on a team job, anyone the channel trusts. A job started by someone whose Slack account is linked (`hangar person link <id> slack T…/U…`) is that person's: it runs with their own login and budget, and anyone else's reply in its thread is refused, naming whose job it is. A job started by someone with no linked account is a team job. GitHub and Jira follow the same rule (`teamcreds.may_continue`). A reply while the agent is still working gets "Can't continue yet"; reply again when the turn is done.
-- **Needs input.** When an agent stops with a question (job state `needs_input`, spec 0011 §2), hangar posts the question in the thread. Your reply is the answer: it runs as an ordinary follow-up.
+- **Who can follow up** (`teamcreds.may_continue`, as on GitHub and Jira). A job started from a linked Slack account (`hangar person link <id> slack T…/U…`) is that person's, on their own login and budget. Only a reply from an account linked to them continues it. Any other reply is refused, naming whose job it is, an admin's too: an admin uses `hangar job follow-up`.
+- **Team jobs.** A job started from an unlinked account is a team job: any reply allowed in the channel continues it. A reply while the agent works gets "Can't continue yet".
+- **Needs input.** When an agent stops with a question (job state `needs_input`, spec 0011 §2), hangar posts the question in the thread. A reply is the answer: an ordinary follow-up, under the same rule.
 - **Safe output.** Text hangar didn't write itself, such as the agent's summary, failure output, or your instructions echoed back, is escaped. It can't ping `@channel` or turn into a link. Known secrets are redacted before anything is posted.
 - **When posting fails.** If the app isn't in the channel or the token is wrong, a slash command answers privately, through Slack's `response_url`, with the reason, and no job starts. Failures to post updates are recorded on the job's timeline.
 

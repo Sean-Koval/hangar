@@ -1017,6 +1017,7 @@ class JobService:
             await self._sh(job, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                 f"git config user.name >/dev/null || git config user.name {q('hangar')}")
         await experiments.prepare_trial(self, job, s)  # --- interfaces: a trial's pinned base and approvals
+        await aireview.pin_head(self, job, s)  # --- KAN-230: the confirmation pass reads the reviewed head
         ctx = self._ctxdir(job)
         _, prov = self.fleet._running(job.sandbox_id)
         sbx = self.fleet.get(job.sandbox_id)

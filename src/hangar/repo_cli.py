@@ -136,6 +136,8 @@ def repo_set(
     allow_heavy_for_intake: bool | None = typer.Option(
         None, "--allow-heavy-for-intake/--no-allow-heavy-for-intake",
         help="Let jobs from GitHub, Slack, Jira and webhooks run Docker on the heavy tier for this repo (#124)."),
+    diff_budget_lines: int | None = typer.Option(None, "--diff-budget-lines", help="Changed lines above which the "
+                                                 "review packet warns that the PR is big (KAN-229)."),
     max_open_agent_prs: int | None = typer.Option(None, "--max-open-agent-prs", help="Open agent PRs awaiting a "
                                                   "person before their new jobs here wait (0 = off; #159)."),
     self_approval: str | None = typer.Option(None, "--self-approval", help="May the job's own person be its PR's "
@@ -177,7 +179,7 @@ def repo_set(
                  ("job_budget", _fields(max_cost_usd=job_max_cost, max_tokens=job_max_tokens,
                                         max_turns=job_max_turns)),
                 ("land", land), ("approvers", approver or None), ("merge_method", merge_method),  # --- landing
-                ("risk_paths", risk_path or None),
+                ("risk_paths", risk_path or None), ("diff_budget_lines", diff_budget_lines),  # --- KAN-229
                 ("require_stale_dismissal", require_stale_dismissal),  # --- trust
                 ("verify_reports", verify_report or None), ("rerun_flaky", rerun_flaky),  # --- testresults
                 ("heavy", heavy), ("profile", profile), ("max_profile", max_profile),  # --- heavy
@@ -209,7 +211,7 @@ def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
                                                              "credentials, egress, build_secrets, land, approvers, "
-                                                             "merge_method, risk_paths, "
+                                                             "merge_method, risk_paths, diff_budget_lines, "
                                                              "require_stale_dismissal, verify_reports, "
                                                              "rerun_flaky, heavy, profile, "
                                                              "max_profile, allow_heavy_for_intake, "

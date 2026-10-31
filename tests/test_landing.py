@@ -92,7 +92,9 @@ class GH:
             self.armed = None
             return httpx.Response(200, json=g["disable_auto_merge"])
         if p == "/repos/o/r/pulls/7" and m == "GET" and r.headers.get("accept") == "application/vnd.github.diff":
-            return httpx.Response(200, text="diff --git a/src/app.py b/src/app.py\n+print('hi')\n")
+            return httpx.Response(200, text="diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n"
+                                                "+++ b/src/app.py\n@@ -1,2 +1,3 @@\n import os\n x = 1\n"
+                                                "+print('hi')\n")
         if p == "/repos/o/r/pulls/7" and m == "GET":
             return httpx.Response(200, json={
                 "number": 7, "state": self.state, "merged": self.merged_sha is not None, "node_id": NODE,
@@ -632,6 +634,100 @@ async def test_the_review_packet(svc, gh, settings):
     assert len(gh.comments) == 1 and job.landing.packet_comment_id != cid
 
 
+
+def _ticket_job(svc: JobService, criteria: list[str], **kw) -> Job:
+    """A job from a ticket, as intake.apply_ticket hands it over: the count label and the untrusted acceptance.md."""
+    from hangar import intake
+    from hangar.models import ContextItem
+
+    req = SubmitJob(instructions="x", repo="https://github.com/o/r.git")
+    intake.apply_ticket(svc, req, "## Acceptance criteria\n" + "\n".join(f"- {c}" for c in criteria), "KAN-1")
+    job = pr_job(svc, verify="uv run pytest -q", labels=req.labels, context=list(req.context),
+                 output_schema=req.output_schema, **kw)
+    assert all(isinstance(c, ContextItem) for c in job.context)
+    job.result.verify_exit_code = 0
+    return job
+
+
+def _check_ran(svc: JobService, job: Job, **outcomes: str) -> None:
+    """The job's last check, a run hangar made, with these cases (testresults.record, as verify leaves it)."""
+    from hangar import testreports, testresults
+
+    res = testreports.Results()
+    for cid, o in outcomes.items():
+        res.cases[cid] = testreports.Case(id=cid, name=cid, outcome=o)  # type: ignore[arg-type]
+    run = testresults.record(svc.store, results=res, kind="verify", repo="o/r", job_id=job.id)
+    job.result.tests = testresults.summary(svc.store, run, job)
+
+
+async def test_the_packet_checks_each_criterions_evidence(svc, gh, settings):
+    settings.public_url = "https://hangar.example"
+    lands(svc, approvers=["alice"])
+    job = _ticket_job(svc, ["uploads retry 3 times", "logs the <b>id</b> | @here [x](https://evil.example)",
+                            "shows a banner", "nobody checked this"])
+    job.result.artifacts = [Artifact(path="shots/banner.png", turn=1, size=1, sha256="0", media_type="image/png")]
+    _check_ran(svc, job, **{"tests.test_upload::test_retry": "passed", "tests.test_upload::test_log": "failed"})
+    job.turns = [Turn(kind="initial", run_id="r1", result={"start_here": [], "evidence": [
+        {"criterion": 1, "tests": ["tests/test_upload.py::test_retry"]},  # pytest's spelling of the JUnit id
+        {"criterion": 2, "tests": ["tests/test_upload.py::test_log", "tests/test_upload.py::test_gone"]},
+        {"criterion": 3, "artifact": "shots/banner.png", "command": "make demo"},
+        {"criterion": 9, "tests": ["x"]}, "junk"]})]  # out of range and not an object: ignored
+    body = svc.landing.packet(job)
+    assert "**Acceptance criteria:** 1 of 4 proven by passing tests" in body
+    assert "| 1 | `uploads retry 3 times` | `tests/test_upload.py::test_retry` | proven: the tests passed |" in body
+    row2 = next(ln for ln in body.splitlines() if ln.startswith("| 2 |"))
+    # the ticket's text is inert: inline code, a pipe escaped, no HTML, link or mention renders
+    assert "`logs the <b>id</b> \\| @here [x](https://evil.example)`" in row2
+    assert "unproven: not passed in the check: `tests/test_upload.py::test_log`, `tests/test_upload.py::test_gone`" \
+        in row2
+    assert f"[`shots/banner.png`](https://hangar.example/api/jobs/{job.id}/artifacts/1/shots/banner.png)" in body
+    row3 = next(ln for ln in body.splitlines() if ln.startswith("| 3 |"))
+    assert "`make demo`, [`shots/banner.png`]" in row3 and row3.endswith("| claimed: hangar can't check a command "
+                                                                         "or artifact |")
+    assert "| 4 | `nobody checked this` | - | unproven |" in body
+
+    # no test results to check against: a cited test is unproven, never taken on the agent's word
+    job.result.tests = None
+    assert "| 1 | `uploads retry 3 times` | `tests/test_upload.py::test_retry` | unproven: no test results to " \
+        "check |" in svc.landing.packet(job)
+    # an auto-fix turn with no schema leaves the reported evidence standing
+    job.turns.append(Turn(kind="follow_up", run_id="r2", result=None))
+    assert "**Acceptance criteria:** 0 of 4" in svc.landing.packet(job)
+
+
+async def test_a_job_without_criteria_renders_as_before(svc, gh, settings):
+    lands(svc, approvers=["alice"], diff_budget_lines=None)
+    plain = pr_job(svc, verify="uv run pytest -q")
+    plain.result.verify_exit_code = 0
+    plain.landing.files = ["tests/test_a.py", "src/a.py"]
+    body = svc.landing.packet(plain)
+    assert "Acceptance criteria" not in body and "Start here" not in body and "**Size:**" not in body
+    assert "**Files:** 2: `tests/test_a.py`, `src/a.py`" in body  # path order, as before
+
+
+async def test_start_here_and_the_size_budget(svc, gh, settings):
+    lands(svc, approvers=["alice"], diff_budget_lines=400)
+    job = _ticket_job(svc, ["it works"])
+    job.landing.files = ["README.md", "src/z.py", "tests/test_a.py", "src/a.py", "src/core.py"]
+    job.result.diffstat = " 5 files changed, 380 insertions(+), 41 deletions(-)"
+    job.turns = [Turn(kind="initial", run_id="r1", result={"evidence": [], "start_here": [
+        "./src/core.py", "src/core.py", "evil.py`](x)", "/README.md"]})]
+    body = svc.landing.packet(job)
+    assert "- **Start here:** `src/core.py`, `README.md`, then the rest, tests last (1 named file(s) not in the " \
+        "diff left out)" in body
+    assert "`src/core.py`, `README.md`, `src/a.py`, `src/z.py`, `tests/test_a.py`" in body  # tests last
+    assert "- **Size:** 421 changed lines, over the repo's budget of 400 (`diff_budget_lines`)" in body
+    assert body.index("**Size:**") < body.index("**Files:**")
+    job.result.diffstat = " 5 files changed, 300 insertions(+), 100 deletions(-)"
+    assert "**Size:**" not in svc.landing.packet(job)  # at the budget: no warning
+    assert landing.changed_lines(" 1 file changed, 1 insertion(+)") == 1
+    assert landing.changed_lines(" 1 file changed, 2 deletions(-)") == 2 and landing.changed_lines(None) is None
+    p = policy_update(svc, PolicyUpdate(repo="o/r", diff_budget_lines=800), "ui:admin")
+    assert p.diff_budget_lines == 800
+    with pytest.raises(ValueError):
+        PolicyUpdate(repo="o/r", diff_budget_lines=0)
+
+
 def test_paths_risk_and_codeowners():
     assert landing.risk(["docs/a.md", "tests/test_x.py"], None)[0] == "low"
     assert landing.risk(["src/a.py"], ["infra/**"]) == ("normal", [])
@@ -702,3 +798,56 @@ async def test_the_packet_names_the_model_that_ran_and_its_price(svc, gh, settin
     (_, body), = gh.comments.items()
     assert "model `claude-fable-5-1` (`frontier`; list price $10/$50 per MTok in/out)" in body, body
     assert "no job budget" in body
+
+
+# ====================================================================== KAN-232: outcome labels on pr.merge
+async def test_a_merge_waits_for_its_outcome_labels_then_goes_to_the_outbox(svc, gh, settings):
+    """The pr.merge event carries what the merge kept of the agent's diff, the human commits on the branch and the
+    review rounds; while GitHub can't answer, the event waits instead of going out without them."""
+    from hangar import outbox
+
+    base = "0" * 40
+    agent = {"files": [{"filename": "src/app.py", "additions": 4, "deletions": 1,
+                        "patch": "@@ -1,1 +1,4 @@\n-old\n+a = 1\n+b = 2\n+\n+c = 3"}],
+             "commits": [{"sha": HEAD, "commit": {"author": {"email": "hangar@localhost"}}, "author": None}]}
+    final = {"files": [{"filename": "src/app.py", "patch": "@@ -1,1 +1,3 @@\n-old\n+a = 1\n+c = 4\n+d = 5"}],
+             "commits": [*agent["commits"], {"sha": NEW, "commit": {"author": {"email": "a@x.io"}}, "author": {
+                 "login": "alice", "type": "User"}}, {"sha": "d" * 40, "commit": {"author": {"email": "d@x.io"}},
+                                                      "author": {"login": "dependabot[bot]", "type": "Bot"}}]}
+    gh.head = lambda: NEW  # alice pushed on top of the agent's head
+    gh.reviews = [{"user": {"login": "alice"}, "state": "COMMENTED", "commit_id": HEAD},
+                  {"user": {"login": "alice"}, "state": "CHANGES_REQUESTED", "commit_id": HEAD},
+                  {"user": {"login": "bob"}, "state": "APPROVED", "commit_id": NEW},
+                  {"user": {"login": "hangar-ai[bot]", "type": "Bot"}, "state": "COMMENTED", "commit_id": NEW}]
+    down, gh_call = [True], gh.__call__
+
+    def github(r: httpx.Request) -> httpx.Response:
+        if r.url.path.startswith("/repos/o/r/compare/"):
+            if down[0]:
+                return httpx.Response(502, json={"message": "Server Error"})
+            return httpx.Response(200, json={f"{base}...{HEAD}": agent, f"{base}...{NEW}": final}[
+                r.url.path.rsplit("/", 1)[1]])
+        got = gh_call(r)
+        if r.url.path == "/repos/o/r/pulls/7" and r.method == "GET" and got.status_code == 200:
+            return httpx.Response(200, json={**json.loads(got.content), "merge_commit_sha": "e" * 40})
+        return got
+
+    svc.transport = httpx.MockTransport(github)
+    settings.outbox_url = str(settings.data_dir / "bucket")
+    svc.store.kv_set(outbox.KV_SINCE, "0")
+    o = outbox.Outbox(svc.fleet)
+    o.jobs = svc
+    job = pr_job(svc)
+    job.result.base_sha = base
+    job.landing.pr_state, job.landing.merged_at, job.landing.merged_by = "merged", time.time(), "bob"
+    svc.store.put(job)
+    assert await o.merge_outcomes() == 0 and o.scan_jobs() == 1  # pr.open; pr.merge waits for GitHub
+    down[0] = False
+    assert await o.merge_outcomes() == 1 and o.scan_jobs() == 0
+    await o.drain_once()
+    bucket = Path(settings.outbox_url)
+    ev = next(e for p in bucket.rglob("*.json") if (e := json.loads(p.read_bytes()))["kind"] == "pr.merge")
+    assert ev["data"] == {"by": "bob", "green_to_merge_seconds": None, "agent_head_sha": HEAD, "merged_sha": "e" * 40,
+                          "final_head_sha": NEW, "agent_diff_lines": 5, "agent_added_lines": 3,
+                          "merged_added_lines": 3, "surviving_lines": 1, "survival_at_merge": 0.3333,
+                          "human_commits": 1, "review_rounds": 2}

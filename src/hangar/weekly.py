@@ -181,11 +181,12 @@ def _cost(svc: JobService, job: Job) -> float:
         u = svc.usage(job)
         total += (u.cost_usd or 0.0) if u else 0.0
     review = getattr(job.landing, "ai_review", None)  # --- #161: its independent review job's spend
-    rid = review.get("job") if isinstance(review, dict) else None
-    if rid and (rj := svc.store.get(Job, rid)) is not None:
-        with contextlib.suppress(Exception):
-            u = svc.usage(rj)
-            total += (u.cost_usd or 0.0) if u else 0.0
+    for key in ("job", "confirm_job"):  # --- KAN-230: and the pass that checked its findings
+        rid = review.get(key) if isinstance(review, dict) else None
+        if rid and (rj := svc.store.get(Job, rid)) is not None:
+            with contextlib.suppress(Exception):
+                u = svc.usage(rj)
+                total += (u.cost_usd or 0.0) if u else 0.0
     return total
 
 
