@@ -42,6 +42,7 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
+          "diff_budget_lines",  # --- KAN-229: the review packet's size warning
           "require_stale_dismissal",  # --- trust
           "verify_reports", "rerun_flaky",  # --- testresults
           "heavy", "profile", "max_profile",  # --- heavy
@@ -113,7 +114,7 @@ class BestOfNPolicy(BaseModel):
     """--- KAN-231: this repo's best-of-N jobs (strategies.py). `sequential`: attempt 1 runs alone and the others
     start only if it falls short (a job's own `sequential` comes first). `escalate_at`: the fraction of the job
     budget attempt 1 may use before the others start. `max_n`: the most attempts per risk tier (the job's
-    `hangar.risk` label, which a ticket's "Touches risk paths?" answer sets); a job that names no `n` gets it."""
+    `hangar.risk` label, which only its submitter sets, never ticket text); a job that names no `n` gets it."""
 
     model_config = ConfigDict(extra="forbid")
     sequential: bool | None = None
@@ -156,6 +157,8 @@ class RepoPolicy(BaseModel):
     approvers: list[str] | None = Field(None, max_length=100)
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = Field(None, max_length=100)
+    # --- KAN-229: changed lines (insertions plus deletions) above which the review packet warns that the PR is big
+    diff_budget_lines: int | None = Field(None, ge=1, le=1_000_000)
     # --- trust: auto-merge is armed only on a base branch that dismisses stale approvals on a push (landing.py);
     # false opts the repo out of that check. None: required.
     require_stale_dismissal: bool | None = None
@@ -429,6 +432,7 @@ class PolicyUpdate(BaseModel):
     approvers: list[str] | None = None
     merge_method: Literal["squash", "merge", "rebase"] | None = None
     risk_paths: list[str] | None = None
+    diff_budget_lines: int | None = Field(None, ge=1, le=1_000_000)  # --- KAN-229
     require_stale_dismissal: bool | None = None  # --- trust
     verify_reports: list[str] | None = None  # --- testresults
     rerun_flaky: bool | None = None

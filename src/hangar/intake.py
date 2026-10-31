@@ -24,11 +24,15 @@ jira.py, ghprojects.py). What they have in common lives here, so a new tracker o
   the job: the count as the `intake.acceptance` label, the criteria as an untrusted `acceptance.md` (anyone with Edit
   Issues can rewrite them), and the command only as a suggestion inside that fence. It becomes the job's `verify` only
   when the repo policy's `verify_allowed` globs match it: the trusted gate stays the policy's or the environment's.
+  A job with criteria and no output schema of its own asks for EVIDENCE_SCHEMA (KAN-229): per criterion, the tests,
+  command or artifact that shows it, and the files a reviewer should read first. The review packet (landing.py)
+  checks the cited tests against the job's test results and reads the criteria back with `criteria`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import fnmatch
 import logging
 import re
@@ -295,20 +299,56 @@ def parse_ticket(text: str | None) -> dict[str, Any]:
     return {"acceptance": acceptance, "verify": verify}
 
 
-def ticket_risk(text: str | None) -> str | None:
-    """--- KAN-231: the ticket's answer under *Touches risk paths?*: "high" for yes, "normal" for no, else None. It
-    only caps a best-of-N job's attempts (the repo policy's `best_of_n.max_n`); landing judges risk by the files."""
-    want = False
-    for line in (text or "")[:TICKET_MAX].replace("\r\n", "\n").split("\n"):
-        heading, known = _section(line)
-        if heading:
-            want = known == "risk"
-            continue
-        if want and (v := _norm(line).strip("`[] ")):
-            if v in _NO_RESPONSE:
-                return None
-            return "high" if v.startswith("y") else "normal" if v.startswith("n") else None
-    return None
+# --- KAN-229: what a ticket job's agent reports, for the review packet's evidence table and reading order
+START_HERE_MAX = 3
+EVIDENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["evidence", "start_here"],
+    "properties": {
+        "evidence": {
+            "type": "array", "maxItems": MAX_CRITERIA,
+            "description": "One entry per acceptance criterion in acceptance.md: what shows it is met. Leave out "
+                           "what you have no evidence for; the review packet marks it unproven.",
+            "items": {
+                "type": "object", "required": ["criterion"],
+                "properties": {
+                    "criterion": {"type": "integer", "minimum": 1, "maximum": MAX_CRITERIA,
+                                  "description": "The criterion's position in acceptance.md, from 1"},
+                    "tests": {"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 300},
+                              "description": "Test ids that pass and prove it (tests/test_x.py::test_y); hangar "
+                                             "checks each against the verify command's test results"},
+                    "command": {"type": "string", "maxLength": 500, "description": "A command that shows it"},
+                    "artifact": {"type": "string", "maxLength": 300,
+                                 "description": "The path of an artifact you handed back that shows it"},
+                },
+            },
+        },
+        "start_here": {
+            "type": "array", "maxItems": START_HERE_MAX, "items": {"type": "string", "maxLength": 300},
+            "description": "The 1 to 3 changed files, repo-relative, that explain the change: a reviewer reads "
+                           "them first",
+        },
+    },
+}
+
+
+def criteria(job: Job) -> list[str]:
+    """--- KAN-229: the acceptance criteria `apply_ticket` gave the job, read back from its acceptance.md (untrusted
+    text: whoever can edit the ticket wrote it). Empty for a job without criteria."""
+    try:
+        n = int(job.labels.get(ACCEPTANCE) or 0)
+    except ValueError:
+        return []
+    item = next((c for c in job.context if c.name == "acceptance.md" and c.kind == "text"), None)
+    if n <= 0 or item is None or not item.content:
+        return []
+    out: list[str] = []
+    for line in item.content.split("\n"):
+        if line.startswith("## "):
+            break
+        if line.startswith("- [ ] "):
+            out.append(line[6:])
+    return out[:min(n, MAX_CRITERIA)]
 
 
 def verify_allowed(svc: JobService, repo: str | None, command: str | None) -> bool:
@@ -326,12 +366,9 @@ def apply_ticket(svc: JobService, req: SubmitJob, text: str | None, ticket: str)
     `acceptance.md` with the criteria and the suggested check, and `verify` when `verify_allowed` matches. Returns
     parse_ticket's answer with `verify_used`."""
     from hangar.models import ContextItem
-    from hangar.strategies import RISK_LABEL  # --- KAN-231
 
     got = parse_ticket(text)
     req.labels = {**req.labels, ACCEPTANCE: str(len(got["acceptance"]))}
-    if RISK_LABEL not in req.labels and (tier := ticket_risk(text)):
-        req.labels[RISK_LABEL] = tier
     used = req.verify is None and verify_allowed(svc, req.repo, got["verify"])
     if used:
         req.verify = got["verify"]
@@ -347,6 +384,8 @@ def apply_ticket(svc: JobService, req: SubmitJob, text: str | None, ticket: str)
                           "Run it in your turn if it makes sense; hangar's own check is the repo's, not this one.")]
         req.context = [*req.context, ContextItem(name="acceptance.md", kind="text", untrusted=True,
                                                  content="\n".join(parts))]
+    if got["acceptance"] and req.output_schema is None:  # --- KAN-229: evidence per criterion, a reading order
+        req.output_schema = copy.deepcopy(EVIDENCE_SCHEMA)
     return {**got, "verify_used": used}
 
 

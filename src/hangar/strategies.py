@@ -238,8 +238,9 @@ async def _fork(svc: SessionService, parent: Session, n: int, requester: str, *,
 
 # ====================================================================== best-of-N jobs
 def risk_tier(labels: dict[str, str]) -> str | None:
-    """--- KAN-231: the job's risk tier (low, normal, high), from its `hangar.risk` label: the submitter's, or the
-    ticket's "Touches risk paths?" answer (intake.apply_ticket). None: not stated."""
+    """--- KAN-231: the job's risk tier (low, normal, high), from its `hangar.risk` label, which only the submitter
+    sets (an API caller, or a trigger's labels as its admin wrote them). Ticket text never sets it: a ticket's answer
+    is untrusted and would pick the policy's cap. None: not stated."""
     tier = (labels.get(RISK_LABEL) or "").strip().lower()
     return tier if tier in ("low", "normal", "high") else None
 
@@ -269,6 +270,19 @@ def check_submit(req: SubmitJob, max_n: int, policy: RepoPolicy | None = None) -
     if not 2 <= n <= max_n:
         raise JobError(f"best_of_n needs n between 2 and {max_n} (HANGAR_BEST_OF_N_MAX)")
     return n
+
+
+def cap_note(req: SubmitJob, n: int, max_n: int, policy: RepoPolicy | None) -> str | None:
+    """--- KAN-231: the event when the repo policy's `best_of_n.max_n` set a default N other than the usual one, or
+    cut the job's own `n`. None: it changed nothing."""
+    if req.strategy != "best_of_n" or (capped := tier_cap(req, policy)) is None:
+        return None
+    tier, cap = capped
+    if req.n is None and n != min(3, max_n):
+        return f"risk {tier}: the repo policy's best_of_n.max_n runs {n} attempts, not the default {min(3, max_n)}"
+    if req.n is not None and n < req.n:
+        return f"risk {tier}: the repo policy's best_of_n.max_n ({cap}) cut n from {req.n} to {n}"
+    return None
 
 
 def sequential_for(req: SubmitJob, policy: RepoPolicy | None) -> SequentialRun | None:
@@ -430,10 +444,10 @@ async def _run_sequential(jobs: JobService, job: Job, sessions: dict[int, Sessio
 
 
 def escalation(jobs: JobService, job: Job, a: Attempt) -> str | None:
-    """--- KAN-231: why attempt 1 of a sequential best-of-N falls short and the others must start, or None. (An
-    attempt that asked a question isn't short: the job waits for the answer, as a parallel one does.)"""
+    """--- KAN-231: why attempt 1 of a sequential best-of-N falls short and the others must start, or None. An
+    attempt that asked a question instead of finishing falls short: it met no bar; the others may not need to ask."""
     if a.outcome == "needs_input":
-        return None
+        return "asked a question instead of finishing"
     if a.outcome == "over_budget":
         return "went over its share of the budget"
     if a.outcome not in ("exited", "timed_out"):

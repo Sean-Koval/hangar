@@ -307,6 +307,7 @@ case "$mode:$a" in
   followup:0) grep -q "also do Y" "$HANGAR_PROMPT_FILE" && echo y > y.txt && git add y.txt && git commit -qm "y"
      echo "did Y" > "$HANGAR_JOB_DIR/RESULT.md"; exit 0 ;;
   first:1) echo good > fix.txt && git add fix.txt && git commit -qm "attempt 1: right" ;;
+  ask:1) mkdir -p "$HANGAR_IO/out" && echo "which file?" > "$HANGAR_IO/out/QUESTION.md"; exit 0 ;;
   *:1) echo bad > fix.txt && git add fix.txt && git commit -qm "attempt 1: wrong" ;;
   *:2) for i in $(seq 1 20); do echo "good $i" >> fix.txt; done; git add fix.txt && git commit -qm "attempt 2: big" ;;
   tamper:3) echo "exit 0" > tests/check.sh; echo bad > fix.txt; git add -A && git commit -qm "attempt 3: tests" ;;
@@ -552,6 +553,19 @@ async def test_sequential_best_of_n_falls_through_to_n(jobs, world, fleet):
     assert "Sequential best of 3: 3 of 3 attempts ran: attempt 1 failed verify (exit 1)" in jobs._pr_body(job)
 
 
+async def test_sequential_attempt_1_asking_a_question_falls_short(jobs, world, fleet):
+    world["mode"].write_text("ask")  # attempt 1 asks a question instead of finishing
+    job = jobs.submit(bon(world, sequential=True), Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE, timeout=60)
+    await _idle(jobs, job)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    a1, a2, a3 = job.attempts
+    assert a1.outcome == "needs_input" and a2.run_id and a3.run_id and a3.rank == 1
+    assert job.sequential.escalated
+    assert job.sequential.why == "attempt 1 asked a question instead of finishing: attempts 2..3 started"
+    assert "met" not in job.sequential.why and "passed" not in job.sequential.why
+
+
 async def test_sequential_best_of_n_restart_keeps_its_phase(jobs, world, fleet):
     world["mode"].write_text("slow")  # attempt 1 takes 1.5 s, then fails verify
     job = jobs.submit(bon(world, sequential=True), Caller("svc", "svc"))
@@ -590,15 +604,23 @@ async def test_parallel_stays_the_default(jobs, world):
     j = jobs.submit(bon(world, n=None, labels={"hangar.risk": "low"}), Caller("svc", "svc"))
     assert j.n == 2 and j.sequential is not None and j.sequential.escalate_at == 0.4
     assert any("(sequential best of 2, at most 2 for risk low)" in e.message for e in j.events)
+    assert "risk low: the repo policy's best_of_n.max_n runs 2 attempts, not the default 3" in [
+        e.message for e in j.events]
     jobs.cancel(j.id, requester="svc")
     j = jobs.submit(bon(world, n=None, labels={"hangar.risk": "high"}), Caller("svc", "svc"))
     assert j.n == 4
+    assert "risk high: the repo policy's best_of_n.max_n runs 4 attempts, not the default 3" in [
+        e.message for e in j.events]
     jobs.cancel(j.id, requester="svc")
     j = jobs.submit(bon(world, n=3, labels={"hangar.risk": "low"}, sequential=False), Caller("svc", "svc"))
     assert j.n == 2 and j.sequential is None
+    assert "risk low: the repo policy's best_of_n.max_n (2) cut n from 3 to 2" in [e.message for e in j.events]
     jobs.cancel(j.id, requester="svc")
-    j = jobs.submit(bon(world, n=None), Caller("svc", "svc"))  # no tier: the usual default
-    assert j.n == 3
+    j = jobs.submit(bon(world, n=2, labels={"hangar.risk": "high"}), Caller("svc", "svc"))  # under the cap
+    assert j.n == 2 and not any("best_of_n.max_n" in e.message for e in j.events)
+    jobs.cancel(j.id, requester="svc")
+    j = jobs.submit(bon(world, n=None), Caller("svc", "svc"))  # no tier: the usual default, and no event
+    assert j.n == 3 and not any("best_of_n.max_n" in e.message for e in j.events)
     jobs.cancel(j.id, requester="svc")
     with pytest.raises(ValueError, match="2 to 8"):
         BestOfNPolicy(max_n={"low": 1})
@@ -630,7 +652,8 @@ def test_sequential_budget_accounting(monkeypatch):
     assert strategies.escalation(None, job, a.model_copy(update={"outcome": "over_budget"})) == \
         "went over its share of the budget"
     assert strategies.escalation(None, job, a.model_copy(update={"files": []})) == "changed nothing"
-    assert strategies.escalation(None, job, a.model_copy(update={"outcome": "needs_input"})) is None
+    assert strategies.escalation(None, job, a.model_copy(update={"outcome": "needs_input"})) == \
+        "asked a question instead of finishing"
     assert strategies.escalation(None, job, a.model_copy(update={"touched_tests": ["tests/t.py"]})).startswith(
         "changed the verify's tests")
     # no job budget: each attempt keeps the turn budget, and there is no fraction to cross
@@ -639,24 +662,23 @@ def test_sequential_budget_accounting(monkeypatch):
     assert jobbudget.used_fraction(None, job) is None
 
 
-def test_ticket_risk_sets_the_risk_label():
+async def test_ticket_text_never_picks_the_risk_cap(jobs, world):
+    """A ticket's *Touches risk paths?* answer is untrusted text: it sets no risk tier, so it can't pick the
+    repo policy's `best_of_n.max_n` cap. Only the submitter's own `hangar.risk` label does."""
     from hangar import intake
-    from hangar.jobs import SubmitJob as Req
+    from hangar.repopolicy import BestOfNPolicy, RepoPolicy, repo_key
 
-    assert intake.ticket_risk("## Touches risk paths? (y/n)\n\ny: infra/\n") == "high"
-    assert intake.ticket_risk("## Touches risk paths?\n\nNo\n") == "normal"
-    assert intake.ticket_risk("## Touches risk paths?\n\n_No response_\n") is None
-    assert intake.ticket_risk("## Goal\n\nyes\n") is None
-
-    class Svc:
-        policies = type("P", (), {"get": staticmethod(lambda repo: None)})()
-
-    req = Req(instructions="x", repo="acme/app")
-    intake.apply_ticket(Svc(), req, "## Touches risk paths?\n\ny\n", "KAN-1")
-    assert req.labels["hangar.risk"] == "high"
-    req = Req(instructions="x", repo="acme/app", labels={"hangar.risk": "low"})  # the submitter's label stands
-    intake.apply_ticket(Svc(), req, "## Touches risk paths?\n\ny\n", "KAN-1")
-    assert req.labels["hangar.risk"] == "low"
+    jobs.policies.put(RepoPolicy(repo=repo_key(world["url"]), best_of_n=BestOfNPolicy(max_n={"high": 5, "normal": 2})))
+    for answer in ("y: infra/", "No"):
+        req = bon(world, n=None)
+        intake.apply_ticket(jobs, req, f"## Goal\n\nfix it\n\n## Touches risk paths? (y/n)\n\n{answer}\n", "KAN-1")
+        assert "hangar.risk" not in req.labels
+        j = jobs.submit(req, Caller("svc", "svc"))
+        assert j.n == 3 and not any("best_of_n.max_n" in e.message for e in j.events)
+        jobs.cancel(j.id, requester="svc")
+    req = bon(world, n=None, labels={"hangar.risk": "normal"})  # the submitter's label stands
+    intake.apply_ticket(jobs, req, "## Touches risk paths?\n\ny\n", "KAN-1")
+    assert req.labels["hangar.risk"] == "normal" and jobs.submit(req, Caller("svc", "svc")).n == 2
 
 
 # ---------------------------------------------------------------------------- surfaces

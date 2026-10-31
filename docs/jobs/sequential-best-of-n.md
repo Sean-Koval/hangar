@@ -32,9 +32,10 @@ Attempt 1 falls short, and the others start, when it:
 - doesn't finish: it timed out, its sandbox went away, or its agent failed;
 - changes nothing;
 - changes the verify command's own tests (`touched_tests`);
+- asks a question instead of finishing;
 - goes over its share of the budget, or uses more than `escalate_at` of the job budget.
 
-An attempt 1 that asks a question doesn't start the others. The job waits for the answer, as a parallel one does.
+An attempt 1 that asked a question met no bar, so the others start. If none of them finishes, the job waits for the answer to attempt 1's question, as a parallel one does.
 
 When attempt 1 passes, it is delivered and attempts 2..N never start. Their forked sessions are archived, and no sandbox was booted for them.
 
@@ -54,9 +55,9 @@ Each turn's own `budget` still caps every attempt. A share is fixed when its att
 
 The policy's `max_n` caps N by the job's risk tier: `low`, `normal` or `high`. The tier is the job's `hangar.risk` label.
 
-The submitter can set that label. A ticket sets it from its *Touches risk paths?* answer ([agent tickets](../intake.md#agent-tickets)): yes is `high`, no is `normal`. A submitter's own label comes first.
+Only the submitter sets that label: an API caller, or a trigger's labels as its admin wrote them. Ticket text never sets it. A ticket's *Touches risk paths?* answer ([agent tickets](../intake.md#agent-tickets)) is untrusted, so it can't pick the cap.
 
-A job that names no `n` gets its tier's number. A larger `n` is cut to it. A job with no tier gets the usual default of 3.
+A job that names no `n` gets its tier's number. A larger `n` is cut to it. Either change adds an event that names the tier and the cap. A job with no tier gets the usual default of 3.
 
 The tier caps attempts only. Landing still judges a PR's risk by its files.
 
