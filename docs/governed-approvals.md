@@ -46,6 +46,10 @@ A missing `HANGAR_GOVERNANCE_URL` or credential counts as unreachable. In `shado
 
 In `enforce`, a person who allows a flagged call or a request in hangar signs Tower's approval. Tower judges the signature: it may allow, ask for more signers, or refuse, for example your own work. hangar shows its reason. `allow_always` is refused, because Tower decides each call once. A deny always goes through, and hangar withdraws Tower's approval.
 
+## With the Tower hook
+
+An environment can require [the Tower hook](governance-hook.md) instead. Tower then sees every call through the hook, and the driver keeps only hangar's `deny-risky` rules. A turn uses one path, never both.
+
 ## On GKE
 
-`HANGAR_UID_SPLIT=required` refuses a `governed` turn wherever the driver can't run as a user of its own, as it refuses `ask`. Tower deciding doesn't stop an agent that shares the driver's user from forging the driver's answer. Until [the driver sidecar](security/driver-sidecar.md) is wired, that means GKE.
+`HANGAR_UID_SPLIT=required` refuses a `governed` turn wherever the driver can't run as a user of its own, as it refuses `ask`. Tower deciding doesn't stop an agent that shares the driver's user from forging the driver's answer. On GKE that means every pod until [the driver sidecar](security/driver-sidecar.md) is turned on there.

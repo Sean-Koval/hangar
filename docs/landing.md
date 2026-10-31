@@ -191,7 +191,7 @@ To use the **App's webhook** instead of per-repo hooks, point it at `https://<ha
 
 ## 6. The review packet
 
-hangar writes one comment on each agent PR when it delivers, and edits it on every later push, rather than posting again. It is built from the job record, so it works for any repo without a CI job:
+hangar writes one comment on each agent PR when it delivers, and edits it on every later push. Built from the job record, it works for any repo without a CI job:
 
 - **Verification**: the command and its result, "base was red" when the [check on the base](repo-policy.md#the-check-on-the-base-commit) failed, and whether the agent changed the check's own tests;
 - **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, or when the PR removes or changes a line of an existing ADR's `checks:` block ([above](#agent-drafted-adrs)), `low` for docs and tests only, `normal` otherwise;
@@ -200,11 +200,19 @@ hangar writes one comment on each agent PR when it delivers, and edits it on eve
 - **Agent**: harness and the version its pack installed, model, environment, and the harness it ran with: the short
   `harness_digest` (`sha256:abcd1234…`, linking to `/api/jobs/{id}/manifest`) and the lock it was thawed from, if any
   (each distinct digest with its turns when they differed);
-- **Session**: its name, and how to pull it locally or continue it (`/hangar <message>`);
-- **Recorded demos**: links to video and GIF artifacts the agent handed back;
-- **AI review**: the verdict, who reviewed (harness and model, or the bot's check), the head it reviewed, the number of findings and a link to the review; "pending" until it is in (a PR delivered during a power-down is reviewed after power-up);
+- **Session**: its name, and how to pull or continue it (`/hangar <message>`);
+- **Recorded demos**: links to the video and GIF artifacts it handed back;
+- **AI review**: the verdict, who reviewed (harness and model, or the bot's check), the head it reviewed, the number of findings and a link; "pending" until it is in (a PR delivered during a power-down is reviewed after power-up);
 - **Landing rule**: who may land it, and why (a second reviewer, or the requester alone for a low-risk PR with an independent AI review; a tainted PR always needs someone other than its person);
 - **Landing**: who can land it and how.
+
+Ticket jobs also ask the agent for `evidence` and `start_here`:
+
+| Line | What it shows |
+| --- | --- |
+| **Acceptance criteria** | One row per criterion of the ticket, with the evidence the agent cites: tests, a command or an artifact. A cited test counts only when it passed in hangar's own run of the check; otherwise the row says "unproven". A command or artifact alone is "claimed". All of it shows as inline code, never as Markdown. |
+| **Start here** | At most 3 files the agent names, checked against the diff. The Files line then lists the rest, tests last. |
+| **Size** | For any job: a warning when the changed lines pass the repo policy's `diff_budget_lines`. |
 
 ## 6a. AI first-pass review
 

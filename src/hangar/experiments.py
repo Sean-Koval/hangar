@@ -1679,6 +1679,9 @@ async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSp
             ran = await _run_shared(jobs, prov, sb, g, repo, env_vars, path, f"experiment:{job.id}")
         grade["trust"] = trust_of(split, g.files_mode, grade["runner"])
         grade["isolation"] = "split" if split else (sb.info.get("isolation") or {}).get("why") or "shared"
+        if not split and isolation.sidecar_wanted(prov, fleet.settings):  # --- KAN-186: turns only, not graders
+            grade["isolation"] = ("the driver sidecar doesn't run graders yet (KAN-188): graded as the sandbox's "
+                                  "user")
         exit_code, tail, raw, junit = ran
         grade["exit_code"] = exit_code
         grade["tail"] = jobs.broker.redact(tail[-TAIL:])

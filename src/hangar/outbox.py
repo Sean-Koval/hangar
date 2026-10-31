@@ -80,6 +80,14 @@ DIFF_FILES = 1000
 KV_SCAN = "outbox:jobs-scanned-at"
 KV_EVENT = "outbox:job-event:"  # + <job id>:<kind>[:<when>] -> the object key
 KV_SINCE = "outbox:enabled-at"
+# --- KAN-232: a merged PR's outcome labels, read from GitHub before its pr.merge event goes out (merge_outcome)
+KV_OUTCOME = "outbox:merge-outcome:"  # + <job id> -> the fields pr.merge's data gains
+KV_OUTCOME_WAIT = "outbox:merge-outcome-wait:"  # + <job id> -> {merged_at, attempts, next_at}: pr.merge waits
+OUTCOME_WAIT = 6 * 3600.0  # past this, pr.merge goes out with `outcome_error` instead
+OUTCOME_TIMEOUT = 120.0  # one job's reads from GitHub, at most
+OUTCOME_JOBS = 20  # merges asked about per pass; the rest wait for the next
+BOT_EMAILS = ("hangar@localhost",)  # the identity hangar commits as when the sandbox has no GitHub user
+COMPARE_FILES, PR_FILES = 300, 3000  # GitHub's caps on a compare's and a PR's file list
 PENDING_DELETE = "pending-delete"
 TYPES = {".json": "application/json", ".diff": "text/x-diff"}
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -205,6 +213,7 @@ class Outbox:
         self._capturing: set[str] = set()  # run keys being built: not exported yet
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.Task | None = None
+        self._outcomes: asyncio.Task | None = None  # --- KAN-232: merge_outcomes, off the drain loop
         self._wake: asyncio.Event | None = None
         self._wake_loop: asyncio.AbstractEventLoop | None = None
 
@@ -227,12 +236,14 @@ class Outbox:
         RETAIN = self.retain_test_run
         if self._loop is None or self._loop.done():
             self._loop = asyncio.create_task(self._run())
+        if self._outcomes is None or self._outcomes.done():
+            self._outcomes = asyncio.create_task(self._outcomes_run())
 
     async def stop(self) -> None:
         global RETAIN
         if RETAIN == self.retain_test_run:
             RETAIN = None
-        tasks = [*self._tasks, *self._patches.values(), *([self._loop] if self._loop else [])]
+        tasks = [*self._tasks, *self._patches.values(), *(t for t in (self._loop, self._outcomes) if t)]
         for t in tasks:
             t.cancel()
         for t in tasks:
@@ -240,7 +251,7 @@ class Outbox:
                 await t
         self._tasks.clear()
         self._patches.clear()
-        self._loop = None
+        self._loop = self._outcomes = None
         if self.sink is not None:
             with contextlib.suppress(Exception):
                 await self.sink.close()
@@ -706,7 +717,8 @@ class Outbox:
                         "review.first"))
         if land.merged_at:
             out.append(("pr.merge", land.merged_at, {"by": land.merged_by,
-                                                     "green_to_merge_seconds": land.green_to_merge_seconds},
+                                                     "green_to_merge_seconds": land.green_to_merge_seconds,
+                                                     **(self.store.kv_get_json(KV_OUTCOME + job.id) or {})},
                         "pr.merge"))
         if land.pr_state == "closed" and land.closed_at:
             out.append(("pr.close", land.closed_at, {}, f"pr.close:{int(land.closed_at)}"))
@@ -726,10 +738,84 @@ class Outbox:
         n = 0
         for job in self.store.list_where(Job, updated_at=Ge(since - 120)):
             for kind, ts, data, once in self.lifecycle(job):
+                if kind == "pr.merge" and self._outcome_pending(job):  # --- KAN-232: merge_outcomes sends it
+                    continue
                 if self.job_event(job, kind, ts, data, once=once):
                     n += 1
         self.store.kv_set(KV_SCAN, str(t))
         return n
+
+    def _outcome_pending(self, job: Job) -> bool:
+        """--- KAN-232: whether pr.merge must wait for its outcome labels; if so, the merge joins the wait. Only
+        a job with labels stored (or an error in their place) sends pr.merge, whichever pass sees it first."""
+        if (self.jobs is None or not job.result.pr_number or self.store.kv_get(KV_OUTCOME + job.id) is not None
+                or self.store.kv_get(f"{KV_EVENT}{job.id}:pr.merge") is not None):
+            return False
+        if self.store.kv_get(KV_OUTCOME_WAIT + job.id) is None:
+            self.store.kv_set_json(KV_OUTCOME_WAIT + job.id, {"merged_at": job.landing.merged_at or now(),
+                                                              "attempts": 0, "next_at": 0})
+        return True
+
+    async def merge_outcomes(self) -> int:
+        """--- KAN-232: the outcome labels of the merges scan_jobs left waiting (merge_outcome), as the GitHub App
+        when hangar has one, then each one's pr.merge event. A merge GitHub can't answer for is asked again with
+        backoff until OUTCOME_WAIT passes; then it goes with `outcome_error`. Returns the pr.merge events sent."""
+        from hangar.github import parse_repo
+        from hangar.models import Job
+
+        if not self.enabled or self.jobs is None:
+            return 0
+        if (old := self.store.kv_get_json(KV_OUTCOME_WAIT.rstrip(":"))) is not None:  # #412's one-key form
+            for jid, merged_at in old.items():
+                self.store.kv_set_json(KV_OUTCOME_WAIT + jid, {"merged_at": merged_at, "attempts": 0, "next_at": 0})
+            self.store.kv_delete(KV_OUTCOME_WAIT.rstrip(":"))
+        n, t = 0, now()
+        due = []
+        for key in self.store.kv_keys(KV_OUTCOME_WAIT):
+            w = self.store.kv_get_json(key) or {}
+            if float(w.get("next_at") or 0) <= t:
+                due.append((key[len(KV_OUTCOME_WAIT):], w))
+        for jid, w in sorted(due, key=lambda x: float(x[1].get("next_at") or 0))[:OUTCOME_JOBS]:
+            job = self.store.get(Job, jid)
+            if job is None:
+                self.store.kv_delete(KV_OUTCOME_WAIT + jid)
+                continue
+            if self.store.kv_get(KV_OUTCOME + jid) is None:
+                gh = await self.jobs.landing.client(parse_repo(job.repo))
+                try:
+                    got = await asyncio.wait_for(merge_outcome(gh, job), OUTCOME_TIMEOUT) if gh else \
+                        {"outcome_error": "no GitHub App or token credential"}
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - asked again with backoff, until OUTCOME_WAIT
+                    end = float(w.get("merged_at") or t) + OUTCOME_WAIT
+                    if now() < end:
+                        w["attempts"] = int(w.get("attempts") or 0) + 1
+                        w["next_at"], w["error"] = min(now() + backoff(w["attempts"]), end), str(e)[:300]
+                        self.store.kv_set_json(KV_OUTCOME_WAIT + jid, w)
+                        continue
+                    got = {"outcome_error": str(e)[:300] or type(e).__name__}
+                finally:
+                    if gh is not None:
+                        with contextlib.suppress(Exception):
+                            await gh.close()
+                self.store.kv_set_json(KV_OUTCOME + jid, got)
+            self.store.kv_delete(KV_OUTCOME_WAIT + jid)
+            for kind, ts, data, once in self.lifecycle(job):
+                if kind == "pr.merge" and self.job_event(job, kind, ts, data, once=once):
+                    n += 1
+        return n
+
+    async def _outcomes_run(self) -> None:
+        """--- KAN-232: merge_outcomes each SCAN_EVERY, in its own task: a slow GitHub never holds up uploads."""
+        while True:
+            try:
+                await self.merge_outcomes()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - next time round
+                log.exception("outbox merge outcomes failed")
+            await asyncio.sleep(SCAN_EVERY)
 
     # ------------------------------------------------------------------ draining
     async def drain_once(self) -> dict[str, int]:
@@ -967,6 +1053,82 @@ def failure(job: Job) -> bool:
 
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
+
+
+async def _pages(gh: Any, path: str, cap: int) -> list[dict[str, Any]]:
+    """Every item of a GitHub list, 100 a page, up to `cap` (GitHub's own cap on that list)."""
+    out: list[dict[str, Any]] = []
+    for page in range(1, cap // 100 + 2):
+        got = await gh._req("GET", path, params={"per_page": 100, "page": page}) or []
+        out += got
+        if len(got) < 100 or len(out) >= cap:
+            break
+    return out
+
+
+async def merge_outcome(gh: Any, job: Job) -> dict[str, Any]:
+    """--- KAN-232 (docs/api/outcome-labels.md): a merged PR's outcome labels. The agent's diff is base...the head
+    hangar last pushed (`agent_head_sha`); the merged diff is the PR's own files at merge, from its merge base, so
+    what an update from the base branch brings in isn't counted. An added line survives when the merged diff adds
+    the same (file, stripped text); blank lines don't count. hangar's commits are the ones it delivered (under the
+    agent head, matched by sha, or by author date and message after a rebase), whatever account pushed them. A
+    human commit is any other PR commit, but a merge commit or a bot's. A review round is a head commit that got
+    a human review. `outcome_truncated` names each list that hit GitHub's cap, so its counts are a floor."""
+    from collections import Counter
+    from urllib.parse import quote
+
+    from hangar import reviewtrust
+    from hangar.github import parse_repo
+
+    repo, r = parse_repo(job.repo), job.result
+    if not (repo and r.base_sha and r.head_sha and r.pr_number):
+        return {"outcome_error": "no repo, base, agent head or PR number recorded"}
+    pr = await gh._req("GET", f"/repos/{repo}/pulls/{r.pr_number}")
+    final = str((pr.get("head") or {}).get("sha") or r.head_sha)
+    cmp_path = f"/repos/{repo}/compare/{quote(r.base_sha, safe='')}...{quote(r.head_sha, safe='')}"
+    mine = await gh._req("GET", cmp_path, params={"per_page": 100, "page": 1})
+    mine_commits = list(mine.get("commits") or [])
+    total = int(mine.get("total_commits") or len(mine_commits))
+    for page in range(2, 11):  # a compare's commits page too (its files don't), up to 1000 here
+        if len(mine_commits) >= total:
+            break
+        if not (more := (await gh._req("GET", cmp_path, params={"per_page": 100, "page": page})).get("commits")):
+            break
+        mine_commits += more
+    files = await _pages(gh, f"/repos/{repo}/pulls/{r.pr_number}/files", PR_FILES)
+    commits = await _pages(gh, f"/repos/{repo}/pulls/{r.pr_number}/commits", 250)
+    reviews = await _pages(gh, f"/repos/{repo}/pulls/{r.pr_number}/reviews", 3000)
+
+    def added(fs: list[dict[str, Any]]) -> Counter:
+        return Counter((f.get("filename"), ln[1:].strip()) for f in fs
+                       for ln in (f.get("patch") or "").splitlines() if ln.startswith("+") and ln[1:].strip())
+
+    def stamp(c: dict[str, Any]) -> tuple[str, str]:  # what a rebase keeps of a commit
+        m = c.get("commit") or {}
+        return str((m.get("author") or {}).get("date") or ""), str(m.get("message") or "").strip()
+
+    shas, stamps = {c.get("sha") for c in mine_commits} | {r.head_sha}, {stamp(c) for c in mine_commits}
+
+    def human(c: dict[str, Any]) -> bool:
+        email = str(((c.get("commit") or {}).get("author") or {}).get("email") or "").lower()
+        return not (c.get("sha") in shas or (stamp(c)[0] and stamp(c) in stamps) or len(c.get("parents") or []) > 1
+                    or email in BOT_EMAILS or reviewtrust.is_bot(c.get("author") or {}))
+
+    mine_files = mine.get("files") or []
+    ours, kept = added(mine_files), added(files)
+    n, survived = sum(ours.values()), sum((ours & kept).values())
+    truncated = [name for name, short in (
+        ("agent_files", len(mine_files) >= COMPARE_FILES), ("agent_commits", len(mine_commits) < total),
+        ("merged_files", len(files) < int(pr.get("changed_files") or 0) or len(files) >= PR_FILES),
+        ("merged_commits", len(commits) < int(pr.get("commits") or 0))) if short]
+    return {"agent_head_sha": r.head_sha, "merged_sha": pr.get("merge_commit_sha"), "final_head_sha": final,
+            "agent_diff_lines": sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0) for f in mine_files),
+            "agent_added_lines": n, "merged_added_lines": sum(kept.values()), "surviving_lines": survived,
+            "survival_at_merge": round(survived / n, 4) if n else None,
+            "human_commits": sum(map(human, commits)),
+            "review_rounds": len({x.get("commit_id") for x in reviews if str(x.get("state")).upper() != "PENDING"
+                                  and not reviewtrust.is_bot(x.get("user") or {})}),
+            "outcome_truncated": truncated}
 
 
 def backoff(attempts: int) -> float:

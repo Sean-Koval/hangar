@@ -163,7 +163,7 @@ class SubmitJob(BaseModel):
     # --- overnight/autofix: the check inside the agent's turn, and the PR auto-fix loop (docs/jobs/agent-loop.md)
     verify_in_loop: bool | None = None  # default HANGAR_VERIFY_IN_LOOP (on)
     max_verify_rounds: int | None = Field(None, ge=0, le=10)  # default HANGAR_MAX_VERIFY_ROUNDS (3)
-    autofix: str | None = Field(None, max_length=40)  # "ci,reviews" (default) | "ci" | "reviews" | "off"
+    autofix: str | None = Field(None, max_length=40)  # "ci,conflicts,reviews" (default), a subset, or "off"
     # --- #181: `eval` waits for the eval window and the token budget, behind interactive work (evalqueue.py)
     queue_class: Literal["interactive", "eval"] | None = None
     # --- change sets (docs/changesets.md): a change-set profile's name (one agent across its repos, one PR per
@@ -1694,6 +1694,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
     if event in landing.EVENTS:  # --- landing: PR state, approvals and checks on hangar's PRs
         landed = await svc.landing.handle(event, payload)
+        if event == "pull_request":  # --- autofix/conflicts: any merge moves the base, hangar's PR or not
+            checked = await autofix.handle(svc, event, delivery, payload)
+            return {**landed, "conflict_checks": checked["conflict_checks"]} if checked.get("ok") else landed
         if event not in autofix.EVENTS:
             return landed
         if landed.get("ok"):  # one delivery, two readers: the response says what each did

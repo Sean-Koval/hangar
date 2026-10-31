@@ -34,6 +34,7 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `approvers` | GitHub logins whose approval lands the repo's agent PRs (`--approver`, repeated). |
 | `merge_method` | `squash` (default), `merge` or `rebase`, for PRs hangar lands. |
 | `risk_paths` | Globs (`infra/**`) that make a PR high risk in its [review packet](landing.md#6-the-review-packet), on top of `.github/**` and `.hangar/**`. |
+| `diff_budget_lines` | Changed lines (insertions plus deletions) above which the [review packet](landing.md#6-the-review-packet) warns that the PR is big (`--diff-budget-lines`). Unset: no warning. |
 | `require_stale_dismissal` | `false` lets hangar arm auto-merge on a base branch that doesn't dismiss stale approvals on a push. Unset (the default) it refuses ([landing.md](landing.md#3-the-branch-protection-to-enable)). |
 | `verify_reports` | The JUnit, Cobertura or LCOV files `verify` writes, relative to the repo, `**/` for any depth (`--verify-report 'build/**/TEST-*.xml'`, repeated). The repo's `.hangar/environment.yaml` `verify_reports` comes first. Most runners need none: see [jobs §8](jobs/test-results.md#where-the-reports-come-from). |
 | `rerun_flaky` | `true`: a check whose every failure is on the repo's [flaky list](jobs/test-results.md#flaky-tests) runs once more, and the rerun decides (`--rerun-flaky`). Unset: a failure stands. |

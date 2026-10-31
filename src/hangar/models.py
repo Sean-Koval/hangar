@@ -480,6 +480,10 @@ class LandingState(BaseModel):
     revert_sha: str | None = None
     fix_forward_pr: int | None = None  # a later merged PR whose body says `Fixes-forward: #<this PR>`
     fix_forward_at: float | None = None
+    # --- KAN-70: reviewer attention (weekly.attention): what the nightly pass read of the merged PR, once, raw:
+    # {"at", "author": {login, id}, "committers": [{login, id}], "events": [{kind, login, id, bot, hangar, at}]};
+    # None: not read yet
+    review_activity: dict[str, Any] | None = None
 
 
 class JobApproval(BaseModel):
@@ -615,7 +619,7 @@ class Job(BaseModel):
     # --- overnight/autofix: the verify gate inside the turn, and the PR auto-fix loop (None: the defaults)
     verify_in_loop: bool | None = None
     max_verify_rounds: int | None = None
-    autofix: str | None = None  # "ci,reviews" | "ci" | "reviews" | "off"
+    autofix: str | None = None  # "ci,conflicts,reviews", a subset, or "off"
     autofix_state: AutofixState = Field(default_factory=AutofixState)
     person: str | None = None  # --- identity: the person it runs for (None: GitHub, Slack, webhooks, older jobs)
     # --- reconciler: times the job resumed on its own after a control-plane restart interrupted it (restarts.py)
@@ -824,6 +828,9 @@ class SessionTurn(BaseModel):
     # --- KAN-77: calls Tower allowed while the session was suspended for them, each allowed once by the driver
     # ({tool, args_hash, receipt, approval}; spec 0015 §5)
     preclear: list[dict[str, str]] = Field(default_factory=list)
+    # --- KAN-78: the turn ran with hangar's managed Tower hook (govhook.py): {runtime, source, path, digest, matcher,
+    # url, wait_seconds, timeout_seconds, fail, policy (the approval policy asked for; the driver ran deny-risky)}
+    governance_hook: dict[str, Any] | None = None
 
 
 class Checkpoint(BaseModel):

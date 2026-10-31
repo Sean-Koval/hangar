@@ -140,15 +140,16 @@ OVERLAY = r"""
       c.querySelector("b").textContent = step; c.querySelector("span").textContent = text; c.classList.add("on");
     },
     play(cast) {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         const s = document.createElement("script"); s.src = "%PLAYER%.min.js";
+        setTimeout(resolve, 15000);  // never hang the render, even if the player never loads or never ends
+        s.onerror = () => reject(new Error("the asciinema player did not load: " + s.src));
         s.onload = () => {
           const p = AsciinemaPlayer.create({ data: cast }, document.getElementById("fp-screen"),
             { autoPlay: true, fit: false, terminalFontSize: "14px", controls: false, idleTimeLimit: 1,
               terminalFontFamily: "'DM Mono', ui-monospace, monospace",
               theme: "asciinema" });
           p.addEventListener("ended", () => resolve());
-          setTimeout(resolve, 15000);
         };
         document.head.appendChild(s);
       });
@@ -339,7 +340,10 @@ def record_cast(path: Path) -> str:
 
 async def ui(pw, out: Path, work: Path) -> None:
     browser = await pw.chromium.launch()
-    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark")
+    # the overlay's terminal plays the asciinema player from jsdelivr, which the console's CSP (KAN-174) doesn't allow;
+    # the overlay is the recording's, not the console's, so this context alone skips the policy
+    ctx = await browser.new_context(viewport={"width": W, "height": H}, device_scale_factor=1, color_scheme="dark",
+                                    bypass_csp=True)
     await ctx.add_init_script(f"sessionStorage.setItem('hangar.token', '{demo.TOKEN}')")
     await ctx.add_init_script(OVERLAY)
     page = await ctx.new_page()
@@ -645,6 +649,15 @@ async def clip(pw, out: Path, work: Path, theme: str) -> None:
     clip_scene(fx, "queued")
     page = await ctx.new_page()
     await fx.wire(page)
+
+    async def frameable(route):  # the console refuses to be framed (KAN-174); the clip's own host page frames it
+        r = await route.fetch()
+        headers = {k: v for k, v in r.headers.items() if k.lower() != "x-frame-options"}
+        csp = r.headers.get("content-security-policy", "")
+        headers["content-security-policy"] = "; ".join(d for d in csp.split("; ") if not d.startswith("frame-ancestors"))
+        await route.fulfill(response=r, headers=headers)
+
+    await page.route(f"{demo.URL}/", frameable)
     host = (CLIP_HOST.replace("%THEME%", theme).replace("%FONTS%", FONTS).replace("%W%", str(w)).replace("%H%", str(h))
             .replace("%BAND%", str(CLIP_BAND)))
     await page.route(f"{demo.URL}/__clip", lambda r: r.fulfill(status=200, content_type="text/html", body=host))
