@@ -160,10 +160,14 @@ class SubmitJob(BaseModel):
     strategy: Literal["single", "best_of_n"] = "single"
     n: int | None = Field(None, ge=1, le=8)  # attempts for best_of_n (2..HANGAR_BEST_OF_N_MAX; default 3)
     judge: bool = False  # best_of_n: a judge turn orders the attempts that pass verification
+    # --- KAN-231: best_of_n runs attempt 1 alone and the others only if it falls short (None: the repo policy's
+    # best_of_n.sequential, else parallel); `escalate_at`: the share of the job budget attempt 1 may use
+    sequential: bool | None = None
+    escalate_at: float | None = Field(None, gt=0, lt=1)
     # --- overnight/autofix: the check inside the agent's turn, and the PR auto-fix loop (docs/jobs/agent-loop.md)
     verify_in_loop: bool | None = None  # default HANGAR_VERIFY_IN_LOOP (on)
     max_verify_rounds: int | None = Field(None, ge=0, le=10)  # default HANGAR_MAX_VERIFY_ROUNDS (3)
-    autofix: str | None = Field(None, max_length=40)  # "ci,reviews" (default) | "ci" | "reviews" | "off"
+    autofix: str | None = Field(None, max_length=40)  # "ci,conflicts,reviews" (default), a subset, or "off"
     # --- #181: `eval` waits for the eval window and the token budget, behind interactive work (evalqueue.py)
     queue_class: Literal["interactive", "eval"] | None = None
     # --- change sets (docs/changesets.md): a change-set profile's name (one agent across its repos, one PR per
@@ -511,7 +515,7 @@ class JobService:
                                     strict=experiments.EXP_LABEL in (req.labels or {}))
         except teamcreds.SubscriptionRefused as e:
             raise JobError(str(e)) from e
-        attempts = strategies.check_submit(req, self.settings.best_of_n_max)
+        attempts = strategies.check_submit(req, self.settings.best_of_n_max, policy)
         job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
             raise JobError(why)
@@ -579,11 +583,12 @@ class JobService:
 
             approval = job.approval = new_approval(self, requester, f"budget: {over}")
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
+        job.sequential = strategies.sequential_for(req, policy)  # --- KAN-231
         taint.seed_job(job)  # --- taint (#129): untrusted task text or context: tainted from turn 1
         job.verify_in_loop, job.max_verify_rounds, job.autofix = req.verify_in_loop, req.max_verify_rounds, fix_mode
         cs = changesets.create(self, job, profile) if profile is not None else None  # --- change sets
         self._jobs[job.id] = job
-        best = f" (best of {attempts})" if req.strategy == "best_of_n" else ""
+        best = f" ({strategies.describe(job, policy)})" if req.strategy == "best_of_n" else ""
         if approval is not None:  # an untrusted trigger: wait for a trusted person instead of queueing
             self._event(job, f"waiting for approval: {approval.reason or approval.requested_by}{best}",
                         JobState.AWAITING_APPROVAL)
@@ -591,6 +596,8 @@ class JobService:
             self._event(job, f"queued by {requester} via {source}{best}")
         if defaults.notes:  # --- frontdoor
             self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
+        if note := strategies.cap_note(req, attempts, self.settings.best_of_n_max, policy):  # --- KAN-231
+            self._event(job, note)
         if lock_note:  # --- #138
             self._event(job, lock_note)
         if branch_note:  # --- change sets (G7)
@@ -1017,6 +1024,7 @@ class JobService:
             await self._sh(job, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                 f"git config user.name >/dev/null || git config user.name {q('hangar')}")
         await experiments.prepare_trial(self, job, s)  # --- interfaces: a trial's pinned base and approvals
+        await aireview.pin_head(self, job, s)  # --- KAN-230: the confirmation pass reads the reviewed head
         ctx = self._ctxdir(job)
         _, prov = self.fleet._running(job.sandbox_id)
         sbx = self.fleet.get(job.sandbox_id)
@@ -1692,6 +1700,9 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         return {"ignored": f"repo '{repo}' is not in HANGAR_GITHUB_REPOS"}
     if event in landing.EVENTS:  # --- landing: PR state, approvals and checks on hangar's PRs
         landed = await svc.landing.handle(event, payload)
+        if event == "pull_request":  # --- autofix/conflicts: any merge moves the base, hangar's PR or not
+            checked = await autofix.handle(svc, event, delivery, payload)
+            return {**landed, "conflict_checks": checked["conflict_checks"]} if checked.get("ok") else landed
         if event not in autofix.EVENTS:
             return landed
         if landed.get("ok"):  # one delivery, two readers: the response says what each did

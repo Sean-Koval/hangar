@@ -2,7 +2,7 @@
 
 How can an `ask` or `deny-risky` turn on GKE keep its driver out of the agent's reach? This page is the design, for whoever reviews or finishes it. Part of the [security model](README.md).
 
-**Status: a prototype (KAN-83).** The pod's shape and the driver's side are built and tested. Turns don't use them yet ([KAN-186](https://seanmkoval.atlassian.net/browse/KAN-186)). Until then `HANGAR_UID_SPLIT=required` refuses those turns on GKE, and H-1 stays mitigated, not closed.
+**Status: built, off by default ([KAN-186](https://seanmkoval.atlassian.net/browse/KAN-186)).** With the setting on, `ask`, `deny-risky` and `governed` turns run their driver in the sidecar. `HANGAR_UID_SPLIT=required` then lets them run where the pod passes hangar's probe, and refuses them elsewhere. The setting stays off until the checks in [Before enabling](driver-sidecar-check.md#before-enabling) pass on the dev cluster. Until then H-1 stays mitigated, not closed.
 
 ## Why Docker's split doesn't carry over
 
@@ -29,6 +29,17 @@ The driver (`driver.py --relay`) listens on the pod's loopback and writes its po
 
 The relay and the harness are the agent's processes. The agent can stop them or lie through them, as it can through the harness under the Docker split. It can't reach the driver's key, control files, memory or approvals.
 
+## How a turn runs there
+
+| What | Where |
+| --- | --- |
+| The driver, its tmux session, the run key, relay token, commands and approvals | `hangar-driver`, in `hangar-ctl` |
+| The run's script, log and exit status, and hangar's harness settings | `hangar-home`: the driver writes them, the agent reads them |
+| The relay and the harness | `sandbox`, as the agent, started through pods/exec |
+| hangar's reads and writes: events, approvals, status, terminals, steer commands | pods/exec into `hangar-driver`, never envd |
+
+An `auto` turn runs in the agent's container as before, so it keeps per-edit trees and the verify gate. Before a pod is used, hangar reads its spec through the API and checks each container from inside. A pod out of shape keeps the sandbox single-user, and the turn says why.
+
 ## What gVisor gives
 
 gVisor runs the whole pod in one sandbox kernel, so isolation between its containers is gVisor's to enforce. These claims were checked in the gVisor source (`google/gvisor` at 4777ee7, 27 October 2026), not on a cluster.
@@ -46,33 +57,22 @@ Not checked: that GKE's admission policy accepts the second container, and the l
 
 - **Shared by the pod:** the network namespace, SysV IPC and `/dev/shm`. The driver uses none of them except its token-checked listener.
 - **The sandbox kernel itself.** A gVisor escape reaches every container in the pod.
-- **Per-edit trees and the verify gate.** The driver's container doesn't have the checkout. Trees turn off, and the gate is skipped with a note on stderr ([KAN-187](https://seanmkoval.atlassian.net/browse/KAN-187)).
+- **Per-edit trees and the verify gate in turns that ask.** The driver's container doesn't have the checkout. Trees are off, with a `skipped: sidecar` line, and the gate is skipped with a note ([KAN-187](https://seanmkoval.atlassian.net/browse/KAN-187)). hangar's verify still runs after the turn.
+- **Graders.** A grade on GKE stays `trust: best_effort` until [graders](#graders) are built ([KAN-188](https://seanmkoval.atlassian.net/browse/KAN-188)).
 - **E2B.** One microVM, one container. Those turns are refused there by default ([the driver's own user on E2B](e2b-driver-user.md)).
 - **Replays** don't depend on the uid split. Their sandbox has no credentials or egress, and the gateway compares outside it.
 
 ## Graders
 
-The same shape fits [sealed graders](graders.md) ([KAN-188](https://seanmkoval.atlassian.net/browse/KAN-188)). The hidden tests go to `hangar-home`, read-only for the trial's code. The grade wrapper runs in `hangar-driver`. The grader's exit status and output come from the exec API, and its report reaches the wrapper on a loopback socket. That would make GKE grades `trust: isolated`.
+The same shape fits [sealed graders](graders.md) ([KAN-188](https://seanmkoval.atlassian.net/browse/KAN-188)). The hidden tests go to `hangar-home`, read-only for the trial's code. The grade wrapper runs in `hangar-driver`. The grader's exit status and output come from the exec API, and its report reaches the wrapper on a loopback socket. That would make GKE grades `trust: isolated`. It isn't built yet.
 
 ## Cost
 
 Each sandbox reserves 50m CPU and 64 MiB more, up to 64 MiB of it for the in-memory control volume. That is about 5% of a 2-CPU sandbox's CPU request. Each turn takes one more exec to start the relay. These are estimates, not measurements.
 
-## Checking it on a cluster
+## Moved from this page
 
-With the setting on in the dev cluster's `hangar` ConfigMap, create a sandbox and find its pod. Each command's comment says what it must show.
-
-```sh
-NS=hangar-sandboxes; POD=<the sandbox's pod>
-kubectl -n $NS get pod $POD -o jsonpath='{.spec.runtimeClassName} {.spec.shareProcessNamespace} {range .status.containerStatuses[*]}{.name}={.ready} {end}'
-# gvisor false hangar-driver=true sandbox=true
-kubectl -n $NS exec $POD -c hangar-driver -- bash -c 'id -u; echo s3cret > /var/lib/hangar-ctl/key; chmod 600 /var/lib/hangar-ctl/key; echo hi > /var/lib/hangar/probe; (exec -a hangar-probe-sleep sleep 600) >/dev/null 2>&1 &'
-# 1001
-kubectl -n $NS exec $POD -c sandbox -- sh -c 'id -u; ls /var/lib/hangar-ctl; cat /var/lib/hangar/probe; touch /var/lib/hangar/x; grep -l hangar-probe-sleep /proc/[0-9]*/cmdline; cat /proc/1/cmdline | tr "\0" " "'
-# 1000 / No such file or directory / hi / Read-only file system / (nothing) / the agent's own sleep infinity
-kubectl -n $NS exec $POD -c hangar-driver -- python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 7999)); s.listen(); c,_=s.accept(); print(c.recv(9))' &
-kubectl -n $NS exec $POD -c sandbox -- python3 -c 'import socket; socket.create_connection(("127.0.0.1", 7999)).sendall(b"loopback\n")'
-# b'loopback\n'
-```
-
-After KAN-186, also run an `ask` turn that tries to read the key and to write `.claude/settings.json` permission rules. The turn must still ask, and the key must stay unread.
+| Section | Now on |
+| --- | --- |
+| <span id="before-enabling"></span>Before enabling | [Turning the driver sidecar on](driver-sidecar-check.md#before-enabling) |
+| <span id="checking-it-on-a-cluster"></span>Checking it on a cluster | [Turning the driver sidecar on](driver-sidecar-check.md#checking-it-on-a-cluster) |

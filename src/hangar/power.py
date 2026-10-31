@@ -540,7 +540,19 @@ class Power:
                           "overnight": {**self.overnight(), "running": len(self.lane),
                                         "capacity": self.settings.overnight_lane_sandboxes}},
                 "last_deploy": (deploys(self.store) or [None])[0],
+                "deploy_lag": self.deploy_lag(),  # --- KAN-216
                 "loops": loops(self.settings, self.started, self.clock())}
+
+
+    def deploy_lag(self) -> dict[str, Any] | None:
+        """--- KAN-216: the deployed commit and how far it is behind main, from deploylag's cache."""
+        from hangar import deploylag
+
+        try:
+            return deploylag.view(self.store, self.settings, self, self.clock)
+        except Exception:  # noqa: BLE001 - the overview must answer whatever happens here
+            log.warning("deploy lag view failed", exc_info=True)
+            return None
 
 
 class PowerError(RuntimeError):

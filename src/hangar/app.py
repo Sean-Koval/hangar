@@ -1258,6 +1258,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import slolog  # --- KAN-144: the stuck-jobs gauge and log line ride it too
 
     slolog.register()
+    from hangar import deploylag  # --- KAN-216: how far production is behind main, and its alert
+
+    deploylag.register()
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

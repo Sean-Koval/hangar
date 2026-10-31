@@ -111,6 +111,7 @@ nav:
           - "Incident: Tower down": runbooks/tower-down.md
           - "Incident: a full disk or quota": runbooks/disk-and-quota.md
           - "Incident: a bad deploy": runbooks/bad-deploy.md
+          - "Incident: a deploy waiting too long": runbooks/deploy.md
           - Onboarding a team: runbooks/onboarding.md
           - The per-repo checklist: runbooks/repo-checklist.md
           - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md
@@ -127,17 +128,21 @@ nav:
               - After you submit a job: jobs/after-submit.md
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
               - Working with the agent: jobs/working-with-the-agent.md
+              - "Sequential best-of-N": jobs/sequential-best-of-n.md
               - An agent loop that finishes the job: jobs/agent-loop.md
+              - When a job's PR conflicts with main: jobs/conflicts.md
               - Test results: jobs/test-results.md
               - Experiments: jobs/experiments.md
               - "Reference: labels, outcomes, settings": jobs/reference.md
           - Sessions: sessions.md
           - Steering: steering.md
           - Governed approvals: governed-approvals.md
+          - The Tower hook: governance-hook.md
           - Job release and landing through Tower: tower-release-landing.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
           - Landing: landing.md
+          - AI first-pass review: ai-review.md
           - Change sets: changesets.md
       - Front doors:
           - Repo policy: repo-policy.md
@@ -197,6 +202,7 @@ nav:
           - The git credential gateway: security/git-gateway.md
           - Who may continue a custom session branch: security/branch-creators.md
           - Egress allowlists: security/egress.md
+          - The GKE egress default: security/egress-default.md
           - Package mirrors: security/package-mirrors.md
           - Sandbox networking on Docker: security/docker-network.md
           - Secret scanning and redaction: security/secret-scanning.md
@@ -206,6 +212,7 @@ nav:
           - People and OAuth connectors: security/people.md
           - Sealed graders: security/graders.md
           - The driver sidecar on GKE: security/driver-sidecar.md
+          - Turning the driver sidecar on: security/driver-sidecar-check.md
           - The driver's own user on E2B: security/e2b-driver-user.md
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md

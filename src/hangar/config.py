@@ -134,9 +134,11 @@ class Settings(BaseSettings):
     # --- scale: the share of an environment's `cpus` a sandbox pod requests; its limit stays `cpus`. 1 = Guaranteed
     # (each sandbox reserves every core it may use); 0.5 packs twice as many mostly-idle agents per node.
     k8s_cpu_request_fraction: float = Field(0.5, gt=0, le=1)
-    # --- KAN-83: a prototype. Adds a `hangar-driver` container to each sandbox pod, as a uid of its own, in a PID
+    # --- KAN-83, KAN-186: adds a `hangar-driver` container to each sandbox pod, as a uid of its own, in a PID
     # namespace of its own, with a control volume the agent's container doesn't mount (docs/security/driver-sidecar.md).
-    # Turns don't use it yet: HANGAR_UID_SPLIT=required still refuses `ask` and `deny-risky` turns on Kubernetes.
+    # `ask`, `deny-risky` and `governed` turns then run their driver there, and HANGAR_UID_SPLIT=required lets them
+    # run in a pod whose sidecar passes the probe (isolation._probe_sidecar). Off until the manual cluster check passes
+    # (docs/security/driver-sidecar-check.md).
     k8s_driver_sidecar: bool = False
 
     # e2b
@@ -497,6 +499,13 @@ class Settings(BaseSettings):
     governance_credential: str | None = None
     governance_webhook_secret: str | None = None
     governance_suspend_after_seconds: int = Field(60, ge=5, le=3600)
+    # --- KAN-78: the managed Tower hook (govhook.py, docs/governance-hook.md). `required`: every Claude Code turn runs
+    # with hangar's PreToolUse hook asking Tower's /hooks/claude-code, failing closed, or is refused where hangar can't
+    # own the hook; an environment's `governance.hook` can require it too. The vault credential of the coding agent's
+    # key in Tower the hook sends, and how long the hook waits for a person to sign before it denies.
+    governance_hook: Literal["off", "required"] = "off"
+    governance_hook_credential: str | None = None
+    governance_hook_wait_seconds: int = Field(300, ge=0, le=540)
     # --- KAN-33 (#174, spec 0015 §9): how the control plane proves itself to Tower. key: the service key in
     # `governance_credential` (phase 1). passport: a token hangar mints itself (`sub: hangar:control-plane`, from its
     # OIDC issuer) exchanged at Tower's token endpoint (default `<governance_url>/oauth/token`) for a passport,
@@ -519,9 +528,10 @@ class Settings(BaseSettings):
     # reporter variables (PYTEST_ADDOPTS --junitxml, GOTESTSUM_JUNITFILE, JEST_JUNIT_OUTPUT_DIR) and read the reports
     # the check writes; collect: only read the reports (the repo's `verify_reports`, the usual paths); off: neither.
     test_reports: Literal["inject", "collect", "off"] = "inject"
-    # The PR auto-fix loop: a failing CI check on the job's own head, or a trusted reviewer's changes requested or
-    # inline comments, start a follow-up turn on the job's session. Per repo: {"owner/repo": "ci"} ("ci,reviews",
-    # "ci", "reviews" or "off"); a job's own `autofix` can only narrow it. Default "ci,reviews".
+    # The PR auto-fix loop: a failing CI check on the job's own head, a trusted reviewer's changes requested or
+    # inline comments, or a merge into its base that leaves it conflicted, start a follow-up turn on the job's
+    # session. Per repo: {"owner/repo": "ci"} (a comma-separated subset of "ci", "conflicts" and "reviews", or
+    # "off"); a job's own `autofix` can only narrow it. Default "ci,conflicts,reviews".
     github_autofix: dict[str, str] = Field(default_factory=dict)
     autofix_max_rounds: int = Field(3, ge=0, le=20)  # per PR
     autofix_cooldown_seconds: float = 120  # at least this long between two rounds on one PR
@@ -650,6 +660,11 @@ class Settings(BaseSettings):
     overnight_lane_sandboxes: int = Field(7, ge=0, le=200)
     overnight_min_yield: float = Field(0.6, ge=0.0, le=1.0)
     power_prepull_image: str = "registry.k8s.io/pause:3.10.1"  # the prepull DaemonSet's only container
+    # --- KAN-216: how far production is behind main (deploylag.py; doctor, the console, the `deploy-lag` alert). The
+    # repo deploy.yml deploys from (unset: the one in the newest deploy record's run URL), and the working days
+    # (Monday to Friday, in the power schedule's zone) the oldest undeployed commit on main may wait before it alerts.
+    deploy_repo: str | None = None
+    deploy_lag_alert_working_days: float = Field(2.0, ge=0)
     # --- clouddoctor: the nightly pass (opstatus.py): credential checks, then the Cloud Doctor (docs/doctor.md). A
     # cron in doctor_time_zone (unset: the power schedule's zone, else UTC); "off" turns it off. Half past midnight
     # in the power schedule's zone is before the sandbox pools power down at 01:00.

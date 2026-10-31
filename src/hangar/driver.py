@@ -29,9 +29,10 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   or trace it. Approval requests and answers also go to `<ctl>/approvals`, which only hangar's user can write: hangar
   reads a split turn's approvals from there, not from the log the harness writes into (--- harden). `--base-env`
   replaces the agent's ~/.hangar/env with hangar's own copy (hangar/harden.py).
-* With `--relay` (the driver sidecar on Kubernetes, KAN-83; a prototype) the driver runs in a container of its own and
+* With `--relay` (the driver sidecar on Kubernetes, KAN-83, KAN-186) the driver runs in a container of its own and
   the harness in the agent's, started by relay.py, which connects back on the pod's loopback with the run's token
-  (`Relay`, `RemoteProc`; docs/security/driver-sidecar.md). The verify gate doesn't run there yet.
+  (`Relay`, `RemoteProc`; docs/security/driver-sidecar.md). The verify gate and per-edit trees don't run there yet
+  (KAN-187): the checkout is in the agent's container.
 
 * Trees (#165): at the turn's start and end, and after each edit or shell tool result, the driver writes the working
   tree's git tree id as a `hangar.tree` line (only when it changed since the last one): `git add -A` and
@@ -270,6 +271,23 @@ def agent_launch(user: str, home: str, run_env: str, cwd: str, argv: list) -> li
     """`argv` in `user`'s environment (home `home`), from `cwd`: what runs once the process is the agent's."""
     return ["env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}", "bash", "-c", LAUNCH, "hangar-agent", run_env,
             cwd, *argv]
+
+
+# --- KAN-186: under the driver sidecar the relay starts `agent_launch` with the agent container's own environment,
+# whose PATH may hold the agent's directories (~/.local/bin). So `env` and `bash` go by their paths on this one, which
+# hangar's probe checked the agent can't write there (isolation.SAFE_PATH; the two containers share an image).
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def relay_launch(argv: list) -> list:
+    """`agent_launch`'s argv with `env` and the `bash` it runs by their paths on SAFE_PATH."""
+    out = list(argv)
+    for i, word in enumerate(out):
+        if word in ("env", "bash"):
+            out[i] = shutil.which(word, path=SAFE_PATH) or word
+        if word == "bash":
+            break
+    return out
 
 
 def as_agent(user: str, home: str, run_env: str, cwd: str, argv: list) -> list:
@@ -977,7 +995,7 @@ class Harness:
         self.proc: subprocess.Popen | RemoteProc
         if drv.relay is not None:  # --- KAN-83: the driver sidecar: the harness starts in the agent's container
             a = drv.args
-            argv = agent_launch(a.agent, a.agent_home or f"/home/{a.agent}", a.run_env, drv.cwd(), argv)
+            argv = relay_launch(agent_launch(a.agent, a.agent_home or f"/home/{a.agent}", a.run_env, drv.cwd(), argv))
             self.proc = drv.relay.start(argv, BASE_ENV)
         else:
             if user := getattr(drv.args, "as_user", None):  # --- isolation
@@ -1698,6 +1716,9 @@ def main(argv: list | None = None) -> int:
         sys.stderr.write("hangar: the verify gate doesn't run under the driver sidecar yet; hangar's verify still "
                          "runs after the turn\n")
         gate = None
+    if args.relay:  # --- KAN-186: the checkout is in the agent's container, not this one (KAN-187)
+        drv.trees.ready, drv.trees.off = True, "sidecar"
+        out.event("tree", phase="start", skipped="sidecar")
     drv.trees.point("start")  # --- #165: the harness is up but has no prompt yet: nothing has changed the tree
     h.start(prompt)
     alive = True

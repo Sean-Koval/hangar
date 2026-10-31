@@ -129,7 +129,7 @@
         "run_ids": {"type": "array", "items": {"type": "string"}},
         "pr": {"type": ["object", "null"]},
         "untrusted": {"type": "boolean"},
-        "data": {"type": "object", "description": "Per kind: pr.open {draft}; pr.ready {} (#168); review.first {by, sha, first_review_at, first_review_by (#168)}; pr.merge {by, green_to_merge_seconds, and within v1 (KAN-232) agent_head_sha, merged_sha, final_head_sha, agent_diff_lines, agent_added_lines, merged_added_lines, surviving_lines, survival_at_merge, human_commits, review_rounds or outcome_error}; pr.close {}; abandon {reason, by?, via?}; revert {sha} (#168)."}
+        "data": {"type": "object", "description": "Per kind: pr.open {draft}; pr.ready {} (#168); review.first {by, sha, first_review_at, first_review_by (#168)}; pr.merge {by, green_to_merge_seconds, and within v1 (KAN-232) agent_head_sha, merged_sha, final_head_sha, agent_diff_lines, agent_added_lines, merged_added_lines, surviving_lines, survival_at_merge, human_commits, review_rounds, outcome_truncated or outcome_error}; pr.close {}; abandon {reason, by?, via?}; revert {sha} (#168)."}
       }
     },
     "tests": {

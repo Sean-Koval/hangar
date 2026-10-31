@@ -8,7 +8,9 @@ could spend $16 before anyone followed up. So:
   together. Each turn's own budget is cut to what the job has left, so the turn that crosses it is stopped like
   any turn over budget (`over_budget`, delivered as a draft); and a job that has used it up starts no more turns:
   follow-ups and auto-fix rounds are refused, verify-fix rounds aren't started. Best-of-N attempts run in
-  parallel, so each gets an equal share, the judge included, and together they can't cross it.
+  parallel, so each gets an equal share, the judge included, and together they can't cross it. A sequential
+  best-of-N (KAN-231) gives attempt 1 its `escalate_at` of the budget (or the same equal share); the attempts that
+  start after it split what it left, the judge again included.
 * **A daily cap per repo** (`max_usd_per_day` in the repo's policy) is checked when work is admitted: a new job
   over it waits in `awaiting_approval` (a trusted person can let it run anyway), and a follow-up or auto-fix round
   is refused. Turns already running, and a job's own verify-fix turns, finish under the job budget. A day starts
@@ -127,6 +129,50 @@ def attempt_share(job: Job) -> Budget | None:
         vals["max_cost_usd"] = share if vals["max_cost_usd"] is None else min(vals["max_cost_usd"], share)
     if b.max_tokens:
         share_t = max(b.max_tokens // parts, 1)
+        vals["max_tokens"] = share_t if vals["max_tokens"] is None else min(vals["max_tokens"], share_t)
+    return Budget(**vals)
+
+
+def first_share(job: Job) -> Budget | None:
+    """--- KAN-231: attempt 1 of a sequential best-of-N runs alone: `escalate_at` of the job budget, or the equal
+    share a parallel attempt gets. Either way the others still have their shares after it."""
+    seq, b = job.sequential, job.job_budget
+    if seq is None or seq.escalate_at is None or b is None or not (b.max_cost_usd or b.max_tokens):
+        return attempt_share(job)
+    vals = (job.budget or Budget()).model_dump()
+    if b.max_cost_usd:
+        share = b.max_cost_usd * seq.escalate_at
+        vals["max_cost_usd"] = share if vals["max_cost_usd"] is None else min(vals["max_cost_usd"], share)
+    if b.max_tokens:
+        share_t = max(int(b.max_tokens * seq.escalate_at), 1)
+        vals["max_tokens"] = share_t if vals["max_tokens"] is None else min(vals["max_tokens"], share_t)
+    return Budget(**vals)
+
+
+def used_fraction(svc: JobService, job: Job) -> float | None:
+    """The share of the job budget spent so far (dollars or tokens, whichever is further along); None: no budget."""
+    b = job.job_budget
+    if b is None or not (b.max_cost_usd or b.max_tokens):
+        return None
+    s = spent(svc, job)
+    return max(s.cost_usd / b.max_cost_usd if b.max_cost_usd else 0.0,
+               s.tokens / b.max_tokens if b.max_tokens else 0.0)
+
+
+def rest_share(svc: JobService, job: Job, attempts: int) -> Budget | None:
+    """--- KAN-231: what attempt 1 of a sequential best-of-N left of the job budget, split equally among the
+    `attempts` that start now (the judge one share more), so together they can't cross it."""
+    b = job.job_budget
+    if b is None or not (b.max_cost_usd or b.max_tokens):
+        return job.budget
+    s = spent(svc, job)
+    parts = attempts + (1 if job.judge else 0)
+    vals = (job.budget or Budget()).model_dump()
+    if b.max_cost_usd:
+        share = max(b.max_cost_usd - s.cost_usd, 1e-6) / parts
+        vals["max_cost_usd"] = share if vals["max_cost_usd"] is None else min(vals["max_cost_usd"], share)
+    if b.max_tokens:
+        share_t = max((b.max_tokens - s.tokens) // parts, 1)
         vals["max_tokens"] = share_t if vals["max_tokens"] is None else min(vals["max_tokens"], share_t)
     return Budget(**vals)
 

@@ -720,11 +720,13 @@ def job_submit(
     schema: Path | None = typer.Option(None, "--schema", help="JSON Schema file for a structured result."),
     best_of: int | None = typer.Option(None, "--best-of", help="Run N attempts in parallel and deliver the best."),
     judge: bool = typer.Option(False, "--judge", help="With --best-of: an agent compares the passing attempts."),
+    sequential: bool = typer.Option(False, "--sequential", help="With --best-of: run attempt 1 alone first; the "
+                                    "others start only if it fails verify."),  # --- KAN-231
     # --- overnight/autofix
     verify_in_loop: bool | None = typer.Option(None, "--verify-in-loop/--no-verify-in-loop",
                                                help="Also run --verify inside the agent's turn (default: on)."),
-    autofix: str | None = typer.Option(None, "--autofix", help="React to the PR's CI and reviews: ci,reviews "
-                                       "(default) | ci | reviews | off."),
+    autofix: str | None = typer.Option(None, "--autofix", help="React to the PR's CI, conflicts and "
+                                       "reviews: ci,conflicts,reviews (default), a subset, or off."),
     profile: str | None = typer.Option(None, "--profile", help="--- heavy: standard | large | xlarge: the job's "
                                        "sandbox size, up to what the repo's policy allows (label hangar.profile)."),
     changeset: str | None = typer.Option(None, "--changeset", help="A change-set profile: one agent across its "
@@ -760,6 +762,7 @@ def job_submit(
                            if v is not None}} if job_max_cost or job_max_turns else {}),  # --- frontdoor
         **({"output_schema": _schema(schema)} if schema else {}),
         **({"strategy": "best_of_n", "n": best_of, "judge": judge} if best_of else {}),
+        **({"sequential": True} if best_of and sequential else {}),  # --- KAN-231
         **({"verify_in_loop": verify_in_loop} if verify_in_loop is not None else {}),
         **({"autofix": autofix} if autofix else {}),
         **({"labels": {"hangar.profile": profile}} if profile else {}),  # --- heavy

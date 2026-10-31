@@ -64,9 +64,10 @@ def _real_lines(caplog) -> dict[str, str]:
     slolog.sandbox_create("kubernetes", "base", 3.5, RuntimeError("x"))
     slolog.fail_closed("hangar.tool.call", "unreachable")
     slolog.emit("jobs_stuck", n=1, oldest_s=4000, states="queued")
+    slolog.emit("deploy_lag", commits=383, working_days=8, days=12)  # --- KAN-216 (deploylag.tick)
     lines = ["hangar.slo: " + r.getMessage() for r in caplog.records if r.name == "hangar.slo"]
     return {"job_start_ok": lines[0], "job_start_error": lines[1], "sandbox_create": lines[2],
-            "fail_closed": lines[3], "jobs_stuck": lines[4]}
+            "fail_closed": lines[3], "jobs_stuck": lines[4], "deploy_lag": lines[5]}
 
 
 def _matches(body: str, line: str) -> bool:
@@ -77,12 +78,13 @@ def test_every_log_metric_matches_a_real_line_and_extracts_from_it(caplog):
     lines = _real_lines(caplog)
     blocks = _metric_blocks()
     assert set(blocks) == {"hangar_job_starts", "hangar_job_queue_seconds", "hangar_sandbox_creates",
-                           "hangar_fail_closed", "hangar_jobs_stuck"}
+                           "hangar_fail_closed", "hangar_jobs_stuck", "hangar_deploy_lag"}
     want = {"hangar_job_starts": ("job_start_ok", {"result": "ok"}),
             "hangar_job_queue_seconds": ("job_start_ok", {"value": "12.5"}),
             "hangar_sandbox_creates": ("sandbox_create", {"result": "error", "provider": "kubernetes"}),
             "hangar_fail_closed": ("fail_closed", {"failure": "unreachable"}),
-            "hangar_jobs_stuck": ("jobs_stuck", {})}
+            "hangar_jobs_stuck": ("jobs_stuck", {}),
+            "hangar_deploy_lag": ("deploy_lag", {})}
     for name, (which, values) in want.items():
         body, line = blocks[name], lines[which]
         assert _matches(body, line), (name, line)
@@ -126,7 +128,7 @@ def _doc_exists(path: str) -> bool:
 def test_every_alert_has_a_severity_a_runbook_and_a_row_in_the_docs():
     pol = _policies()
     assert set(pol) == {"job-starts-failing", "job-starts-slow-burn", "queue-slow", "sandbox-creates-failing",
-                        "jobs-stuck", "tower-fail-closed", "restarts", "data-disk", "node-disk"}
+                        "jobs-stuck", "tower-fail-closed", "restarts", "data-disk", "node-disk", "deploy-lag"}
     table = (DOCS / "alerting.md").read_text()
     for key, p in pol.items():
         assert p["severity"] in ("CRITICAL", "WARNING"), key
@@ -184,6 +186,7 @@ def test_the_prometheus_rules_read_metrics_hangar_exports():
     m.loop_failures.labels("ops").inc()
     m.backup_last.set(1)
     m.jobs_stuck.set(0)
+    m.deploy_lag_over.set(0)
     exported = set(re.findall(r"^(hangar_\w+?)(?:\{| )", generate_latest(m.registry).decode(), re.M))
     records = set()
     alerts = []
@@ -201,7 +204,7 @@ def test_the_prometheus_rules_read_metrics_hangar_exports():
         for rec in re.findall(r"\b(hangar:[\w:]+)", a["expr"]):
             assert rec in records, rec
     assert {"HangarJobStartsFailing", "HangarQueueSlow", "HangarSandboxCreatesFailing",
-            "HangarTowerFailClosed", "HangarJobStuck"} <= {a["alert"] for a in alerts}
+            "HangarTowerFailClosed", "HangarJobStuck", "HangarDeployLag"} <= {a["alert"] for a in alerts}
 
 
 def test_the_runbooks_are_linked_from_the_index_and_the_nav():

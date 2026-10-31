@@ -84,6 +84,7 @@ locals {
     creates = "logging_googleapis_com:user_hangar_sandbox_creates"
     closed  = "logging_googleapis_com:user_hangar_fail_closed"
     stuck   = "logging_googleapis_com:user_hangar_jobs_stuck"
+    lag     = "logging_googleapis_com:user_hangar_deploy_lag"
   }
 }
 
@@ -218,6 +219,20 @@ resource "google_logging_metric" "jobs_stuck" {
   depends_on = [google_project_service.alerting]
 }
 
+# KAN-216: production more than HANGAR_DEPLOY_LAG_ALERT_WORKING_DAYS behind main while the infra is up (hangar decides,
+# so the night's power-down and a hold never write the line)
+resource "google_logging_metric" "deploy_lag" {
+  count       = local.alerting ? 1 : 0
+  name        = "hangar_deploy_lag"
+  description = "One a minute while production is too far behind main and the infra is up (src/hangar/deploylag.py)"
+  filter      = "${local.slo_source} AND textPayload:\"hangar.slo: event=deploy_lag \""
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+  }
+  depends_on = [google_project_service.alerting]
+}
+
 # --------------------------------------------------------------------------- the control plane answers at all
 resource "google_monitoring_uptime_check_config" "hangar" {
   count        = local.alerting && var.domain != "" ? 1 : 0
@@ -277,6 +292,13 @@ locals {
       query    = "sum(increase(${local.m.stuck}[10m])) > 0"
       duration = "0s"
       runbook  = "runbooks/stuck-job/"
+    }
+    deploy-lag = {
+      severity = "WARNING"
+      title    = "hangar: production is too far behind main (a deploy waits for approval)"
+      query    = "sum(increase(${local.m.lag}[10m])) > 0"
+      duration = "0s"
+      runbook  = "runbooks/deploy/"
     }
     tower-fail-closed = {
       severity = "CRITICAL"
@@ -342,7 +364,8 @@ resource "google_monitoring_alert_policy" "slo" {
     content   = "Runbook: ${local.docs}/${each.value.runbook}\n\nOn call and escalation: ${local.docs}/runbooks/on-call/. SLOs: ${local.docs}/slos/."
   }
   depends_on = [google_logging_metric.job_starts, google_logging_metric.job_queue_seconds,
-  google_logging_metric.sandbox_creates, google_logging_metric.fail_closed, google_logging_metric.jobs_stuck]
+    google_logging_metric.sandbox_creates, google_logging_metric.fail_closed, google_logging_metric.jobs_stuck,
+  google_logging_metric.deploy_lag]
 }
 
 resource "google_monitoring_alert_policy" "escalated" {

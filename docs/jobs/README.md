@@ -114,7 +114,7 @@ EOF
 | `harness_lock` drift | Drift from the lock is a warning, an event and a review-packet line. Under `HANGAR_HARNESS_DRIFT=fail`, the job fails with `reason: "harness_drift"` and delivers nothing. |
 | `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([the agent loop](agent-loop.md)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. Left out: the repo's [policy](../repo-policy.md), then the environment's `verify:`; `""` means no check. |
 | `verify_in_loop`, `max_verify_rounds` | Whether `verify` also runs inside the turn (default `true`), and how many failures go back to the agent per turn (default 3). See [the agent loop](agent-loop.md). |
-| `autofix` | What the job's PR reacts to by itself: `ci,reviews` (default), `ci`, `reviews` or `off`. See [the agent loop](agent-loop.md). |
+| `autofix` | What the job's PR reacts to by itself: `ci,conflicts,reviews` (default), a subset, or `off`. See [the agent loop](agent-loop.md). |
 | `deliver` | `draft_pr` (default), `pr`, `branch` or `none`. |
 | `context` | Files the agent is given in `~/.hangar/jobs/<job>/` (outside the repo, mode 0600), plus links listed in the prompt. Up to 50 items and 2 MB. |
 | `callback_url`, `callback_secret` | Where to POST `job.started` and `job.finished`. `jobs` tokens always sign with their bound key; admins may name any `webhook` credential. |

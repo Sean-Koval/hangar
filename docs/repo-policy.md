@@ -45,13 +45,15 @@ hangar repo check acme/app          # is it ready for agent work? (below)
 | `ai_review` | The [AI first-pass review](landing.md#6a-ai-first-pass-review) of the repo's agent PRs: `hangar` (a review job on a different harness from the author's), `check:<name>` (an org review bot's check run or status on the head) or `off` (unset) (`--ai-review`). |
 | `ai_review_harness` | The reviewing harness. Unset: codex for a claude-code PR, else claude-code (`--ai-review-harness`). |
 | `ai_review_model` | The reviewer's model or policy. Unset: `frontier`, resolved to a concrete id when the review is submitted (`--ai-review-model`). |
-| `ai_review_budget_usd` | What one review job may spend. Unset: $1.50 (`--ai-review-budget`). |
+| `ai_review_budget_usd` | What one review may spend, its confirmation pass included. Unset: $1.50 (`--ai-review-budget`). |
+| `ai_review_inline_max` | The most inline comments one review posts, most severe confirmed findings first. Unset: 5; at most 20 (`--ai-review-inline-max`). |
 | `max_open_agent_prs` | [Review capacity](team-scale.md#review-capacity): open agent PRs awaiting a person before their new jobs on this repo wait as `awaiting_capacity`; `0` turns it off. Unset: `HANGAR_PERSON_MAX_OPEN_AGENT_PRS` (5) (`--max-open-agent-prs`). |
 | `verify_allowed` | Globs (`make test*`, `pytest tests/*`) a ticket's own *Verify command* ([agent tickets](intake.md#agent-tickets)) must match to become that job's `verify` (`--verify-allowed`, repeated). Unset: a ticket's command is only ever a suggestion to the agent, and the job's check stays the policy's or the environment's. A matched command is the job's own check (`verify_source: job`), so the [base check](#the-check-on-the-base-commit) is skipped for it, as for any acceptance test a job brings. `*` alone is refused. |
 | `overnight` | `true`: the repo's intake jobs (Jira, GitHub, Slack) run at night in the overnight lane instead of waiting for 10:00 (`--overnight`; [gke.md](gke.md#the-overnight-lane), #186). A job from any repo can ask for it with the label `lane: overnight`. |
 | `branch_template` | The repo's job branches, e.g. `feature/{ticket_key}-{job}`. It must contain `{job}`, or the set is refused and nothing changes. Unset: `hangar/<job>` (`--branch-template`; `''` clears it). See [change sets](changesets.md#company-conventions-in-the-repo-policy). |
 | `require_ticket` | `true` refuses a job for the repo without a `ticket` (`jira:PAY-412`) (`--require-ticket`, `--no-require-ticket`). |
 | `title_template` | The title of the repo's agent PRs, e.g. `{ticket_key}: {title}` (`--title-template`; `''` clears it). Placeholders: `{job}`, `{ticket}`, `{ticket_key}`, `{title}`, `{role}`. |
+| `best_of_n` | `{sequential, escalate_at, max_n}` for best-of-N jobs. Attempt 1 runs alone first, may use `escalate_at` of the job budget, and `max_n` caps attempts per risk tier. See [sequential best-of-N](jobs/sequential-best-of-n.md). |
 
 The repo is `owner/repo` for GitHub (any URL form, any case), or the git URL for another host.
 

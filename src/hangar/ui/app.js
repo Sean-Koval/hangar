@@ -550,6 +550,7 @@ async function boot() {
     if (state.view === "jobs") loadJobs(true);
     if (state.view === "sessions") loadSessions(true);
     if (state.view === "needs" || tick % 8 === 0) loadNeeds(true);  // the count elsewhere, every half minute
+    if (tick % 15 === 0) api("GET", "/api/overview").then((ov) => { state.overview = ov; drawProd(ov); }).catch(() => {});
   }, 4000);
   loadJobs(true);  // fills the nav counts
   loadSessions(true);
@@ -569,6 +570,27 @@ async function refreshMeta() {
          ? `<span class="hint">default</span>` : ""}</span>`).join("");
   $("#providers").innerHTML = providers;
   $("#more-providers").innerHTML = `<span class="af-lbl">Providers</span>${providers}`;  // the top bar hides them on a phone
+  drawProd(ov);
+}
+
+// KAN-216: the commit production runs, its tag, and how far it is behind main. Information, not a status: grey
+// (af-meta), and the lag value takes the approval role only past the alert's threshold, when a deploy needs a person.
+function drawProd(ov) {
+  const el = $("#fleet-prod"), v = ov?.deploy_lag;
+  el.hidden = !v;
+  if (!v) return;
+  const item = (key, val, { mod = "", title = "" } = {}) => `<span class="af-meta__item${mod ? ` af-meta__item--${mod}` : ""}"${title
+    ? ` title="${esc(title)}"` : ""}><span class="af-meta__key">${esc(key)}</span><span class="af-meta__val">${esc(val)}</span></span>`;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  let lag;
+  if (v.state === "unknown") lag = item("Behind main", "unknown", { title: v.reason || "" });
+  else if (v.state === "current") lag = item("Behind main", "0 commits");
+  else lag = item("Behind main", `${plural(v.behind_commits, "commit")}, ${plural(v.days_behind, "day")}`, {
+    mod: v.over ? "approval" : "",
+    title: `${v.working_days_behind} working days since the oldest commit production lacks${v.over
+      ? `; over ${v.threshold_working_days}: a deploy needs approval` : ""}`,
+  });
+  el.innerHTML = `<span class="af-meta">${item("Production", v.short, { title: v.sha })}${v.tag ? item("Tag", v.tag) : ""}${lag}</span>`;
 }
 
 /* ------------------------------------------------------------------ fleet */

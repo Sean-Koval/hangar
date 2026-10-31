@@ -233,9 +233,15 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import posture  # --- intake posture (#123): gateway, egress proxy, intake environments' modes
 
     out += posture.doctor_checks(h)
+    from hangar import egress  # --- KAN-174: the default mode and the hosts sandboxes were refused
+
+    out += egress.doctor_checks(h)
     from hangar import power  # --- ops: the pools' power state, the last deploy, the background loops
 
     out += power.doctor_checks(h)
+    from hangar import deploylag  # --- KAN-216: the deployed commit and how far it is behind main
+
+    out += await deploylag.doctor_checks(h)
     from hangar import credhealth  # --- clouddoctor: logins that stopped working or expire soon
 
     out += credhealth.doctor_checks(h)

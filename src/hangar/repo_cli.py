@@ -152,6 +152,8 @@ def repo_set(
                                                "(default frontier)."),
     ai_review_budget: float | None = typer.Option(None, "--ai-review-budget", help="USD one AI review may spend "
                                                   "(default 1.50)."),
+    ai_review_inline_max: int | None = typer.Option(None, "--ai-review-inline-max", help="Inline comments one AI "
+                                                    "review posts, most severe first (default 5; KAN-230)."),
     verify_allowed: list[str] = typer.Option([], "--verify-allowed", help="A glob a ticket's own verify command "
                                              "may match to become its job's check, e.g. 'make test*' (repeat it). "
                                              "Replaces the list."),  # --- #156
@@ -185,6 +187,7 @@ def repo_set(
                 ("max_open_agent_prs", max_open_agent_prs), ("self_approval", self_approval),  # --- #159, #160
                 ("ai_review", ai_review), ("ai_review_harness", ai_review_harness),  # --- #161
                 ("ai_review_model", ai_review_model), ("ai_review_budget_usd", ai_review_budget),
+                ("ai_review_inline_max", ai_review_inline_max),  # --- KAN-230
                 ("verify_allowed", verify_allowed or None),  # --- #156
                 ("overnight", overnight),  # --- #186
                 ("require_ticket", require_ticket)):  # --- change sets (G7)
@@ -214,7 +217,8 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "max_profile, allow_heavy_for_intake, "
                                                              "max_open_agent_prs, self_approval, ai_review, "
                                                              "ai_review_harness, ai_review_model, "
-                                                             "ai_review_budget_usd, verify_allowed, "
+                                                             "ai_review_budget_usd, ai_review_inline_max, "
+                                                             "verify_allowed, "
                                                              "overnight, branch_template, require_ticket, "
                                                              "title_template). None: "
                                                              "remove the repo's policy.")):

@@ -85,9 +85,13 @@ MIRRORED = ("pypi", "npm", "go")
 # can't reach its model is no agent). Claude Code: code.claude.com/docs/en/network-config ("Network access
 # requirements": api.anthropic.com, claude.ai, platform.claude.com for OAuth refresh). The others from their CLIs'
 # documented endpoints; a provider not listed here (pi with another router) goes in `allow`.
+# --- KAN-174: Google's include Vertex AI's global endpoint, which a service-account credential (agy's ADC mode, pi's
+# google-vertex) calls with GOOGLE_CLOUD_LOCATION=global, hangar's default. A regional location's
+# `<region>-aiplatform.googleapis.com` goes in `allow`.
 _ANTHROPIC = ("api.anthropic.com", "claude.ai", "platform.claude.com")
 _OPENAI = ("api.openai.com", "chatgpt.com", "auth.openai.com")
-_GOOGLE = ("generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oauth2.googleapis.com")
+_GOOGLE = ("generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oauth2.googleapis.com",
+           "aiplatform.googleapis.com")
 HARNESS_HOSTS: dict[str, tuple[str, ...]] = {
     "claude-code": _ANTHROPIC,
     "codex": _OPENAI,
@@ -671,6 +675,43 @@ def mount(app: Any, h: Any, admin: Any) -> None:
         fleet.audit(who, "egress.revoke", key, scope=scope, rule=rule)
         fleet.egress.invalidate()
         return {"revoked": rule, scope: key}
+
+
+def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """--- KAN-174: `hangar doctor`: which environments the default mode decides, and the hosts sandboxes were refused
+    in the last 24 hours, by environment, with the three ways to let one through."""
+    from hangar.doctor import _check
+    from hangar.models import now as _now
+    from hangar.opstatus import _egress
+
+    s, fleet = h.settings, h.fleet
+    follow, own = [], []
+    for name in fleet.catalog.names():
+        try:
+            e = getattr(fleet.catalog.get(name), "egress", None)
+        except Exception:  # noqa: BLE001 - an environment that doesn't load is reported elsewhere
+            continue
+        if e is not None and e.mode:
+            own.append(f"{name} ({e.mode})")
+        else:
+            follow.append(name)
+    detail = f"HANGAR_EGRESS_DEFAULT={s.egress_default}: " + (
+        f"{', '.join(follow)} follow it" if follow else "every environment sets its own mode") + (
+        f"; {', '.join(own)} set their own" if own else "")
+    cluster = "kubernetes" in fleet.providers
+    out = [_check("egress default", s.egress_default != "open" or not cluster or None, detail,
+                  "HANGAR_EGRESS_DEFAULT=allowlist (deploy/k8s/config.yaml), and egress: {mode: open} on the "
+                  "environments that need the internet (docs/security/egress-default.md)")]
+    denies = _egress(fleet, _now())
+    if not denies["total"]:
+        out.append(_check("egress denials (24h)", True, "no connection refused in the last 24 hours"))
+        return out
+    hosts = "; ".join(f"{d['host']} ({d['count']}, {', '.join(d['environments']) or '?'})"
+                      for d in denies["by_host"][:8])
+    out.append(_check("egress denials (24h)", None, f"{denies['total']} refused: {hosts}",
+                      "approve the agent's request, add the host to the environment's egress.allow, or give the "
+                      "environment egress: {mode: open} (docs/security/egress-default.md)"))
+    return out
 
 
 def request_hint(host: str, port: int) -> str:

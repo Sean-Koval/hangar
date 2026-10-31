@@ -16,6 +16,7 @@ says what to do, in order, and what to check after.
 | [A credential leak](credential-leak.md) | A secret may be somewhere it shouldn't be: revoke it, find where it went, close the path | Whoever finds it, then an admin |
 | [Tower down](tower-down.md) | Tower isn't answering, so its hook and hangar fail closed (`tower-down`, `tower-fail-closed`) | The on-call owner |
 | [A full disk or quota](disk-and-quota.md) | hangar's data disk, a node's disk or a GCP quota is full (`data-disk`, `node-disk`, `sandbox-creates-failing`) | The on-call owner |
+| [A deploy waiting too long](deploy.md) | Production is behind main and a deploy waits for approval (`deploy-lag`): who approves, and what to do with a stale run | The on-call owner, or the second approver |
 | [A bad deploy](bad-deploy.md) | The control plane crash-loops or stops answering after a deploy (`restarts`, `api-down`); links the rollback | The on-call owner |
 | [Governance break-glass](break-glass.md) | Tower (the Govern plane) is unreachable or denies what it shouldn't: what hangar does today, and the planned switch back from `enforce` | An admin, and a second admin to confirm |
 

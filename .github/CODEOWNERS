@@ -73,6 +73,7 @@
 /src/hangar/approvals.py           @Sean-Koval
 /src/hangar/governance.py          @Sean-Koval
 /src/hangar/governed.py            @Sean-Koval
+/src/hangar/govhook.py             @Sean-Koval
 /src/hangar/govevents.py           @Sean-Koval
 /src/hangar/govrelease.py          @Sean-Koval
 /src/hangar/reviewtrust.py         @Sean-Koval

@@ -15,6 +15,7 @@ skills:
 credentials: []            # e.g. [claude-api, codex-api, openrouter, github-hangar]; filtered per harness
 # MCP servers are written in each harness's own config format when a sandbox is claimed.
 # ${VAR} references resolve against env injected into the sandbox (credentials and `secrets`).
+# Under allowlist egress a shipped environment's remote MCP servers are on its allowlist (api.githubcopilot.com).
 mcp:
   github:
     url: https://api.githubcopilot.com/mcp/

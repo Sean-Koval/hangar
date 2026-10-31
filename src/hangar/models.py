@@ -539,9 +539,22 @@ class Attempt(BaseModel):
     rank: int | None = None  # 1 = delivered
     summary: str | None = None
     cost_usd: float | None = None  # from its usage: reported by the harness or priced (--- interactions)
+    # --- KAN-231: its share of the job budget, fixed when it started (sequential runs share what attempt 1 left)
+    budget: Budget | None = None
     error: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
+
+
+class SequentialRun(BaseModel):
+    """--- KAN-231: a sequential best-of-N job (strategies.py). Attempt 1 runs alone; attempts 2..N start, in
+    parallel, only if it fails verify, changes nothing or the verify's tests, or uses more than `escalate_at` of the
+    job budget. `why` says what was decided and why: the events, the PR body and the review packet show it."""
+
+    escalate_at: float | None = None  # fraction of the job budget attempt 1 may use (None: an equal share)
+    decided: bool = False
+    escalated: bool = False  # attempts 2..N ran
+    why: str | None = None
 
 
 class FailureLabel(BaseModel):
@@ -613,13 +626,14 @@ class Job(BaseModel):
     n: int = 1
     judge: bool = False
     attempts: list[Attempt] = Field(default_factory=list)
+    sequential: SequentialRun | None = None  # --- KAN-231: None runs the attempts in parallel (the default)
     # --- workstream A: triggers
     approval: JobApproval | None = None
     untrusted_source: str | None = None  # who wrote untrusted task text ("github:<login>", "webhook:<source>")
     # --- overnight/autofix: the verify gate inside the turn, and the PR auto-fix loop (None: the defaults)
     verify_in_loop: bool | None = None
     max_verify_rounds: int | None = None
-    autofix: str | None = None  # "ci,reviews" | "ci" | "reviews" | "off"
+    autofix: str | None = None  # "ci,conflicts,reviews", a subset, or "off"
     autofix_state: AutofixState = Field(default_factory=AutofixState)
     person: str | None = None  # --- identity: the person it runs for (None: GitHub, Slack, webhooks, older jobs)
     # --- reconciler: times the job resumed on its own after a control-plane restart interrupted it (restarts.py)
@@ -828,6 +842,9 @@ class SessionTurn(BaseModel):
     # --- KAN-77: calls Tower allowed while the session was suspended for them, each allowed once by the driver
     # ({tool, args_hash, receipt, approval}; spec 0015 §5)
     preclear: list[dict[str, str]] = Field(default_factory=list)
+    # --- KAN-78: the turn ran with hangar's managed Tower hook (govhook.py): {runtime, source, path, digest, matcher,
+    # url, wait_seconds, timeout_seconds, fail, policy (the approval policy asked for; the driver ran deny-risky)}
+    governance_hook: dict[str, Any] | None = None
 
 
 class Checkpoint(BaseModel):
