@@ -799,35 +799,43 @@ async def test_the_packet_names_the_model_that_ran_and_its_price(svc, gh, settin
 
 
 # ====================================================================== KAN-232: outcome labels on pr.merge
-async def test_a_merge_waits_for_its_outcome_labels_then_goes_to_the_outbox(svc, gh, settings):
-    """The pr.merge event carries what the merge kept of the agent's diff, the human commits on the branch and the
-    review rounds; while GitHub can't answer, the event waits instead of going out without them."""
+BASE, MERGED = "0" * 40, "e" * 40
+
+
+def commit(sha: str, email: str, login: str | None = None, msg: str = "work", date: str = "2026-10-29T10:00:00Z",
+           parents: int = 1, bot: bool = False) -> dict:
+    return {"sha": sha, "parents": [{"sha": "p"}] * parents,
+            "commit": {"author": {"email": email, "date": date}, "message": msg},
+            "author": {"login": login, "type": "Bot" if bot else "User"} if login else None}
+
+
+def outcome_world(svc, gh, settings, *, agent_files: list, agent_commits: list, pr_files: list, pr_commits: list,
+                  pr: dict | None = None, down: list | None = None):
+    """GitHub for one merged PR #7: the compare of the agent's diff (base...HEAD), the PR's own files and commits
+    (paged as GitHub pages them) and its reviews (gh.reviews). Returns the outbox, the job and the reads."""
     from hangar import outbox
 
-    base = "0" * 40
-    agent = {"files": [{"filename": "src/app.py", "additions": 4, "deletions": 1,
-                        "patch": "@@ -1,1 +1,4 @@\n-old\n+a = 1\n+b = 2\n+\n+c = 3"}],
-             "commits": [{"sha": HEAD, "commit": {"author": {"email": "hangar@localhost"}}, "author": None}]}
-    final = {"files": [{"filename": "src/app.py", "patch": "@@ -1,1 +1,3 @@\n-old\n+a = 1\n+c = 4\n+d = 5"}],
-             "commits": [*agent["commits"], {"sha": NEW, "commit": {"author": {"email": "a@x.io"}}, "author": {
-                 "login": "alice", "type": "User"}}, {"sha": "d" * 40, "commit": {"author": {"email": "d@x.io"}},
-                                                      "author": {"login": "dependabot[bot]", "type": "Bot"}}]}
-    gh.head = lambda: NEW  # alice pushed on top of the agent's head
-    gh.reviews = [{"user": {"login": "alice"}, "state": "COMMENTED", "commit_id": HEAD},
-                  {"user": {"login": "alice"}, "state": "CHANGES_REQUESTED", "commit_id": HEAD},
-                  {"user": {"login": "bob"}, "state": "APPROVED", "commit_id": NEW},
-                  {"user": {"login": "hangar-ai[bot]", "type": "Bot"}, "state": "COMMENTED", "commit_id": NEW}]
-    down, gh_call = [True], gh.__call__
+    seen: list[httpx.Request] = []
 
     def github(r: httpx.Request) -> httpx.Response:
-        if r.url.path.startswith("/repos/o/r/compare/"):
-            if down[0]:
+        p = r.url.path
+        if p.startswith("/repos/o/r/compare/") or p in ("/repos/o/r/pulls/7/files", "/repos/o/r/pulls/7/commits"):
+            seen.append(r)
+            if down and down[0]:
                 return httpx.Response(502, json={"message": "Server Error"})
-            return httpx.Response(200, json={f"{base}...{HEAD}": agent, f"{base}...{NEW}": final}[
-                r.url.path.rsplit("/", 1)[1]])
-        got = gh_call(r)
+            per, page = int(r.url.params.get("per_page", 30)), int(r.url.params.get("page", 1))
+            if p.startswith("/repos/o/r/compare/"):
+                assert p.rsplit("/", 1)[1] == f"{BASE}...{HEAD}"
+                return httpx.Response(200, json={"total_commits": len(agent_commits), "files": agent_files
+                                                 if page == 1 else [], "commits": agent_commits[(page - 1) * per:
+                                                                                                page * per]})
+            items = pr_files if p.endswith("/files") else pr_commits
+            return httpx.Response(200, json=items[(page - 1) * per:page * per])
+        got = gh(r)
         if r.url.path == "/repos/o/r/pulls/7" and r.method == "GET" and got.status_code == 200:
-            return httpx.Response(200, json={**json.loads(got.content), "merge_commit_sha": "e" * 40})
+            return httpx.Response(200, json={**json.loads(got.content), "merge_commit_sha": MERGED,
+                                             "changed_files": len(pr_files), "commits": len(pr_commits),
+                                             **(pr or {})})
         return got
 
     svc.transport = httpx.MockTransport(github)
@@ -836,16 +844,159 @@ async def test_a_merge_waits_for_its_outcome_labels_then_goes_to_the_outbox(svc,
     o = outbox.Outbox(svc.fleet)
     o.jobs = svc
     job = pr_job(svc)
-    job.result.base_sha = base
+    job.result.base_sha = BASE
     job.landing.pr_state, job.landing.merged_at, job.landing.merged_by = "merged", time.time(), "bob"
     svc.store.put(job)
-    assert await o.merge_outcomes() == 0 and o.scan_jobs() == 1  # pr.open; pr.merge waits for GitHub
+    return o, job, seen
+
+
+async def outcome(o, job) -> dict:
+    from hangar import outbox
+
+    o.scan_jobs()
+    assert await o.merge_outcomes() == 1
+    assert o.store.kv_get(f"{outbox.KV_EVENT}{job.id}:pr.merge") is not None
+    return o.store.kv_get_json(outbox.KV_OUTCOME + job.id)
+
+
+AGENT_PATCH = {"filename": "src/app.py", "additions": 4, "deletions": 1,
+               "patch": "@@ -1,1 +1,4 @@\n-old\n+a = 1\n+b = 2\n+\n+c = 3"}
+
+
+async def test_a_merge_waits_for_its_outcome_labels_then_goes_to_the_outbox(svc, gh, settings):
+    """The pr.merge event carries what the merge kept of the agent's diff, the human commits on the branch and the
+    review rounds; while GitHub can't answer, the event waits, asked again with backoff, instead of going out
+    without them."""
+    from hangar import outbox
+
+    gh.head = lambda: NEW  # alice pushed on top of the agent's head
+    gh.reviews = [{"user": {"login": "alice"}, "state": "COMMENTED", "commit_id": HEAD},
+                  {"user": {"login": "alice"}, "state": "CHANGES_REQUESTED", "commit_id": HEAD},
+                  {"user": {"login": "bob"}, "state": "APPROVED", "commit_id": NEW},
+                  {"user": {"login": "hangar-ai[bot]", "type": "Bot"}, "state": "COMMENTED", "commit_id": NEW}]
+    down = [True]
+    agent = [commit(HEAD, "hangar@localhost")]
+    o, job, _ = outcome_world(
+        svc, gh, settings, agent_files=[AGENT_PATCH], agent_commits=agent, down=down,
+        pr_files=[{"filename": "src/app.py", "patch": "@@ -1,1 +1,3 @@\n-old\n+a = 1\n+c = 4\n+d = 5"}],
+        pr_commits=[*agent, commit(NEW, "a@x.io", "alice", msg="tidy"),
+                    commit("d" * 40, "d@x.io", "dependabot[bot]", bot=True)])
+    assert o.scan_jobs() == 1  # pr.open; pr.merge waits for its labels
+    assert await o.merge_outcomes() == 0 and o.scan_jobs() == 0  # GitHub is down: still waiting
+    wait = svc.store.kv_get_json(outbox.KV_OUTCOME_WAIT + job.id)
+    assert wait["attempts"] == 1 and wait["next_at"] > time.time() + 30 and "502" in wait["error"]
     down[0] = False
+    assert await o.merge_outcomes() == 0  # not due yet: the backoff holds
+    svc.store.kv_set_json(outbox.KV_OUTCOME_WAIT + job.id, {**wait, "next_at": 0})
     assert await o.merge_outcomes() == 1 and o.scan_jobs() == 0
+    assert svc.store.kv_keys(outbox.KV_OUTCOME_WAIT) == []
     await o.drain_once()
     bucket = Path(settings.outbox_url)
     ev = next(e for p in bucket.rglob("*.json") if (e := json.loads(p.read_bytes()))["kind"] == "pr.merge")
-    assert ev["data"] == {"by": "bob", "green_to_merge_seconds": None, "agent_head_sha": HEAD, "merged_sha": "e" * 40,
+    assert ev["data"] == {"by": "bob", "green_to_merge_seconds": None, "agent_head_sha": HEAD, "merged_sha": MERGED,
                           "final_head_sha": NEW, "agent_diff_lines": 5, "agent_added_lines": 3,
                           "merged_added_lines": 3, "surviving_lines": 1, "survival_at_merge": 0.3333,
-                          "human_commits": 1, "review_rounds": 2}
+                          "human_commits": 1, "review_rounds": 2, "outcome_truncated": []}
+
+
+async def test_an_update_from_main_is_not_a_human_edit(svc, gh, settings):
+    """The owner clicked Update branch: main's own commits are in base...final, but not in the PR's files or
+    commits, and the merge commit that brought them is no human edit."""
+    gh.head = lambda: NEW
+    agent = [commit(HEAD, "hangar@localhost")]
+    o, job, seen = outcome_world(
+        svc, gh, settings, agent_files=[AGENT_PATCH], agent_commits=agent,
+        pr_files=[{"filename": "src/app.py", "patch": AGENT_PATCH["patch"]}],
+        pr_commits=[*agent, commit(NEW, "owner@x.io", "owner", msg="Merge branch 'main' into hangar/job-0001",
+                                   parents=2)])
+    got = await outcome(o, job)
+    assert got["human_commits"] == 0 and got["merged_added_lines"] == got["agent_added_lines"] == 3
+    assert got["survival_at_merge"] == 1.0 and got["final_head_sha"] == NEW
+    assert not [r for r in seen if r.url.path.endswith(f"...{NEW}")]  # never base...final, which holds main's work
+
+
+async def test_the_owners_fix_counts_though_hangar_pushed_as_the_owner(svc, gh, settings):
+    """hangar pushed under the delegating owner's account, so the owner's own fix on the PR has the same author;
+    it's a human commit all the same, as it isn't a commit hangar delivered."""
+    gh.head = lambda: NEW
+    agent = [commit("a" * 40, "owner@x.io", "owner", msg="first", date="2026-10-29T10:00:00Z"),
+             commit(HEAD, "owner@x.io", "owner", msg="second", date="2026-10-29T10:05:00Z")]
+    o, job, _ = outcome_world(
+        svc, gh, settings, agent_files=[AGENT_PATCH], agent_commits=agent,
+        pr_files=[{"filename": "src/app.py", "patch": "@@ -1,1 +1,3 @@\n-old\n+a = 1\n+b = 2\n+c = 30"}],
+        pr_commits=[*agent, commit(NEW, "owner@x.io", "owner", msg="fix c", date="2026-10-29T12:00:00Z")])
+    got = await outcome(o, job)
+    assert got["human_commits"] == 1 and got["surviving_lines"] == 2 and got["merged_added_lines"] == 3
+
+
+async def test_a_rebased_branch_keeps_hangars_commits(svc, gh, settings):
+    """A rebase gives hangar's commits new shas; their author date and message still say they are hangar's."""
+    gh.head = lambda: NEW
+    agent = [commit(HEAD, "owner@x.io", "owner", msg="the fix", date="2026-10-29T10:00:00Z")]
+    o, job, _ = outcome_world(
+        svc, gh, settings, agent_files=[AGENT_PATCH], agent_commits=agent,
+        pr_files=[{"filename": "src/app.py", "patch": AGENT_PATCH["patch"]}],
+        pr_commits=[commit(NEW, "owner@x.io", "owner", msg="the fix", date="2026-10-29T10:00:00Z")])
+    got = await outcome(o, job)
+    assert got["human_commits"] == 0 and got["survival_at_merge"] == 1.0
+
+
+async def test_long_lists_are_paged_and_a_capped_one_is_flagged(svc, gh, settings):
+    """The PR's files and commits are read page by page; a list GitHub caps (a PR's 250 commits, a compare's 300
+    files) is named in outcome_truncated, so a reader knows the counts are a floor."""
+    gh.head = lambda: NEW
+    files = [{"filename": f"f{i}.py", "patch": "@@ -0,0 +1 @@\n+x = 1"} for i in range(300)]
+    agent = [commit(f"{i:040x}", "hangar@localhost") for i in range(1, 130)] + [commit(HEAD, "hangar@localhost")]
+    humans = [commit(f"{i:040x}", "a@x.io", "alice", msg=f"edit {i}") for i in range(1000, 1150)]
+    o, job, seen = outcome_world(svc, gh, settings, agent_files=files, agent_commits=agent, pr_files=files,
+                                 pr_commits=(agent + humans)[:250], pr={"commits": len(agent) + len(humans)})
+    got = await outcome(o, job)
+    assert got["agent_added_lines"] == got["merged_added_lines"] == got["surviving_lines"] == 300
+    assert got["human_commits"] == 120  # every agent commit (two compare pages) is known as hangar's
+    assert got["outcome_truncated"] == ["agent_files", "merged_commits"]
+    assert sorted(r.url.params["page"] for r in seen if r.url.path.endswith("/files")) == ["1", "2", "3", "4"]
+
+
+async def test_a_merge_seen_by_the_scan_first_still_waits_for_its_labels(svc, gh, settings):
+    """However the scan and the outcome pass interleave, pr.merge goes out only with its labels (or the error in
+    their place)."""
+    from hangar import outbox
+
+    o, job, _ = outcome_world(svc, gh, settings, agent_files=[], agent_commits=[], pr_files=[], pr_commits=[])
+    assert await o.merge_outcomes() == 0  # the outcome pass runs before the scan has seen the merge
+    o.scan_jobs()
+    assert o.store.kv_get(f"{outbox.KV_EVENT}{job.id}:pr.merge") is None
+    assert o.store.kv_get(outbox.KV_OUTCOME_WAIT + job.id) is not None
+    assert await o.merge_outcomes() == 1 and "agent_added_lines" in o.store.kv_get_json(outbox.KV_OUTCOME + job.id)
+
+
+async def test_outcome_labels_are_read_as_the_app_and_never_hold_up_uploads(svc, gh, settings, broker, app_pem,
+                                                                             monkeypatch):
+    from hangar import outbox
+
+    broker.put("hangar-app", "git", CredentialKind.GITHUB_APP, json.dumps({"app_id": "99", "private_key": app_pem}))
+    settings.github_app_credential = "hangar-app"
+    o, job, seen = outcome_world(svc, gh, settings, agent_files=[], agent_commits=[], pr_files=[], pr_commits=[])
+    assert await outcome(o, job) is not None
+    assert seen and {r.headers["authorization"] for r in seen} == {"Bearer ghs_app1"}
+    # a GitHub that never answers: the drain loop still uploads what is staged
+    stuck = asyncio.Event()
+
+    async def hang(gh, job):
+        await stuck.wait()
+
+    monkeypatch.setattr(outbox, "merge_outcome", hang)
+    job2 = pr_job(svc)
+    job2.result.base_sha, job2.landing.merged_at, job2.landing.pr_state = BASE, time.time(), "merged"
+    svc.store.put(job2)
+    o.scan_jobs()
+    o.start(jobs=svc)
+    try:
+        for _ in range(100):
+            if not o.status()["pending"]:
+                break
+            await asyncio.sleep(0.05)
+        assert o.status()["pending"] == 0
+        assert o.store.kv_get(outbox.KV_OUTCOME_WAIT + job2.id) is not None  # still asking GitHub
+    finally:
+        await o.stop()
