@@ -149,7 +149,6 @@ nav:
           - Intake (Jira, GitHub Projects): intake.md
           - Slack: slack.md
           - Triggers and schedules: triggers.md
-          - A2A: a2a.md
           - Plugins and events out: plugins.md
       - Environments and agents:
           - Environments:
@@ -181,7 +180,6 @@ nav:
   - Reference:
       - APIs:
           - The Fleet API: api/fleet.md
-          - E2B-compatible API: e2b.md
           - hangar-envd: envd.md
           - Trace export (hangar.trace/v1): api/traces.md
           - Run capture (hangar.run/v1): api/outbox.md
@@ -264,5 +262,5 @@ nav:
       - Troubleshooting: troubleshooting.md
       - Team scale: team-scale.md
       - The Cloud Doctor: doctor.md
-      - MicroVM tier (E2B, CubeSandbox): microvm.md
+      - MicroVM tier (E2B, CubeSandbox; experimental): microvm.md
       - Local microVMs: local-microvms.md

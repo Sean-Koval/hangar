@@ -34,7 +34,7 @@ Build caches, the agent's screen and the vault key ring get the
 One hangar serves a team. Every token belongs to a [person](people.md), an admin or a member. Members see and act only
 on their own work, and OAuth connectors reach `/mcp` only, for at most 90 days.
 
-Work enters through [seven front doors](front-doors.md): REST, MCP, A2A, GitHub, Slack, signed webhooks and schedules.
+Work enters through [six front doors](front-doors.md): REST, MCP, GitHub, Slack, signed webhooks and schedules.
 Each decides who may start work. All of them end in the same job service with the same rate limits, caps and audit.
 
 ## What is not covered

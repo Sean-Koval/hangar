@@ -64,6 +64,5 @@ answer still works.
 
 ## From another agent
 
-Google ADK's `RemoteA2aAgent`, or any A2A client, can hand hangar a job. hangar is an A2A agent at `/a2a`, with its
-card at `/.well-known/agent-card.json`. A task is a job, and a message in the same context is a follow-up. See
-[A2A](../a2a.md).
+Another agent hands hangar a job over MCP (`submit_job`) or REST, like any client. The A2A endpoint was removed
+after v0.2.0 ([removed surfaces](../upgrading.md#removed-surfaces)).

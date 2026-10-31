@@ -129,8 +129,7 @@ def upstream(**over):
                 "bundle": {"dsseEnvelope": {"payload": base64.b64encode(json.dumps(stmt).encode()).decode()}}}]})
         if u.startswith(canary.NPM):
             pkg = req.url.path.lstrip("/").replace("%2f", "/").replace("%2F", "/")
-            latest = {"@openai/codex": "0.163.0", "@earendil-works/pi-coding-agent": "1.2.0",
-                      "@google/gemini-cli": "0.64.0"}[pkg]
+            latest = {"@openai/codex": "0.163.0", "@earendil-works/pi-coding-agent": "1.2.0"}[pkg]
             versions = {latest: {"dist": {"integrity": "sha512-abc"}}}
             if pkg == "@openai/codex":
                 versions.update({f"{latest}-{p}": {"dist": {"integrity": "sha512-x"}}
@@ -150,7 +149,6 @@ def test_resolve_moves_every_harness_forward_with_verified_checksums():
         a: hashlib.sha256(b).hexdigest() for a, b in CLAUDE_BIN.items()}}
     assert cand["antigravity"] == {"version": "1.3.5", "build": "6164039479459840",
                                    "sha512": {a: hashlib.sha512(b).hexdigest() for a, b in AGY.items()}}
-    assert cand["gemini"] == lock["gemini"] and report["harnesses"]["gemini"]["status"] == "current"
     assert "checked against each download" in report["harnesses"]["claude-code"]["checksums"]
     canary.harnesses_for(cand)  # valid as a lock
 

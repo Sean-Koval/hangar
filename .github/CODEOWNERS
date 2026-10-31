@@ -65,7 +65,6 @@
 /src/hangar/identity.py            @Sean-Koval
 /src/hangar/identity_api.py        @Sean-Koval
 /src/hangar/people.py              @Sean-Koval
-/src/hangar/e2b_api.py             @Sean-Koval
 /src/hangar/frontdoor.py           @Sean-Koval
 /src/hangar/app.py                 @Sean-Koval
 
@@ -117,5 +116,4 @@
 /src/hangar/github.py              @Sean-Koval
 /src/hangar/slack.py               @Sean-Koval
 /src/hangar/jira.py                @Sean-Koval
-/src/hangar/a2a.py                 @Sean-Koval
 /src/hangar/setup_api.py           @Sean-Koval

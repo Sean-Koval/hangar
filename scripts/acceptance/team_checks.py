@@ -1593,7 +1593,7 @@ def _every(api: Api, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _others_busy(api: Api, state: State) -> list[str]:
     """Other people's work the pools going down would interrupt: live sessions, active jobs and any other sandbox
-    (MCP, REST, E2B). This run's own (its label, its test people, what its state recorded) doesn't count."""
+    (MCP, REST). This run's own (its label, its test people, what its state recorded) doesn't count."""
     run = state.run
     own_sbs, own_sessions = set(state.get("sandboxes", [])), set(state.get("sessions", []))
 

@@ -47,7 +47,7 @@ IAP stays off by default. With it on, Google asks for a Google login before any 
 every caller that isn't a browser:
 
 - GitHub, Slack and Jira webhooks, and signed webhooks;
-- MCP clients, the CLI, the E2B SDK and A2A agents, which send hangar tokens;
+- MCP clients and the CLI, which send hangar tokens;
 - Tower's approval events, and the power jobs' calls.
 
 hangar already checks a token on every request. Its tokens are hashed at rest, scoped and revocable. The policy above

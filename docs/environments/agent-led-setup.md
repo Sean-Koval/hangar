@@ -27,8 +27,7 @@ It is a job (`hangar.kind: env-setup` in its labels). So it also starts from
 that label, and from a schedule's or an inbound webhook's job template.
 
 It also starts from an issue carrying the `HANGAR_ENV_SETUP_LABEL` label (`hangar-env-setup`). That is a GitHub issue
-given it, or a Jira issue that reaches the trigger status (or label) with it. It is also a GitHub Projects item whose
-issue has it. The
+given it, or a Jira issue that reaches the trigger status (or label) with it. The
 job's events, its result, its tracker write-back and the inbox work like any job's.
 
 ## 1. Goal

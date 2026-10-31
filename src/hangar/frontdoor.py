@@ -1,4 +1,4 @@
-"""Front-door limits shared by every way work enters hangar (REST, MCP, A2A, GitHub, Slack, webhooks, schedules).
+"""Front-door limits shared by every way work enters hangar (REST, MCP, GitHub, Slack, webhooks, schedules).
 
 - Admission: per-caller and per-source token buckets on job submissions and follow-ups, a cap on each caller's
   unfinished jobs, and an audit entry for every refusal (itself rate limited, so a flood can't fill the audit log).
@@ -39,7 +39,7 @@ ANON_MAX_BODY = 64 * 1024  # an unauthenticated request: a token exchange or con
 GITHUB_MAX_BODY = 2 * 1024 * 1024
 _PRUNE_SECONDS = 600
 _MAX_BUCKETS = 10_000  # rate-limit buckets kept per Buckets (callers or client addresses)
-_EXEMPT_SOURCES = {"api", "mcp", "a2a"}  # ...when the caller is an admin token (not restricted)
+_EXEMPT_SOURCES = {"api", "mcp"}  # ...when the caller is an admin token (not restricted)
 
 
 class RateLimited(JobError):
@@ -273,7 +273,7 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
 
 
 def outbound_transport(svc: JobService) -> GuardedTransport:
-    """For callbacks and A2A push notifications (spec 0009 §5.5)."""
+    """For callbacks (spec 0009 §5.5)."""
     return GuardedTransport(svc._callback_allowed, svc.resolve)
 
 
@@ -305,21 +305,18 @@ class FrontDoorMiddleware:
             return s.inbound_max_body_bytes
         if path == "/api/hooks/jira":  # --- intake: an issue with a long description is well past 64 KB
             return self.STREAMED  # --- trust: jira.receive says on the issue what it couldn't take
-        if path.startswith(("/api/", "/mcp")) or path == "/a2a":
+        if path.startswith(("/api/", "/mcp")):
             return -1  # depends on the caller
         return ANON_MAX_BODY  # the OAuth endpoints, and anything else
 
     def _authed_cap(self, path: str) -> int:
-        """What a request with a valid token may send. /a2a has its own limit (and checks the token before reading
-        the body, which this middleware would otherwise undo for anonymous callers)."""
-        if path == "/a2a":
-            return self.h.settings.a2a_max_request_bytes
+        """What a request with a valid token may send."""
         return self.h.settings.max_request_mb * 1024 * 1024
 
     async def _may_send(self, path: str, headers: dict[str, str]) -> bool:
         """Whether the request's token may use this route, and so send it a big body (--- overnight/sweep: a `jobs`
         or `mcp` token gets the anonymous cap on the routes it would be refused on). Mirrors the routes' own checks:
-        `jobs` reaches /api/jobs* and /a2a, `mcp` (and an OAuth token) reaches /mcp, `admin` everything."""
+        `jobs` reaches /api/jobs*, `mcp` (and an OAuth token) reaches /mcp, `admin` everything."""
         from hangar.auth import bearer_from_headers
 
         token = bearer_from_headers(headers)
@@ -335,7 +332,7 @@ class FrontDoorMiddleware:
             return "mcp" in scopes or "user" in scopes  # --- identity
         if "user" in scopes and path.startswith(("/api/me", "/api/connect", "/api/tokens", "/api/credentials")):
             return True  # --- identity: a person's own tokens and credentials
-        return "jobs" in scopes and (path in ("/a2a", "/api/jobs") or path.startswith("/api/jobs/"))
+        return "jobs" in scopes and (path == "/api/jobs" or path.startswith("/api/jobs/"))
 
     def _audit(self, scope, status: int) -> None:
         client = (scope.get("client") or ("?", 0))[0]

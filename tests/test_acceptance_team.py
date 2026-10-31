@@ -172,7 +172,7 @@ def test_only_and_skip_take_core(tmp_path, hangar_with):
     """`core` in --only or --skip stands for the core checks (deploy.yml runs them, then the rest, in two steps)."""
     env = _script_env(tmp_path, hangar_with.url)
     base = ["bash", str(SCRIPT), "--no-kubectl", "--env", "xenv", "--session-env", "xenv"]
-    others = "doctor,sandbox,exec,stream,files,mcp,isolation,session,e2b,backup,power"
+    others = "doctor,sandbox,exec,stream,files,mcp,isolation,session,backup,power"
     for args, want in ((["--only", "metrics,computer", "--skip", "core"], ["computer"]),
                        (["--only", "core", "--skip", others], ["metrics"])):
         rep = tmp_path / "r.json"
@@ -571,7 +571,7 @@ def _busy_hangar(world_: dict[str, Any]) -> _FakeApi:
 @pytest.mark.parametrize("case,why", [
     ("idle_session", "1 live session"),  # between turns: no turn running, but the pools going down end its sandbox
     ("needs_input_job", "1 active job"),
-    ("raw_sandbox", "1 other sandbox"),  # an MCP or E2B sandbox someone works in
+    ("raw_sandbox", "1 other sandbox"),  # an MCP sandbox someone works in
     ("paged_session", "1 live session"),  # past the first page of the listing
 ])
 def test_power_cycle_refuses_while_others_are_live(tmp_path, monkeypatch, case, why):

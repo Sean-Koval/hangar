@@ -1,6 +1,9 @@
 # The microVM tier: E2B and CubeSandbox as hangar providers
 
-hangar can run sandboxes as microVMs that start by restoring a memory snapshot, in tens of milliseconds rather than the second or more a container or a GKE gVisor Pod takes. It doesn't run the microVMs itself. It drives a platform that does, through its `e2b` provider, and stays the control plane: environments, jobs, sessions, the git gateway, budgets and the MCP and E2B APIs all work the same on top.
+!!! warning "Experimental, outside 1.0"
+    The `e2b` provider is experimental and not part of hangar 1.0 (KAN-84). It refuses `ask`, `deny-risky` and governed turns by default (#402). hangar's own E2B-compatible API is gone ([removed surfaces](upgrading.md#removed-surfaces)); this provider, which runs hangar's sandboxes on E2B or CubeSandbox, stays.
+
+hangar can run sandboxes as microVMs that start by restoring a memory snapshot, in tens of milliseconds rather than the second or more a container or a GKE gVisor Pod takes. It doesn't run the microVMs itself. It drives a platform that does, through its `e2b` provider, and stays the control plane: environments, jobs, sessions, the git gateway, budgets and the MCP API all work the same on top.
 
 | Platform | VMM | How it is fast | Flavour |
 | --- | --- | --- | --- |
@@ -8,7 +11,7 @@ hangar can run sandboxes as microVMs that start by restoring a memory snapshot, 
 | E2B self-hosted ([infra](https://github.com/e2b-dev/infra) / Embed) | Firecracker | Same, on your machines | `selfhosted` |
 | [CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Cloud Hypervisor fork | Restores a memory image mapped `MAP_PRIVATE`, so every VM from one template shares its page cache; XFS reflink rootfs; a pre-created TAP pool | `cube` |
 
-This is spec 0013's phase P3 and the deployment design for its P4 (§6, §8.2, §9). Nothing here was run on KVM: this machine has none. The tests run the provider against a fake control plane and against hangar's own E2B API, with real envd daemons behind both (see [Testing](#testing-without-kvm)).
+This is spec 0013's phase P3 and the deployment design for its P4 (§6, §8.2, §9). Nothing here was run on KVM: this machine has none. The tests run the provider against a fake control plane, with real envd daemons behind it (see [Testing](#testing-without-kvm)).
 
 ## Tiers
 
@@ -58,8 +61,6 @@ HANGAR_TIERS='{"fast": ["e2b"], "heavy": ["e2b"]}'   # or ["kubernetes", "e2b"]:
 - **Hot resume** pauses the VM with its memory, so a resumed session finds dockerd, its images and running stacks as
   they were.
 
-hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROVIDER`, the provider that has hangar-envd, so a `fast` environment requested through `/e2b` can't route back into the `e2b` provider. If that provider pointed at this same hangar, the request would loop. An `isolated` environment is created through `/e2b` only when the default provider is one of the isolated tier's; otherwise the create fails.
-
 ## The e2b provider
 
 ### Flavours
@@ -74,7 +75,7 @@ hangar's own E2B API never uses tiers. It always creates on `HANGAR_DEFAULT_PROV
 | Template builds | `Template.build` from your pushed image (e2b SDK) | same | CubeAPI's image builds (`POST /templates`) |
 | Snapshots | `POST /sandboxes/{id}/snapshots` | same | same |
 
-`HANGAR_E2B_SANDBOX_URL` overrides where envd is reached. With `{sandbox_id}` (and `{port}`) in it, it is filled in per sandbox. That is for a CubeProxy without TLS on a private network, for example `http://{port}-{sandbox_id}.cube.internal`. Without placeholders, every sandbox is reached at that one URL and routed by header. That fits a single-host test, or another hangar's `/e2b/sandbox`.
+`HANGAR_E2B_SANDBOX_URL` overrides where envd is reached. With `{sandbox_id}` (and `{port}`) in it, it is filled in per sandbox. That is for a CubeProxy without TLS on a private network, for example `http://{port}-{sandbox_id}.cube.internal`. Without placeholders, every sandbox is reached at that one URL and routed by header. That fits a single-host test.
 
 ### What changed from the old provider
 
@@ -146,8 +147,6 @@ Parked sandboxes are a cache, so hangar bounds them. When a suspend would break 
 
 **Cost.** A paused sandbox isn't running, but it isn't free either: E2B keeps its snapshot (check your plan's terms for paused sandboxes), and CubeSandbox keeps the snapshot files on the node's disk. Turn hot resume off with `HANGAR_SESSION_HOT_RESUME_MINUTES=0` if that matters more than the restore time.
 
-Pause and connect through hangar's own E2B API keep doing what they did before: the provider's pause, with memory.
-
 ## Security
 
 - **CubeSandbox's envd has no token.** CubeAPI returns `envdAccessToken: null` (spec 0013 §5.4, `services/sandboxes.rs`), so the envd inside a Cube sandbox answers anyone who can reach it. hangar therefore **refuses such sandboxes and kills them**, unless `HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true`. Set that only when all of these hold:
@@ -158,7 +157,7 @@ Pause and connect through hangar's own E2B API keep doing what they did before: 
 - **Upstream fix.** CubeSandbox should return an envd token and serve the v2 routes; spec 0013 §8.2 proposes the PR. Once it does, the `cube` flavour needs neither the flag nor the v1 routes.
 - **API key.** The key is sent only to `HANGAR_E2B_API_URL`, never logged, and missing from every error message. For `cube`, CubeAPI can check keys against hangar through its `AUTH_CALLBACK_URL` (spec 0013 §8.3), which isn't built yet.
 - **A sandbox's answers are untrusted.** Output is cut to a tail, reads stop at their limit, frames are capped and compression is refused, as for hangar-envd. Sandbox ids from the API are checked before they go into a URL path.
-- **No loops.** The provider deliberately has no `envd` attribute, so hangar's E2B API and sandbox router never mistake it for a hangar-envd provider. hangar's own E2B API always creates on the default provider. A hangar whose default provider is its own `/e2b` gets a refusal ("has no hangar-envd"), not a loop. The tests check both.
+- **Not a hangar-envd provider.** The provider deliberately has no `envd` attribute, so the preview proxy never mistakes it for one.
 
 ## Deployment
 
@@ -260,7 +259,6 @@ The provider adds little on top. One control-API round trip creates a sandbox, a
   - pagination, pause and connect with rotating tokens, snapshots, alias lookups and Cube's template build.
 
   Every fake sandbox runs a real hangar-envd daemon. hangar-envd accepts E2B's `X-Access-Token`, so commands, files and terminals cross the real envd protocol. The tests cover create (the v1 or v2 route per flavour), exec with exactly one login shell, the output and read caps, files and modes, a PTY, pause and resume keeping a process alive, a control-plane restart re-fetching tokens, timeouts, list, snapshots, kill, and the refusal of an unauthenticated envd.
-- **Against hangar itself.** The `selfhosted` and `cube` flavours are pointed at another hangar's `/e2b` API and sandbox router, which runs local hangar-envd daemons. That is an end-to-end test of both sides. The same fixture checks that hangar can't loop through itself: a `fast` environment created through `/e2b` stays on the default provider, and a hangar whose default provider is its own `/e2b` refuses.
 - **Tiers** (`fast` picks e2b, falls back when full and cools down; `isolated` never falls back; other errors don't fall back) on the fake fleet.
 - **Hot resume** (`tests/test_hot_resume.py`) uses the session tests' scripted agent, real git and tmux:
   - suspend checkpoints, then pauses; the next turn resumes the same sandbox, with the ignored `.venv` still there;

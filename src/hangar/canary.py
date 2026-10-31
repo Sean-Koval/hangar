@@ -51,11 +51,11 @@ from hangar.harnesses import (
     version_from_log,
 )
 
-# The agent CLIs the contract tests run (gemini is deprecated and has no tests; `install --only gemini` still works).
+# The agent CLIs the contract tests run.
 CONTRACT = ("claude-code", "codex", "pi", "antigravity")
 TEST_ENV = {"claude-code": "HANGAR_TEST_CLAUDE", "codex": "HANGAR_TEST_CODEX", "pi": "HANGAR_TEST_PI",
             "antigravity": "HANGAR_TEST_AGY"}
-BINARY = {"claude-code": "claude", "codex": "codex", "pi": "pi", "antigravity": "agy", "gemini": "gemini"}
+BINARY = {"claude-code": "claude", "codex": "codex", "pi": "pi", "antigravity": "agy"}
 STAMP = ".hangar-pack"  # the pack digest an install came from: a cached install of another recipe is redone
 
 # The vendors' release sources (the same ones harnesses.lock.yaml was verified against, 2026-10-14).
@@ -63,7 +63,7 @@ CLAUDE_RELEASES = "https://downloads.claude.ai/claude-code-releases"
 AGY_UPDATER = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app"
 AGY_ARCHIVES = "https://storage.googleapis.com/antigravity-public/antigravity-cli"
 NPM = "https://registry.npmjs.org"
-NPM_PACKAGES = {"codex": "@openai/codex", "pi": "@earendil-works/pi-coding-agent", "gemini": "@google/gemini-cli"}
+NPM_PACKAGES = {"codex": "@openai/codex", "pi": "@earendil-works/pi-coding-agent"}
 CLAUDE_PLATFORMS = {"x86_64": "linux-x64", "aarch64": "linux-arm64"}  # the lock's arch -> the manifest's platform
 AGY_PLATFORMS = {"x86_64": ("linux_amd64", "linux-x64/cli_linux_x64"), "aarch64": ("linux_arm64",
                                                                                "linux-arm/cli_linux_arm64")}
@@ -79,7 +79,7 @@ AGY_PLATFORMS = {"x86_64": ("linux_amd64", "linux-x64/cli_linux_x64"), "aarch64"
 CLAUDE_KEY = Path(__file__).parent / "keys" / "claude-code.asc"
 CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 NPM_REPOS = {"codex": "https://github.com/openai/codex", "pi": "https://github.com/earendil-works/pi"}
-NPM_CPUS = {"codex": ("x64", "arm64"), "pi": ("x64",), "gemini": ("x64",)}  # codex ships a package per platform
+NPM_CPUS = {"codex": ("x64", "arm64"), "pi": ("x64",)}  # codex ships a package per platform
 
 
 # ====================================================================== the lock

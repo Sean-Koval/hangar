@@ -37,6 +37,46 @@ bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / 
 | `HANGAR_INTAKE_POSTURE=warn` or `off` | the release after v0.2.0 (KAN-74) | In the environment (`hangar-site`, `.env`): hangar refuses to start and logs the fix. Stored with `hangar config`: it isn't applied, and `hangar doctor` fails | Set `HANGAR_GATEWAY_URL` (and `HANGAR_EGRESS_URL` on GKE), then remove the setting ([the steps](releases/enforce.md#before-you-upgrade)) |
 | `HANGAR_SUBSCRIPTION_LOGINS=any` | the release after v0.2.0 (KAN-74) | The same. Jobs on a subscription login (a ChatGPT sign-in, Claude Pro or Max) are refused, naming the API key to add | Store an API key for each harness jobs use, e.g. `hangar cred add codex-api --harness codex --kind api_key --file openai-key.txt`, then remove the setting ([the steps](releases/enforce.md#before-you-upgrade)) |
 
+## Removed surfaces
+
+| What was removed (KAN-217, after v0.2.0) | What to do first |
+| --- | --- |
+| The A2A endpoint: `POST /a2a` and `GET /.well-known/agent-card.json` now answer 404 | Send work over MCP (`submit_job`) or `POST /api/jobs` |
+| The E2B-compatible API: `/e2b/*` and its sandbox URLs (`api.<domain>`, `sandbox.<domain>`, `<port>-<id>.<domain>`) | Drive sandboxes over MCP or `/api/sandboxes` |
+| The `sandboxes` token scope (`hangar token create --scope sandboxes`) | Revoke such tokens: they reach nothing now |
+| The GitHub Projects door: a `projects_v2_item` delivery is ignored, and the `ghprojects` plugin is gone | Use a Jira status or a GitHub label; delete the organization webhook |
+| The `gemini` harness (Gemini CLI), deprecated since Antigravity replaced it | Use `antigravity`; `hangar connect gemini` still adds hangar to Gemini CLI |
+| `deploy/k8s/e2b.yaml` | Delete its Gateway and route; preview ports' NetworkPolicy is now `deploy/k8s/preview-network.yaml` |
+| Not removed: the `e2b` provider | It stays, as an [experimental tier outside 1.0](microvm.md) |
+
+| Removed setting | Surface |
+| --- | --- |
+| `HANGAR_A2A_ENABLED` | The A2A endpoint |
+| `HANGAR_A2A_DEFAULT_REPO` | The A2A endpoint |
+| `HANGAR_A2A_POLL_SECONDS` | The A2A endpoint |
+| `HANGAR_A2A_MAX_WAIT_SECONDS` | The A2A endpoint |
+| `HANGAR_A2A_MAX_REQUEST_BYTES` | The A2A endpoint |
+| `HANGAR_A2A_MAX_PUSH_CONFIGS` | The A2A endpoint |
+| `HANGAR_A2A_MAX_STREAMS_PER_OWNER` | The A2A endpoint |
+| `HANGAR_E2B_API_PATH` | The E2B-compatible API |
+| `HANGAR_E2B_API_DOMAIN` | The E2B-compatible API |
+| `HANGAR_E2B_TEMPLATES` | The E2B-compatible API |
+| `HANGAR_E2B_TRUSTED_ENVIRONMENTS` | The E2B-compatible API |
+| `HANGAR_E2B_MAX_TIMEOUT_SECONDS` | The E2B-compatible API |
+| `HANGAR_E2B_MAX_SANDBOXES_PER_OWNER` | The E2B-compatible API |
+| `HANGAR_E2B_RATE_PER_MINUTE` | The E2B-compatible API |
+| `HANGAR_E2B_RATE_BURST` | The E2B-compatible API |
+| `HANGAR_E2B_CREATE_PER_MINUTE` | The E2B-compatible API |
+| `HANGAR_E2B_CREATE_BURST` | The E2B-compatible API |
+| `HANGAR_E2B_MAX_STREAMS_PER_SANDBOX` | The E2B-compatible API; preview ports' cap is now `HANGAR_PREVIEW_MAX_STREAMS_PER_SANDBOX` (256) |
+| `HANGAR_GITHUB_PROJECTS` | The GitHub Projects door |
+
+| Where a removed setting is set | What happens |
+| --- | --- |
+| The environment (`hangar-site`, `.env`) | hangar refuses to start, naming the setting and this section |
+| Stored with `hangar config` | It isn't applied, `hangar doctor` fails, and `hangar config unset <setting>` clears it |
+| `hangar config set` | Refused, naming this section |
+
 ## When to deploy
 
 Image or node-pool upgrades, which replace the sandbox pool's nodes or every environment's image

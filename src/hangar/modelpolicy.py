@@ -48,8 +48,7 @@ log = logging.getLogger("hangar.modelpolicy")
 
 POLICIES = ("frontier", "balanced")
 VENDORS = ("anthropic", "openai", "google")
-PROVIDER = {"claude-code": "anthropic", "codex": "openai", "pi": "openrouter", "antigravity": "google",
-            "gemini": "google"}
+PROVIDER = {"claude-code": "anthropic", "codex": "openai", "pi": "openrouter", "antigravity": "google"}
 LISTS = {
     "anthropic": "https://api.anthropic.com/v1/models",
     "openai": "https://api.openai.com/v1/models",
@@ -65,7 +64,6 @@ SEED: dict[str, dict[str, str]] = {
     "codex": {"frontier": "gpt-6-astra", "balanced": "gpt-6.1-sol"},
     "pi": {"frontier": "openrouter/anthropic/claude-fable-5.1", "balanced": "openrouter/anthropic/claude-opus-5.5"},
     "antigravity": {"frontier": "gemini-3.8-flash-high", "balanced": "gemini-3.8-flash-high"},
-    "gemini": {"frontier": "gemini-3.8-flash", "balanced": "gemini-3.8-flash"},
 }
 # --- review #105: pi with a vendor (`frontier@openai`) has one too. Without it the first turns ran on pi's own
 # default and the session switched model once the list arrived (an unset model is resolved again on each run).

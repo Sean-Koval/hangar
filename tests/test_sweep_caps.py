@@ -155,7 +155,6 @@ def test_body_cap_follows_the_tokens_scope(settings):
         assert post("/api/sandboxes", jobs_tok, chunked=True) == 413  # no Content-Length: counted as it arrives
         assert post("/api/credentials", mcp_tok) == 413
         assert post("/api/jobs", mcp_tok) == 413
-        assert post("/a2a", mcp_tok) == 413
         assert post("/api/jobs", jobs_tok) not in (413, 401, 403)  # its own route: the usual limit
         assert post("/mcp", mcp_tok) != 413
         assert post("/api/sandboxes", "t0ken") != 413  # admin: everything

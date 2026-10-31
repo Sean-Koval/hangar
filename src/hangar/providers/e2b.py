@@ -1,10 +1,11 @@
 """E2B provider: sandboxes are microVMs on E2B's cloud, a self-hosted E2B, or Tencent CubeSandbox (docs/microvm.md).
+Experimental, and outside 1.0 (KAN-84, KAN-217).
 
 One provider with three flavours (HANGAR_E2B_FLAVOR), because all three answer E2B's control API and run E2B's envd
 in the sandbox (spec 0013 §8.2):
 - cloud: E2B's cloud or BYOC; the API is https://api.<domain>.
 - selfhosted: E2B's own stack (Embed) on your machines, at your domain, and at HANGAR_E2B_API_URL when the API isn't
-  at api.<domain>. Hangar's own /e2b API (e2b_api.py) is one too.
+  at api.<domain>.
 - cube: CubeSandbox's CubeAPI. It serves only the v1 create and connect routes (`POST /v2/sandboxes` is a 405), and
   returns no envd access token, so its envd answers anyone who can reach it: such a sandbox is refused (and killed)
   unless HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD says the network is private.

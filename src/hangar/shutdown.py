@@ -1,7 +1,7 @@
 """Graceful shutdown (overnight/sweep): long-polls answer as soon as a shutdown signal arrives.
 
 uvicorn drains open requests before it runs the app's shutdown, so a request that waits (MCP `agent_status` with
-`wait_seconds`, `wait_for_turn`, a blocking A2A send) held the pod's shutdown for as long as it waited. Hangar chains
+`wait_seconds`, `wait_for_turn`) held the pod's shutdown for as long as it waited. Hangar chains
 its own handler in front of uvicorn's for SIGTERM and SIGINT: it sets `Fleet.closing`, every waiter returns what it
 has now, and the client asks again (the new pod answers). Streams and terminals are cut after
 HANGAR_SHUTDOWN_GRACE_SECONDS (uvicorn's timeout_graceful_shutdown, set by `hangar serve`).

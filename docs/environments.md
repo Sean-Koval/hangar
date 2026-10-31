@@ -124,7 +124,7 @@ migrate-merge --dry-run` lists which environments resolve differently
 | `HANGAR_ENV_SETUP_MAX_COST_USD`, `HANGAR_ENV_SETUP_MAX_TURNS` | 30, 16 | An env setup's job budget when neither the job nor the repo's policy sets one |
 | `HANGAR_ENV_SETUP_VALIDATE_MINUTES` | 45 | One validation: the sandbox, install, the services and every command |
 | `HANGAR_ENV_SETUP_MODELS` | unset | `{"claude-code": "frontier", "codex": "gpt-6-astra"}`: a model or a policy per harness instead of `balanced` |
-| `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira, GitHub Projects) with this label starts an env setup |
+| `HANGAR_ENV_SETUP_LABEL` | `hangar-env-setup` | An issue (GitHub, Jira) with this label starts an env setup |
 | `HANGAR_TIERS` `heavy` | unset (off) | The heavy tier's providers, in order (`kubernetes`, `e2b`, `docker`) |
 | `HANGAR_HEAVY_RUNTIME_CLASS` | `kata-qemu-runtime-rs` | Kubernetes: the VM runtime heavy pods run under |
 | `HANGAR_HEAVY_NODE_SELECTOR` | `true` | Kubernetes: pin heavy pods to the `sandboxes-heavy` pool (`hangar.dev/runtime=heavy`) |

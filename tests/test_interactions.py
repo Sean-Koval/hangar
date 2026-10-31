@@ -1,4 +1,4 @@
-"""Features together: best-of-N, budgets and usage, needs_input, structured results, forks, triggers, Slack, A2A
+"""Features together: best-of-N, budgets and usage, needs_input, structured results, forks, triggers, Slack
 and restarts, on the fake provider with one scripted agent, real git and tmux. Each test pins a seam where two
 features built separately met (spec 0011)."""
 
@@ -554,30 +554,7 @@ async def test_best_of_n_through_the_gateway_winner_losers_and_follow_ups_push(j
     assert log[:2] == ["choose B", "choose B"], log
 
 
-# ---------------------------------------------------------------------------- needs_input x A2A x idle suspend
-async def test_a2a_input_required_then_a_reply_by_task_id_finishes_the_job(jobs, world, settings, store):
-    from fastapi import FastAPI
-
-    from hangar.a2a import COMPLETED, INPUT_REQUIRED, A2AServer
-    from hangar.auth import TokenAuth
-    from tests.test_a2a import ADMIN, BASE, _http, msg, rpc
-
-    settings.public_url, settings.a2a_poll_seconds = BASE, 0.05
-    server = A2AServer(jobs, TokenAuth(store, ADMIN), Vault(store, b"0" * 43 + b"="), settings)
-    app = FastAPI()
-    server.mount(app)
-    world["mode"].write_text("ask")
-    async with _http(app) as http:
-        meta = {"repo": world["url"], "environment": "seamenv", "verify": "test -f choice.txt"}
-        task = (await rpc(http, "SendMessage", {"message": msg("pick one"), "metadata": meta}))["result"]["task"]
-        assert task["status"]["state"] == INPUT_REQUIRED, task["status"]
-        assert task["status"]["message"]["parts"][0]["text"] == "A or B? (attempt 0)"
-        res = await rpc(http, "SendMessage", {"message": msg("TASK-ANSWER: B", taskId=task["id"])})
-        task = res["result"]["task"]
-    assert task["status"]["state"] == COMPLETED, task["status"]
-    assert any(p.get("text") == "Went with B" for a in task["artifacts"] for p in a["parts"])
-    job = jobs.get(task["id"])
-    assert len(job.turns) == 2 and jobs.sessions.get(job.session_id).needs_input is None
+# ---------------------------------------------------------------------------- needs_input x idle suspend
 
 
 async def test_a_session_question_survives_an_idle_suspend(sessions, world):
@@ -601,16 +578,12 @@ async def test_a_session_question_survives_an_idle_suspend(sessions, world):
 
 # ---------------------------------------------------------------------------- surfaces read what jobs keep
 def test_surfaces_read_the_question_and_the_result_where_jobs_keep_them():
-    from hangar.a2a import _STATES, A2AServer
     from hangar.models import Job, Turn
     from hangar.slack import render
 
-    assert set(_STATES) == {s.value for s in JobState}  # no state silently falls back to "working"
     job = Job(title="t", instructions="x", environment="e",
               turns=[Turn(result={"ok": True}), Turn(kind="follow_up", message="more")])  # the follow-up is running
     job.result.data = {"ok": True}
-    arts = A2AServer._artifacts(A2AServer.__new__(A2AServer), job)
-    assert [p["data"] for a in arts if a["name"] == "Structured result" for p in a["parts"]] == [{"ok": True}]
     job.state, job.result.question, job.result.summary = JobState.NEEDS_INPUT, "A or B?", "half done"
     assert exchange.open_question(job) == "A or B?"
     assert "> A or B?" in render(job, "(fallback)", "note")

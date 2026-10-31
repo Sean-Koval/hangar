@@ -108,7 +108,7 @@ Nothing to set: a repo opts in by committing `.hangar/environment.yaml` ([enviro
 
 ### 10d. Preview ports
 
-**Optional** (off until set). A registrable domain of its own, not a subdomain of your company's or hangar's, with wildcard DNS pointing at hangar, and on GKE a wildcard certificate for `*.<domain>` on hangar's ingress and `deploy/k8s/e2b.yaml`'s `allow-hangar-sandbox-ports` NetworkPolicy:
+**Optional** (off until set). A registrable domain of its own, not a subdomain of your company's or hangar's, with wildcard DNS pointing at hangar, and on GKE a wildcard certificate for `*.<domain>` on hangar's ingress and `deploy/k8s/preview-network.yaml`'s `allow-hangar-sandbox-ports` NetworkPolicy:
 
 ```bash
 hangar config set HANGAR_PREVIEW_DOMAIN hangar-preview.example.net    # restart

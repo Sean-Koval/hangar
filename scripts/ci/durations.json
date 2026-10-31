@@ -1,5 +1,4 @@
 {
-"tests/test_a2a.py": 17.1,
 "tests/test_acceptance_script.py": 9.0,
 "tests/test_acceptance_team.py": 79.7,
 "tests/test_adr.py": 6.3,
@@ -45,7 +44,6 @@
 "tests/test_driver.py": 0.6,
 "tests/test_driver_real_clis.py": 0.0,
 "tests/test_durable.py": 4.0,
-"tests/test_e2b_api.py": 29.2,
 "tests/test_e2b_provider.py": 20.6,
 "tests/test_editorial.py": 3.1,
 "tests/test_egress.py": 6.5,

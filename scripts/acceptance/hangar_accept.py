@@ -1,5 +1,5 @@
-"""The checks behind scripts/acceptance/gke.sh: each one against a running hangar, over its REST API, MCP endpoint and
-E2B API, with kubectl where a check needs the cluster itself.
+"""The checks behind scripts/acceptance/gke.sh: each one against a running hangar, over its REST API and MCP endpoint,
+with kubectl where a check needs the cluster itself.
 
     python scripts/acceptance/hangar_accept.py <check> --state FILE --summary FILE [options]
 
@@ -918,38 +918,6 @@ def check_gateway(api: Api, state: State, opts: argparse.Namespace) -> str:
             "sandbox")
 
 
-def check_e2b(api: Api, state: State, opts: argparse.Namespace) -> str:
-    """The stock e2b SDK with a `sandboxes`-scoped token: create, run, files, list, kill."""
-    try:
-        from e2b import Sandbox
-    except ImportError as e:
-        raise Skip("the e2b SDK isn't installed here (uv sync --extra e2b)") from e
-    token, _ = api.scopes_token(state, "e2b", ["sandboxes"])
-    o = {"api_key": token, "api_url": f"{api.url}/e2b", "sandbox_url": f"{api.url}/e2b/sandbox", "retries": 0,
-         "request_timeout": float(opts.boot_timeout)}
-    if api.http.get("/api/sandboxes", headers={"Authorization": f"Bearer {token}"}).status_code != 403:
-        raise Fail("a `sandboxes` token was let into /api/sandboxes")
-    t = time.monotonic()
-    sbx = Sandbox.create(template=opts.env, timeout=600, metadata={LABEL: state.run}, envs={"FROM_E2B": "yes"}, **o)
-    state.add("sandboxes", sbx.sandbox_id)
-    create = time.monotonic() - t
-    t = time.monotonic()
-    r = sbx.commands.run("echo $FROM_E2B; id -un")
-    run = time.monotonic() - t
-    if r.stdout.split()[:1] != ["yes"]:
-        raise Fail(f"commands.run printed {r.stdout!r}")
-    sbx.files.write(f"/tmp/accept-{state.run}.txt", "from the e2b sdk")
-    if sbx.files.read(f"/tmp/accept-{state.run}.txt") != "from the e2b sdk":
-        raise Fail("files.read didn't return what files.write wrote")
-    listed = [x.sandbox_id for x in Sandbox.list(**o).next_items()]
-    if sbx.sandbox_id not in listed:
-        raise Fail("Sandbox.list doesn't show the sandbox")
-    sbx.kill()
-    st = api.call("GET", f"/api/sandboxes/{sbx.sandbox_id}")["state"]
-    say(f"{sbx.sandbox_id}: create {create:.1f}s, commands.run {run * 1000:.0f} ms, files ok, listed, killed ({st})")
-    return f"create {create:.1f}s, run {run * 1000:.0f} ms, files, list, kill"
-
-
 def check_backup(api: Api, state: State, opts: argparse.Namespace) -> str:
     t = time.monotonic()
     r = api.call("POST", "/api/admin/backup")
@@ -1157,7 +1125,7 @@ CHECKS: dict[str, Callable[[Api, State, argparse.Namespace], str]] = {
     "doctor": check_doctor, "k8s": check_k8s, "sandbox": check_sandbox, "exec": check_exec, "stream": check_stream,
     "files": check_files, "mcp": check_mcp,
     "isolation": check_isolation, "session": check_session, "model": check_model, "steer": check_steer,
-    "gateway": check_gateway, "e2b": check_e2b, "backup": check_backup, "metrics": check_metrics,
+    "gateway": check_gateway, "backup": check_backup, "metrics": check_metrics,
     "power": check_power, "warmstart": check_warmstart,  # --- ops
     "cleanup": cleanup,
 }
@@ -1188,7 +1156,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("check", choices=sorted(CHECKS))
     p.add_argument("--state", type=Path, required=True)
     p.add_argument("--summary", type=Path)
-    p.add_argument("--env", default="minimal", help="environment for plain sandboxes and the E2B check")
+    p.add_argument("--env", default="minimal", help="environment for plain sandboxes")
     p.add_argument("--session-env", default="claude-python", help="environment for sessions (needs an agent harness)")
     p.add_argument("--repo", default=None, help="the sessions' repo (default: --gateway-repo's, else a public one)")
     p.add_argument("--gateway-repo", default=None, help="OWNER/REPO on github.com the gateway may push to")

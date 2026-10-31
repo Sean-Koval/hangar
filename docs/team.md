@@ -39,7 +39,7 @@ hangar person ls
 
 ## 2. Link their accounts elsewhere
 
-Each sender on GitHub, Slack, Jira or GitHub Projects is an account there, not a hangar person, until an admin links
+Each sender on GitHub, Slack or Jira is an account there, not a hangar person, until an admin links
 them. How, and what a linked account changes, is on [linked accounts](team/linked-accounts.md).
 
 ## 3. Team credentials
@@ -101,9 +101,9 @@ claude setup-token | hangar cred add claude-alice-max --harness claude-code --ki
 
 | Work | Runs for | Login, by default |
 | --- | --- | --- |
-| MCP, REST, CLI, A2A jobs (`submit_job`) | the caller's person | their API key, else the team's |
+| MCP, REST, CLI jobs (`submit_job`) | the caller's person | their API key, else the team's |
 | A schedule | its person (none for schedules from before people) | their API key, else the team's |
-| GitHub issue or comment, Slack, Jira, GitHub Projects | the linked person, else the team | their API key, else the team's |
+| GitHub issue or comment, Slack, Jira | the linked person, else the team | their API key, else the team's |
 | Inbound webhooks | the team | the team's |
 | A person's own `new_session`, `create_sandbox`, `run_agent` | the caller's person | theirs (a subscription login too, with a warning), else the team's |
 

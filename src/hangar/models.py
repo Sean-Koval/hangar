@@ -108,7 +108,7 @@ class Credential(BaseModel):
     """Metadata only. Secret material lives encrypted in the vault, never in this model."""
 
     name: str
-    harness: str  # claude-code | codex | antigravity | gemini | git | custom
+    harness: str  # claude-code | codex | pi | antigravity | git | custom
     kind: CredentialKind
     description: str | None = None
     exclusive: bool = False  # only one sandbox may hold it at a time (rotating refresh tokens)

@@ -123,7 +123,7 @@ def test_acceptance_script_on_docker(tmp_path, upstream, monkeypatch):  # noqa: 
         status = {name: st for st, name in re.findall(r"^(PASS|FAIL|SKIP|INFO)\s+([\w-]+)", summary, re.M)}
         assert r.returncode == 0, out
         for check in ("doctor", "sandbox", "exec", "stream", "files", "mcp", "isolation", "session", "model", "gateway",
-                      "e2b", "backup", "metrics", "power", "warmstart"):
+                      "backup", "metrics", "power", "warmstart"):
             assert status.get(check) == "PASS", (check, summary)
         assert status.get("k8s") == "SKIP" and "steer" not in status, summary  # --no-kubectl; --skip steer
         # --- acceptance: what isn't configured here skips cleanly, saying what it needs

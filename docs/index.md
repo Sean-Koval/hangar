@@ -64,7 +64,7 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 
 | Feature | What it gives your team | Status |
 | --- | --- | --- |
-| **Many front doors** | MCP clients, the CLI, REST, GitHub issues and Projects, Jira, Slack, webhooks, schedules and A2A all become [jobs](jobs/README.md) or [sessions](sessions.md), with one [repo policy](repo-policy.md) for each repo. | Shipped |
+| **Many front doors** | MCP clients, the CLI, REST, GitHub issues, Jira, Slack, webhooks and schedules all become [jobs](jobs/README.md) or [sessions](sessions.md), with one [repo policy](repo-policy.md) for each repo. | Shipped |
 | **Isolated sandboxes** | Each has its own files, tools, checkout and agent configuration, from [environments](environments.md) you prepare once; fork a prepared one into parallel attempts. Docker, gVisor or Kata, GKE or E2B. | Shipped |
 | **Any agent** | Claude Code, Codex, pi and Antigravity as [harnesses](harnesses.md), pinned by version; a Codex client can ask for Claude Code and the other way round. A team shares one harness (instructions, skills, Claude Code plugins) frozen from a good run into a [harness repo](harness-lock.md#the-team-harness-repo). | Shipped |
 | **Verified delivery** | The repo's own check runs before anything is pushed; hangar pushes through the git gateway and opens a draft PR with a review packet; with [landing](landing.md), an approval lands it. | Shipped |
@@ -83,7 +83,7 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 
 *Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
 
-**Security posture.** hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, GitHub Projects, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](security/README.md) and [the safe-release upgrade](releases/safe-release.md).
+**Security posture.** hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](security/README.md) and [the safe-release upgrade](releases/safe-release.md).
 
 ## Where to go next
 

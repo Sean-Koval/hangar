@@ -1,6 +1,6 @@
 """Intake posture: the secure defaults for jobs whose task text someone outside hangar could write (#123).
 
-Jobs started from GitHub, GitHub Projects, Jira, Slack or an inbound webhook carry text that anyone with edit rights on
+Jobs started from GitHub, Jira, Slack or an inbound webhook carry text that anyone with edit rights on
 the ticket, issue or thread can write. Hangar fences that text as untrusted in the prompt (triggers.untrusted_note),
 but a prompt is not a boundary. The intake posture adds two that are, for every *intake job*:
 
@@ -216,7 +216,7 @@ def packet_lines(settings: Settings, job: Job, spec: EnvSpec | None = None) -> l
 
 
 def intake_environments(settings: Settings) -> list[str]:
-    """The environments intake jobs run in: those mapped for repos (GitHub, Slack, Jira and GitHub Projects run only
+    """The environments intake jobs run in: those mapped for repos (GitHub, Slack and Jira run only
     on repos in HANGAR_GITHUB_REPOS) and the inbound webhooks' own."""
     out: list[str] = []
     for raw in (settings.github_repos or {}).values():
@@ -230,8 +230,7 @@ def intake_environments(settings: Settings) -> list[str]:
 def intake_doors(settings: Settings) -> list[str]:
     """--- #236: the front doors that can start intake jobs here, by name (any part of one configured counts)."""
     doors = {"GitHub": settings.github_webhook_secret_credential, "Slack": settings.slack_signing_secret_credential,
-             "Jira": settings.jira, "GitHub Projects": settings.github_projects,
-             "inbound webhooks": settings.inbound_webhooks}
+             "Jira": settings.jira, "inbound webhooks": settings.inbound_webhooks}
     return [name for name, cfg in doors.items() if cfg]
 
 
@@ -271,7 +270,7 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
                           f"job from {', '.join(doors)} is refused", gateway_fix(s, fleet)))
     else:
         out.append(_check("intake posture: gateway", None, "enforce; no intake front door is configured (GitHub, "
-                          "Slack, Jira, GitHub Projects, webhooks), so nothing is refused yet. Once one is, its "
+                          "Slack, Jira, webhooks), so nothing is refused yet. Once one is, its "
                           "jobs need the git gateway, which isn't set up", gateway_fix(s, fleet)))
     # the egress proxy each provider needs for a floored sandbox
     provs = list(fleet.providers)

@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from hangar.config import Settings, removed_switch
+from hangar.config import Settings, removed_setting, removed_switch
 from hangar.store import Store
 
 log = logging.getLogger("hangar.settings")
@@ -46,7 +46,7 @@ REFUSED: dict[str, str] = {
 
 # Read once at startup (providers, listeners, OAuth, worker pools): a change applies after the next restart.
 _RESTART = ("public_url", "oauth_", "env_dirs", "image_prefix", "registry", "extra_ca_bundle", "default_provider",
-            "enabled_providers", "docker_", "k8s_", "e2b_", "gateway_", "a2a_", "job_concurrency", "session_store",
+            "enabled_providers", "docker_", "k8s_", "e2b_", "gateway_", "job_concurrency", "session_store",
             "prebuild_environments", "github_api_url", "sandbox_user", "events_max_mb",
             "mcp_stateless_http",  # integrate: #52's MCP transport mode is chosen when the app is built
             "io_threads",  # integrate: #53's I/O pool and the Docker connection pool are sized at startup
@@ -122,8 +122,12 @@ class SettingsStore:
         # Everything the environment, .env or the constructor set: those win over stored values.
         self.pinned: set[str] = set(settings.model_fields_set)
 
-    def check(self, key: str) -> str:
+    def check(self, key: str, removed_ok: bool = False) -> str:
         name = field_name(key)
+        if msg := removed_setting(name):  # --- KAN-217: a removed setting can only be unset
+            if removed_ok:
+                return name
+            raise SettingError(msg)
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or name not in Settings.model_fields:
             raise SettingError(f"unknown setting '{key}' (see `hangar config list --all`)")
         if name in REFUSED:
@@ -143,6 +147,9 @@ class SettingsStore:
     def apply(self) -> None:
         """At startup: put stored values into the settings object, unless the environment pinned them."""
         for name, value in self.stored().items():
+            if msg := removed_setting(name):  # --- KAN-217: not applied; `hangar doctor` fails until it is unset
+                log.error("ignoring stored setting: %s", msg)
+                continue
             if name not in Settings.model_fields or name in REFUSED or name in self.pinned:
                 continue
             try:
@@ -156,6 +163,10 @@ class SettingsStore:
     def removed(self) -> list[tuple[str, str]]:
         """--- KAN-74: stored settings whose value no longer exists, as (HANGAR_NAME, what to do instead)."""
         return [(env_var(n), m) for n, v in self.stored().items() if (m := removed_switch(n, v))]
+
+    def removed_settings(self) -> list[tuple[str, str]]:
+        """--- KAN-217: stored settings that no longer exist, as (HANGAR_NAME, what to do instead)."""
+        return [(env_var(n), m) for n in self.stored() if (m := removed_setting(n))]
 
     def describe(self, name: str) -> dict[str, Any]:
         stored = self.stored()
@@ -182,8 +193,10 @@ class SettingsStore:
         return self.describe(name)
 
     def unset(self, key: str) -> dict[str, Any]:
-        name = self.check(key)
+        name = self.check(key, removed_ok=True)
         self.store.kv_delete(KV_PREFIX + name, durable=True)
+        if name not in Settings.model_fields:  # --- KAN-217: a removed setting: only its stored value was left
+            return {"key": env_var(name), "value": None, "source": "removed", "stored": None, "restart": False}
         if name not in self.pinned:
             setattr(self.settings, name, _default(name))
         return self.describe(name)

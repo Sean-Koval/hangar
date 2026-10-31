@@ -163,7 +163,7 @@ def hangar_suite() -> str:
     b = [
         text(20, 44, "Where hangar sits", "title"),
         text(20, 70, "Many doors  ·  one run plane  ·  one gate", "lbl"),
-        box(xs[0], y, w, h, "Doors", ["Jira, GitHub, Slack,", "MCP, webhooks,", "schedules, A2A"], eyebrow="Work in"),
+        box(xs[0], y, w, h, "Doors", ["Jira, GitHub, Slack,", "MCP, webhooks", "and schedules"], eyebrow="Work in"),
         box(xs[1], y, w, h, "hangar runs it", ["A sandbox per job", "The repo's own check", "Credentials outside"], eyebrow="Run", kind="box-hub", product="hangar"),
         box(xs[2], y, w, h, "Draft PR", ["One commit, pushed", "by hangar; an", "approval lands it"], eyebrow="The gate", kind="box-ext"),
         box(xs[3], y, w, h, "People", ["Review, answer and", "approve: console,", "Slack, CLI, MCP"], eyebrow="Your team", kind="person"),
@@ -188,7 +188,7 @@ def hangar_suite() -> str:
 def hangar_suite_stacked() -> str:
     x, w = 20, 310
     rows = [
-        ("Work in", "Doors", ["Jira, GitHub, Slack, MCP,", "webhooks, schedules, A2A"], "box", None),
+        ("Work in", "Doors", ["Jira, GitHub, Slack, MCP,", "webhooks and schedules"], "box", None),
         ("Run", "hangar runs it", ["A sandbox per job, the repo's own", "check, credentials outside"], "box-hub", "hangar"),
         ("The gate", "Draft PR", ["One commit, pushed by hangar;", "an approval lands it"], "box-ext", None),
         ("Your team", "People", ["Review, answer and approve: the", "console, Slack, the CLI, MCP"], "person", None),
@@ -224,7 +224,7 @@ def concepts_map() -> str:
     x1, x2 = M, M + w + gap
     t = [
         ("Who", "People and tools", ["MCP clients, the CLI, the browser;", "Jira, GitHub, Slack; services,", "CI and other agents"], "person", None),
-        ("Work in", "Front doors", ["MCP, REST and the CLI; GitHub,", "Jira, Projects and Slack;", "webhooks, schedules, A2A"], "box", None),
+        ("Work in", "Front doors", ["MCP, REST and the CLI; GitHub,", "Jira and Slack; webhooks", "and schedules"], "box", None),
         ("hangar", "Control plane", ["Jobs and sessions; policy, people", "and budgets; the vault and gateway;", "verify, branch, PR and landing"], "box-hub", "hangar"),
         ("Work runs", "Sandboxes", ["An environment, a harness and the", "repo's checkout, isolated: Docker,", "GKE or E2B"], "box-ext", None),
     ]
@@ -294,25 +294,6 @@ def jobs_flow() -> str:
     b.append(text(xs[1] + w // 2, 16 + 2, "signed callback: job.started, job.finished", anchor="middle"))
     b.append(text(M, y2 + h + 34, "An engineer follows up (the API, MCP, the CLI, /hangar on the PR) or opens the sandbox's terminal."))
     return svg(WIDE, y2 + h + 52, "A job, from the caller to a draft PR", b, "jobs")
-
-
-def a2a_flow() -> str:
-    """A2A: a client sends a message, hangar runs a job, task updates stream back; the same contextId follows up."""
-    w, gap = 180, (WIDE - 2 * M - 3 * 180) // 2
-    xs = [M + i * (w + gap) for i in range(3)]
-    y, h = 16, 92
-    b = [
-        box(xs[0], y, w, h, "A2A client", ["ADK, AX or any", "other client"], kind="person"),
-        box(xs[1], y, w, h, "/a2a", ["SendMessage in;", "hangar admits it"], kind="box-hub", product="hangar"),
-        box(xs[2], y, w, h, "Job", ["queue, sandbox, agent,", "verify, draft PR"]),
-        edge(f"M{xs[0] + w} {y + h // 2}H{xs[1] - 2}"),
-        edge(f"M{xs[1] + w} {y + h // 2}H{xs[2] - 2}"),
-        edge(f"M{xs[2] + w // 2} {y + h}V{y + h + 40}H{xs[0] + w // 2 + 20}V{y + h + 2}"),
-        text(xs[1] + w // 2, y + h + 32, "the Task, status updates (SSE), push notifications", anchor="middle"),
-        edge(f"M{xs[0] + w // 2 - 20} {y + h}V{y + h + 80}H{xs[2] + w // 2 + 20}V{y + h + 2}", plan=True),
-        text(xs[1] + w // 2, y + h + 72, "SendMessage, same contextId: a follow-up turn on the same job", anchor="middle"),
-    ]
-    return svg(WIDE, y + h + 98, "A2A: a message in, a task out", b, "a2a")
 
 
 def slack_flow() -> str:
@@ -391,7 +372,7 @@ def back_edge(y_from, y_to, label, label_y, plan=False):
 def concepts_map_stacked() -> str:
     body, _, end = stack(16, [
         ("People and tools", ["MCP clients, the CLI, the browser;", "Jira, GitHub, Slack; services,", "CI and other agents"], "person", "Who", None),
-        ("Front doors", ["MCP, REST and the CLI; GitHub,", "Jira, Projects and Slack;", "webhooks, schedules, A2A"], "box", "Work in", None),
+        ("Front doors", ["MCP, REST and the CLI; GitHub,", "Jira and Slack; webhooks", "and schedules"], "box", "Work in", None),
         ("Control plane", ["Jobs and sessions; policy, people", "and budgets; the vault and the", "gateway; verify, PR, landing"], "box-hub", "hangar", "hangar"),
         ("Sandboxes", ["An environment, a harness and the", "repo's checkout, isolated:", "Docker, GKE or E2B"], "box-ext", "Work runs", None),
     ], labels=(None, "jobs and sessions", "runs"))
@@ -431,21 +412,6 @@ def jobs_flow_stacked() -> str:
          text(BX, end + 50, "the CLI, /hangar on the PR) or opens"),
          text(BX, end + 68, "the sandbox's terminal.")]
     return svg(NARROW, end + 86, "A job, from the caller to a draft PR", b, "jobs-stacked")
-
-
-def a2a_flow_stacked() -> str:
-    rows = [("A2A client", ["ADK, AX or any other client"], "person", None, None),
-            ("/a2a", ["SendMessage in; hangar admits it"], "box-hub", None, "hangar"),
-            ("Job", ["queue, sandbox, agent, verify,", "draft PR"], "box", None, None)]
-    body, tops, end = stack(16, rows, gap=40, bw=RW)
-    first, last = tops[0], tops[-1]
-    b = [body,
-         back_edge(last[0] + last[1] // 2, first[0] + first[1] // 2, "the Task and its updates (SSE)",
-                   (first[0] + last[0] + last[1]) // 2),
-         edge(f"M{BX + 40} {end}V{end + 30}", plan=True),
-         text(BX, end + 52, "SendMessage with the same contextId:"),
-         text(BX, end + 70, "a follow-up turn on the same job and branch")]
-    return svg(NARROW, end + 88, "A2A: a message in, a task out", b, "a2a-stacked")
 
 
 def slack_flow_stacked() -> str:
@@ -488,13 +454,11 @@ def main() -> None:
         ("concepts-map", concepts_map),
         ("control-plane", control_plane),
         ("jobs-flow", jobs_flow),
-        ("a2a-flow", a2a_flow),
         ("slack-flow", slack_flow),
         ("landing-states", landing_states),
         ("concepts-map-stacked", concepts_map_stacked),
         ("control-plane-stacked", control_plane_stacked),
         ("jobs-flow-stacked", jobs_flow_stacked),
-        ("a2a-flow-stacked", a2a_flow_stacked),
         ("slack-flow-stacked", slack_flow_stacked),
         ("landing-states-stacked", landing_states_stacked),
     ):

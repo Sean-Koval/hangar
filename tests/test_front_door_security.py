@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 import tests.test_jobs as tj
 from hangar.jobs import Caller, JobError, JobService, SubmitJob, handle_github
-from hangar.models import Budget, CredentialKind, JobState
+from hangar.models import CredentialKind, JobState
 from tests.test_triggers import EVENT, SENTRY, _comment, _issue, _sig, hook_client, intake  # noqa: F401 - fixtures
 
 pytestmark = pytest.mark.skipif(not shutil.which("tmux") or not shutil.which("git"), reason="needs tmux and git")
@@ -141,33 +141,6 @@ def test_inbound_replay_with_a_new_delivery_id_is_a_duplicate(hook_client):  # n
     assert len(h.jobs.list()) == 3
 
 
-# ====================================================================== A2A
-async def test_a2a_jobs_token_budget_cap_applies(jobs, world, settings, store):  # noqa: F811
-    """F2: a jobs token's max_budget caps A2A jobs too (it was only applied over REST)."""
-    from fastapi import FastAPI
-
-    from hangar.a2a import A2AServer
-    from hangar.auth import TokenAuth
-    from hangar.vault import Vault
-
-    settings.github_repos = {world["url"]: "jobenv"}
-    auth = TokenAuth(store, "adm")
-    raw, _ = auth.create("svc", ["jobs"], max_budget=Budget(max_minutes=5, max_cost_usd=1.0))
-    server = A2AServer(jobs, auth, Vault(store, b"0" * 43 + b"="), settings)
-    app = FastAPI()
-    server.mount(app)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://h",
-                                 headers={"Authorization": f"Bearer {raw}", "A2A-Version": "1.0"}) as http:
-        r = await http.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": {
-            "message": {"messageId": "m1", "role": "ROLE_USER", "parts": [{"text": "do it"}],
-                        "metadata": {"repo": world["url"]}},
-            "configuration": {"returnImmediately": True}}})
-        task = r.json()["result"]["task"]
-    job = jobs.get(task["id"])
-    assert job.budget is not None and job.budget.max_minutes == 5 and job.budget.max_cost_usd == 1.0
-    jobs.cancel(job.id, "t")
-
-
 # ====================================================================== SSRF: DNS rebinding
 class _Listener:
     """A local TCP listener that records connections (the 'internal service' a rebinding attack reaches)."""
@@ -217,21 +190,6 @@ async def test_callback_is_pinned_to_the_checked_address(fleet, monkeypatch):
         await svc._callback(job, "job.finished")
         assert lis.hits == 0, "connected to 127.0.0.1 after the check passed"
     assert any("callback job.finished" in e.message for e in job.events)
-
-
-async def test_a2a_push_is_pinned_to_the_checked_address(fleet, settings, store, monkeypatch):
-    """F5: the same for A2A push notifications."""
-    from hangar.a2a import A2AServer, PushConfig
-    from hangar.auth import TokenAuth
-    from hangar.vault import Vault
-
-    svc = JobService(fleet, None)
-    server = A2AServer(svc, TokenAuth(store, "adm"), Vault(store, b"0" * 43 + b"="), settings)
-    _rebinding(monkeypatch)
-    async with _Listener() as lis:
-        job = svc.submit(SubmitJob(instructions="x", environment="plain", deliver="none"), Caller("a", "a"))
-        await server._notify(job, PushConfig(id="p1", task_id=job.id, url=f"https://rebind.test:{lis.port}/p"))
-        assert lis.hits == 0
 
 
 async def test_guarded_backend_refuses_internal_and_allows_public(monkeypatch):
@@ -517,35 +475,6 @@ async def test_follow_ups_are_rate_limited_for_outside_callers(intake, settings)
         adm.admit_follow_up("laptop", None)  # an admin token over REST or MCP
 
 
-async def test_a2a_open_streams_are_capped(jobs, world, settings, store):  # noqa: F811
-    from fastapi import FastAPI
-
-    from hangar.a2a import A2AServer
-    from hangar.auth import TokenAuth
-    from hangar.vault import Vault
-
-    settings.github_repos = {world["url"]: "jobenv"}
-    settings.a2a_max_streams_per_owner = 1
-    server = A2AServer(jobs, TokenAuth(store, "adm"), Vault(store, b"0" * 43 + b"="), settings)
-    app = FastAPI()
-    server.mount(app)
-    server._open["admin"] = 1  # one stream already open for this token
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://h",
-                                 headers={"Authorization": "Bearer adm", "A2A-Version": "1.0"}) as http:
-        def send(method: str, mid: str) -> dict:
-            return {"jsonrpc": "2.0", "id": mid, "method": method, "params": {"message": {
-                "messageId": mid, "role": "ROLE_USER", "parts": [{"text": "x"}], "metadata": {"repo": world["url"]}}}}
-
-        r = await http.post("/a2a", json=send("SendStreamingMessage", "m1"))
-        assert "too many open streams" in r.json()["error"]["message"]
-        t0 = time.monotonic()
-        r = await http.post("/a2a", json=send("SendMessage", "m2"))
-        assert r.json()["result"]["task"]["id"] and time.monotonic() - t0 < 5  # answered without waiting
-    assert server._open == {"admin": 1}
-    for j in jobs.list():
-        jobs.cancel(j.id, "t")
-
-
 # ====================================================================== review of #50 (second pass)
 def test_rate_limit_buckets_stay_bounded_for_many_callers():
     """Buckets were only pruned when a take was refused, so a stream of new keys (an anonymous client per source
@@ -560,48 +489,6 @@ def test_rate_limit_buckets_stay_bounded_for_many_callers():
     assert len(b._b) <= 10_000, len(b._b)
     b.take("ip:busy", 30, 1)
     assert b.take("ip:busy", 30, 1) > 0  # an active, limited key is still limited
-async def test_a2a_stream_cap_holds_for_concurrent_requests(jobs, world, settings, store):  # noqa: F811
-    """The cap was checked when the request arrived and counted only once the stream started, so requests that
-    arrived together all passed the check."""
-    from hangar.a2a import V1, A2AServer
-    from hangar.auth import TokenAuth
-    from hangar.vault import Vault
-
-    settings.github_repos = {world["url"]: "jobenv"}
-    settings.a2a_max_streams_per_owner = 1
-    server = A2AServer(jobs, TokenAuth(store, "adm"), Vault(store, b"0" * 43 + b"="), settings)
-    caller = Caller("admin", "admin")
-
-    def params(mid: str) -> dict:
-        return {"message": {"messageId": mid, "role": "ROLE_USER", "parts": [{"text": "x"}],
-                            "metadata": {"repo": world["url"]}}}
-
-    responses = [await server._stream(caller, params(f"m{i}"), V1, "stream", i, None) for i in range(3)]
-    try:
-        first = [await r.body_iterator.__anext__() for r in responses]
-        assert server._open.get("admin", 0) <= 1, server._open
-        assert sum("too many open streams" in str(x) for x in first) == 2, first
-    finally:
-        for r in responses:
-            await r.body_iterator.aclose()
-        for j in jobs.list():
-            jobs.cancel(j.id, "t")
-    assert server._open == {}
-
-
-def test_anonymous_a2a_bodies_are_capped_before_auth(settings):
-    """/a2a used to check the token before reading the body; the body cap middleware then read up to 4 MB of an
-    anonymous request before the A2A handler could refuse it."""
-    app, _ = _app(settings)
-    big = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": {"x": "y" * 1_000_000}})
-    with TestClient(app) as client:
-        def chunks():
-            for i in range(0, len(big), 16_384):
-                yield big[i:i + 16_384].encode()
-
-        assert client.post("/a2a", content=chunks()).status_code == 413
-        r = client.post("/a2a", content=big, headers={"Authorization": "Bearer t0ken", "A2A-Version": "1.0"})
-        assert r.status_code != 413  # a real token gets the A2A limit
 
 
 async def test_untrusted_github_callers_cannot_drain_the_front_door_for_trusted_ones(intake, settings):  # noqa: F811
