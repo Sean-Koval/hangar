@@ -92,7 +92,9 @@ class GH:
             self.armed = None
             return httpx.Response(200, json=g["disable_auto_merge"])
         if p == "/repos/o/r/pulls/7" and m == "GET" and r.headers.get("accept") == "application/vnd.github.diff":
-            return httpx.Response(200, text="diff --git a/src/app.py b/src/app.py\n+print('hi')\n")
+            return httpx.Response(200, text="diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n"
+                                                "+++ b/src/app.py\n@@ -1,2 +1,3 @@\n import os\n x = 1\n"
+                                                "+print('hi')\n")
         if p == "/repos/o/r/pulls/7" and m == "GET":
             return httpx.Response(200, json={
                 "number": 7, "state": self.state, "merged": self.merged_sha is not None, "node_id": NODE,

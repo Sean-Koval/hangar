@@ -72,6 +72,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
+- **The AI review keeps only confirmed findings** (KAN-230, [docs/ai-review.md](docs/ai-review.md)). Each finding
+  has a `severity` and `evidence`. A second pass on the `balanced` policy, within the same `ai_review_budget_usd`,
+  keeps one only with a reproducing command or a quoted diff line. At most `ai_review_inline_max` (default 5, was 20)
+  inline comments go out, most severe first, and the packet counts the rest. It fails closed: `blocking` becomes
+  `comment` only when the check ran and dropped every major or critical finding. A quote must be an added line of
+  the finding's own file near its line; a command is marked unverified. The check reads the reviewed head.
 - **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
   different approval id, hangar treats it as a contract failure, not a decision.
 - **Auto-fix merges the base into a job's PR when it conflicts** ([docs/jobs/conflicts.md](docs/jobs/conflicts.md)).

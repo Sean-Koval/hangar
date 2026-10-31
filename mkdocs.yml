@@ -140,6 +140,7 @@ nav:
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
           - Landing: landing.md
+          - AI first-pass review: ai-review.md
           - Change sets: changesets.md
       - Front doors:
           - Repo policy: repo-policy.md
