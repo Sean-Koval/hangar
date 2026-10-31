@@ -127,6 +127,7 @@ nav:
               - After you submit a job: jobs/after-submit.md
               - From GitHub, Slack and Jira: jobs/from-github-slack-jira.md
               - Working with the agent: jobs/working-with-the-agent.md
+              - "Sequential best-of-N": jobs/sequential-best-of-n.md
               - An agent loop that finishes the job: jobs/agent-loop.md
               - When a job's PR conflicts with main: jobs/conflicts.md
               - Test results: jobs/test-results.md

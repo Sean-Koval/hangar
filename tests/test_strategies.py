@@ -306,6 +306,8 @@ esac
 case "$mode:$a" in
   followup:0) grep -q "also do Y" "$HANGAR_PROMPT_FILE" && echo y > y.txt && git add y.txt && git commit -qm "y"
      echo "did Y" > "$HANGAR_JOB_DIR/RESULT.md"; exit 0 ;;
+  first:1) echo good > fix.txt && git add fix.txt && git commit -qm "attempt 1: right" ;;
+  ask:1) mkdir -p "$HANGAR_IO/out" && echo "which file?" > "$HANGAR_IO/out/QUESTION.md"; exit 0 ;;
   *:1) echo bad > fix.txt && git add fix.txt && git commit -qm "attempt 1: wrong" ;;
   *:2) for i in $(seq 1 20); do echo "good $i" >> fix.txt; done; git add fix.txt && git commit -qm "attempt 2: big" ;;
   tamper:3) echo "exit 0" > tests/check.sh; echo bad > fix.txt; git add -A && git commit -qm "attempt 3: tests" ;;
@@ -508,6 +510,177 @@ async def test_best_of_n_validation(jobs, world):
     jobs.cancel(j.id, requester="svc")
 
 
+# ---------------------------------------------------------------------------- sequential best-of-N (KAN-231)
+async def test_sequential_best_of_n_stops_when_attempt_1_passes(jobs, world, fleet):
+    world["mode"].write_text("first")  # attempt 1 gets it right
+    job = jobs.submit(bon(world, sequential=True), Caller("svc", "svc"))
+    assert job.sequential is not None and not job.sequential.decided
+    job = await _until(jobs, job.id, DONE, timeout=40)
+    await _idle(jobs, job)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    a1, a2, a3 = job.attempts
+    assert a1.rank == 1 and a1.verify_exit_code == 0 and job.session_id == a1.session_id
+    assert [a2.outcome, a3.outcome] == ["skipped", "skipped"] and not (a2.run_id or a3.run_id)
+    assert job.sequential.decided and not job.sequential.escalated
+    assert job.sequential.why == "attempt 1 passed verify and changed 1 file(s): attempts 2..3 not started"
+    msgs = [e.message for e in job.events]
+    assert any("running attempt 1 of 3 alone" in m for m in msgs)
+    assert "Attempt 1 passed verify and changed 1 file(s): attempts 2..3 not started" in msgs
+    assert any("queued by svc" in m and "(sequential best of 3)" in m for m in msgs)
+    # the forks that never ran are archived; nothing of theirs was ever booted
+    for a in (a2, a3):
+        s = jobs.sessions.get(a.session_id)
+        assert s.state == SessionState.ARCHIVED and s.sandbox_id is None and all(t.run_id is None for t in s.turns)
+    body = jobs._pr_body(job)
+    assert "Sequential best of 3: 1 of 3 attempts ran: attempt 1 passed verify" in body
+    assert "| 2 | not started |" in body
+    from hangar import strategies
+
+    assert strategies.packet_line(job) == ("- **Attempts:** sequential best of 3; 1 of 3 attempts ran: attempt 1 "
+                                           "passed verify and changed 1 file(s)")
+
+
+async def test_sequential_best_of_n_falls_through_to_n(jobs, world, fleet):
+    job = jobs.submit(bon(world, sequential=True), Caller("svc", "svc"))  # attempt 1 fails verify
+    job = await _until(jobs, job.id, DONE, timeout=60)
+    await _idle(jobs, job)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    a1, a2, a3 = job.attempts
+    assert a1.verify_exit_code != 0 and all(a.run_id for a in job.attempts) and a3.rank == 1
+    assert a1.finished_at <= a2.started_at and a1.finished_at <= a3.started_at  # the others started after it
+    assert job.sequential.escalated and job.sequential.why == "attempt 1 failed verify (exit 1): attempts 2..3 started"
+    assert "Attempt 1 failed verify (exit 1): attempts 2..3 started" in [e.message for e in job.events]
+    assert "Sequential best of 3: 3 of 3 attempts ran: attempt 1 failed verify (exit 1)" in jobs._pr_body(job)
+
+
+async def test_sequential_attempt_1_asking_a_question_falls_short(jobs, world, fleet):
+    world["mode"].write_text("ask")  # attempt 1 asks a question instead of finishing
+    job = jobs.submit(bon(world, sequential=True), Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE, timeout=60)
+    await _idle(jobs, job)
+    assert job.state == JobState.SUCCEEDED, [e.message for e in job.events]
+    a1, a2, a3 = job.attempts
+    assert a1.outcome == "needs_input" and a2.run_id and a3.run_id and a3.rank == 1
+    assert job.sequential.escalated
+    assert job.sequential.why == "attempt 1 asked a question instead of finishing: attempts 2..3 started"
+    assert "met" not in job.sequential.why and "passed" not in job.sequential.why
+
+
+async def test_sequential_best_of_n_restart_keeps_its_phase(jobs, world, fleet):
+    world["mode"].write_text("slow")  # attempt 1 takes 1.5 s, then fails verify
+    job = jobs.submit(bon(world, sequential=True), Caller("svc", "svc"))
+    while not (job.attempts and job.attempts[0].run_id):
+        await asyncio.sleep(0.05)
+    assert not any(a.run_id for a in job.attempts[1:])  # attempt 1 runs alone
+    await jobs.stop()
+    again = JobService(fleet, jobs.sessions, transport=jobs.transport)
+    await again.start()
+    try:
+        done = await _until(again, job.id, DONE, timeout=60)
+        assert done.state == JobState.SUCCEEDED, [e.message for e in done.events]
+        assert done.sequential.escalated and len({a.run_id for a in done.attempts}) == 3
+        assert done.attempts[0].run_id == job.attempts[0].run_id  # re-attached, not run again
+    finally:
+        await again.stop()
+
+
+async def test_parallel_stays_the_default(jobs, world):
+    from hangar.repopolicy import BestOfNPolicy, RepoPolicy, repo_key
+
+    j = jobs.submit(bon(world), Caller("svc", "svc"))
+    assert j.sequential is None and any("(best of 3)" in e.message for e in j.events)
+    from hangar import strategies
+
+    assert strategies.packet_line(j) is None
+    jobs.cancel(j.id, requester="svc")
+    with pytest.raises(JobError, match="apply to strategy 'best_of_n'"):
+        jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="bonenv", sequential=True),
+                    Caller("svc", "svc"))
+    with pytest.raises(JobError, match="escalate_at applies"):
+        jobs.submit(bon(world, sequential=False, escalate_at=0.5), Caller("svc", "svc"))
+    # the repo policy turns it on, and caps the attempts by the job's risk tier; a job's own choice comes first
+    jobs.policies.put(RepoPolicy(repo=repo_key(world["url"]), best_of_n=BestOfNPolicy(
+        sequential=True, escalate_at=0.4, max_n={"low": 2, "high": 4})))
+    j = jobs.submit(bon(world, n=None, labels={"hangar.risk": "low"}), Caller("svc", "svc"))
+    assert j.n == 2 and j.sequential is not None and j.sequential.escalate_at == 0.4
+    assert any("(sequential best of 2, at most 2 for risk low)" in e.message for e in j.events)
+    assert "risk low: the repo policy's best_of_n.max_n runs 2 attempts, not the default 3" in [
+        e.message for e in j.events]
+    jobs.cancel(j.id, requester="svc")
+    j = jobs.submit(bon(world, n=None, labels={"hangar.risk": "high"}), Caller("svc", "svc"))
+    assert j.n == 4
+    assert "risk high: the repo policy's best_of_n.max_n runs 4 attempts, not the default 3" in [
+        e.message for e in j.events]
+    jobs.cancel(j.id, requester="svc")
+    j = jobs.submit(bon(world, n=3, labels={"hangar.risk": "low"}, sequential=False), Caller("svc", "svc"))
+    assert j.n == 2 and j.sequential is None
+    assert "risk low: the repo policy's best_of_n.max_n (2) cut n from 3 to 2" in [e.message for e in j.events]
+    jobs.cancel(j.id, requester="svc")
+    j = jobs.submit(bon(world, n=2, labels={"hangar.risk": "high"}), Caller("svc", "svc"))  # under the cap
+    assert j.n == 2 and not any("best_of_n.max_n" in e.message for e in j.events)
+    jobs.cancel(j.id, requester="svc")
+    j = jobs.submit(bon(world, n=None), Caller("svc", "svc"))  # no tier: the usual default, and no event
+    assert j.n == 3 and not any("best_of_n.max_n" in e.message for e in j.events)
+    jobs.cancel(j.id, requester="svc")
+    with pytest.raises(ValueError, match="2 to 8"):
+        BestOfNPolicy(max_n={"low": 1})
+
+
+def test_sequential_budget_accounting(monkeypatch):
+    """Attempt 1 gets `escalate_at` of the job budget (or a parallel attempt's equal share); the attempts that
+    start after it split what it left, the judge included, so together they never cross the job budget."""
+    from hangar import jobbudget, strategies
+    from hangar.models import Attempt, Budget, Job, JobBudget, SequentialRun
+
+    job = Job(id="job-1", title="t", instructions="x", requester="svc", owner="svc", environment="e",
+              strategy="best_of_n", n=4, judge=True, job_budget=JobBudget(max_cost_usd=10.0, max_tokens=1000),
+              budget=Budget(max_cost_usd=3.0), sequential=SequentialRun())
+    assert jobbudget.first_share(job) == jobbudget.attempt_share(job) == Budget(max_cost_usd=2.0, max_tokens=200)
+    job.sequential.escalate_at = 0.5
+    assert jobbudget.first_share(job) == Budget(max_cost_usd=3.0, max_tokens=500)  # the turn budget still caps it
+    spent = jobbudget.Spent(4.0, 400, 1)
+    monkeypatch.setattr(jobbudget, "spent", lambda svc, job, leave_out=None: spent)
+    assert jobbudget.rest_share(None, job, 3) == Budget(max_cost_usd=1.5, max_tokens=150)  # (10-4)/(3+1)
+    assert 4.0 + 3 * 1.5 + 1.5 <= 10.0
+    assert jobbudget.used_fraction(None, job) == 0.4
+    # over its fraction: the others start; under it, a pass stops the run
+    a = Attempt(index=1, outcome="exited", exit_code=0, verify_exit_code=0, files=["M fix.txt"])
+    job.verify = "true"
+    assert strategies.escalation(None, job, a) is None
+    spent = jobbudget.Spent(6.0, 100, 1)
+    assert strategies.escalation(None, job, a) == "used 60% of the job budget, more than its 50%"
+    assert strategies.escalation(None, job, a.model_copy(update={"outcome": "over_budget"})) == \
+        "went over its share of the budget"
+    assert strategies.escalation(None, job, a.model_copy(update={"files": []})) == "changed nothing"
+    assert strategies.escalation(None, job, a.model_copy(update={"outcome": "needs_input"})) == \
+        "asked a question instead of finishing"
+    assert strategies.escalation(None, job, a.model_copy(update={"touched_tests": ["tests/t.py"]})).startswith(
+        "changed the verify's tests")
+    # no job budget: each attempt keeps the turn budget, and there is no fraction to cross
+    job.job_budget = None
+    assert jobbudget.first_share(job) == jobbudget.rest_share(None, job, 3) == Budget(max_cost_usd=3.0)
+    assert jobbudget.used_fraction(None, job) is None
+
+
+async def test_ticket_text_never_picks_the_risk_cap(jobs, world):
+    """A ticket's *Touches risk paths?* answer is untrusted text: it sets no risk tier, so it can't pick the
+    repo policy's `best_of_n.max_n` cap. Only the submitter's own `hangar.risk` label does."""
+    from hangar import intake
+    from hangar.repopolicy import BestOfNPolicy, RepoPolicy, repo_key
+
+    jobs.policies.put(RepoPolicy(repo=repo_key(world["url"]), best_of_n=BestOfNPolicy(max_n={"high": 5, "normal": 2})))
+    for answer in ("y: infra/", "No"):
+        req = bon(world, n=None)
+        intake.apply_ticket(jobs, req, f"## Goal\n\nfix it\n\n## Touches risk paths? (y/n)\n\n{answer}\n", "KAN-1")
+        assert "hangar.risk" not in req.labels
+        j = jobs.submit(req, Caller("svc", "svc"))
+        assert j.n == 3 and not any("best_of_n.max_n" in e.message for e in j.events)
+        jobs.cancel(j.id, requester="svc")
+    req = bon(world, n=None, labels={"hangar.risk": "normal"})  # the submitter's label stands
+    intake.apply_ticket(jobs, req, "## Touches risk paths?\n\ny\n", "KAN-1")
+    assert req.labels["hangar.risk"] == "normal" and jobs.submit(req, Caller("svc", "svc")).n == 2
+
+
 # ---------------------------------------------------------------------------- surfaces
 async def test_mcp_fork_session(svc, world, fleet):
     import json
@@ -564,6 +737,8 @@ def test_rest_and_cli_surfaces(settings, monkeypatch):
                                                          "names": None})
     r = runner.invoke(cli.app, ["job", "submit", "fix it", "--best-of", "3", "--judge"])
     assert r.exit_code == 0 and calls[-1][2]["strategy"] == "best_of_n" and calls[-1][2]["n"] == 3
-    assert calls[-1][2]["judge"] is True
+    assert calls[-1][2]["judge"] is True and "sequential" not in calls[-1][2]
+    r = runner.invoke(cli.app, ["job", "submit", "fix it", "--best-of", "3", "--sequential"])
+    assert r.exit_code == 0 and calls[-1][2]["sequential"] is True
     r = runner.invoke(cli.app, ["job", "attempts", "job-1"])
     assert r.exit_code == 0 and "* #1" in r.output and "changed the verify's tests" in r.output

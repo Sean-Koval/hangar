@@ -54,7 +54,8 @@ FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "
           "verify_allowed",  # --- #156
           "shadow",  # --- #183
           "overnight",  # --- #186: its intake jobs run in the overnight lane
-          "branch_template", "require_ticket", "title_template")  # --- change sets (G7): SDLC conventions
+          "branch_template", "require_ticket", "title_template",  # --- change sets (G7): SDLC conventions
+          "best_of_n")  # --- KAN-231: sequential best-of-N and the attempts per risk tier
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")  # a GitHub login
 
 
@@ -105,6 +106,28 @@ class ShadowPolicy(BaseModel):
         if bool(self.pin_set) == bool(self.harness):
             raise ValueError("shadow: give one of `pin_set` or `harness` (name@sha256:...)")
         return self
+
+
+RiskTier = Literal["low", "normal", "high"]  # as landing.risk names them
+
+
+class BestOfNPolicy(BaseModel):
+    """--- KAN-231: this repo's best-of-N jobs (strategies.py). `sequential`: attempt 1 runs alone and the others
+    start only if it falls short (a job's own `sequential` comes first). `escalate_at`: the fraction of the job
+    budget attempt 1 may use before the others start. `max_n`: the most attempts per risk tier (the job's
+    `hangar.risk` label, which only its submitter sets, never ticket text); a job that names no `n` gets it."""
+
+    model_config = ConfigDict(extra="forbid")
+    sequential: bool | None = None
+    escalate_at: float | None = Field(None, gt=0, lt=1)
+    max_n: dict[RiskTier, int] | None = None
+
+    @field_validator("max_n")
+    @classmethod
+    def _max_n(cls, v: dict[str, int] | None) -> dict[str, int] | None:
+        if v and (bad := [k for k, n in v.items() if not 2 <= n <= 8]):
+            raise ValueError(f"max_n: each tier's attempts are 2 to 8 (not {', '.join(bad)})")
+        return v
 
 
 class RepoPolicy(BaseModel):
@@ -183,6 +206,7 @@ class RepoPolicy(BaseModel):
     branch_template: str | None = Field(None, max_length=200)
     require_ticket: bool | None = None
     title_template: str | None = Field(None, max_length=200)
+    best_of_n: BestOfNPolicy | None = None  # --- KAN-231: sequential best-of-N, attempts per risk tier
     updated_at: float = Field(default_factory=now)
     updated_by: str | None = None
 
@@ -432,6 +456,7 @@ class PolicyUpdate(BaseModel):
     branch_template: str | None = Field(None, max_length=200)  # --- change sets (G7)
     require_ticket: bool | None = None
     title_template: str | None = Field(None, max_length=200)
+    best_of_n: BestOfNPolicy | None = None  # --- KAN-231
 
     @field_validator("heavy", mode="before")
     @classmethod

@@ -160,6 +160,10 @@ class SubmitJob(BaseModel):
     strategy: Literal["single", "best_of_n"] = "single"
     n: int | None = Field(None, ge=1, le=8)  # attempts for best_of_n (2..HANGAR_BEST_OF_N_MAX; default 3)
     judge: bool = False  # best_of_n: a judge turn orders the attempts that pass verification
+    # --- KAN-231: best_of_n runs attempt 1 alone and the others only if it falls short (None: the repo policy's
+    # best_of_n.sequential, else parallel); `escalate_at`: the share of the job budget attempt 1 may use
+    sequential: bool | None = None
+    escalate_at: float | None = Field(None, gt=0, lt=1)
     # --- overnight/autofix: the check inside the agent's turn, and the PR auto-fix loop (docs/jobs/agent-loop.md)
     verify_in_loop: bool | None = None  # default HANGAR_VERIFY_IN_LOOP (on)
     max_verify_rounds: int | None = Field(None, ge=0, le=10)  # default HANGAR_MAX_VERIFY_ROUNDS (3)
@@ -511,7 +515,7 @@ class JobService:
                                     strict=experiments.EXP_LABEL in (req.labels or {}))
         except teamcreds.SubscriptionRefused as e:
             raise JobError(str(e)) from e
-        attempts = strategies.check_submit(req, self.settings.best_of_n_max)
+        attempts = strategies.check_submit(req, self.settings.best_of_n_max, policy)
         job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
             raise JobError(why)
@@ -579,11 +583,12 @@ class JobService:
 
             approval = job.approval = new_approval(self, requester, f"budget: {over}")
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
+        job.sequential = strategies.sequential_for(req, policy)  # --- KAN-231
         taint.seed_job(job)  # --- taint (#129): untrusted task text or context: tainted from turn 1
         job.verify_in_loop, job.max_verify_rounds, job.autofix = req.verify_in_loop, req.max_verify_rounds, fix_mode
         cs = changesets.create(self, job, profile) if profile is not None else None  # --- change sets
         self._jobs[job.id] = job
-        best = f" (best of {attempts})" if req.strategy == "best_of_n" else ""
+        best = f" ({strategies.describe(job, policy)})" if req.strategy == "best_of_n" else ""
         if approval is not None:  # an untrusted trigger: wait for a trusted person instead of queueing
             self._event(job, f"waiting for approval: {approval.reason or approval.requested_by}{best}",
                         JobState.AWAITING_APPROVAL)
@@ -591,6 +596,8 @@ class JobService:
             self._event(job, f"queued by {requester} via {source}{best}")
         if defaults.notes:  # --- frontdoor
             self._event(job, f"from the repo policy for {repopolicy.repo_key(repo)}: " + "; ".join(defaults.notes))
+        if note := strategies.cap_note(req, attempts, self.settings.best_of_n_max, policy):  # --- KAN-231
+            self._event(job, note)
         if lock_note:  # --- #138
             self._event(job, lock_note)
         if branch_note:  # --- change sets (G7)

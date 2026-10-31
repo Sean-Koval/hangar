@@ -539,9 +539,22 @@ class Attempt(BaseModel):
     rank: int | None = None  # 1 = delivered
     summary: str | None = None
     cost_usd: float | None = None  # from its usage: reported by the harness or priced (--- interactions)
+    # --- KAN-231: its share of the job budget, fixed when it started (sequential runs share what attempt 1 left)
+    budget: Budget | None = None
     error: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
+
+
+class SequentialRun(BaseModel):
+    """--- KAN-231: a sequential best-of-N job (strategies.py). Attempt 1 runs alone; attempts 2..N start, in
+    parallel, only if it fails verify, changes nothing or the verify's tests, or uses more than `escalate_at` of the
+    job budget. `why` says what was decided and why: the events, the PR body and the review packet show it."""
+
+    escalate_at: float | None = None  # fraction of the job budget attempt 1 may use (None: an equal share)
+    decided: bool = False
+    escalated: bool = False  # attempts 2..N ran
+    why: str | None = None
 
 
 class FailureLabel(BaseModel):
@@ -613,6 +626,7 @@ class Job(BaseModel):
     n: int = 1
     judge: bool = False
     attempts: list[Attempt] = Field(default_factory=list)
+    sequential: SequentialRun | None = None  # --- KAN-231: None runs the attempts in parallel (the default)
     # --- workstream A: triggers
     approval: JobApproval | None = None
     untrusted_source: str | None = None  # who wrote untrusted task text ("github:<login>", "webhook:<source>")

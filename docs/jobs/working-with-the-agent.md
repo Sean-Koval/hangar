@@ -56,7 +56,7 @@ hangar job submit "fix the flaky test_export" --repo https://github.com/acme/app
 hangar job attempts job-3fa2c1d0
 ```
 
-Over REST or MCP: `"strategy": "best_of_n", "n": 3` (2–8), and optionally `"judge": true`.
+Over REST or MCP: `"strategy": "best_of_n", "n": 3` (2–8), and optionally `"judge": true`. Or run attempt 1 alone first: [sequential best-of-N](sequential-best-of-n.md).
 
 How it runs:
 
@@ -77,5 +77,5 @@ If no attempt finished but one asked a question (`hangar-agent ask`), the first 
 - **Cancel** stops every attempt. A control-plane restart re-attaches to each running attempt. One attempt's sandbox dying (or its agent failing) doesn't fail the job; it is recorded and left out of the ranking.
 - To carry on with an attempt that wasn't delivered, fork its session: `hangar session fork job-3fa2c1d0-attempt-2 "..."`.
 
-**Cost:** N attempts are N sandboxes running at the same time and N agent runs (the judge adds one more short run in a sandbox of its own). The preparation runs once. A job holds one worker slot (`HANGAR_JOB_CONCURRENCY`) however many attempts it runs, so the sandbox count, not the job count, is what to watch: `HANGAR_BEST_OF_N_MAX` caps N, and `HANGAR_MAX_SANDBOXES` caps the fleet.
+**Cost:** N attempts are N sandboxes at once, N agent runs (the judge adds a short run in its own sandbox). Preparation runs once. A job holds one worker slot (`HANGAR_JOB_CONCURRENCY`) however many attempts it runs, so the sandbox count, not the job count, is what to watch: `HANGAR_BEST_OF_N_MAX` caps N, and `HANGAR_MAX_SANDBOXES` caps the fleet.
 
