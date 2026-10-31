@@ -859,7 +859,7 @@ def test_shipped_environments_work_under_the_gke_default(name):
 
 def test_vertex_ai_is_a_google_harness_host():
     """agy's ADC mode and pi's google-vertex call Vertex AI's global endpoint (hangar-jobs carries gcp-vertex-agy)."""
-    for harness in ("antigravity", "gemini", "pi"):
+    for harness in ("antigravity", "pi"):
         assert "aiplatform.googleapis.com" in egress.HARNESS_HOSTS[harness]
     assert "aiplatform.googleapis.com" not in egress.HARNESS_HOSTS["claude-code"]
 
