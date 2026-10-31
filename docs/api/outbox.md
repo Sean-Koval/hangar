@@ -154,7 +154,7 @@ Schema: `$defs.job_event`. Every event has `kind`, `ts`, `job_id`, `job_source`,
 | --- | --- | --- |
 | `pr.open` | the job's PR exists | `{draft}` |
 | `review.first` | the first approval that counts (landing) | `{by, sha, first_review_at, first_review_by}`: the last two are the first human review in any state (#168, added within v1) |
-| `pr.merge` | merged | `{by, green_to_merge_seconds}` |
+| `pr.merge` | merged, once its [outcome labels](outcome-labels.md) are read (up to 6 hours) | `{by, green_to_merge_seconds}`, and the outcome labels (added within v1) |
 | `pr.close` | closed without merging (each close) | `{}` |
 | `abandon` | the job was cancelled; or an abandon reason was set on its closed PR (#168) | `{reason}`; for a PR's reason `{reason, by, via, pr: "closed"}` |
 | `pr.ready` | the PR was opened non-draft or marked ready (#168): review wait starts here | `{}` |
@@ -162,6 +162,7 @@ Schema: `$defs.job_event`. Every event has `kind`, `ts`, `job_id`, `job_source`,
 | `label` | a failure label from the Friday harness review, and each relabel (#169, [runbook](../runbooks/harness-review.md)) | the `FailureLabel` (`id, job_id, session_id, turn, seq, category, fix, note, candidate_task, labelled_by, at`) and `base_sha, head_sha, repo, ticket_ref, title, ticket` (redacted, at most 4,000 characters), `ticket_untrusted, verify, pr_state, abandon_reason` |
 
 hangar scans jobs changed in the last minute for new facts and writes each once.
+
 
 ## Guarantees
 

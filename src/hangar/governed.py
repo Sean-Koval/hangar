@@ -161,6 +161,8 @@ class Governed:
         """While a `governed` turn runs: relay each call the driver holds for hangar. Never raises."""
         if turn.approval_policy != "governed" or not turn.live or turn.finished_at:
             return
+        if turn.governance_hook:  # --- KAN-78: Tower saw each call through the hook; one path per turn (§9)
+            return
         for a in turn.approvals:
             if a.status != "pending" or a.id in self._asked or not (a.risky or a.taint):
                 continue

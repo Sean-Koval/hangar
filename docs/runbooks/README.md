@@ -6,6 +6,8 @@ says what to do, in order, and what to check after.
 | Runbook | When | Who |
 | --- | --- | --- |
 | [Onboarding a team](onboarding.md) | Putting 2 engineers on 1 repo, then 6 on 3: people, credentials, the repo, its policy and doors, until `hangar repo check` is green | An admin, with a GitHub admin for the App and branch protection |
+| [The per-repo checklist](repo-checklist.md) | Steps 4–7 for each repo: the repo, its policy and doors, until `hangar repo check` is green | An admin, with a GitHub admin |
+| [Onboarding, phase 2](onboarding-phase-2.md) | Going from 2 engineers on 1 repo to 6 on 3, the daily loop, and rolling back | An admin |
 | [The Friday harness review](harness-review.md) | Every Friday, 30 minutes: labelling where failed and abandoned jobs first went wrong, until 20 candidate tasks reach flightdeck | The team, with an admin as facilitator |
 | [Run capture: the outbox](outbox.md) | Switching run capture on, checking that a run landed, retention and deletion requests, and what to do when uploads fail | An admin, with the GCP project's owner for the bucket |
 | [Tower beside hangar on GKE](tower.md) | Pointing hangar at Tower in the cluster, in shadow mode, and what the power schedule does to it | An admin |

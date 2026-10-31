@@ -28,6 +28,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`pr.merge` carries outcome labels** (KAN-232, [docs/api/outcome-labels.md](docs/api/outcome-labels.md)): the
+  agent head, the merge commit, the agent's diff lines, how many of its added lines the merge kept, human commits on
+  the branch and review rounds, read from GitHub before the event goes out. Added within `hangar.job_event/v1`.
+  Follow-up: the merged diff and human commits are the PR's own, so an update from main or a rebase isn't a human
+  edit, and an owner's fix counts though hangar pushes as the owner. Long lists are paged, a capped one is named in
+  `outcome_truncated`, and the labels are read as the GitHub App, with backoff, off the upload loop.
 - **`evals/` is gone** (KAN-86, #145). The semver kit moved to flightdeck: the task to `tasks/smoke/semver/`, the
   process metrics and rule labeller to its data plane. hangar's experiment tests grade
   `tests/fixtures/experiments/semver-mini/`, five of its hidden cases.
@@ -37,14 +43,41 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   `interactive`.
 - **The refusal names the key to add**: an OpenAI API key for Codex, an Anthropic one for Claude Code, a Gemini one
   for Antigravity, each with its `hangar cred add` command. So does the doctor's **subscription logins** check.
+- **GKE ships with allowlist egress (KAN-174, L-9).** `deploy/k8s/config.yaml` and `deploy/kustomize/base/config.yaml`
+  set `HANGAR_EGRESS_DEFAULT: "allowlist"`, so an environment without its own `egress.mode` reaches only its harness's
+  model API, the package mirror (pip, uv, npm, Go), crates, its MCP servers, the repo through the git gateway, and
+  hosts an owner approved. Vertex AI's global endpoint (`aiplatform.googleapis.com`) joins Google's harness hosts.
+  `hangar doctor` names the environments the default decides and the hosts sandboxes were refused in the last 24
+  hours. Docker keeps `open`. [docs/security/egress-default.md](docs/security/egress-default.md)
+
+  **Before you upgrade:** on GKE, every shipped environment (`bare`, `base`, `python`, `node`, `go`, `polyglot`,
+  `claude-python`, `codex-node`, `example-repo`, `hangar`, `hangar-jobs`, `minimal`) and every environment of yours
+  that doesn't set `egress.mode` becomes `allowlist`. Jobs that fetch from GitHub directly (`gh`, `pip install
+  git+https://github.com/…`, release downloads), download toolchains or browsers at run time, use Maven, Poetry's own
+  sources or conda, run `uv sync --frozen`, or call a regional Vertex AI endpoint are refused. Running sandboxes keep
+  their open network until they end; resumed sessions, forks and warm sandboxes come back proxied. To keep one
+  environment open, give it `egress: {mode: open}`; to keep all, set `HANGAR_EGRESS_DEFAULT: "open"` in your overlay's
+  `hangar-site` ConfigMap (a ConfigMap key wins over `hangar config set`).
 - **`approvals: governed` asks Tower** (KAN-79, [docs/governed-approvals.md](docs/governed-approvals.md)). The calls
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
+  in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
+  own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps
+  only its `deny-risky` rules, so a call never raises two approvals. The script's digest is checked at each turn's
+  start and kept in the manifest. Turns are refused where the agent could remove the hook: GKE, E2B, Docker without
+  the uid split, and Codex.
 - **`HANGAR_UID_SPLIT` unset means `required` on E2B** (KAN-189, security review H-1). An E2B sandbox is one microVM
   with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
+- **A status answer about another approval fails closed** (KAN-174, L-1). When Tower answers a status check with a
+  different approval id, hangar treats it as a contract failure, not a decision.
+- **Auto-fix merges the base into a job's PR when it conflicts** ([docs/jobs/conflicts.md](docs/jobs/conflicts.md)).
+  When any PR merges, hangar checks its other open PRs on that base. One GitHub marks `dirty` gets a round: the agent
+  merges the base in, resolves the conflicts, reruns the check, and hangar pushes without force. `autofix` gains
+  `conflicts`, on by default.
 
 ### Fixed
 

@@ -30,7 +30,7 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hangar import harden, isolation  # --- isolation, harden
+from hangar import govhook, harden, isolation  # --- isolation, harden, KAN-78
 from hangar.driver import DECISIONS, ENDED, MAX_TEXT, sign
 from hangar.events import RunEvent
 from hangar.harnesses import Harness, get_harness
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("hangar.steer")
 
 DRIVER = Path(__file__).with_name("driver.py")
+RELAY = Path(__file__).with_name("relay.py")  # --- KAN-186: the agent's end under the driver sidecar
 KV = "steer-key:"
 ACK_WAIT = 15.0  # seconds a command waits for the driver's answer
 APPROVAL_ID = re.compile(r"^ap-[0-9a-f]{12}$")
@@ -80,7 +81,8 @@ def policy(svc: SessionService, s: Session) -> str:
 
 def ctl_dir(svc: SessionService, run_id: str, sb: Sandbox | None = None) -> str:
     """`sb`: where a split run (isolation.py) keeps it; without it, the agent's ~/.hangar/runs."""
-    return isolation.ctl_dir(svc.settings, run_id, sb is not None and isolation.run_split(sb, run_id))
+    return isolation.ctl_dir(svc.settings, run_id, sb is not None and isolation.run_split(sb, run_id),
+                             sb is not None and isolation.run_sidecar(sb, run_id))
 
 
 async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbox, h: Harness,
@@ -91,9 +93,18 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     Installs the driver and the run's key in the sandbox. Without python3 there, an `auto` turn falls back to the
     one-shot command; an `ask` or `deny-risky` one fails rather than run with permission checks off."""
     run_id = new_id("run")
-    pol = policy(svc, s)
+    asked = policy(svc, s)
+    # --- KAN-78: the managed Tower hook (govhook.py). One path per turn (spec 0015 §9): with it, the driver answers
+    # from its deny-risky rules, never relaying to Tower as well
+    hooked = govhook.required_for(svc, s)
+    pol = govhook.driver_policy(asked) if hooked else asked
     live = svc.settings.live_turns and h.live and h.live_run
+    if hooked and (why := govhook.why_not(svc.settings, h)):
+        raise SteerError(f"governance.hook is required here, and hangar can't install its Tower hook: {why}")
     if not live:
+        if hooked:
+            raise SteerError("governance.hook is required here, and hangar's Tower hook needs a live turn"
+                             + ("" if svc.settings.live_turns else " (HANGAR_LIVE_TURNS is off)"))
         if pol != "auto":
             raise SteerError(f"approvals={pol} needs a live turn, and {h.name} turns are one-shot"
                              + ("" if svc.settings.live_turns else " (HANGAR_LIVE_TURNS is off)")
@@ -111,6 +122,18 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     required = mode == "required"
     because = ("HANGAR_UID_SPLIT=required" if svc.settings.uid_split == "required" else
                "HANGAR_UID_SPLIT=required, the default on E2B (docs/security/e2b-driver-user.md)")
+    # --- KAN-186: under the driver sidecar only a turn that asks runs split; an `auto` one keeps its per-edit trees
+    # and verify gate, which need the checkout, in the agent's container as before (KAN-187)
+    side = split and isolation.sidecar(sb)
+    if side and not guarded:
+        split = side = False
+    if hooked and not split:  # --- KAN-78: whatever HANGAR_UID_SPLIT says: the agent could remove it
+        raise SteerError(f"governance.hook is required here, and hangar can install its Tower hook only where the "
+                         f"agent can't remove it: a sandbox whose driver runs as a user of its own, and this one "
+                         f"can't ({isolation.why_not(svc.settings, sb)}) (docs/governance-hook.md#where-it-runs)")
+    if hooked and side:  # --- KAN-78 x KAN-186: the hook and its key are files of the agent's container, not CTL's
+        raise SteerError("governance.hook is required here, and hangar can't install its Tower hook under the driver "
+                         "sidecar yet (docs/governance-hook.md#where-it-runs)")
     if guarded and not split:
         why = isolation.why_not(svc.settings, sb)
         if required:
@@ -121,9 +144,13 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                              "tamper with later turns: change the harness's settings, environment and binary so it "
                              "doesn't ask, and fake the run log, approval requests and exit status hangar reads "
                              "(docs/steering.md#the-uid-split)")
-    ctl = isolation.ctl_dir(svc.settings, run_id, split)
+    ctl = isolation.ctl_dir(svc.settings, run_id, split, side)
     wd = sb.info.get("repo_path") or svc.settings.workspace_dir  # where fleet.run_agent runs it
-    hard = harden.plan(svc.fleet, sb, h, run_id, wd, env or {}) if split and guarded else None  # --- harden
+    hard = (harden.plan(svc.fleet, sb, h, run_id, wd, env or {}, ctl=ctl if side else None)  # --- harden
+            if split and (guarded or hooked) else None)
+    if isinstance(hard, str) and hooked:  # --- KAN-78
+        raise SteerError(f"governance.hook is required here, and hangar can't own the harness's settings in this "
+                         f"sandbox ({hard}) (docs/governance-hook.md#where-it-runs)")
     if isinstance(hard, str):
         if required:
             raise SteerError(f"approvals={pol} needs hangar to own the harness's settings, and it can't in this "
@@ -144,12 +171,38 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
                              "(a Codex rules file, or an MCP server set to `approve`), and Codex can't be told to "
                              "ignore them. Remove them, or run with approvals=auto "
                              "(docs/steering.md#hangar-owned-harness-settings)")
+    hook_rec = None
+    if hooked and hard is not None:  # --- KAN-78: the hook in hangar's settings, its key a file of the run
+        try:
+            hook_rec = govhook.apply(svc.fleet, hard, run_id, svc.settings.governance_hook_wait_seconds)
+        except ValueError as e:
+            raise SteerError(f"governance.hook is required here, and hangar can't install its Tower hook: {e}") from e
+        await govhook.before(svc.fleet, prov, sb, s, turn)
     # --- KAN-77: calls Tower signed while the session was suspended for them, signed with the run's key
     preclear = preclear_file(key.encode(), turn.preclear) if guarded and turn.preclear else None
-    if split:
+    if side:  # --- KAN-186: the driver sidecar: the key, relay token and agent env only in its container's CTL
+        driver = isolation.DRIVER
+        token = isolation.relay_token(run_id)  # handed to the relay's stdin by isolation.start
+        name = f"{run_id}.ctl"
+        try:
+            await asyncio.gather(
+                isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644),
+                                                         "relay.py": (RELAY.read_bytes(), 0o644)}),
+                *([isolation.put(prov, sb, isolation.RUNS, hard.files)] if hard and hard.files else []))
+            await isolation.put(prov, sb, isolation.CTL_RUNS, {
+                name: (None, 0o700), f"{name}/key": (key.encode(), 0o600),
+                f"{name}/relay-token": (f"{token}\n".encode(), 0o600),
+                **({f"{name}/preclear": (preclear, 0o600)} if preclear else {}),
+                **{f"{name}/{k}": v for k, v in (hard.ctl_files if hard else {}).items()}})
+        except BaseException:
+            isolation.drop_relay(run_id)
+            raise
+    elif split:
         driver = isolation.DRIVER
         await asyncio.gather(
-            isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644)}),
+            isolation.put(prov, sb, isolation.HOME, {"driver.py": (DRIVER.read_bytes(), 0o644),
+                                                     **({govhook.NAME: (govhook.SCRIPT.read_bytes(), 0o644)}
+                                                        if hook_rec else {})}),
             isolation.put(prov, sb, isolation.RUNS, {f"{run_id}.ctl": (None, 0o700),
                                                      f"{run_id}.ctl/key": (key.encode(), 0o600),
                                                      **({f"{run_id}.ctl/preclear": (preclear, 0o600)}
@@ -160,13 +213,23 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
         await asyncio.gather(prov.write_file(sb, driver, DRIVER.read_bytes(), mode=0o644),
                              prov.write_file(sb, f"{ctl}/key", key.encode(), mode=0o600),
                              *([prov.write_file(sb, f"{ctl}/preclear", preclear, mode=0o600)] if preclear else []))
+    if hook_rec is not None:  # --- KAN-78: refuse the turn unless the hook is there as hangar meant it
+        if why := await govhook.verify(svc.fleet, prov, sb, run_id):
+            raise SteerError(f"governance.hook is required here, and hangar's Tower hook isn't in place: {why} "
+                             "(docs/governance-hook.md#integrity)")
+        turn.governance_hook = {**hook_rec, "policy": asked}
+        if asked != pol:
+            turn.warnings.append(f"approvals={asked}: Tower decides each call through hangar's Tower hook, and the "
+                                 "driver keeps hangar's deny-risky rules as a guard rail, so no call is asked about "
+                                 "twice (docs/governance-hook.md#one-path-per-turn)")
     svc.store.kv_set(KV + run_id, svc.vault.encrypt(key.encode()).decode(), durable=True)
     turn.live, turn.approval_policy = True, pol  # type: ignore[assignment]
     q = shlex.quote
     one_shot = isolation.agent_command(svc.settings, run_id, wd, h.run) if split else h.run
     fallback = (f"{one_shot}" if pol == "auto" else
                 f"echo 'hangar: approvals={pol} needs python3 >= 3.8 in the sandbox' >&2; false")
-    split_args = f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else ""
+    split_args = (f" {isolation.relay_args(svc.settings, run_id, wd)}" if side  # --- KAN-186
+                  else f" {isolation.driver_args(svc.settings, run_id, wd)}" if split else "")
     if hard:  # --- harden: the harness by its path, with hangar's settings and environment
         split_args += f" {hard.driver_args}"
     from hangar import taint  # --- taint (#130): a turn that starts tainted, and the environment's MCP writes
@@ -211,6 +274,7 @@ def reseal(store: Any, ring: Any) -> int:
 def forget(svc: SessionService, run_id: str | None) -> None:
     """The run is over (or never started): its key is of no more use."""
     if run_id:
+        isolation.drop_relay(run_id)  # --- KAN-186
         with contextlib.suppress(Exception):
             svc.store.kv_delete(KV + run_id)
 
@@ -228,7 +292,8 @@ async def command(svc: SessionService, s: Session, turn: SessionTurn, op: str, *
     sb = svc.fleet.get(s.sandbox_id)
     _, prov = svc.fleet._running(sb.id)
     split = isolation.run_split(sb, turn.run_id)  # --- isolation: the control files are hangar's user's
-    ctl = isolation.ctl_dir(svc.settings, turn.run_id or "", split)
+    # --- KAN-186: under the driver sidecar, in its container's CTL (isolation.put and .sh go there)
+    ctl = isolation.ctl_dir(svc.settings, turn.run_id or "", split, isolation.run_sidecar(sb, turn.run_id))
     if split:
         await isolation.put(prov, sb, ctl, {f".{cid}": (json.dumps(cmd).encode(), 0o600)})
     else:

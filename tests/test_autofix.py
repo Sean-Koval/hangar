@@ -27,6 +27,7 @@ case "$mode" in
            && git commit -qm "fix the failing test" ;;
   review) grep -rqs "rename foo to bar" "$HANGAR_IO/in" && echo bar > bar.txt && git add bar.txt \
            && git commit -qm "rename foo to bar" ;;
+  merge) date +%N > merged.txt && git add merged.txt && git commit -qm "merge main" ;;
   nochange) true ;;
 esac
 echo "mode $mode" > "$HANGAR_JOB_DIR/RESULT.md"
@@ -55,6 +56,7 @@ class GitHubMock:
         self.review_comments: dict[int, list] = {}
         self.login = "hangar-bot"
         self.log_location = lambda jid: f"https://{LOG_HOST}/actions-results/{jid}?sig=abc"
+        self.pr_extra = lambda: {}  # mergeable, mergeable_state, base: what GitHub says about the PR's merge
 
     def __call__(self, r: httpx.Request) -> httpx.Response:
         self.calls.append(r)
@@ -65,7 +67,8 @@ class GitHubMock:
         if p == "/user":
             return httpx.Response(200, json={"login": self.login})
         if p == "/repos/o/r/pulls/7":
-            return httpx.Response(200, json={"number": 7, "state": self.state, "head": {"sha": self.head()}})
+            return httpx.Response(200, json={"number": 7, "state": self.state, "head": {"sha": self.head()},
+                                             **self.pr_extra()})
         if p == "/repos/o/r/pulls" and m == "GET":
             return httpx.Response(200, json=[{"number": 7, "html_url": "https://github.com/o/r/pull/7"}])
         if p == "/repos/o/r/issues/7/comments" and m == "POST":
@@ -407,3 +410,55 @@ async def test_other_prs_on_the_same_branch_name_or_commit_dont_count(jobs, worl
     # the job's own branch, with the PR list not filled in yet, still counts
     own = _check_run(job, 571, "tests", pull_requests=[], check_suite={"head_branch": job.branch})
     assert (await handle_github(jobs, "check_run", "o-5", own))["ok"]
+
+
+def _merged(number: int = 8, base: str = "main", **pr) -> dict:
+    return {"action": "closed", "repository": {"full_name": "o/r"},
+            "pull_request": {"number": number, "merged": True, "base": {"ref": base}, "merge_commit_sha": "m" * 40,
+                             **pr}}
+
+
+async def test_a_merge_that_leaves_the_pr_conflicted_starts_a_merge_round(jobs, world, gh):  # noqa: F811
+    job = await _pr_job(jobs, world, gh)
+    head0 = job.result.head_sha
+    answers = iter([{"mergeable": None, "mergeable_state": "unknown"}])  # GitHub is still working it out
+    gh.pr_extra = lambda: next(answers, {"mergeable": False, "mergeable_state": "dirty", "base": {"ref": "main"}})
+    jobs.settings.autofix_coalesce_seconds = 0.05
+    world["mode"].write_text("merge")
+    res = await handle_github(jobs, "pull_request", "d-1", _merged())
+    assert res["conflict_checks"] == [job.id], res
+    assert "conflict_checks" not in await handle_github(jobs, "pull_request", "d-1b", _merged())  # redelivery
+    job = await _turns(jobs, job, 2, timeout=60)
+    assert job.turns[1].trigger == "autofix:conflict" and job.turns[1].requester == "hangar:autofix"
+    ask = job.turns[1].message or ""
+    assert "no longer merges into `main`" in ask and "git merge origin/main" in ask and "don't rebase" in ask
+    assert job.result.head_sha != head0  # the agent's commit was pushed, without force
+    assert gh.comments()[0].startswith("**Auto-fix** (round 1 of 3): `main` moved (#8 merged into main) and the PR "
+                                       "no longer merges")
+    assert job.autofix_state.rounds[-1].trigger == "conflict"
+
+
+async def test_a_merge_checks_only_open_hangar_prs_on_that_base_and_acts_only_on_conflicts(
+        jobs, world, gh):  # noqa: F811
+    job = await _pr_job(jobs, world, gh)
+    gh.pr_extra = lambda: {"mergeable": True, "mergeable_state": "clean", "base": {"ref": "main"}}
+    assert "conflict_checks" not in await handle_github(jobs, "pull_request", "d-1",
+                                                        {**_merged(), "action": "synchronize"})
+    assert "conflict_checks" not in await handle_github(jobs, "pull_request", "d-2", _merged(merged=False))
+    assert not job.autofix_state.pending
+    job.base_branch = "release"  # each of these is skipped: nothing queued, and landing's answer goes back
+    assert "conflict_checks" not in (await handle_github(jobs, "pull_request", "d-4", _merged()))
+    job.base_branch, job.autofix = None, "ci,reviews"
+    assert "conflict_checks" not in (await handle_github(jobs, "pull_request", "d-5", _merged()))
+    job.autofix = None
+    job.landing.pr_state = "merged"
+    assert "conflict_checks" not in (await handle_github(jobs, "pull_request", "d-6", _merged()))
+    job.landing.pr_state = "open"
+    assert not job.autofix_state.pending and not job.autofix_state.seen
+    assert (await handle_github(jobs, "pull_request", "d-7", _merged()))["conflict_checks"] == [job.id]
+    for _ in range(200):  # the round finds the PR still merges: no turn, and it says why
+        if not job.autofix_state.pending:
+            break
+        await asyncio.sleep(0.05)
+    assert len(job.turns) == 1 and not job.autofix_state.rounds
+    assert any("still merges into its base" in e.message for e in job.events)

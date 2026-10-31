@@ -1280,7 +1280,7 @@ class Fleet:
         self.touch(sb.id)  # someone watching a terminal is using the sandbox
         capture = f"capture-pane -p -J -t {shlex.quote(_slug(session))} -S -{int(lines)}"
         if isolation.run_split(sb, _slug(session)):  # --- isolation: a split run's terminal is hangar's user's
-            res = await isolation.sh(prov, sb, f"{isolation.TMUX} {capture}", timeout=15)
+            res = await isolation.sh(prov, sb, f"{isolation.tmux(sb)} {capture}", timeout=15)  # --- KAN-186
         else:
             res = await prov.exec(sb, f"tmux {capture}", timeout=15)
         if res.exit_code != 0:
@@ -1369,6 +1369,9 @@ class Fleet:
         run_id = run_id or new_id("run")
         home = f"/home/{self.settings.sandbox_user}"
         split = await isolation.ensure(self, prov, sb)  # --- isolation: the run as hangar's user, the agent as its own
+        # --- KAN-186: under the driver sidecar only a turn steer.prepare gave a relay token runs split (one that asks)
+        side = split and isolation.sidecar(sb) and isolation.has_relay(run_id)
+        split = split and (side or not isolation.sidecar(sb))
         rdir = isolation.runs_dir(self.settings, split)
         wd = cwd or sb.info.get("repo_path") or self.settings.workspace_dir
         env = {**observe.run_env(self.settings, sb, run_id, hname), **(env or {})}  # --- observe: TRACEPARENT, OTel
@@ -1399,7 +1402,8 @@ class Fleet:
         runs = sb.info.setdefault("runs", [])
         hver = sb.info.get("harness_version") if hname == selected else None  # --- images: what the pack installed
         runs.append({"id": run_id, "harness": hname, "model": model, "started_at": now(), "prompt": prompt[:200],
-                     **({"split": True} if split else {}), **({"harness_version": hver} if hver else {})})
+                     **({"split": True} if split else {}), **({"sidecar": True} if side else {}),  # --- KAN-186
+                     **({"harness_version": hver} if hver else {})})
         self._touch(sb)
         self.audit(actor, "agent.run", sb.id, run=run_id, harness=hname, model=model, prompt=prompt[:300])
         return {"sandbox": sb.id, "run_id": run_id, "harness": hname, "model": model, "terminal_session": run_id,

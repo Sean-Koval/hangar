@@ -48,12 +48,15 @@ FULL = ["tests/conftest.py", "tests/__init__.py", "tests/fixtures/*", "pyproject
 # Non-Python paths, matched in order: the tests that read them, or a key of READS to find those by their source.
 PATHS: list[tuple[str, list[str] | str]] = [
     # the front page's security posture and feature table (#151), and the editorial rule (tests/test_editorial.py)
-    ("README.md", ["tests/test_front_page.py", "tests/test_editorial.py"]),
-    ("docs/index.md", ["tests/test_front_page.py", "tests/test_editorial.py"]),
-    ("docs/gke.md", ["tests/test_sweep_durability.py", "tests/test_editorial.py"]),
-    ("docs/*", ["tests/test_editorial.py"]),  # the editorial rule: every page, the nav
+    ("README.md", ["tests/test_front_page.py", "tests/test_editorial.py", "tests/test_onboarding_docs.py"]),
+    ("docs/index.md", ["tests/test_front_page.py", "tests/test_editorial.py", "tests/test_onboarding_docs.py"]),
+    ("docs/gke.md", ["tests/test_sweep_durability.py", "tests/test_editorial.py", "tests/test_onboarding_docs.py"]),
+    # the editorial rule (every page, the nav); subscription logins only in interactive sections (KAN-219)
+    ("docs/*", ["tests/test_editorial.py", "tests/test_onboarding_docs.py"]),
+    ("AGENTS.md", ["tests/test_codeowners.py", "tests/test_editorial.py"]),  # the merge rule, the editorial rule
     ("*.md", []),
     ("LICENSE", []),
+    (".github/CODEOWNERS", ["tests/test_codeowners.py"]),  # KAN-220: the security modules' owners
     ("bench/*", []),
     ("Dockerfile", ["tests/test_image_supply_chain.py", "tests/test_apt_versions.py"]),  # and the build, on main
     (".dockerignore", []),

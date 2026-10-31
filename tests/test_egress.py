@@ -826,3 +826,65 @@ def test_open_sandboxes_get_the_gateway_in_etc_hosts(monkeypatch):
     assert egress.k8s_direct_hosts(Settings(gateway_url="http://10.4.0.9:8788")) == []
     with pytest.raises(egress.EgressError, match="nowhere.svc"):
         egress.k8s_direct_hosts(Settings(gateway_url="http://nowhere.svc:8788"))
+
+
+# ============================================================================ KAN-174: GKE's allowlist default
+SHIPPED = Path(__file__).parents[1] / "envs"
+
+
+def test_shipped_environments_leave_the_mode_to_the_default():
+    """No shipped environment sets egress.mode, so they are `allowlist` on GKE (its manifests set
+    HANGAR_EGRESS_DEFAULT) and `open` on a laptop, where Docker Desktop can't run a proxied sandbox."""
+    cat = EnvCatalog([SHIPPED])
+    for name in cat.names():
+        assert getattr(cat.get(name).egress, "mode", None) is None, name
+
+
+@pytest.mark.parametrize("name", ["bare", "base", "python", "node", "go", "polyglot", "claude-python",
+                                  "codex-node", "example-repo", "hangar", "hangar-jobs", "minimal"])
+def test_shipped_environments_work_under_the_gke_default(name):
+    """Under GKE's allowlist, with the gateway on: each harness reaches its model, packages come from the mirror,
+    and hangar's GitHub MCP server is reachable. GitHub itself stays closed (git goes through the gateway)."""
+    s = Settings(egress_default="allowlist", gateway_url="http://hangar-gateway.hangar.svc:8788")
+    spec = EnvCatalog([SHIPPED]).get(name)
+    for harness in spec.harnesses or ["claude-code"]:
+        pol = egress.resolve(s, spec, harness=harness)
+        assert pol.proxied and pol.mode == "allowlist"
+        assert all(pol.allows(h, 443) for h in egress.HARNESS_HOSTS[harness]), harness
+        assert pol.mirrors == ("pypi", "npm", "go") and pol.allows("index.crates.io", 443)
+        assert pol.allows("github.com", 443) is None
+    if name.startswith("hangar"):
+        assert egress.resolve(s, spec, harness="claude-code").allows("api.githubcopilot.com", 443).source == "mcp"
+
+
+def test_vertex_ai_is_a_google_harness_host():
+    """agy's ADC mode and pi's google-vertex call Vertex AI's global endpoint (hangar-jobs carries gcp-vertex-agy)."""
+    for harness in ("antigravity", "gemini", "pi"):
+        assert "aiplatform.googleapis.com" in egress.HARNESS_HOSTS[harness]
+    assert "aiplatform.googleapis.com" not in egress.HARNESS_HOSTS["claude-code"]
+
+
+def test_the_doctor_names_the_default_and_the_hosts_sandboxes_were_refused(fleet, tmp_path):
+    fleet.catalog.save_dir = tmp_path  # not the shipped fixtures
+    s = fleet.settings
+    s.egress_default = "allowlist"
+    fleet.catalog.add({"name": "web", "harnesses": ["claude-code"], "egress": {"mode": "open"}})
+    h = SimpleNamespace(settings=s, fleet=fleet)
+    checks = {c["name"]: c for c in egress.doctor_checks(h)}
+    assert checks["egress default"]["status"] == "ok"
+    assert "HANGAR_EGRESS_DEFAULT=allowlist" in checks["egress default"]["detail"]
+    assert "web (open)" in checks["egress default"]["detail"]
+    assert checks["egress denials (24h)"]["status"] == "ok"
+    for _ in range(3):
+        fleet.audit("sandbox:sb-abcd1234", "egress.deny", "sb-abcd1234", host="nodejs.org", port=443,
+                    reason="not_allowed", environment="node")
+    fleet.audit("sandbox:sb-abcd1234", "egress.deny", "sb-abcd1234", host="github.com", port=443,
+                reason="not_allowed", environment="node", suppressed_before=4)
+    d = {c["name"]: c for c in egress.doctor_checks(h)}["egress denials (24h)"]
+    assert d["status"] == "warn" and d["detail"].startswith("8 refused: github.com (5, node); nodejs.org (3, node)")
+    assert "egress.allow" in d["fix"] and "mode: open" in d["fix"]
+    # open on a cluster is a warning; open on a laptop's Docker is what it should be
+    s.egress_default = "open"
+    assert {c["name"]: c for c in egress.doctor_checks(h)}["egress default"]["status"] == "ok"
+    fleet.providers["kubernetes"] = fleet.providers["docker"]
+    assert {c["name"]: c for c in egress.doctor_checks(h)}["egress default"]["status"] == "warn"

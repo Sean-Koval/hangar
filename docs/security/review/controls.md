@@ -40,7 +40,7 @@ shipped).
 | Egress by hostname allowlist through hangar's proxy, in `allowlist` and `none` environments | In place | [Egress allowlists](../egress.md) |
 | Intake jobs (GitHub, Jira, Slack, webhooks) get at least `allowlist` and the gateway | In place | [Intake posture](../front-doors.md#intake-posture) |
 | GKE's default egress is `open` | Open | A decision: KAN-174, L-9 |
-| Approvals inside a turn bind the agent on GKE (no uid split) | Partial | `required` refuses such turns on GKE; the sidecar is KAN-83 |
+| Approvals inside a turn bind the agent on GKE (no uid split) | Partial | `required` refuses such turns on GKE; the [driver sidecar](../driver-sidecar.md) is built, off until its cluster checks pass (KAN-186) |
 | The control-plane pod: restricted security context and an ingress NetworkPolicy | Open | KAN-174, L-8 |
 
 ## Supply chain and change

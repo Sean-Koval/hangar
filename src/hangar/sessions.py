@@ -1419,10 +1419,10 @@ class SessionService:
         r = isolation.RUNS
         res = await isolation.sh(prov, sb, f"n=0; for f in {r}/run-*.sh; do [ -e \"$f\" ] || continue; "
                                            "x=$(basename \"$f\" .sh); "
-                                           f"if [ ! -e {r}/$x.exit ] && {{ {isolation.TMUX} has-session -t \"$x\" "
+                                           f"if [ ! -e {r}/$x.exit ] && {{ {isolation.tmux(sb)} has-session -t \"$x\" "
                                            f"2>/dev/null || {{ p=$(cat {r}/$x.pid 2>/dev/null); [ -n \"$p\" ] && "
                                            "[ -d /proc/$p ]; }; }; then n=$((n+1)); fi; done; "
-                                           f"echo $(( n + $({isolation.TMUX} list-clients 2>/dev/null | wc -l) ))",
+                                           f"echo $(( n + $({isolation.tmux(sb)} list-clients 2>/dev/null | wc -l) ))",
                                  timeout=20)
         return res.stdout.strip() not in ("", "0")
 
