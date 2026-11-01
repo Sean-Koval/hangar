@@ -610,19 +610,23 @@ async def _post(svc: JobService, job_id: str) -> None:
     job = svc._jobs.get(job_id)
     if job is None:
         return
-    await _post_review(svc, job)
+    posted = await _post_review(svc, job)
     await self_review_step(svc, job)
-    await _settled(svc, job_id)
+    if posted:
+        await _settled(svc, job_id)
+    else:
+        await svc.landing.post_packet(job)
 
 
-async def _post_review(svc: JobService, job: Job) -> None:
+async def _post_review(svc: JobService, job: Job) -> bool:
+    """Whether a verdict went to GitHub (or failed to): only then is a held self-approval looked at again."""
     st, repo, number = job.landing, parse_repo(job.repo), job.result.pr_number
     r = st.ai_review or {}
     if r.get("verdict") in (None, "error") or r.get("review_id") or not repo or not number:
-        return
+        return False
     gh = await svc.landing.client(repo, job)
     if gh is None:
-        return
+        return False
     try:
         body = svc.broker.redact(review_body(job))
         inline = [{"path": f["path"], "line": f["line"], "side": "RIGHT",
@@ -649,6 +653,7 @@ async def _post_review(svc: JobService, job: Job) -> None:
         svc._event(job, f"AI review: couldn't post the review on the PR: {e}")
     finally:
         await gh.close()
+    return True
 
 
 async def _settled(svc: JobService, job_id: str) -> None:
@@ -762,10 +767,10 @@ async def turn_ended(svc: JobService, job: Job) -> None:
     sr = st.self_review or {}
     if sr["state"] == "reviewing":
         return await self_review_step(svc, job)  # a verdict that waited for the turn
-    if job.id in svc._active or job.state not in JOB_TERMINAL or len(job.turns) <= int(sr.get("round_turn") or 0):
+    if job.id in svc._active or job.state not in JOB_TERMINAL:
         return
-    if job.state != JobState.SUCCEEDED:
-        return await release(svc, job, f"the auto-fix round failed ({job.reason or job.state.value})")
+    if job.state != JobState.SUCCEEDED:  # its delivery went out as a draft: it stays one
+        return await release(svc, job, f"the auto-fix round failed ({job.reason or job.state.value})", ready=False)
     head = st.head_sha or job.result.head_sha
     if not head or head == sr.get("round_head"):
         return await release(svc, job, "the auto-fix round pushed nothing")
@@ -778,18 +783,18 @@ async def turn_ended(svc: JobService, job: Job) -> None:
         await self_review_step(svc, job)  # reviewed already
 
 
-async def release(svc: JobService, job: Job, why: str) -> None:
-    """End the hold: the PR is ready for review (unless hangar would have opened it as a draft), so it reaches the
-    inbox and counts for review capacity from now on."""
+async def release(svc: JobService, job: Job, why: str, ready: bool = True) -> None:
+    """End the hold: the PR is ready for review (unless hangar would have opened it as a draft, or `ready` is
+    False), so it reaches the inbox and counts for review capacity from now on."""
     st = job.landing
     sr = st.self_review or {}
     if not held(st):
         return
     sr.update(state="done", outcome=why, ended_at=now())
     st.self_review = sr
-    ready = bool(sr.get("ready")) and st.draft
+    ready = ready and bool(sr.get("ready")) and st.draft
     svc._event(job, f"self-review: {why}; " + ("marking the PR ready for review" if ready else
-                                                "the PR stays a draft (hangar would have opened it as one)"))
+                                                "the PR stays a draft" if st.draft else "the PR is ready for review"))
     svc._save(job)
     if ready and not await svc.landing.mark_ready(job):
         sr["mark_failed"] = True

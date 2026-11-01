@@ -695,7 +695,9 @@ async def test_a_round_that_fails_or_pushes_nothing_ends_the_hold(svc, gh, monke
     svc.landing.pushed(job, head, "hangar pushed")
     svc.landing.idle(job)
     await settle(svc)
-    assert job.landing.self_review["outcome"] == why and gh.readied and len(job.autofix_state.rounds) == 1
+    assert job.landing.self_review["outcome"] == why and len(job.autofix_state.rounds) == 1
+    assert not aireview.held(job.landing) and waiting(svc, job)
+    assert bool(gh.readied) is (state == JobState.SUCCEEDED)  # a failed round's delivery was a draft: it stays one
 
 
 async def test_a_pr_hangar_would_open_as_a_draft_stays_one(svc, gh, monkeypatch):  # noqa: F811
