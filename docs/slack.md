@@ -8,7 +8,7 @@ Type `/hangar fix the flaky upload test` in a channel, or mention `@hangar` with
 
 Reply in that thread to follow up. The agent picks up its own conversation, on the same branch and PR.
 
-Slack is the door for **unplanned** work: an alert, a question in a thread. Planned work comes through Jira's *Ready for agent* status, and repo chores through a GitHub label or Projects column ([intake.md](intake.md)). The Slack door is maintained but not extended beyond `@hangar adr` (#170).
+Slack is the door for **unplanned** work: an alert, a question in a thread. Planned work comes through Jira's *Ready for agent* status, and repo chores through a GitHub label ([intake.md](intake.md)). The Slack door is maintained but not extended beyond `@hangar adr` (#170).
 
 <figure class="af-figure af-figure--wide">
 --8<-- "slack-flow.svg"
@@ -102,7 +102,7 @@ hangar setup slack --manifest slack-app.yaml
 - **Limits.** Each Slack user is a caller for [rate limits and the active-job cap](security/front-doors.md#front-door-limits): by default 10 jobs or follow-ups at once, refilling at 30 a minute, and at most 10 unfinished jobs. Past a limit, hangar says so in the thread.
 - **Only people.** hangar ignores messages from bots (its own included), edits and deletions.
 - **Who's asking.** The requester is `slack:<team>/<user>`, shown in the job's timeline, PR body and audit log. Slack jobs are fenced in like a `jobs` token: only repos in `HANGAR_GITHUB_REPOS`, only their environments, and no choice of provider.
-- **Who can follow up** (`teamcreds.may_continue`, as on GitHub and Jira). A job started from a linked Slack account (`hangar person link <id> slack T…/U…`) is that person's, on their own login and budget. Only a reply from an account linked to them continues it. Any other reply is refused, naming whose job it is, an admin's too: an admin uses `hangar job follow-up`.
+- **Who can follow up** (`teamcreds.may_continue`, as on GitHub and Jira). A job started from a linked Slack account (`hangar person link <id> slack T…/U…`) is that person's, on their own API key and budget. Only a reply from an account linked to them continues it. Any other reply is refused, naming whose job it is, an admin's too: an admin uses `hangar job follow-up`.
 - **Team jobs.** A job started from an unlinked account is a team job: any reply allowed in the channel continues it. A reply while the agent works gets "Can't continue yet".
 - **Needs input.** When an agent stops with a question (job state `needs_input`, spec 0011 §2), hangar posts the question in the thread. A reply is the answer: an ordinary follow-up, under the same rule.
 - **Safe output.** Text hangar didn't write itself, such as the agent's summary, failure output, or your instructions echoed back, is escaped. It can't ping `@channel` or turn into a link. Known secrets are redacted before anything is posted.

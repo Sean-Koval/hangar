@@ -48,11 +48,11 @@ One rule decides on every path (`src/hangar/approvals.py`), so MCP and REST give
 
 A refused `/hangar approve` gets a comment on the issue that says why.
 
-Approving queues the job and records who approved it on the job's `approval`: `decided_by`, `decided_person`, `self_approved`, and the `rule` that allowed it (`admin`, `repo_approver`, `front_door`, `solo`, or `system` for hangar's own code). Rejecting cancels it with reason `rejected`. A job nobody decides on is cancelled after `HANGAR_JOB_APPROVAL_TTL_HOURS` (default 72) with reason `approval_expired`. Waiting jobs survive restarts. `/hangar approve` and `/hangar reject` are always decisions, never instructions.
+Approving queues the job and records who approved it on the job's `approval`: `decided_by`, `decided_person`, `self_approved`, and the `rule` that allowed it (`admin`, `repo_approver`, `front_door`, `solo`, or `system` for hangar's own code). Under [Tower](tower-release-landing.md) `enforce`, only Tower's allow queues it. Rejecting cancels it with reason `rejected`. A job nobody decides on is cancelled after `HANGAR_JOB_APPROVAL_TTL_HOURS` (default 72) with reason `approval_expired`. Waiting jobs survive restarts. `/hangar approve` and `/hangar reject` are always decisions, never instructions.
 
 Every decision is in the audit log: `job.approve` and `job.reject` (with `decided_person`, `self_approved` and `rule`), `job.approval_expired` (actor `system`), and `job.approve.refused` / `job.reject.refused` when someone who may not decide tries (with why).
 
-Untrusted people's `/hangar` comments on a PR that a job opened are ignored: only trusted people can continue a job. The same goes for answering a job's question: when a job asks for input on an issue (`needs_input`), only a trusted person's `/hangar <answer>` reaches the agent. Anyone else's is ignored and audited (`github.refused`), even when they opened the issue.
+Only trusted people's `/hangar` comments continue a job from its PR or answer its question (`needs_input`). Anyone else's is ignored and audited (`github.refused`), even when they opened the issue. On a person's job, only their own account counts ([who can follow up](slack.md#how-it-behaves)).
 
 ### Replays and limits
 
