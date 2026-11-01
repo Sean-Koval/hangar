@@ -261,7 +261,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
             approved: list[dict[str, Any]] | None = None,
             mcp_trusted: set[tuple[str, int | None]] | None = None, sealed: bool = False,
             mirror: bool = False, setup_hosts: tuple[str, ...] = (), floor: str | None = None,
-            floor_reason: str = "intake") -> Policy:
+            closed: bool = False) -> Policy:
     """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests.
     `mcp_trusted` (from `trusted_mcp`) limits which of the spec's remote MCP servers count; None takes them all,
     for a spec the caller vouches for. `floor` (--- intake posture, #123: the sandbox's `hangar.egress.floor`) raises
@@ -273,8 +273,11 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     the MCP servers' or the cloud's, and no approval, whatever the environment and the repo policy say. Always on the
     proxy-only network. `mirror` (`Grader.network: mirror`) adds hangar's read-only package mirror when it is on.
     `setup_hosts`: the repo's git host while the sandbox is set up without the git gateway, before any of the code it
-    grades runs (for_sandbox; delivery.lock_sealed ends it). `floor_reason`: `eval` for an eval job's floor
-    (trialiso.py, KAN-234), else `intake`."""
+    grades runs (for_sandbox; delivery.lock_sealed ends it).
+
+    --- KAN-234: `closed` is an eval sandbox's whose environment sets no egress mode (trialiso.py): its floor is the
+    eval default, and no GitHub host gets through, whatever a preset, the repo policy or an approval adds. Its
+    `setup_hosts` (the repo's git host for a clone without the gateway) last until the clone is isolated."""
     if sealed:
         from hangar.pkgmirror import available
 
@@ -293,7 +296,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     env = getattr(spec, "egress", None)
     base = floored(env_mode(settings, spec), floor)
     mode, notes = base, []
-    if base != env_mode(settings, spec) and floor_reason == "eval":  # --- KAN-234
+    if base != env_mode(settings, spec) and closed:  # --- KAN-234
         notes.append(f"egress {base} (eval default): environment {spec.name} sets no egress, and this sandbox runs an "
                      "eval job (docs/security/graders.md#what-a-trial-can-reach)")
     elif base != env_mode(settings, spec):
@@ -348,6 +351,17 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
                 rules.append(parse_rule(a["rule"], f"approved:{a.get('request') or a.get('by') or '?'}"))
             except (EgressError, KeyError, TypeError):
                 continue
+    if closed and mode != "open":  # --- KAN-234: no GitHub for an eval sandbox on hangar's closed default
+        from hangar.trialiso import is_github
+
+        if dropped := sorted({r.text for r in rules if is_github(r.host)}):
+            rules = [r for r in rules if not is_github(r.host)]
+            notes.append(f"eval default: {', '.join(dropped[:4])}{', ...' if len(dropped) > 4 else ''} left out: an "
+                         f"eval job on environment {spec.name}, which sets no egress mode, reaches no GitHub host "
+                         "(docs/security/graders.md#what-a-trial-can-reach)")
+        for h in setup_hosts:  # the clone's, until it is isolated
+            with contextlib.suppress(EgressError):
+                rules.append(Rule(normalize_host(h), False, None, "eval-setup"))
     seen: set[tuple[str, bool, int | None]] = set()
     out = []
     for r in rules:
@@ -427,13 +441,13 @@ def for_sandbox(fleet: Fleet, sb: Sandbox, spec: EnvSpec | None = None) -> Polic
                        setup_hosts=delivery.sealed_setup_hosts(sb))
     session = sb.labels.get("hangar.session")
     approved = approvals(fleet.store, environment=sb.environment, session=session)
+    from hangar import trialiso  # --- KAN-234: an eval job on hangar's closed default reaches no GitHub host
     from hangar.posture import floor_of  # --- intake posture (#123)
 
-    from hangar.trialiso import LABEL  # --- KAN-234: an eval job's floor says so
-
+    closed = trialiso.closed(sb)
     return resolve(fleet.settings, spec, repo_egress(fleet.store, sb.repo), sb.info.get("harness"), approved,
-                   trusted_mcp(fleet, sb.environment), floor=floor_of(sb.labels),
-                   floor_reason="eval" if sb.labels.get(LABEL) else "intake")
+                   trusted_mcp(fleet, sb.environment), floor=floor_of(sb.labels), closed=closed,
+                   setup_hosts=trialiso.setup_hosts(sb) if closed else ())
 
 
 # ============================================================================ approvals

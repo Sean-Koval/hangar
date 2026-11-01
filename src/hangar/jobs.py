@@ -1009,6 +1009,8 @@ class JobService:
             return False
         if sb.info.get("repo_path"):
             q = shlex.quote
+            if not job.base_branch and s.base_branch and s.base_branch != "HEAD":
+                job.base_branch = s.base_branch  # --- KAN-234: read at the clone; a trial's origin is gone by now
             if not job.base_branch:
                 res = await self._sh(job, "git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null "
                                           "|| git rev-parse --abbrev-ref @{-1} 2>/dev/null")
