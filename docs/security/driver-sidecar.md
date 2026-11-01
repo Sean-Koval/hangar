@@ -38,7 +38,11 @@ The relay and the harness are the agent's processes. The agent can stop them or 
 | The relay and the harness | `sandbox`, as the agent, started through pods/exec |
 | hangar's reads and writes: events, approvals, status, terminals, steer commands | pods/exec into `hangar-driver`, never envd |
 
-An `auto` turn runs in the agent's container as before, so it keeps per-edit trees and the verify gate. Before a pod is used, hangar reads its spec through the API and checks each container from inside. A pod out of shape keeps the sandbox single-user, and the turn says why.
+An `auto` turn runs in the agent's container as before. Before a pod is used, hangar reads its spec through the API and checks each container from inside. A pod out of shape keeps the sandbox single-user, and the turn says why.
+
+## Per-edit trees and the verify gate
+
+Both run in the agent's container, as the agent, through the relay. Trees from there are `trusted: false`. [Trees and the verify gate under the sidecar](driver-sidecar-trees.md) says how, and why not a shared checkout.
 
 ## What gVisor gives
 
@@ -57,7 +61,7 @@ Not checked: that GKE's admission policy accepts the second container, and the l
 
 - **Shared by the pod:** the network namespace, SysV IPC and `/dev/shm`. The driver uses none of them except its token-checked listener.
 - **The sandbox kernel itself.** A gVisor escape reaches every container in the pod.
-- **Per-edit trees and the verify gate in turns that ask.** The driver's container doesn't have the checkout. Trees are off, with a `skipped: sidecar` line, and the gate is skipped with a note ([KAN-187](https://seanmkoval.atlassian.net/browse/KAN-187)). hangar's verify still runs after the turn.
+- **Trusted trees in turns that ask.** The agent's container hashes them ([above](#per-edit-trees-and-the-verify-gate)), so they are `trusted: false`. hangar's verify still runs after the turn, whatever the gate said.
 - **Graders.** A grade on GKE stays `trust: best_effort` until [graders](#graders) are built ([KAN-188](https://seanmkoval.atlassian.net/browse/KAN-188)).
 - **E2B.** One microVM, one container. Those turns are refused there by default ([the driver's own user on E2B](e2b-driver-user.md)).
 - **Replays** don't depend on the uid split. Their sandbox has no credentials or egress, and the gateway compares outside it.
