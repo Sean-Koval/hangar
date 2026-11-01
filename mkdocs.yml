@@ -214,6 +214,7 @@ nav:
           - Sealed graders: security/graders.md
           - The driver sidecar on GKE: security/driver-sidecar.md
           - Turning the driver sidecar on: security/driver-sidecar-check.md
+          - Trees and the verify gate under the sidecar: security/driver-sidecar-trees.md
           - The driver's own user on E2B: security/e2b-driver-user.md
           - Build caches: security/build-caches.md
           - Screens and requests: security/screen.md

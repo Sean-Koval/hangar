@@ -7,6 +7,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -38,9 +39,15 @@ if os.environ.get("ASK_TOOL"):
     emit({"type": "control_request", "request_id": "r1", "request": {
         "subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "sudo rm -rf /"}}})
     note += " answer=" + json.loads(sys.stdin.readline())["response"]["response"]["behavior"]
+if os.environ.get("EDIT"):  # an edit in the checkout: the driver hashes the tree after its result
+    emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "w1", "name": "Write"}]}})
+    open("edited.txt", "w").write("edit\n")
+    emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "w1"}]}})
 emit({"type": "result", "subtype": "success", "is_error": False, "result": note, "usage": {}})
-for _ in sys.stdin:
-    pass
+for line in sys.stdin:  # a message hangar steers in (the verify gate's failure) gets a result of its own
+    if json.loads(line).get("type") == "user":
+        emit({"type": "result", "subtype": "success", "is_error": False, "usage": {},
+              "result": "again: " + json.loads(line)["message"]["content"]})
 sys.exit(int(os.environ.get("EXIT_CODE", "0")))
 '''
 
@@ -99,9 +106,123 @@ def test_a_turn_runs_through_the_relay_and_its_approvals_stay_the_drivers(tmp_pa
     assert [(e["decision"], e["by"]) for e in resolved] == [("deny", "policy")], out
     assert (tmp_path / "ctl" / "approvals").exists()  # the driver's own copy, in its control directory
     assert "fake: on stderr" in err  # the harness's stderr came back on ctl
-    assert "verify gate doesn't run under the driver sidecar" in err  # the agent's check never runs as the driver
+    assert any(e["type"] == "hangar.verify" and e["passed"] for e in events)  # the gate ran, in the agent's place
     assert not (tmp_path / "ctl" / "relay-token").exists()  # read and deleted, like the key
     assert not w["port"].exists()  # stopped listening once the relay was in
+
+
+def _git_work(w: dict) -> Path:
+    work = w["tmp"] / "work"
+    for argv in (["init", "-q"], ["add", "-A"]):
+        subprocess.run(["git", "-C", str(work), *argv], check=True, capture_output=True)
+    (work / "README").write_text("hi\n")
+    subprocess.run(["git", "-C", str(work), "add", "README"], check=True, capture_output=True)
+    return work
+
+
+def _events(out: str) -> list:
+    return [json.loads(ln) for ln in out.splitlines() if ln.startswith('{"type": "hangar.')]
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+def test_an_ask_turn_under_the_sidecar_records_trees_from_the_agents_container(tmp_path):
+    w = _world(tmp_path)
+    work = _git_work(w)
+    drv = _driver(w, "--approvals", "ask", env={"HANGAR_RUN_ID": "r1"})
+    assert _relay(w, env={"EDIT": "1"}).returncode == 0
+    out, err = drv.communicate(timeout=60)
+    assert drv.returncode == 0, err
+    trees = [e for e in _events(out) if e["type"] == "hangar.tree"]
+    assert [e.get("phase") or e.get("tool_use_id") for e in trees] == ["start", "w1", "end"], out
+    assert all(e["by"] == "agent" and len(e["tree"]) == 40 for e in trees)  # the agent's hashes: never trusted
+    assert trees[0]["tree"] != trees[1]["tree"] == trees[2]["tree"]  # the edit changed it, nothing after it did
+    subprocess.run(["git", "-C", str(work), "add", "-A"], check=True, capture_output=True)  # the repo's own ids
+    want = subprocess.run(["git", "-C", str(work), "write-tree"], capture_output=True, text=True).stdout.strip()
+    assert trees[2]["tree"] == want
+    assert not (tmp_path / "home" / ".hangar" / "runs" / "r1.tree").exists()  # its scratch dir went at the end
+    assert not (tmp_path / "ctl" / "tree").exists()  # nothing of the agent's tree in the driver's directory
+
+
+def test_trees_hashed_by_the_agent_are_recorded_untrusted():
+    from hangar.events import tree_events
+
+    ev, = tree_events("a" * 40, phase="start", by="agent")
+    assert ev.data["by"] == "agent"
+    assert "by" not in tree_events("a" * 40, phase="start", by="something")[0].data
+
+
+def test_the_verify_gate_runs_in_the_agents_container_through_the_relay(tmp_path):
+    w = _world(tmp_path)
+    check = 'echo "where=${WHERE:-} cwd=$(pwd)"; exit 3'
+    gate = {"command": check, "cwd": str(tmp_path / "work"), "rounds": 1, "deadline": 2**31, "timeout": 20}
+    drv = _driver(w, "--approvals", "ask", env={"HANGAR_RUN_ID": "r1", "WHERE": "driver",
+                                                "HANGAR_VERIFY_GATE": json.dumps(gate)})
+    assert _relay(w, env={"WHERE": "relay"}).returncode == 0
+    out, err = drv.communicate(timeout=60)
+    assert drv.returncode == 0, err
+    verify = [e for e in _events(out) if e["type"] == "hangar.verify"]
+    assert [(e["exit_code"], e["passed"]) for e in verify] == [(3, False)]
+    again = [d["result"] for d in map(json.loads, filter(None, out.splitlines())) if d.get("type") == "result"][-1]
+    assert again.startswith("again: hangar: the job's check") and "exit 3" in again
+    assert f"where=relay cwd={tmp_path / 'work'}" in again  # run by the relay, as the agent, from the checkout
+    assert (tmp_path / "home" / ".hangar" / "runs" / "r1.verify").read_text() == "fail 3\n"  # the agent's file
+
+
+def test_a_run_that_outlives_its_timeout_is_killed_and_says_so(tmp_path):
+    w = _world(tmp_path)
+    gate = {"command": "echo started; sleep 60", "cwd": str(tmp_path / "work"), "rounds": 1, "deadline": 2**31,
+            "timeout": 1}
+    t0 = time.time()
+    drv = _driver(w, env={"HANGAR_VERIFY_GATE": json.dumps(gate)})
+    assert _relay(w).returncode == 0
+    out, err = drv.communicate(timeout=60)
+    assert drv.returncode == 0, err
+    assert [e["exit_code"] for e in _events(out) if e["type"] == "hangar.verify"] == [124]
+    again = [d["result"] for d in map(json.loads, filter(None, out.splitlines())) if d.get("type") == "result"][-1]
+    assert "started" in again and "timed out after 1 s" in again
+    assert time.time() - t0 < 30
+
+
+def test_a_run_that_shares_the_specs_read_is_still_served(tmp_path):
+    """The driver's first `run` (the start tree) can reach the relay in the same read as what to start."""
+    lsock = socket.socket()
+    lsock.bind(("127.0.0.1", 0))
+    lsock.listen(2)
+    port = tmp_path / "run.port"
+    port.write_text(f"{lsock.getsockname()[1]}\n")
+    rel = subprocess.Popen([sys.executable, "-I", str(RELAY), str(port), "--foreground"], stdin=subprocess.PIPE,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rel.stdin.write(b"tok\n")
+    rel.stdin.close()
+    conns = {}
+    lsock.settimeout(20)
+    for _ in range(2):
+        c, _ = lsock.accept()
+        conns[c.recv(64).split()[1].decode()] = c
+    ctl = conns["ctl"]
+    spec = {"argv": [sys.executable, "-c", "import time; time.sleep(30)"], "base_env": None}
+    run = {"id": "first", "argv": ["sh", "-c", "echo hi; exit 4"], "timeout": 10}
+    ctl.sendall(json.dumps(spec).encode() + b"\nrun " + json.dumps(run).encode() + b"\n")
+    proc = driver.RemoteProc(conns["io"], ctl)
+    end = time.time() + 20
+    while "first" not in proc.ran and time.time() < end:
+        proc._read(1)
+    assert proc.ran.get("first", {}).get("code") == 4
+    assert proc.run(["sh", "-c", "echo again"], 10)[:2] == (0, b"again\n")
+    proc.kill()
+    proc.wait(20)
+    proc.close()
+    assert rel.wait(20) == 137  # killed, as a shell reports it; and gone once the driver closed ctl
+
+
+def test_a_run_gets_none_once_the_relay_is_gone():
+    a, b = socket.socketpair()
+    io, _ = socket.socketpair()
+    proc = driver.RemoteProc(io, a)
+    b.sendall(b"exit 0\n")
+    b.shutdown(socket.SHUT_WR)  # the relay closed its end: no `ran` will come
+    assert proc.run(["true"], 1) is None
+    assert proc.returncode == 0  # its exit status came first
 
 
 def test_the_harness_exit_status_and_hangars_copy_of_the_env_cross_over(tmp_path):
