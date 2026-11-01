@@ -21,7 +21,7 @@ hangar job events <id>     # the timeline, newest last
 
 Then match the state:
 
-- **Queued, no reason.** Workers are busy or stopped. Check `hangar status` for a loop that stopped beating, and `HANGAR_JOB_CONCURRENCY`. A held job has a reason and isn't stuck ([troubleshooting](../troubleshooting.md#a-job-waits)).
+- **Queued, no reason.** Workers are busy or stopped. Check `hangar status` for a loop that stopped beating, and `HANGAR_JOB_CONCURRENCY`. A held job has a reason and isn't stuck ([troubleshooting](../troubleshooting.md#a-job-waits)). `awaiting_capacity` waits for [reviews](../team-scale.md#review-capacity), or `hangar job admit <id>`.
 - **Provisioning.** The sandbox didn't start. Look for "building the image" in the events: a first build takes minutes. Otherwise check the nodes: `kubectl get nodes` and `kubectl -n hangar-sandboxes get pods`. A pod stuck `Pending` is a node or quota problem ([disk or quota](disk-and-quota.md)).
 - **Running, verifying or delivering.** The agent or a check hangs. `hangar job events <id>` shows the last output.
 
