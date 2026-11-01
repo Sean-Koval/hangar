@@ -461,6 +461,10 @@ class LandingState(BaseModel):
     # independent, at, review_id, url, source (hangar | check:<name>)}; and when the last one was asked for
     ai_review: dict[str, Any] | None = None
     ai_review_requested_at: float | None = None
+    # --- KAN-228: the self-review hold (aireview.held): {state (reviewing | fixing | done), ready (mark the PR ready
+    # for review when it ends), at, first (the blocking review the round fixed: head_sha, findings, summary),
+    # round_head, round_turn, outcome, ended_at}; None: the PR wasn't held
+    self_review: dict[str, Any] | None = None
     # --- #168: weekly metrics (weekly.py, docs/metrics.md)
     opened_at: float | None = None  # hangar opened (or found) the PR
     ready_at: float | None = None  # opened non-draft, or marked ready for review: review wait starts here

@@ -91,6 +91,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   with one user, so the driver would share the agent's user. Docker and Kubernetes keep `auto`. The doctor's **uid
   split on e2b** check warns on an explicit `auto` or `off`. A second user inside the microVM is KAN-200
   ([docs/security/e2b-driver-user.md](docs/security/e2b-driver-user.md)).
+- **Self-review: a blocking AI review gets one auto-fix round before a person looks** (KAN-228,
+  [docs/ai-review.md](docs/ai-review.md#self-review-before-a-person-looks)). With `ai_review: hangar` and the new
+  `self_review: true` (default false), the PR opens as a draft, with no inbox item or review-capacity count, until
+  its review is in. An independent `blocking` verdict starts one round on the job's session, inside its budget. The
+  review of its push ends the wait whatever it says; then the PR is marked ready. Weekly cost per merged PR now
+  counts every review's passes, not only the last review's.
 - **The AI review keeps only confirmed findings** (KAN-230, [docs/ai-review.md](docs/ai-review.md)). Each finding
   has a `severity` and `evidence`. A second pass on the `balanced` policy, within the same `ai_review_budget_usd`,
   keeps one only with a reproducing command or a quoted diff line. At most `ai_review_inline_max` (default 5, was 20)
