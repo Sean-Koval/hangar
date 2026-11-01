@@ -484,7 +484,10 @@ async def test_an_ask_turn_runs_through_the_sidecar_end_to_end(side, svc, live, 
     kinds = [(e["kind"], e["data"].get("status")) for e in svc.events("se") if e["kind"] == "approval_request"]
     assert ("approval_request", "pending") in kinds, kinds  # from the driver's own file in hangar-ctl
     trees = [e["data"] for e in svc.events("se") if e["data"].get("action") == "tree"]
-    assert any(d.get("skipped") == "sidecar" for d in trees), trees  # KAN-187: said, not silently off
+    # KAN-187: per-edit trees, hashed in the agent's container through the relay, so never trusted
+    assert [d.get("phase") or "tool" for d in trees] == ["start", "tool", "end"], trees
+    assert all(d.get("by") == "agent" and d["trusted"] is False for d in trees), trees
+    assert trees[0]["tree"] != trees[1]["tree"] == trees[2]["tree"]  # the tool's file is in it
     box = side.boxes[sb.id]
     assert (box / "vol/hangar/runs" / f"{t.run_id}.exit").read_text().strip() == "0"  # hangar-home, the driver's
     assert not (box / "vol/hangar-ctl/runs" / f"{t.run_id}.ctl/agent-env").exists()  # gone with the run
