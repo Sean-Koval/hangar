@@ -39,11 +39,11 @@ all of a person's tokens, MCP and REST calls, and the OAuth connectors they appr
 admin's existing tokens all count as `owner`. `fairness.person_of` is the one place that maps who acted to a person;
 records from before people fall back to the token's name. hangar's own actors (sessions' and jobs' sandboxes, the
 reaper, schedules) are not people. For the caps to be per engineer, **add each engineer as a person**
-(`hangar person add <name>`, which prints their login token); jobs triggered from GitHub or Slack have no person
-yet and are capped per GitHub login or Slack user.
+(`hangar person add <name>` prints their login token). Jobs from GitHub, Slack or Jira count for the
+[linked](team/linked-accounts.md) person. An unlinked sender is capped per GitHub or Slack account.
 
 The caps sit beside the per-caller limits that already exist: `HANGAR_JOB_MAX_ACTIVE_PER_OWNER` (unfinished jobs per
-caller, 10), the job rate limits, and `HANGAR_E2B_MAX_SANDBOXES_PER_OWNER`.
+caller, 10) and the job rate limits.
 
 ## Review capacity
 
@@ -68,7 +68,7 @@ their state stays `queued` (clients keep working) and their `reason` is `awaitin
   `GET /api/review-capacity` (admin) lists open agent PRs per reviewer and the held jobs; the gauge
   `hangar_jobs_awaiting_capacity` (no person label: labels stay bounded); and the GitHub, Slack and Jira "queued"
   replies say the job waits on review capacity and link the person's review queue on GitHub. `fairness.capacity_view`
-  gives a digest the counts.
+  gives each person's [digest](team/linked-accounts.md#inbox-delivery-dms-and-the-digest) the counts.
 - **Power-down**: a job held for capacity stays in the queue; one held by the power-down shows `powered_down`, and
   capacity is checked again at power-up.
 
@@ -171,7 +171,7 @@ finished job with its timeline, so 18,000 jobs (six months at 100 a day) cost ov
 all of them. Now each holds what is live (unfinished jobs, jobs whose PR is still on its way to landed or with
 auto-fix triggers waiting, live, suspending or busy sessions) and whatever was saved or asked for in the last
 `HANGAR_RESIDENT_MINUTES` (60). Everything else is read back from the store when asked for, by id, by name, or
-through the store's indexes (`resident.py`): the GitHub, Jira and Projects lookups (by PR number, branch, head commit,
+through the store's indexes (`resident.py`): the GitHub and Jira lookups (by PR number, branch, head commit,
 ticket), idempotent retries, the inbox, the usage report and the daily caps. Every 5 minutes the retention loop lets
 go of what nothing needs any more. A record read back stays one object while it's in use, so two callers never hold
 copies that overwrite each other's changes.
@@ -342,7 +342,7 @@ sandbox pool's N2D because it takes the regional `CPUS` quota, not `N2D_CPUS` (w
 pool may have used in full). E2 lands on Intel or AMD, and GKE Sandbox turns SMT off on Intel, so the node shows 8 or
 16 vCPUs: it runs up to 7 standard sandboxes (`HANGAR_OVERNIGHT_LANE_SANDBOXES`; 14 on AMD or an n2d-standard-16, the
 [packing](#packing) of one node), shared by
-overnight repos' intake jobs and evals. The plan turns it on only once agent PR yield is at least 60%
+overnight repos' intake jobs and evals. The plan turns it on only once agent PR yield ([weekly metrics](metrics.md)) is at least 60%
 (`hangar power overnight on` refuses below that without `--force`).
 
 The floor costs nothing extra in hours when sandboxes run anyway; it is the price of idle evenings and weekends with a

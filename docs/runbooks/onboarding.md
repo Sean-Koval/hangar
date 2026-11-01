@@ -66,8 +66,7 @@ Later routine deploys go through `deploy.yml` while the pools are on, 10:00–01
 [adopt & capture upgrade](../releases/adopt-capture.md) (#133–#189), which deploys by day.
 
 ```bash
-hangar doctor                          # clean: no failures
-hangar config get HANGAR_INTAKE_POSTURE   # enforce, the only value (warn and off were removed after v0.2.0)
+hangar doctor                          # clean: no failures (it also fails on a removed switch still stored)
 ```
 
 ### 2. People

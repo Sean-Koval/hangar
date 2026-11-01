@@ -6,7 +6,8 @@ hangar enforces, Tower decides whether a person or a policy allows something, an
 is ever an allow.
 
 **Break-glass itself isn't built yet.** Read [what is built today](#today-hangar-decides-alone) first. With every
-kind `off` (the default), hangar never asks Tower. The [procedure](break-glass-tower.md) covers a kind in `enforce`.
+kind `off` (the code's default), hangar never asks Tower. GKE's `deploy/k8s/config.yaml` sets `shadow`: hangar's rules
+decide and Tower answers a dry run. The [procedure](break-glass-tower.md) covers a kind in `enforce`.
 
 ## Today: hangar decides alone
 
@@ -22,7 +23,11 @@ What is built (spike #171, PR #208):
   shadow never changes an outcome. Break-glass needs two admins and lasts at most 24 hours.
 
 Every approval path calls it through `HANGAR_GOVERNANCE` and `HANGAR_GOVERNANCE_MODES`:
-[job release and landing](../tower-release-landing.md) and [governed approvals](../governed-approvals.md).
+
+- `govrelease.py`: [job release and landing](../tower-release-landing.md).
+- `governed.py`: [governed approvals](../governed-approvals.md) of flagged tool calls, egress and secret requests.
+- `govevents.py`: Tower's signed events, which suspend and resume turns and stop runs.
+- `govhook.py`: [the managed Tower hook](../governance-hook.md) for Claude Code turns.
 
 What isn't built:
 

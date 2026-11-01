@@ -125,7 +125,13 @@ With `HANGAR_TRACE_LIVE_TOOLS=true`, each turn's tool calls, subagents and appro
 | `hangar_http_request_seconds` | histogram | `method` (a method outside HTTP's standard ones is `_OTHER`), `route` (the template), `status` |
 | `hangar_db_backups_total`, `hangar_db_backup_seconds`, `hangar_db_backup_last_success_timestamp_seconds` | counter, histogram, gauge | `result` (`ok`, `error`). Alert when `time() - hangar_db_backup_last_success_timestamp_seconds` passes two backup intervals; the gauge starts empty after a restart. |
 | `hangar_event_loop_lag_seconds`, `hangar_event_loop_lag_last_seconds` | histogram, gauge | How late a 0.5 s sleep on the event loop wakes up. Sustained lag means something blocks the loop. |
-| `hangar_loop_last_tick_timestamp`, `hangar_loop_failures_total` | gauge, counter | `loop` (`reaper`, `reconciler`, `sessions`, `schedules`, `backups`). When each background loop last finished a pass, and passes that raised. Alert when `time() - hangar_loop_last_tick_timestamp` passes three of the loop's intervals (reaper 60 s, reconciler 30 s, sessions 60 s, schedules `HANGAR_SCHEDULE_POLL_SECONDS`, backups `HANGAR_BACKUP_HOURS`); the gauge starts empty after a restart. |
+| `hangar_loop_last_tick_timestamp`, `hangar_loop_failures_total` | gauge, counter | `loop` (`reaper`, `reconciler`, `sessions`, `schedules`, `backups`, `ops`, `egress`, `cloud-tokens`). When each background loop last finished a pass, and passes that raised. Alert when `time() - hangar_loop_last_tick_timestamp` passes three of the loop's intervals (reaper 60 s, reconciler 30 s, sessions 60 s, schedules `HANGAR_SCHEDULE_POLL_SECONDS`, backups `HANGAR_BACKUP_HOURS`); the gauge starts empty after a restart. |
+| `hangar_job_starts_total`, `hangar_job_queue_seconds`, `hangar_jobs_stuck` | counter, histogram, gauge | `result` (`ok`, `error`) on starts. The job-start SLO signals and the stuck-job alert ([SLOs](slos.md#job-starts), [a stuck job](runbooks/stuck-job.md)) |
+| `hangar_jobs_awaiting_capacity` | gauge | Queued jobs held for [review capacity](team-scale.md#review-capacity); no person label |
+| `hangar_eval_observed_tpm`, `hangar_eval_tpm_budget`, `hangar_eval_jobs_waiting`, `hangar_eval_window_open` | gauge | `provider` on the first two, `reason` on waiting jobs ([the eval queue](team-scale.md#the-eval-queue-class)) |
+| `hangar_governance_fail_closed_total`, `hangar_governance_disagreements_total` | counter | `kind`, plus `failure` on fail-closed. Tower's answers hangar had to make itself, and shadow disagreements ([Tower](runbooks/tower.md)) |
+| `hangar_deploy_lag_commits`, `hangar_deploy_lag_working_days`, `hangar_deploy_lag_over` | gauge | How far production is behind main; -1 while unknown ([a deploy waiting too long](runbooks/deploy.md)) |
+| `hangar_outbox_pending` | gauge | Run capture objects not uploaded yet ([run capture](#run-capture)) |
 | `hangar_io_pool_queue_depth`, `hangar_io_pool_threads`, `hangar_io_pool_max_threads` | gauge | Blocking provider calls waiting for a worker thread (`HANGAR_IO_THREADS`, see `runtime.py`) |
 | `hangar_streams_open`, `hangar_streams_total`, `hangar_stream_bytes_total`, `hangar_stream_first_output_seconds` | gauge, counter, counter, histogram | `kind` (`exec`, `process_attach`, `events`, `watch`, `process`, `turn_log`, ...); the counter also `reason` (`done`, `client`, `shutdown`, `destroyed`, `paused`, `revoked`, `lifetime`, `error`). Streams to clients and the logs and processes hangar follows ([streaming.md](streaming.md)). |
 
@@ -237,6 +243,8 @@ cloud doctor: 2 open finding(s); last run 9h ago (done)
 | `credentials` | [credential health](#credential-health): counts, what needs renewing, pools | [credhealth.py](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/credhealth.py) |
 | `models` | what jobs run on by default (`balanced`, the id it resolves to and its list price), the job budget and daily cap that bound it, and the repos whose policy caps them; `NO job budget or daily cap` until one is set, which `hangar doctor` also warns about (`model spend`) | [modelpolicy.py](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/modelpolicy.py) |
 | `nightly`, `doctor` | the nightly pass and the [Cloud Doctor](doctor.md)'s last run and open findings | |
+| `deploy_lag` | how far production is behind main ([a deploy waiting too long](runbooks/deploy.md)) | GitHub, with hangar's token |
+| `tests`, `caches` | test runs' results and flaky tests; the build caches | [test results](jobs/test-results.md), [caches](caches.md) |
 | `log` | the last 50 warnings and errors hangar logged | in memory |
 
 `?section=slo,failures` (or `--section`) returns only those. `--check-credentials` checks every credential now; otherwise status rechecks only results older than an hour, spending at most 15 s.
@@ -285,11 +293,11 @@ REST: `GET /api/records?hours=24&cause=…` (admins), `GET /api/records/{id}` an
 
 ## Run capture
 
-Traces and metrics show the fleet now; run capture keeps every run for later. With `HANGAR_OUTBOX_URL` set (a GCS
+Traces and metrics show the fleet now; run capture keeps every run. With `HANGAR_OUTBOX_URL` set (a GCS
 bucket on GKE, `terraform output run_bucket`; a local directory in dev), every finished run is written once as
 immutable objects: `run.json` (`hangar.run/v1`: who, what, the harness and environment digests, outcome, usage,
 verify, steers, the untrusted flag), the turn's manifest, its trace export, its test results and its patch, under
-`v1/runs/{date}/{session_id}.{run_id}/`, plus job events (PR opened, first review, merged, closed, abandoned) under
+`v1/runs/{date}/{session_id}.{run_id}/`, plus [job events](api/outbox.md#job-events-hangarjob_eventv1) (a PR opened, reviewed, merged, reverted or abandoned) under
 `v1/jobs/`. The sister tool reads them into its own tables while the sandbox pools sleep. The contract (layout,
 schema, redaction, write-once IAM, deletion requests) is [docs/api/outbox.md](api/outbox.md).
 

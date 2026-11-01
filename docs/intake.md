@@ -12,7 +12,7 @@ Write tickets from the [agent ticket template](#agent-tickets). hangar keeps the
 | --- | --- |
 | Queued | a comment saying which job and environment, when it starts if the sandbox pools are powered down (01:00-10:00), and a hint when the ticket has no acceptance criteria |
 | Agent started | a comment with a link to the job in hangar; the `started` transition |
-| The agent asks a question | the question as a comment; the `needs_input` transition. A linked teammate's next comment answers it, and the agent picks up where it left off |
+| The agent asks a question | the question as a comment; the `needs_input` transition. The job's person's next comment answers it (on a team job, any linked teammate's), and the agent picks up where it left off |
 | Delivered | the outcome with the PR, which is also added as a remote link; the `delivered` transition |
 | Failed or cancelled | what went wrong; the `failed` transition |
 
@@ -32,7 +32,7 @@ The repo must be in `HANGAR_GITHUB_REPOS`, as for every front door, and the repo
 
 ### Safety
 
-The fence around ticket text is in the prompt; the boundaries are outside it. Under the default `HANGAR_INTAKE_POSTURE=enforce` ([security/front-doors.md](security/front-doors.md#intake-posture)) every Jira job needs the [git gateway](security/git-gateway.md): without `HANGAR_GATEWAY_URL` (or for a repo whose host the gateway doesn't serve) the job is refused and the reason is posted on the issue. Its sandboxes hold only a fetch-only grant (hangar pushes), and they get at least `allowlist` egress, even in an `open` environment: the environment's presets and hosts, the repo policy's, and the harness's API. Anything else is an egress request a person answers. `warn` runs such jobs as before for one release, with a `posture.warn` event and a line in the review packet.
+The fence around ticket text is in the prompt; the boundaries are outside it. Every Jira job needs the [git gateway](security/git-gateway.md): without `HANGAR_GATEWAY_URL` (or for a repo whose host the gateway doesn't serve) the job is refused and the reason is posted on the issue. Its sandboxes hold only a fetch-only grant (hangar pushes), and they get at least `allowlist` egress, even in an `open` environment: the environment's presets and hosts, the repo policy's, and the harness's API. Anything else is an egress request a person answers. This is the [intake posture](security/front-doors.md#intake-posture), and no setting relaxes it.
 
 ## Jira Cloud
 
@@ -179,7 +179,7 @@ Both have *Goal*, *Acceptance criteria* (a checklist), *Verify command*, *Out of
 
 ## Adding a tracker
 
-`src/hangar/intake.py` holds what every front door shares: `person_for` (who the sender is), `once` (commit after handle), `open_job` (one job per ticket), `submit` (approval for untrusted senders and refusals as answers) and `TRACKERS`, the write-back registry. A tracker sets the job label `intake.tracker` to its ticket reference and registers `TRACKERS[<scheme>] = update(svc, job, ticket, stage)`. hangar calls it once per stage (`started`, `needs_input`, `delivered`, `failed`) whenever the job reports, whichever thread the conversation is in. `jira.py` is the example.
+`src/hangar/intake.py` holds what every front door shares: `person_for` (who the sender is), `once` (commit after handle), `open_job` (one job per ticket), `submit` (approval for untrusted senders and refusals as answers) and `TRACKERS`, the write-back registry. A tracker is a [plugin](plugins.md): it sets the job label `intake.tracker` to its ticket reference, adds its door with `host.add_door` and its write-back with `host.add_tracker(<scheme>, update)`. hangar calls `update(svc, job, ticket, stage)` once per stage (`started`, `needs_input`, `delivered`, `failed`) whenever the job reports, whichever thread the conversation is in. `jira.py`'s `PLUGIN` is the example.
 
 **Shadows never write back** (#183). A repo policy's `shadow` samples real intake jobs for a shadow run of a candidate
 harness ([repo-policy.md](repo-policy.md#shadows)). A shadow is a `source: shadow` trial without `intake.tracker`,

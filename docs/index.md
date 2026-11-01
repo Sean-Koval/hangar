@@ -39,7 +39,7 @@ hide:
 
 ## How it works
 
-Many doors bring work in; hangar runs it in a sandbox and verifies it; the pull request is the one gate out. Around it, the team harness repo defines what the agents run, flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/) will decide risky actions; its wiring is on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture). The suite's [architecture page](https://sean-koval.github.io/agent-factory/architecture/) shows how they connect.
+Many doors bring work in; hangar runs it in a sandbox and verifies it; the pull request is the one gate out. Around it, the team harness repo defines what the agents run, flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/) decides risky actions once an admin turns governance on. The suite's [architecture page](https://sean-koval.github.io/agent-factory/architecture/) shows how they connect.
 
 <figure class="af-figure af-figure--wide" markdown="0">
 --8<-- "hangar-suite.svg"
@@ -73,15 +73,15 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 | **Hostile-sandbox security** | Credentials stay behind a gateway; intake jobs get an egress allowlist and no push rights; tainted work opens as a draft and needs a second person. See the [security model](security/README.md). | Shipped |
 | **Usage and insight** | Tokens, cost and budgets per job and person ([activity](activity.md)), traces as OTLP ([observability](observability.md)), and run capture for [flightdeck](specs/0014-sister-tool-interfaces.md). | Shipped |
 | **Shadow runs** | A repo policy samples real tickets and runs a candidate harness on each at the same base commit; it delivers nothing, and flightdeck grades it against what people merged ([shadows](repo-policy.md#shadows)). | Shadow |
-| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. Today hangar's own approval rule decides; the client and contract are built ([spec 0015](specs/0015-governance-decision-point.md)). | Planned ([roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture)) |
+| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. On GKE it runs in shadow: hangar's rules decide and Tower answers a dry run. An admin sets a kind to `enforce` to let Tower decide ([Tower beside hangar](runbooks/tower.md)). | Shadow |
 | **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00) for the intake jobs of repos that opt in and for evals, so evening tickets become PRs by morning; off until an admin turns it on ([the overnight lane](gke.md#the-overnight-lane)). | Shipped |
 | **Plugins and events out** | Doors, trackers, notifiers and deliverers are plugins: a package of your own adds a chat bot's door or a company tracker without changing hangar, and every job change goes out as a signed `hangar.event/v1` ([plugins](plugins.md)). | Shipped |
 | **Deploy on your company's cluster** | Kustomize base and components, a Terraform module that never creates a cluster, released images, secrets from your secret manager and admin configuration as reviewed files (`hangar apply`) ([company deploy](deploy-company.md)). | Shipped |
-| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](clients/relay.md)). | Partial |
+| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](clients/relay.md)). | Shipped |
 
 </div>
 
-*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
+*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress. *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
 
 **Security posture.** hangar treats every sandbox as hostile. A job from an intake door (a GitHub issue, Jira, Slack, an inbound webhook) can fetch its repo but never push: hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login. Once an agent has read untrusted content, its PR opens as a draft and a second person, not the requester, must approve it to land. See [the security model](security/README.md) and [the safe-release upgrade](releases/safe-release.md).
 

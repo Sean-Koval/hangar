@@ -5,7 +5,7 @@ For Tower's `tower-down` alert and hangar's `tower-fail-closed` alert ([alerting
 ## What is blocked while Tower is down
 
 - **Laptops with Tower's Claude Code hook.** The hook fails closed, so every call it would send to Tower is blocked. Engineers see "Blocked by the Tower hook (it fails closed)".
-- **hangar, for kinds in `enforce`.** Those decisions fail closed: jobs wait in `awaiting_approval`, and tool calls are denied with "approval service unavailable". In `shadow` (the default) hangar's own rules decide and nothing waits.
+- **hangar, for kinds in `enforce`.** Those decisions fail closed: jobs wait in `awaiting_approval`, and tool calls are denied with "approval service unavailable". In `shadow` (what GKE's config sets; the code's default is `off`) hangar's own rules decide and nothing waits.
 - **Nothing else in hangar.** Jobs, sessions and sandboxes keep running.
 
 hangar asks Tower for every kind not set to `off`: [job release and landing](../tower-release-landing.md), and [governed approvals](../governed-approvals.md). With every kind `off`, hangar's alert can't fire, and Tower's uptime check is the only signal.
