@@ -66,15 +66,21 @@ resolved once and every trial gets that id, recorded in `pins.variants.<name>.mo
 shape decided, and the experiment's notes say so). Ordinary jobs still accept aliases; their manifests say
 `model.concrete: false` ([harnesses.md](../harnesses.md#concrete-ids-and-floating-aliases)).
 
-hangar pins the harness version, the model id and each task's base commit, mounts only the trial's harness, gives it
-exactly the variant's skills and instructions (the lock's, or the overlay's), and keeps egress the same for every
-variant. It records what each
-trial ran with (its [manifest](../api/manifest.schema.json)), what it did (its [trace](../api/traces.md)) and its
-verification, and runs an optional `grader.command` in a clean sandbox on each trial's patch. Two trials of one
-variant should share a configuration; when they don't, the trial's `drift` says which half moved: **harness drift**
-(its manifest's `harness_digest`: instructions, skills, MCP servers, hooks, model, approvals) or **environment drift**
-(`environment_digest`: image, build, egress, resources, isolation). It doesn't compare the
-variants: that is the sister tool's job. The details are in [spec 0014](../specs/0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1).
+hangar records what each trial ran with (its [manifest](../api/manifest.schema.json)), what it did (its
+[trace](../api/traces.md)) and its verification. Two trials of one variant should share a configuration; when they
+don't, the trial's `drift` says which half moved: **harness drift** (its manifest's `harness_digest`) or **environment
+drift** (`environment_digest`: image, build, egress, resources, isolation). The sister tool compares the variants
+([spec 0014](../specs/0014-sister-tool-interfaces.md#4-experiment-jobs-hangarexperimentv1)).
+
+## What a trial can reach
+
+A trial can't see the answer ([security](../security/graders.md#what-a-trial-can-reach)). Its clone stops at the
+pinned base, with no remote and no later branch, tag or object, and its git grant closes once it is cloned. An
+environment that sets no `egress.mode` gives it `allowlist`: the model API and the package mirror, no GitHub host.
+
+That needs the egress proxy (Docker or GKE). Every variant gets the same egress. An environment that sets its own
+egress keeps it, and `pins.trial_egress` says which. When GitHub is reachable, a warning goes into the notes and each
+trial's manifest.
 
 ## Grading
 
@@ -89,10 +95,8 @@ tasks:
   - {id: fix-retry, ..., reference_patch: "diff --git ..."}   # optional: a known fix the hidden tests must pass
 ```
 
-The grader runs agent-written code beside the hidden tests, so its sandbox is sealed: no credential, `secrets:` or
-cloud token, a fetch-only git grant that is revoked before the command runs, none of the environment's `mcp:`,
-`computer:` or services, and egress `none` with no host at all, not even the harness's model API, on the proxy-only
-network whatever the environment's egress says ([security](../security/graders.md)). A dependency that isn't in the
+The grader runs agent-written code beside the hidden tests, so its sandbox is sealed: no credential and no host at
+all, not even the model API ([security](../security/graders.md#the-graders-sandbox)). A dependency that isn't in the
 image (the environment's, or its repo build's) can't be fetched: use `network: mirror` or a repo build.
 
 The command runs in the repo with the trial's patch applied, and gets `HANGAR_HIDDEN_TESTS` (the grader's `files`,
