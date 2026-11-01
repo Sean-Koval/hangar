@@ -230,6 +230,7 @@ One list per person, newest first, from the records hangar keeps:
 | `approval` | a job waiting for approval (an untrusted trigger, a spend cap); a turn waiting on a tool approval; requests other modules add (egress, secrets) | approve or deny |
 | `failed` | a job that failed in the last 7 days and has no open PR | read why, then follow up or resubmit |
 | `denied` | policy denied a step of a turn that is still running (the agent carried on without it) | steer the session, or let it be |
+| `abandon` | your agent's PR was closed without merging in the last 7 days and has no [abandon reason](#what-hangar-records) | comment `/hangar abandon <reason>` on it ([metrics.md](metrics.md#what-hangar-records-for-them)) |
 | `alert` | admins only: a front door saw use that a real sender wouldn't make, such as a Jira Automation token used for an issue nobody just moved ([intake.md](intake.md#fallback-an-automation-rule)); kept 7 days | check the rule, rotate the token if it doesn't explain it |
 
 It is per person, as everything is since [people](security/people.md#people): a member sees items for their own jobs and sessions. An admin sees their own, plus work nobody in particular owns (jobs from GitHub issues, Slack and inbound webhooks). Read it:
