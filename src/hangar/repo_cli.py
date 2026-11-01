@@ -154,6 +154,9 @@ def repo_set(
                                                   "(default 1.50)."),
     ai_review_inline_max: int | None = typer.Option(None, "--ai-review-inline-max", help="Inline comments one AI "
                                                     "review posts, most severe first (default 5; KAN-230)."),
+    self_review: bool | None = typer.Option(None, "--self-review/--no-self-review", help="With --ai-review hangar: "
+                                            "a blocking review starts one auto-fix round before the PR is ready "
+                                            "for a person (KAN-228)."),
     verify_allowed: list[str] = typer.Option([], "--verify-allowed", help="A glob a ticket's own verify command "
                                              "may match to become its job's check, e.g. 'make test*' (repeat it). "
                                              "Replaces the list."),  # --- #156
@@ -188,6 +191,7 @@ def repo_set(
                 ("ai_review", ai_review), ("ai_review_harness", ai_review_harness),  # --- #161
                 ("ai_review_model", ai_review_model), ("ai_review_budget_usd", ai_review_budget),
                 ("ai_review_inline_max", ai_review_inline_max),  # --- KAN-230
+                ("self_review", self_review),  # --- KAN-228
                 ("verify_allowed", verify_allowed or None),  # --- #156
                 ("overnight", overnight),  # --- #186
                 ("require_ticket", require_ticket)):  # --- change sets (G7)
@@ -218,6 +222,7 @@ def repo_unset(repo: str = typer.Argument(...),
                                                              "max_open_agent_prs, self_approval, ai_review, "
                                                              "ai_review_harness, ai_review_model, "
                                                              "ai_review_budget_usd, ai_review_inline_max, "
+                                                             "self_review, "
                                                              "verify_allowed, "
                                                              "overnight, branch_template, require_ticket, "
                                                              "title_template). None: "

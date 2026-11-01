@@ -223,11 +223,13 @@ def bucket_of(job: Job) -> str:
 
 def counts_as_open(job: Job) -> bool:
     """An agent PR that waits on a person: open or approved (approved but not landing still needs them), not ended.
-    AI review jobs and experiment trials open none."""
+    AI review jobs and experiment trials open none; a PR held for its self-review (KAN-228) doesn't wait yet."""
+    from hangar import aireview
+
     st = job.landing
     if job.source == "review" or "hangar.experiment" in job.labels or not job.result.pr_number:
         return False
-    return st.pr_state in ("open", "approved") and not st.ended
+    return st.pr_state in ("open", "approved") and not st.ended and not aireview.held(st)  # --- KAN-228
 
 
 class ReviewLoad:

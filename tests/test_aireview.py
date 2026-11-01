@@ -9,11 +9,12 @@ import json
 
 import pytest
 
-from hangar import aireview, egress, fairness, posture, usage
+from hangar import aireview, egress, fairness, inbox, posture, usage
+from hangar.auth import Principal
 from hangar.gateway import FETCH_ONLY_LABELS
 from hangar.harnesses import HARNESSES, Harness
 from hangar.jobs import JobService, handle_github
-from hangar.models import JobState, Sandbox
+from hangar.models import JobBudget, JobState, Sandbox, Usage
 from hangar.repopolicy import RepoPolicy, repo_key
 from tests.test_jobs import DONE, _until, jobs, sessions, world  # noqa: F401 - fixtures
 from tests.test_landing import GH, HEAD, NEW, fx, gh, pr_job, settle, sub, svc  # noqa: F401 - fixtures
@@ -539,3 +540,197 @@ async def test_a_review_job_runs_fenced_and_its_spend_shows_under_source_review(
     assert any(k in sb.labels for k in FETCH_ONLY_LABELS) and sb.info.get("egress", {}).get("mode", "none") == "none"
     rows = {row["key"]: row for row in usage.aggregate(jobs.sessions, jobs, "source")["rows"]}
     assert rows["review"]["turns"] >= 1 and rows["api"]["turns"] >= 1
+
+
+# ====================================================================== self-review (KAN-228)
+BLOCKING = {"verdict": "blocking", "summary": "It breaks unicode export.",
+            "findings": [{"path": "src/app.py", "line": 3, "severity": "major", "text": "This prints instead of "
+                          "writing the CSV", "evidence": "print('hi')"}]}
+ALICE = Principal("alice-laptop", "tok-a", ["mcp"], person="alice", role="member")
+
+
+async def held_job(svc, gh, monkeypatch, **policy):  # noqa: F811
+    """A job whose PR hangar opens (o/r#7) with self_review on: it opens as a draft, held for its review."""
+    reviews_on(svc, self_review=True, **policy)
+    monkeypatch.setattr(aireview, "DEBOUNCE_SECONDS", 0.0)
+    monkeypatch.setattr(svc, "_sandbox_alive", lambda j: True)  # the round continues the job's own sandbox
+    job = agent_job(svc)
+    job.result.pr_number = job.result.pr_url = None
+    job.landing = type(job.landing)(head_sha=HEAD)
+    await svc._ensure_pr(job, draft=False)
+    return job
+
+
+async def answer(svc, rj, result, confirm=None, head=HEAD):  # noqa: F811
+    """A review job (and its check, when one starts) answer."""
+    job = svc._jobs[rj.labels[aireview.OF_LABEL]]
+    rj.result.data, rj.result.base_sha, rj.state = result, head, JobState.SUCCEEDED
+    aireview.job_done(svc, rj)
+    await settle(svc)
+    if cid := (job.landing.ai_review or {}).get("confirm_job"):
+        cj = svc._jobs[cid]
+        if cj.state not in (JobState.SUCCEEDED, JobState.FAILED):
+            cj.result.data, cj.result.base_sha, cj.state = confirm, head, JobState.SUCCEEDED
+            aireview.job_done(svc, cj)
+            await settle(svc)
+
+
+async def first_review(svc, job, result, confirm=None):  # noqa: F811
+    aireview.request(svc, job, "hangar pushed")
+    await settle(svc)
+    assert job.landing.ai_review, [e.message for e in job.events]
+    await answer(svc, svc._jobs[job.landing.ai_review["job"]], result, confirm)
+
+
+async def the_round_pushes(svc, job, head=NEW):  # noqa: F811
+    """The round's turn ran, committed and hangar pushed `head` (what jobs._finish_turn and _process do)."""
+    job.state, job.result.head_sha = JobState.SUCCEEDED, head
+    svc.landing.pushed(job, head, "hangar pushed")
+    aireview.request(svc, job, "hangar pushed")
+    svc.landing.idle(job)
+    await settle(svc)
+
+
+def waiting(svc, job) -> bool:  # noqa: F811
+    """A person sees it: an inbox item, a review-capacity count."""
+    in_inbox = any(i["kind"] == "review" and i.get("job") == job.id for i in inbox.items(svc, ALICE))
+    assert in_inbox == fairness.counts_as_open(job)
+    return in_inbox
+
+
+async def test_self_review_is_off_by_default_and_needs_ai_review_hangar(svc, gh):  # noqa: F811
+    job = agent_job(svc)
+    reviews_on(svc)
+    assert aireview.hold(svc, job, False) is False and job.landing.self_review is None
+    svc.policies.put(RepoPolicy(repo="o/r", self_review=True))  # no ai_review: nothing to wait for
+    assert aireview.hold(svc, job, False) is False and job.landing.self_review is None
+    p = RepoPolicy(repo="o/r", ai_review="hangar", self_review=True)
+    assert aireview.self_review_on(p) and not aireview.self_review_on(RepoPolicy(repo="o/r", ai_review="hangar"))
+
+
+async def test_a_blocking_review_starts_one_round_then_the_pr_is_ready(svc, gh, monkeypatch):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    opened = [json.loads(c.content) for c in gh.calls if c.method == "POST" and c.url.path == "/repos/o/r/pulls"]
+    assert opened[0]["draft"] is True and job.landing.draft and job.landing.ready_at is None
+    assert aireview.held(job.landing) and not waiting(svc, job)
+    turns = len(job.turns)
+    await first_review(svc, job, BLOCKING, {"findings": [yes(0)]})
+    assert job.landing.ai_review["verdict"] == "blocking" and gh.reviews_posted  # the App's review, on the draft
+    # one round on the job's own session, the confirmed findings fenced as untrusted
+    assert len(job.turns) == turns + 1 and job.state == JobState.QUEUED
+    t = job.turns[-1]
+    assert t.trigger == "autofix:self_review" and t.requester == "hangar:autofix" and t.reply_to == "github:o/r#7"
+    md = next(c for c in t.context if c.name == "ai-review.md")
+    assert md.untrusted and "This prints instead of writing the CSV" in md.content and "print('hi')" in md.content
+    rounds = job.autofix_state.rounds
+    assert [r.trigger for r in rounds] == ["self_review"] and rounds[0].head_sha == HEAD
+    assert job.landing.self_review["state"] == "fixing" and job.landing.draft and not gh.readied
+    assert not waiting(svc, job) and "one auto-fix round ran" in svc.landing.packet(job)
+    # the round pushes; its head is reviewed again, still held; a non-blocking review ends the hold
+    await the_round_pushes(svc, job)
+    second = svc._jobs[job.landing.ai_review["job"]]
+    assert job.landing.ai_review["head_sha"] == NEW and aireview.held(job.landing)
+    await answer(svc, second, {"verdict": "comment", "summary": "Fixed.", "findings": []}, head=NEW)
+    sr = job.landing.self_review
+    assert sr["state"] == "done" and "fixed head 9c3f2a1 is comment" in sr["outcome"]
+    assert gh.readied == [job.landing.node_id] and not job.landing.draft and job.landing.ready_at
+    assert len(job.autofix_state.rounds) == 1 and waiting(svc, job)
+    packet = svc.landing.packet(job)
+    assert "**Self-review:** the AI review of 6dcb09b was blocking (1 confirmed finding(s)); one auto-fix " \
+           "round ran; the review of the fixed head 9c3f2a1 is comment" in packet
+
+
+async def test_a_second_blocking_review_lists_its_findings_without_another_round(svc, gh, monkeypatch):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    await first_review(svc, job, BLOCKING, {"findings": [yes(0)]})
+    turns = len(job.turns)
+    await the_round_pushes(svc, job)
+    await answer(svc, svc._jobs[job.landing.ai_review["job"]], BLOCKING, {"findings": [yes(0)]}, head=NEW)
+    assert len(job.turns) == turns and len(job.autofix_state.rounds) == 1  # no loop
+    assert job.landing.self_review["outcome"] == "the review of the fixed head 9c3f2a1 is blocking (1 confirmed " \
+                                                 "finding(s))"
+    assert gh.readied and waiting(svc, job)
+    body = gh.reviews_posted[-1]["body"]
+    assert "verdict **blocking**" in body and "This prints instead of writing the CSV" in body
+    assert "AI review:** blocking" in svc.landing.packet(job) and "1 confirmed finding(s)" in svc.landing.packet(job)
+
+
+async def test_a_spent_job_budget_starts_no_round_and_the_pr_is_ready(svc, gh, monkeypatch):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    job.job_budget = JobBudget(max_cost_usd=2.0)
+    monkeypatch.setattr(svc, "usage", lambda j: Usage(cost_usd=2.0) if j.id == job.id else None)
+    turns = len(job.turns)
+    await first_review(svc, job, BLOCKING, {"findings": [yes(0)]})
+    assert len(job.turns) == turns and not job.autofix_state.rounds
+    sr = job.landing.self_review
+    assert sr["state"] == "done" and "no auto-fix round" in sr["outcome"] and "job budget is spent" in sr["outcome"]
+    assert gh.readied and waiting(svc, job)
+    assert "job budget is spent" in svc.landing.packet(job)
+
+
+@pytest.mark.parametrize(("result", "independent", "why"), [
+    ({**RESULT, "findings": []}, True, "nothing to fix first"),
+    (BLOCKING, False, "not independent"),
+])
+async def test_no_round_unless_blocking_and_independent(svc, gh, monkeypatch, result, independent, why):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    if not independent:
+        job.harness = "codex"
+        svc.policies.put(svc.policies.get(job.repo).model_copy(update={"ai_review_harness": "codex"}))
+    turns = len(job.turns)
+    await first_review(svc, job, result, {"findings": [yes(0)]})
+    assert job.landing.ai_review["independent"] is independent
+    assert len(job.turns) == turns and not job.autofix_state.rounds
+    assert why in job.landing.self_review["outcome"] and gh.readied and waiting(svc, job)
+
+
+@pytest.mark.parametrize(("state", "head", "why"), [
+    (JobState.FAILED, NEW, "the auto-fix round failed (agent_failed)"),
+    (JobState.SUCCEEDED, HEAD, "the auto-fix round pushed nothing"),
+])
+async def test_a_round_that_fails_or_pushes_nothing_ends_the_hold(svc, gh, monkeypatch, state, head, why):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    await first_review(svc, job, BLOCKING, {"findings": [yes(0)]})
+    job.state, job.reason, job.result.head_sha = state, "agent_failed" if state == JobState.FAILED else None, head
+    svc.landing.pushed(job, head, "hangar pushed")
+    svc.landing.idle(job)
+    await settle(svc)
+    assert job.landing.self_review["outcome"] == why and gh.readied and len(job.autofix_state.rounds) == 1
+
+
+async def test_a_pr_hangar_would_open_as_a_draft_stays_one(svc, gh, monkeypatch):  # noqa: F811
+    reviews_on(svc, self_review=True)
+    job = agent_job(svc)
+    job.result.pr_number = job.result.pr_url = None
+    await svc._ensure_pr(job, draft=True)  # the check failed, say: a draft whatever the review says
+    await first_review(svc, job, {**RESULT, "findings": []})
+    assert job.landing.self_review["state"] == "done" and not gh.readied and job.landing.draft
+    assert any("the PR stays a draft" in e.message for e in job.events)
+
+
+async def test_marking_the_draft_ready_by_hand_ends_the_hold(svc, gh, monkeypatch):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    ready = sub(fx("pull_request.synchronize"), NEW, HEAD)
+    ready["action"], ready["pull_request"]["draft"] = "ready_for_review", False
+    await handle_github(svc, "pull_request", "d-ready", ready)
+    await settle(svc)
+    assert job.landing.self_review["outcome"] == "someone marked the PR ready for review" and not gh.readied
+
+
+async def test_a_verdict_during_a_turn_waits_for_it(svc, gh, monkeypatch):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    svc._active.add(job.id)  # delivery's turn is still finishing
+    await first_review(svc, job, BLOCKING, {"findings": [yes(0)]})
+    assert job.landing.self_review["state"] == "reviewing" and not job.autofix_state.rounds
+    svc._active.discard(job.id)
+    svc.landing.idle(job)  # jobs._process, once the turn is over (and landing.restore after a restart)
+    await settle(svc)
+    assert job.landing.self_review["state"] == "fixing" and len(job.autofix_state.rounds) == 1
+
+
+async def test_with_auto_fix_on_reviews_off_a_blocking_review_starts_nothing(svc, gh, monkeypatch):  # noqa: F811
+    job = await held_job(svc, gh, monkeypatch)
+    job.autofix = "ci"
+    await first_review(svc, job, BLOCKING, {"findings": [yes(0)]})
+    assert not job.autofix_state.rounds and "auto-fix on reviews is off" in job.landing.self_review["outcome"]
+    assert gh.readied and waiting(svc, job)

@@ -34,7 +34,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from hangar import identity, steer
+from hangar import aireview, identity, steer
 from hangar.models import JobState, now
 from hangar.store import NOT_NULL, Ge  # --- durable
 
@@ -203,7 +203,8 @@ def items(svc: JobService, p: Principal | None = None) -> list[dict[str, Any]]:
                 st.pr_state not in ("merged", "closed") and j.source != "review":  # --- #161: the packet says so
             out.append(_item("failed", f"job failed ({j.reason or 'error'})",
                              f"hangar job get {j.id}; then follow up or submit it again", j.updated_at, **ref))
-        if pr_open and j.id not in svc._active and j.state in (JobState.SUCCEEDED, JobState.FAILED):
+        if pr_open and j.id not in svc._active and j.state in (JobState.SUCCEEDED, JobState.FAILED) \
+                and not aireview.held(st):  # --- KAN-228: held as a draft for its self-review: not yet
             draft = " (a draft: hangar wasn't sure; read the packet)" if st.draft else ""
             if j.state == JobState.FAILED:
                 draft += f" (the job ended {j.reason or 'with an error'})"

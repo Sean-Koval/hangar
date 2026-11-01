@@ -27,6 +27,14 @@ no review-capacity count (#159). The self-approval rule (#160) accepts it as evi
 (another harness, or an org bot) and reviewed the approved head. With only one harness available the review runs on
 the author's harness in a fresh session, flagged `independent: false`, which #160 doesn't accept. The App's review is
 a bot's, so it starts no auto-fix round (reviewtrust.is_bot).
+
+--- KAN-228, self-review: with `self_review: true` too, hangar reviews the PR before a person sees it. The PR opens
+as a draft (`hold`) and the review runs on it. While it is held (`held`) it makes no inbox item and no
+review-capacity count. An independent `blocking` verdict starts one auto-fix round on the job's session
+(autofix.self_review_round), inside the job's budget. Its push is reviewed again, and that review ends the hold
+whatever it says: no second round. So does a non-blocking or not independent first review, an error, a round that
+can't start (budget, round limit, auto-fix off) and a round that fails or pushes nothing (`turn_ended`). The PR is
+then marked ready for review, unless hangar would have opened it as a draft anyway; the packet says what happened.
 """
 
 from __future__ import annotations
@@ -168,7 +176,8 @@ def counts_for(st: Any, sha: str | None) -> bool:
 def wanted(svc: JobService, job: Job) -> str | None:
     """The review mode when this job's PR should be reviewed now, else None."""
     st = job.landing
-    if job.source == "review" or not job.result.pr_number or st.draft or st.pr_state not in ("open", "approved"):
+    if job.source == "review" or not job.result.pr_number or (st.draft and not held(st)) \
+            or st.pr_state not in ("open", "approved"):
         return None
     m = mode(svc.policies.get(job.repo))
     return None if m == "off" else m
@@ -215,7 +224,8 @@ async def _after(svc: JobService, job_id: str, head: str, wait: float, why: str)
         job = svc._jobs.get(job_id)
         if job is None or (job.landing.head_sha or job.result.head_sha) != head or wanted(svc, job) != "hangar":
             return  # pushed again (that push asked for its own), closed, or no longer wanted
-        await submit(svc, job, head, why)
+        if await submit(svc, job, head, why) is None and held(job.landing):  # --- KAN-228: nothing will end it
+            await release(svc, job, "the AI review couldn't start")
     finally:
         if svc.landing._ai_due.get(job_id) == head:
             svc.landing._ai_due.pop(job_id, None)
@@ -596,14 +606,19 @@ def review_body(job: Job) -> str:
 
 async def _post(svc: JobService, job_id: str) -> None:
     """One COMMENT review from the App, with at most ai_review_inline_max inline comments (the most severe
-    confirmed findings that have a line); then the packet shows it."""
+    confirmed findings that have a line); then a held PR's next step (KAN-228), and the packet shows it."""
     job = svc._jobs.get(job_id)
     if job is None:
         return
+    await _post_review(svc, job)
+    await self_review_step(svc, job)
+    await _settled(svc, job_id)
+
+
+async def _post_review(svc: JobService, job: Job) -> None:
     st, repo, number = job.landing, parse_repo(job.repo), job.result.pr_number
     r = st.ai_review or {}
     if r.get("verdict") in (None, "error") or r.get("review_id") or not repo or not number:
-        await svc.landing.post_packet(job)
         return
     gh = await svc.landing.client(repo, job)
     if gh is None:
@@ -634,7 +649,6 @@ async def _post(svc: JobService, job_id: str) -> None:
         svc._event(job, f"AI review: couldn't post the review on the PR: {e}")
     finally:
         await gh.close()
-    await _settled(svc, job_id)
 
 
 async def _settled(svc: JobService, job_id: str) -> None:
@@ -672,6 +686,134 @@ def packet_line(job: Job) -> str | None:
         counts += f", {r['unconfirmed']} " + ("unchecked finding(s) dropped (the check didn't complete)"
                                              if r.get("unchecked") else "unconfirmed finding(s) dropped")
     return (f"- **AI review:** {r['verdict']} ({who}) on {str(r.get('head_sha'))[:7]}" + counts + indep + link)
+
+
+# ====================================================================== self-review (KAN-228)
+def self_review_on(policy: RepoPolicy | None) -> bool:
+    return mode(policy) == "hangar" and bool(policy is not None and policy.self_review)
+
+
+def held(st: Any) -> bool:
+    """The PR is held as a draft for its self-review: no inbox item, no review-capacity count."""
+    return (st.self_review or {}).get("state") in ("reviewing", "fixing")
+
+
+def hold(svc: JobService, job: Job, draft: bool) -> bool:
+    """From JobService._ensure_pr, before hangar opens the job's PR: whether to open it as a draft. With
+    self_review on, always, and the PR is held until its review (and one round) is done; `draft` is what it would
+    have been, so what it becomes when the hold ends."""
+    if job.source == "review" or job.parent or not self_review_on(svc.policies.get(job.repo)):
+        return draft
+    job.landing.self_review = {"state": "reviewing", "ready": not draft, "at": now()}
+    svc._event(job, "self-review: the PR opens as a draft and waits for the AI review; a blocking one gets one "
+                    "auto-fix round first")
+    return True
+
+
+async def self_review_step(svc: JobService, job: Job) -> None:
+    """A held PR's review has a verdict (from _post, or landing.idle once the job's turn is over): start the round,
+    or end the hold. Nothing awaits between reading the state and changing it."""
+    from hangar import autofix
+
+    st = job.landing
+    sr, r = st.self_review or {}, st.ai_review or {}
+    if not held(st) or r.get("source", "hangar") != "hangar" or r.get("verdict") is None:
+        return
+    head, verdict = str(r.get("head_sha") or ""), r["verdict"]
+    n = len(r.get("findings") or [])
+    what = f"{verdict}" + (f" ({n} confirmed finding(s))" if n else "")
+    if st.pr_state not in ("open", "approved"):
+        sr.update(state="done", outcome=f"the PR is {st.pr_state}", ended_at=now())
+        svc._save(job)
+        return
+    if sr["state"] == "fixing":
+        if head and head != sr.get("round_head"):
+            await release(svc, job, f"the review of the fixed head {head[:7]} is {what}")
+        return
+    if verdict == "error":
+        return await release(svc, job, f"the AI review failed ({str(r.get('error') or 'no result')[:200]})")
+    if verdict != "blocking":
+        return await release(svc, job, f"the AI review of {head[:7]} is {what}: nothing to fix first")
+    if not r.get("independent"):
+        return await release(svc, job, f"the AI review of {head[:7]} is {what} but not independent (the author's "
+                                       "own harness), so it starts no round")
+    if job.id in svc._active or job.state not in JOB_TERMINAL:
+        if job.state in (JobState.NEEDS_INPUT, JobState.AWAITING_APPROVAL):
+            return await release(svc, job, f"the AI review of {head[:7]} is {what}, but the job is "
+                                           f"{job.state.value}")
+        return  # a turn is running: landing.idle comes back here when it is over
+    if why := autofix.self_review_round(svc, job, r):
+        return await release(svc, job, f"the AI review of {head[:7]} is {what}; no auto-fix round: {why}")
+    sr.update(state="fixing", round_head=head, round_turn=len(job.turns) - 1,
+              first={"head_sha": head, "findings": n, "summary": r.get("summary")})
+    st.self_review = sr
+    svc._save(job)
+    await autofix.announce_self_review(svc, job)
+
+
+async def turn_ended(svc: JobService, job: Job) -> None:
+    """landing.idle: the job's turn is over. A held PR whose round failed or pushed nothing is released; one whose
+    round pushed waits for the review of its new head (delivery asked for it)."""
+    st = job.landing
+    if not held(st):
+        return
+    if not self_review_on(svc.policies.get(job.repo)):
+        return await release(svc, job, "self_review is off in the repo policy now")
+    sr = st.self_review or {}
+    if sr["state"] == "reviewing":
+        return await self_review_step(svc, job)  # a verdict that waited for the turn
+    if job.id in svc._active or job.state not in JOB_TERMINAL or len(job.turns) <= int(sr.get("round_turn") or 0):
+        return
+    if job.state != JobState.SUCCEEDED:
+        return await release(svc, job, f"the auto-fix round failed ({job.reason or job.state.value})")
+    head = st.head_sha or job.result.head_sha
+    if not head or head == sr.get("round_head"):
+        return await release(svc, job, "the auto-fix round pushed nothing")
+    r = st.ai_review or {}
+    if r.get("head_sha") != head and svc.landing._ai_due.get(job.id) != head:
+        request(svc, job, "after the self-review round")
+        if (st.ai_review or {}).get("head_sha") != head and svc.landing._ai_due.get(job.id) != head:
+            return await release(svc, job, f"no AI review of the fixed head {head[:7]} could start")
+    if (st.ai_review or {}).get("head_sha") == head:
+        await self_review_step(svc, job)  # reviewed already
+
+
+async def release(svc: JobService, job: Job, why: str) -> None:
+    """End the hold: the PR is ready for review (unless hangar would have opened it as a draft), so it reaches the
+    inbox and counts for review capacity from now on."""
+    st = job.landing
+    sr = st.self_review or {}
+    if not held(st):
+        return
+    sr.update(state="done", outcome=why, ended_at=now())
+    st.self_review = sr
+    ready = bool(sr.get("ready")) and st.draft
+    svc._event(job, f"self-review: {why}; " + ("marking the PR ready for review" if ready else
+                                                "the PR stays a draft (hangar would have opened it as one)"))
+    svc._save(job)
+    if ready and not await svc.landing.mark_ready(job):
+        sr["mark_failed"] = True
+        svc._save(job)
+    await svc.landing.post_packet(job)
+
+
+def self_review_line(job: Job) -> str | None:
+    """The review packet's self-review line: held, or what the hold did."""
+    sr = job.landing.self_review
+    if not sr:
+        return None
+    if sr.get("state") == "reviewing":
+        return "- **Self-review:** a draft until the AI review is in; a blocking one gets one auto-fix round first"
+    first = sr.get("first") or {}
+    did = ""
+    if first:
+        n = first.get("findings") or 0
+        did = (f"the AI review of {str(first.get('head_sha'))[:7]} was blocking"
+               + (f" ({n} confirmed finding(s))" if n else "") + "; one auto-fix round ran")
+    if sr.get("state") == "fixing":
+        return f"- **Self-review:** {did}; the PR stays a draft until its push is reviewed"
+    tail = "; couldn't mark it ready for review: mark it yourself" if sr.get("mark_failed") else ""
+    return f"- **Self-review:** {'; '.join(x for x in (did, str(sr.get('outcome') or 'done')) if x)}{tail}"
 
 
 # ====================================================================== after a restart
