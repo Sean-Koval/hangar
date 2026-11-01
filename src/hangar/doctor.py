@@ -260,6 +260,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import harness_repo  # --- #138: the team harness repo: reachable, last refresh, channels
 
     out += harness_repo.doctor_checks(h)
+    from hangar import codex_plugins  # --- KAN-72: every hook of a Codex lock's plugins trusted
+
+    out += codex_plugins.doctor_checks(h)
     out += mcp_checks(h)  # --- #140: both MCP servers
     await asyncio.sleep(0)
     return out

@@ -168,6 +168,7 @@ nav:
               - Plugins from a git marketplace: environments/git-plugins.md
           - Harnesses: harnesses.md
           - Harness locks: harness-lock.md
+          - Codex plugin hooks: codex-plugin-hooks.md
           - Computer use: computer-use.md
           - Build caches: caches.md
       - Usage and insight:
