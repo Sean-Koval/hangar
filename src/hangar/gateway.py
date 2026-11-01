@@ -721,6 +721,15 @@ class Gateway:
     def drop(self, grant_id: str) -> None:
         self.store.delete(SandboxGrant, grant_id)
 
+    def close(self, sandbox_id: str) -> None:
+        """--- KAN-234: a trial's grant once its clone is done: no repository, so no fetch, no push and no GitHub API
+        path. The token stays live for the package mirror; revoke() would end the model gateway's bearer too."""
+        for g in self.grants(sandbox_id):
+            if g.repos or g.push_refs:
+                g.repos, g.push_refs = [], []
+                self.store.put(g)
+        self.fleet.audit("gateway", "gateway.close", sandbox_id)
+
     def narrow(self) -> int:
         """At startup: grants minted before jobs went fetch-only (an upgrade, with a job's sandbox kept for its
         follow-ups) lose their push refs, and delivery grants a restart cut short go. The token stays the same, so

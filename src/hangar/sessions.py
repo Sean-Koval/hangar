@@ -43,6 +43,7 @@ from hangar import resident as resident  # --- durable: live and recent sessions
 from hangar import slo as slo  # --- clouddoctor: turn-start and resume times for `hangar status`
 from hangar import steer as steering  # workstream steer: live turns
 from hangar import taint as taint  # --- taint (#129): whether a turn has read untrusted content
+from hangar import trialiso as trialiso  # --- KAN-234: a trial's clone stops at its base
 from hangar import turnlogin as turnlogin  # --- #293: a turn's harness must have a login
 from hangar import turnsummary as turnsummary  # --- KAN-137: a stopped turn's summary, from its events
 from hangar.checkpoints import CheckpointStore, make_store
@@ -672,6 +673,7 @@ class SessionService:
         try:
             if sb.info.get("repo_path"):
                 note = await self._restore(s, sb)
+                await trialiso.isolate(self, s, sb)  # --- KAN-234: a trial's clone stops at its base
         except Exception:
             s.state = SessionState.FAILED  # so the pre-destroy hook does not checkpoint a half-restored tree
             with contextlib.suppress(Exception):

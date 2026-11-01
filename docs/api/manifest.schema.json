@@ -143,7 +143,7 @@
         "default": {"type": "string"},
         "effective": {"type": ["object", "null"], "description": "What the sandbox got: mode, enforced, mirrors."},
         "floor": {"enum": ["allowlist", "none"], "description": "Present when the sandbox's egress was raised above its environment's for an intake-triggered job (HANGAR_INTAKE_POSTURE=enforce)."},
-        "floor_reason": {"type": "string", "description": "Why the floor applies: intake."}
+        "floor_reason": {"type": "string", "description": "Why the floor applies: intake, or eval (an eval job whose environment sets no egress gets the closed allowlist, KAN-234)."}
       }
     },
     "environment": {
@@ -176,7 +176,7 @@
         "deliver": {"type": ["string", "null"]}
       }
     },
-    "repo": {"type": "object", "properties": {"url": {"type": ["string", "null"]}, "base_branch": {"type": ["string", "null"]}, "base_sha": {"type": ["string", "null"]}, "branch": {"type": ["string", "null"]}}},
+    "repo": {"type": "object", "properties": {"url": {"type": ["string", "null"]}, "base_branch": {"type": ["string", "null"]}, "base_sha": {"type": ["string", "null"]}, "branch": {"type": ["string", "null"]}, "isolation": {"type": "object", "description": "KAN-234: an experiment trial's clone, stopped at its base: the refs left, no remotes, and its git grant (closed, or direct when the gateway isn't in use).", "properties": {"base_sha": {"type": ["string", "null"]}, "branch": {"type": "string"}, "refs": {"type": "array", "items": {"type": "string"}}, "remotes": {"type": "array", "items": {"type": "string"}}, "git_grant": {"enum": ["closed", "direct"]}}}}},
     "probe": {"type": ["object", "null"], "properties": {"ok": {"type": "boolean"}, "error": {"type": ["string", "null"]},
       "plugins": {"description": "The declared seed plugins' directories in the sandbox as the turn started (#136; null: none declared, or not read).",
         "oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "required": ["id", "present"], "properties": {

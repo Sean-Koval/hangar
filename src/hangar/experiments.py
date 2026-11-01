@@ -19,7 +19,9 @@ variant is the only overlay on an environment and gains no new fields: it shrink
 Kubernetes a template of its own, never a warm sandbox of the environment, which mounts them all), gets exactly the
 skills and instructions its variant declares (written when its sandbox is created, every time it is, so a resumed
 trial has them too), and nothing else of the experiment. Egress is fixed per experiment: every variant's environment
-must have the same egress policy, or the experiment is refused.
+must have the same egress policy, or the experiment is refused. A trial can't see the answer (KAN-234, trialiso.py):
+its clone stops at the pinned base, with no remote and no ref past it, its git grant closes once it is cloned, and
+an environment that sets no egress gives it the closed `allowlist` (no GitHub).
 
 **Pinning.** The harness version (the lock at the start; a lock change mid-way stops new trials), the model id, the
 base commit of each task (resolved from GitHub at the start, else from the first trial's clone, and checked out in
@@ -614,6 +616,11 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
     # --- review(#114): egress too: an approved egress request widens an environment mid-experiment
     _pin_sets(jobs, job, st, spec, variants, tasks, overlays)  # --- #178
     st.pins = {"variants": variants, "tasks": tasks, "egress": _egress(fleet, spec), "pinned_at": now()}
+    from hangar import trialiso  # --- KAN-234: what the trials reach; a warning when GitHub is one of them
+
+    st.pins["trial_egress"] = te = trialiso.plan(fleet, spec.environment)
+    if te.get("warning"):
+        st.notes.append(te["warning"])
     st.trials = [Trial(key=f"{t.id}/{vname}/{i}", task=t.id, variant=vname, trial=i)
                  for i in range(1, spec.trials + 1) for t in spec.tasks for vname in spec.variants]
     st.stage = "running"
