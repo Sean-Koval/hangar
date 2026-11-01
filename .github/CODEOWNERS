@@ -34,13 +34,15 @@
 /src/hangar/computer.py            @Sean-Koval
 /src/hangar/uiheaders.py           @Sean-Koval
 
-# Egress: what a sandbox may reach, and the read-only mirrors and gateways it reaches instead.
+# Egress: what a sandbox may reach, and the read-only mirrors and gateways it reaches instead (trialiso: what an
+# experiment trial reaches, KAN-234).
 /src/hangar/egress*.py             @Sean-Koval
 /src/hangar/pkgmirror.py           @Sean-Koval
 /src/hangar/regmirror.py           @Sean-Koval
 /src/hangar/ghapi.py               @Sean-Koval
 /src/hangar/modelgw.py             @Sean-Koval
 /src/hangar/envrequests.py         @Sean-Koval
+/src/hangar/trialiso.py            @Sean-Koval
 
 # Credentials and brokering: where secrets live, which reach a sandbox, and scanning for the ones that leak.
 /src/hangar/broker.py              @Sean-Koval

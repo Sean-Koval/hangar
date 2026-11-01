@@ -35,7 +35,7 @@ MANIFEST_SCHEMA = json.loads((ROOT / "docs/api/manifest.schema.json").read_text(
 
 
 @pytest.fixture
-async def jobs(fleet, world, settings, store):
+async def jobs(fleet, world, settings, store, monkeypatch):
     settings.session_poll_seconds = settings.job_poll_seconds = 0.1
     settings.harness_repo = str(world["root"] / "registry")
     fleet.catalog.dirs.insert(0, world["envs"])
@@ -55,6 +55,12 @@ async def jobs(fleet, world, settings, store):
             f.write_text(text)
 
     fake.create = create_with_baked_skills
+    from hangar import egress
+
+    async def proxy_url(fleet_, prov, sb):  # --- KAN-234: a trial is proxied (closed eval egress); no network here
+        return "http://127.0.0.1:9"
+
+    monkeypatch.setattr(egress, "_proxy_url", proxy_url)
     sessions = SessionService(fleet, Vault(store, b"0" * 43 + b"="))
     await sessions.start()
     svc = JobService(fleet, sessions, transport=httpx.MockTransport(Hooks()))
