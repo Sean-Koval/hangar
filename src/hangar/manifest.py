@@ -481,12 +481,12 @@ def _codex_hook_lines(svc: SessionService, sb: Sandbox, harness: str | None, hom
     from hangar import codex_plugins
 
     try:
-        t = codex_plugins.mounted_trust(svc.fleet, sb, harness)
+        t, ids = codex_plugins.mounted_forms(svc.fleet, sb, harness)
     except Exception:  # noqa: BLE001 - nothing to ask; the rest is read
         return []
     h = HARNESSES.get(harness or "")
     codex = f"{h.prefix}/bin/codex" if h is not None and h.install else "codex"
-    return codex_plugins.probe_lines(t, codex, sb.info.get("repo_path") or home)
+    return codex_plugins.probe_lines(t, codex, sb.info.get("repo_path") or home, plugins=ids)  # KAN-72: theirs too
 
 
 def start_probe(svc: SessionService, s: Session, sb: Sandbox) -> asyncio.Task[dict[str, Any]]:

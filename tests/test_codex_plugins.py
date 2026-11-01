@@ -2,8 +2,8 @@
 
 The hashes below are what Codex 0.162.1 itself reported (app server `hooks/list`, `currentHash`) for these plugins
 installed from a local marketplace; hangar must compute the same, or the hooks it trusts stay untrusted. With
-HANGAR_TEST_CODEX naming the real CLI, the last test installs a lock's Codex form with the commands `mount` runs and
-asks that Codex whether it runs the hooks:
+HANGAR_TEST_CODEX naming the real CLI, the last tests install a lock's Codex form with the commands `mount` runs, ask
+that Codex whether it runs the hooks, and run a turn with hangar's Codex command to see them fire (KAN-72):
 
     HANGAR_TEST_CODEX=$(command -v codex) uv run pytest tests/test_codex_plugins.py
 """
@@ -14,8 +14,11 @@ import json
 import os
 import shlex
 import subprocess
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +134,32 @@ def test_only_the_hooks_codex_loads_are_trusted():
     assert {k.split(":")[1] for k in codex_plugins.plugin_trust("x@m", dflt)} == {"hooks/hooks.json"}
 
 
+def test_untrusted_names_every_hook_codex_would_skip():
+    """--- KAN-72: what of a form's hooks never runs under hangar's trust, for `hangar doctor`."""
+    files = _files(AIDLC)
+    assert codex_plugins.untrusted(files) == []
+    odd = {**files, "hooks.json": json.dumps({"hooks": {"Stop": [{"hooks": [
+        {"type": "prompt", "prompt": "x"}, {"type": "command", "command": "x"}, {"type": "command", "command": " "},
+        {"type": "mcp_tool", "server": "s", "tool": "t"}]}]}}).encode()}
+    assert codex_plugins.untrusted(odd) == ["hooks.json:stop:0:0 is a prompt hook",
+                                            "hooks.json:stop:0:2 is an empty command",
+                                            "hooks.json:stop:0:3 is a mcp_tool hook"]
+    man = AIDLC[".codex-plugin/plugin.json"]
+    for hooks, why in (("./nope.json", "nope.json isn't in the plugin"),
+                       ("../hooks.json", "hooks path '../hooks.json' isn't a ./ path inside the plugin"),
+                       ([{"hooks": {}, "extra": 1}], "plugin.json#hooks[0] doesn't parse"),
+                       (3, "the manifest's hooks are neither paths nor hooks objects")):
+        man_file = json.dumps({**man, "hooks": hooks}).encode()
+        assert codex_plugins.untrusted({**files, ".codex-plugin/plugin.json": man_file}) == [why], hooks
+    bad = {**files, "hooks.json": json.dumps({"hooks": {"Stop": [{"hooks": [
+        {"type": "command", "command": "x", "timeout": "10"}]}]}}).encode()}
+    assert codex_plugins.untrusted(bad) == ["hooks.json doesn't parse"]
+    assert codex_plugins.untrusted({}) == [".codex-plugin/plugin.json doesn't parse"]
+    # an empty hooks file, or none at all, is nothing to trust and nothing skipped
+    assert codex_plugins.untrusted({**files, "hooks.json": b'{"hooks": {}}'}) == []
+    assert codex_plugins.untrusted({".codex-plugin/plugin.json": b'{"name": "x"}'}) == []
+
+
 def test_override_is_one_toml_table_of_exactly_the_trust():
     t = {**AIDLC_TRUST, 'odd"key\\é:x.json:stop:0:0': "sha256:" + "0" * 64}
     doc = tomllib.loads(codex_plugins.override(t))
@@ -213,6 +242,59 @@ async def test_a_codex_lock_mounts_its_forms_and_trusts_only_their_hooks(fleet, 
         "codexhook\tworkflow@team:hooks.json:stop:0:0\ttrusted\t0\n"))[0]["effective"] == "disabled"
 
 
+def test_doctor_flags_a_codex_lock_whose_hooks_would_stay_untrusted(fleet, registry, monkeypatch,  # noqa: F811
+                                                                    tmp_path):
+    """--- KAN-72: `hangar doctor`'s `codex plugin hooks` check, over the team harness repo's Codex locks."""
+    h = SimpleNamespace(settings=fleet.settings)
+    assert codex_plugins.doctor_checks(h) == []  # a Claude Code lock: not this check's
+    _codex_registry(fleet, registry, monkeypatch, tmp_path)
+    [chk] = codex_plugins.doctor_checks(h)
+    assert chk["name"] == "codex plugin hooks" and chk["status"] == "ok", chk
+    assert chk["detail"] == "1 Codex harness(es), 1 plugin(s), 3 hook(s) trusted by hash"
+
+    d = registry["reg"] / "harnesses/team/native/codex/workflow"
+    (d / "hooks/extra.json").write_text("{}")  # a file the lock doesn't pin: a claim refuses the lock
+    [chk] = codex_plugins.doctor_checks(h)
+    assert chk["status"] == "fail" and "team: plugin:workflow@team: native/codex/workflow/hooks/extra.json is not " \
+        "pinned" in chk["detail"] and "hangar harness check" in chk["fix"]
+    (d / "hooks/extra.json").unlink()
+
+    form = _files({**AIDLC, ".codex-plugin/plugin.json": {**AIDLC[".codex-plugin/plugin.json"], "name": "workflow"},
+                   "hooks.json": {"hooks": {**AIDLC["hooks.json"]["hooks"], "PostToolUse": [{"hooks": [
+                       {"type": "prompt", "prompt": "review it"}]}]}}, "hooks/aidlc_hook.py": "print('hi')\n"})
+    _codex_registry(fleet, registry, monkeypatch, tmp_path, form=form)  # pinned, but a hook Codex skips
+    [chk] = codex_plugins.doctor_checks(h)
+    assert chk["status"] == "fail"
+    assert chk["detail"] == "team workflow@team: hooks.json:post_tool_use:0:0 is a prompt hook"
+
+
+def test_turn_1_asks_codex_about_every_hook_of_the_locks_plugins(fleet, registry, monkeypatch, tmp_path):  # noqa: F811
+    """--- KAN-72: the probe names the lock's plugins too, so a hook of theirs hangar didn't trust is drift."""
+    _codex_registry(fleet, registry, monkeypatch, tmp_path)
+    p = harness_thaw.pin(fleet, "team", "lockenv")
+    sb = Sandbox(name="x", environment="lockenv", provider="docker")
+    sb.info[harness_thaw.INFO] = harness_thaw.info(p)
+    t, ids = codex_plugins.mounted_forms(fleet, sb, "codex")
+    assert len(t) == 3 and ids == ["workflow@team"]  # extra@team is disabled
+    [line] = manifest._codex_hook_lines(_Svc(fleet), sb, "codex", "/home/u")
+    assert line.endswith(" " + shlex.quote(json.dumps(["workflow@team"])) + " || printf 'codexhook\\t-\\t%s\\t0\\n' "
+                         "error; else printf 'codexhook\\t-\\t%s\\t0\\n' no-python3; fi")
+    # a lock plugin with no hooks hangar trusts is still asked about
+    assert codex_plugins.probe_lines({}, "codex", "/w", plugins=["workflow@team"])
+    assert codex_plugins.probe_lines({}, "codex", "/w") == []
+    probe = manifest.parse_probe("codexhook\tworkflow@team:hooks.json:post_tool_use:0:0\tuntrusted\t1\n"
+                                 "codexhook\tworkflow@team:hooks.json:stop:0:0\tmodified\t0\n"
+                                 "codexhook\tworkflow@team\tskipped\t0\n")
+    assert codex_plugins.drift(probe) == [
+        {"component": "codex-hook:workflow@team:hooks.json:post_tool_use:0:0", "lock": "trusted",
+         "effective": "untrusted"},
+        {"component": "codex-hook:workflow@team:hooks.json:stop:0:0", "lock": "trusted", "effective": "modified"},
+        {"component": "codex-hook:workflow@team", "lock": "trusted", "effective": "skipped"}]
+    # the lock's directory without its forms: nothing trusted, the plugins still asked about
+    monkeypatch.setattr(codex_plugins, "trust", lambda *a: (_ for _ in ()).throw(ValueError("gone")))
+    assert codex_plugins.mounted_forms(fleet, sb, "codex") == ({}, ["workflow@team"])
+
+
 class _Svc:
     def __init__(self, fleet):
         self.fleet, self.settings = fleet, fleet.settings
@@ -282,3 +364,119 @@ def test_the_real_codex_runs_exactly_the_trusted_hooks(tmp_path):
     got = ask(t, keys)
     assert got["ai-dlc-workflow@team-harnesses:hooks.json:stop:0:0"] == "modified"
     assert got["ai-dlc-workflow@team-harnesses:hooks.json:pre_tool_use:0:0"] == "trusted"
+
+
+def _install(tmp: Path, forms: dict[str, dict[str, bytes]]) -> dict[str, str]:
+    """Install Codex forms as `mount` does, into a fresh CODEX_HOME; the environment to run that Codex with."""
+    mkt = tmp / "opt/team-harnesses"
+    for name, files in forms.items():
+        for rel, data in files.items():
+            (mkt / name / rel).parent.mkdir(parents=True, exist_ok=True)
+            (mkt / name / rel).write_bytes(data)
+    (mkt / ".agents/plugins").mkdir(parents=True)
+    (mkt / codex_plugins.MARKETPLACE).write_bytes(codex_plugins.marketplace_doc("team-harnesses", sorted(forms)))
+    home = tmp / "home"
+    (home / ".codex").mkdir(parents=True)
+    env = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex")}
+    for args in (["plugin", "marketplace", "add", str(mkt)],
+                 *[["plugin", "add", f"{n}@team-harnesses"] for n in sorted(forms)]):
+        subprocess.run([CODEX, *args], env=env, check=True, capture_output=True, timeout=60)
+    return env
+
+
+@pytest.mark.skipif(not CODEX, reason="set HANGAR_TEST_CODEX to the real codex CLI")
+def test_the_real_codex_reports_the_lock_plugins_hooks_hangar_didnt_trust(tmp_path):
+    """--- KAN-72: with the lock's plugin ids, the probe also reports a hook of theirs outside the trust, and a plugin
+    whose hooks Codex skipped in part (a prompt hook: unsupported in 0.162.1). Codex loads an mcp_tool hook, which
+    hangar never trusts."""
+    doc = json.loads(json.dumps(AIDLC))
+    doc["hooks.json"]["hooks"]["Stop"][0]["hooks"] += [{"type": "prompt", "prompt": "check"},
+                                                       {"type": "mcp_tool", "server": "s", "tool": "t"}]
+    files = _files(doc)
+    env = _install(tmp_path, {"ai-dlc-workflow": files})
+    t = codex_plugins.plugin_trust("ai-dlc-workflow@team-harnesses", files)
+    assert codex_plugins.untrusted(files) == ["hooks.json:stop:0:1 is a prompt hook",
+                                              "hooks.json:stop:0:2 is a mcp_tool hook"]
+    mcp = "ai-dlc-workflow@team-harnesses:hooks.json:stop:0:2"
+    stop = "ai-dlc-workflow@team-harnesses:hooks.json:stop:0:0"
+    partial = {k: v for k, v in t.items() if k != stop}
+    line = codex_plugins.probe_lines(partial, CODEX, str(tmp_path), plugins=["ai-dlc-workflow@team-harnesses"])[0]
+    out = subprocess.run(["bash", "-c", line], env=env, capture_output=True, text=True, timeout=60).stdout
+    probe = manifest.parse_probe(out)
+    assert {x["key"]: x["status"] for x in probe["codex_hooks"]} == {
+        **dict.fromkeys(partial, "trusted"), stop: "untrusted", mcp: "untrusted",
+        "ai-dlc-workflow@team-harnesses": "skipped"}
+    assert [x["component"] for x in codex_plugins.drift(probe)] == [
+        f"codex-hook:{stop}", f"codex-hook:{mcp}", "codex-hook:ai-dlc-workflow@team-harnesses"]
+
+
+class _Responses(BaseHTTPRequestHandler):
+    """A minimal OpenAI Responses API: every turn's answer is one assistant message ("hi"), streamed."""
+
+    def log_message(self, *a):
+        pass
+
+    def _empty(self, code: int) -> None:
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):  # Codex tries a websocket first, then falls back to HTTP
+        self._empty(404)
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if not self.path.endswith("/responses"):
+            return self._empty(404)
+
+        def ev(kind: str, **kw) -> str:
+            return f"event: {kind}\ndata: {json.dumps({'type': kind, **kw})}\n\n"
+
+        item = {"type": "message", "role": "assistant", "id": "msg_1",
+                "content": [{"type": "output_text", "text": "hi"}]}
+        usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        body = (ev("response.created", response={"id": "resp_1"}) + ev("response.output_item.done", item=item)
+                + ev("response.completed", response={"id": "resp_1", "usage": usage})).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.mark.skipif(not CODEX, reason="set HANGAR_TEST_CODEX to the real codex CLI")
+def test_a_real_codex_turn_fires_the_workflow_plugins_hooks_only_when_trusted(tmp_path):
+    """--- KAN-72: hangar's own Codex turn command (HARNESSES["codex"].run, with TRUST_ENV as fleet.py sets it) runs
+    the workflow plugin's SessionStart and Stop hooks; without the trust Codex skips them silently. The model is a
+    local stand-in for the Responses API, so no key or network is needed."""
+    fired = tmp_path / "fired.log"
+    files = {**_files(AIDLC), "hooks/aidlc_hook.py": f"import sys\nopen({str(fired)!r}, 'a').write(sys.argv[1] + "
+                                                     "'\\n')\n".encode()}
+    env = _install(tmp_path, {"ai-dlc-workflow": files})
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Responses)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}/v1"
+    cfg = Path(env["CODEX_HOME"]) / "config.toml"  # `codex plugin add` enabled the plugin there: keep that
+    cfg.write_text('model_provider = "stand-in"\n' + cfg.read_text()
+                   + '\n[model_providers.stand-in]\nname = "stand-in"\n'
+                   f'base_url = "{base}"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\n'
+                   "request_max_retries = 0\nstream_max_retries = 0\n")
+    (tmp_path / "prompt.txt").write_text("say hi")
+    env.pop("HANGAR_MODEL", None)
+    env.update(OPENAI_API_KEY="sk-stand-in", HANGAR_PROMPT_FILE=str(tmp_path / "prompt.txt"),
+               PATH=f"{Path(CODEX).parent}{os.pathsep}{env['PATH']}")
+    t = codex_plugins.plugin_trust("ai-dlc-workflow@team-harnesses", files)
+
+    def turn(extra: dict[str, str]) -> str:
+        fired.unlink(missing_ok=True)
+        r = subprocess.run(["bash", "-c", HARNESSES["codex"].run], env={**env, **extra}, cwd=tmp_path,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0 and '"text":"hi"' in r.stdout.replace(" ", ""), r.stderr[-2000:]
+        return fired.read_text() if fired.exists() else ""
+
+    try:
+        assert turn({}) == ""  # untrusted: skipped, and the turn still succeeds
+        assert turn({codex_plugins.TRUST_ENV: codex_plugins.override(t)}).split() == ["session-start", "stop"]
+    finally:
+        srv.shutdown()
+
