@@ -16,6 +16,8 @@ that would start with no login. The setup it checks is on [team setup](../team.m
   `HANGAR_SUBSCRIPTION_LOGINS=any` is still stored ([removed switches](../upgrading.md#removed-switches)).
 - **harness repo**: when `HANGAR_HARNESS_REPO` is set, whether it is reachable, when it was last refreshed, and
   whether every channel resolves.
+- **codex plugin hooks**: fails for a Codex harness in that repo with a plugin hook hangar can't trust. A sandbox
+  wouldn't run it ([Codex plugin hooks](../codex-plugin-hooks.md#before-any-sandbox-hangar-doctor)).
 - **inbox delivery**: with the Slack app configured, warns for people who get DMs (`--dm` isn't `off`) but have no
   linked Slack account: "inbox not delivered".
 - **unlinked senders**: GitHub, Slack and Jira accounts linked to nobody that started 3 or more jobs

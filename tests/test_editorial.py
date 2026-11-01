@@ -50,7 +50,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "computer-use.md": (2263, 36, LATER + "the desktop, the screen, the tools"),
     "context-exchange.md": (741, 12, LATER + "patches in, patches out"),
     "deploy-company.md": (1370, 12, LATER + "the base, the components, the Terraform module"),
-    "doctor.md": (1400, 31, LATER + "the checks, the fixes"),
+    "doctor.md": (1391, 30, LATER + "the checks, the fixes"),
     "envd.md": (1971, 41, LATER + "the daemon, its API"),
     "gke.md": (5741, 81, LATER + "install, images and packs, operations"),
     "harness-lock.md": (2528, 53, LATER + "the lock, the team harness repo"),

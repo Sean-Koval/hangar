@@ -192,7 +192,7 @@ agent's own user can't.
 | --- | --- | --- |
 | each skill | its `tree` digest | the sandbox's effective skill digest (`skills.effective`); a skill the sandbox has and the lock doesn't is drift too, except hangar's own (`hangar-environment`, `verify-ui`) |
 | each plugin | its `digest`, `enabled` and `tree` | the manifest's declared plugin (read from the mounted lock) and what the probe found in the seed (`probe.plugins`) |
-| each Codex plugin hook | trusted and enabled | what the sandbox's Codex reports for it (`probe.codex_hooks`; drift `codex-hook:<key>`, or `codex-hooks` when Codex couldn't be asked) |
+| each Codex plugin hook | trusted and enabled | what the sandbox's Codex reports for it (`probe.codex_hooks`; drift `codex-hook:<key>`, or `codex-hooks` when Codex couldn't be asked). Hooks of the plugins outside hangar's trust, and hooks Codex skipped, are drift too ([Codex plugin hooks](codex-plugin-hooks.md#in-a-sandbox-turn-1)) |
 | the instructions file | the `guide:` digest | the declared one (`instructions.global.declared.digest`: hangar splices its environment notes into the sandbox's copy, so that copy isn't compared byte for byte) |
 | the CLI | `runtime.version` | the version the sandbox's CLI reported |
 | everything else | its `harness_digest` | the manifest's `harness_digest` (model, MCP servers, hooks, approvals) |
