@@ -111,6 +111,19 @@ Open the sandbox in the console to follow the work in its live terminal. When yo
 | Upgrade a running hangar | [Upgrading](upgrading.md) |
 | Run it day to day, and when something breaks | [Runbooks](runbooks/README.md) · [Troubleshooting](troubleshooting.md) |
 
+## What's new
+
+Newest first, up to `main` today. Each release's page says what changes for a running hangar
+([release notes](releases/README.md)); the changelog lists every PR.
+
+| Release | What it brings |
+| --- | --- |
+| `main`, unreleased (KAN-74 to KAN-232, up to #424) | Every job runs on an API key and enforced intake. GKE egress is an allowlist. Tower can govern approvals and Claude Code's tool calls. The AI review keeps only confirmed findings. The A2A endpoint, the E2B-compatible API, the GitHub Projects door and the `gemini` harness are [removed](upgrading.md#removed-surfaces). |
+| v0.2.0: adopt & capture (#133–#189) | The team workflow. Jira "Ready for agent" is the default [door](intake.md), and the [inbox reaches you in Slack](landing.md#delivery-it-comes-to-you). The review cap, steer classes, [weekly metrics](metrics.md) and the [Friday review](runbooks/harness-review.md) keep the loop honest. Every run is captured to the [outbox](runbooks/outbox.md) for flightdeck. |
+| v0.2.0: the safe release (#120–#132) | Secure intake by default: the git gateway and egress proxy for jobs from trackers, and API keys for automated work. |
+| v0.2.0: the team release (#75–#117) | One hangar for six: people and their tokens, repo policies, budgets, Jira intake, approvals that land the PR, environments that live in the repo. |
+| The overnight stack (#48–#69) | Live turns with steering and approvals, durable sessions, the uid split, the git gateway and `hangar up`. |
+
 ## Moved from this page
 
 | Section | Now on |

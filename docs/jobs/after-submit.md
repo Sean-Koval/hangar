@@ -51,10 +51,11 @@ To run several attempts and keep the best, see
 ## Questions
 
 An agent that needs a decision runs `hangar-agent ask "…"`. The job goes to state `needs_input` with
-`result.question`. Nothing is verified or pushed yet, a `job.needs_input` callback is sent, and a GitHub job comments
-the question on its issue or PR.
+`result.question`. Nothing is verified or pushed yet, and a `job.needs_input` callback is sent. hangar posts the question
+where the job came from (the GitHub issue or PR, the Slack thread, the Jira issue) and in its person's inbox.
 
-Answer with a follow-up (`/hangar <answer>` on GitHub); the agent continues in the same conversation. Cancelling a
+Answer there as the job's person: `/hangar <answer>` on GitHub, a thread reply in Slack, any comment in Jira. Or use
+`hangar job follow-up`. The agent continues in the same conversation. Cancelling a
 job that needs input ends it.
 
 When the answer is one of a few choices, the agent offers them

@@ -31,8 +31,8 @@ one-shot command, so attaching and resuming work as before. Standard library onl
   replaces the agent's ~/.hangar/env with hangar's own copy (hangar/harden.py).
 * With `--relay` (the driver sidecar on Kubernetes, KAN-83, KAN-186) the driver runs in a container of its own and
   the harness in the agent's, started by relay.py, which connects back on the pod's loopback with the run's token
-  (`Relay`, `RemoteProc`; docs/security/driver-sidecar.md). The verify gate and per-edit trees don't run there yet
-  (KAN-187): the checkout is in the agent's container.
+  (`Relay`, `RemoteProc`; docs/security/driver-sidecar.md). The checkout is in the agent's container, so the verify
+  gate's check and per-edit trees run there too, as the agent, through the relay (`run` on `ctl`, KAN-187).
 
 * Trees (#165): at the turn's start and end, and after each edit or shell tool result, the driver writes the working
   tree's git tree id as a `hangar.tree` line (only when it changed since the last one): `git add -A` and
@@ -233,23 +233,74 @@ class Trees:
         sha, ms = self.hash()
         if self.off:
             if phase == "start" and self.off != "no repo":
-                self.out.event("tree", phase=phase, skipped=self.off)
+                self.event(phase=phase, skipped=self.off)
             return
         if sha is None:
             return
         if ms > TREE_SLOW * 1000:
             self.off = "slow"
-            self.out.event("tree", **({"phase": phase} if phase else {"tool_use_id": tool_use_id}), skipped="slow",
-                           ms=ms)
+            self.event(**({"phase": phase} if phase else {"tool_use_id": tool_use_id}), skipped="slow", ms=ms)
             return
         if phase is None and sha == self.last:
             return
         self.last = sha
-        self.out.event("tree", **({"phase": phase} if phase else {"tool_use_id": tool_use_id}), tree=sha, ms=ms)
+        self.event(**({"phase": phase} if phase else {"tool_use_id": tool_use_id}), tree=sha, ms=ms)
+
+    def event(self, **data: object) -> None:
+        self.out.event("tree", **data)
 
     def close(self) -> None:
         if self.dir:
             shutil.rmtree(self.dir, ignore_errors=True)
+
+
+class RelayTrees(Trees):
+    """--- KAN-187: Trees under the driver sidecar, where the checkout is in the agent's container. Each hash is
+    `tree_main` there, run by the relay as the agent, with its scratch directory in the agent's home: the driver never
+    runs git in the agent's tree as its own uid. The agent could change what comes back, as it can in a turn without
+    the uid split, so these lines say `by: agent` and hangar records them as `trusted: false`."""
+
+    def __init__(self, out: Out, cwd: str, private_dir: str, run):
+        super().__init__(out, cwd, private_dir)
+        self.run = run  # Driver.agent_run
+
+    def hash(self) -> tuple:
+        if self.off:
+            return None, 0
+        self.ready = True
+        res = self.run([sys.executable, "-I", os.path.abspath(__file__), "tree", self.dir or "", self.cwd],
+                       2 * TREE_TIMEOUT + 10)
+        try:
+            d = json.loads(res[1].decode(errors="replace").strip().splitlines()[-1]) if res and res[0] == 0 else None
+        except (ValueError, IndexError):
+            d = None
+        if not isinstance(d, dict):
+            self.off = "error"
+            return None, 0
+        if d.get("off"):
+            self.off = str(d["off"])[:40]
+            return None, 0
+        sha, ms = d.get("tree"), d.get("ms")
+        return (sha if isinstance(sha, str) and _SHA.match(sha) else None), (ms if isinstance(ms, int) else 0)
+
+    def event(self, **data: object) -> None:
+        self.out.event("tree", **data, by="agent")
+
+    def close(self) -> None:
+        if self.dir and self.ready:
+            self.run(["rm", "-rf", "--", self.dir], 60)
+
+
+def tree_main(argv: list) -> int:
+    """--- KAN-187: `driver.py tree DIR CWD`: one hash of CWD's tree with DIR as Trees' private directory, as a JSON
+    line {tree, ms, off}. What RelayTrees has the relay run in the agent's container."""
+    if len(argv) != 2:
+        sys.stderr.write("usage: driver.py tree DIR CWD\n")
+        return 2
+    t = Trees(Out(), argv[1], argv[0])
+    sha, ms = t.hash()
+    print(json.dumps({"tree": sha, "ms": ms, "off": t.off}))
+    return 0
 
 
 # ====================================================================== the agent's user (--- isolation)
@@ -295,6 +346,11 @@ def as_agent(user: str, home: str, run_env: str, cwd: str, argv: list) -> list:
     joined, for the one-shot command in the turn's script."""
     return ["setpriv", f"--reuid={user}", f"--regid={user}", "--init-groups", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", "--", *agent_launch(user, home, run_env, cwd, argv)]
+
+
+def run_name() -> str:
+    """The run's id, as the rounds file and the Stop hook name it (verifyloop.stop_hook)."""
+    return os.environ.get("HANGAR_RUN_ID") or "run"
 
 
 BASE_ENV: bytes | None = None  # --- harden: --base-env, read once at start and deleted (like the key)
@@ -681,7 +737,12 @@ class Driver:
         self.write_tools = list(getattr(args, "write_tool", None) or [])
         self.preclear: list = []  # --- KAN-77: calls Tower signed, each allowed once
         ctl_dir = getattr(args, "ctl", None)
-        self.trees = Trees(out, self.cwd(), os.path.join(ctl_dir, "tree") if ctl_dir else None)  # --- #165
+        self.trees: Trees
+        if getattr(args, "relay", None):  # --- KAN-187: the checkout is in the agent's container
+            self.trees = RelayTrees(out, self.cwd(), f"{self.agent_home()}/.hangar/runs/{run_name()}.tree",
+                                    self.agent_run)
+        else:
+            self.trees = Trees(out, self.cwd(), os.path.join(ctl_dir, "tree") if ctl_dir else None)  # --- #165
 
     def taint(self, ref: str) -> None:
         """--- taint (#130): the turn has read untrusted content. Never undone."""
@@ -692,6 +753,20 @@ class Driver:
     def cwd(self) -> str:
         """The turn's working directory: --cwd under the uid split, where the driver doesn't run in it."""
         return getattr(self.args, "cwd", None) or os.getcwd()
+
+    def agent_home(self) -> str:
+        """--- KAN-187: with --relay, the agent's home in its container."""
+        return getattr(self.args, "agent_home", None) or f"/home/{self.args.agent}"
+
+    def agent_run(self, argv: list, timeout: float, cwd: str | None = None) -> tuple | None:
+        """--- KAN-187: with --relay, `argv` as the agent in its container, in the harness's environment, from `cwd`
+        (default: the turn's): RemoteProc.run. None without the relay's harness."""
+        proc = self.harness.proc if self.harness is not None else None
+        if self.relay is None or not isinstance(proc, RemoteProc):
+            return None
+        a = self.args
+        return proc.run(relay_launch(agent_launch(a.agent, self.agent_home(), a.run_env, cwd or self.cwd(), argv)),
+                        timeout)
 
     def ended(self) -> None:
         """The harness is gone: what it never took is answered so (hangar then starts the next turn with it)."""
@@ -823,6 +898,7 @@ class Driver:
 RELAY_HELLO = "hangar-relay"
 RELAY_WAIT = 60.0  # seconds the driver waits for the relay to connect
 RELAY_LOST = 1  # the harness's exit status when its relay went away without reporting one
+RELAY_RUN_SLACK = 30.0  # --- KAN-187: seconds past a `run`'s own timeout the driver waits for its reply
 
 
 class RelayError(RuntimeError):
@@ -862,35 +938,77 @@ class RemoteProc:
         self.stdin, self.stdout = _SockWriter(io), _SockReader(io)
         self.returncode: int | None = None
         self.buf = b""
+        self.gone = False  # the relay closed `ctl`
+        self.ran: dict = {}  # --- KAN-187: `run` replies by id
+        self.runs = 0
+
+    def _read(self, timeout: float) -> bool:
+        """Read what the relay said within `timeout`, and handle each whole line. False when nothing came."""
+        if self.gone:
+            return False
+        ready, _, _ = select.select([self.ctl], [], [], timeout)
+        if not ready:
+            return False
+        try:
+            data = self.ctl.recv(1 << 16)
+        except OSError:
+            data = b""
+        if not data:
+            self.gone = True
+            if self.returncode is None:
+                sys.stderr.write("hangar: the harness's relay went away without its exit status\n")
+                self.returncode = RELAY_LOST
+            return False
+        self.buf += data
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            word, _, rest = line.partition(b" ")
+            if word == b"err":
+                with contextlib.suppress(ValueError, OSError):
+                    sys.stderr.buffer.write(base64.b64decode(rest))
+                    sys.stderr.flush()
+            elif word == b"exit" and self.returncode is None:
+                try:
+                    self.returncode = int(rest)
+                except ValueError:
+                    self.returncode = RELAY_LOST
+            elif word == b"ran":  # --- KAN-187
+                with contextlib.suppress(ValueError, TypeError, AttributeError):
+                    d = json.loads(rest)
+                    self.ran[str(d["id"])] = d
+        return True
 
     def _pump(self, timeout: float) -> None:
         """Read what the relay said within `timeout`, then whatever else is already there."""
-        while self.returncode is None:
-            ready, _, _ = select.select([self.ctl], [], [], timeout)
-            if not ready:
-                return
+        while self.returncode is None and self._read(timeout):
             timeout = 0
-            try:
-                data = self.ctl.recv(1 << 16)
-            except OSError:
-                data = b""
-            if not data:
-                sys.stderr.write("hangar: the harness's relay went away without its exit status\n")
-                self.returncode = RELAY_LOST
-                return
-            self.buf += data
-            while b"\n" in self.buf and self.returncode is None:
-                line, self.buf = self.buf.split(b"\n", 1)
-                word, _, rest = line.partition(b" ")
-                if word == b"err":
-                    with contextlib.suppress(ValueError, OSError):
-                        sys.stderr.buffer.write(base64.b64decode(rest))
-                        sys.stderr.flush()
-                elif word == b"exit":
-                    try:
-                        self.returncode = int(rest)
-                    except ValueError:
-                        self.returncode = RELAY_LOST
+
+    def run(self, argv: list, timeout: float) -> tuple | None:
+        """--- KAN-187: `argv` run by the relay, in the agent's container, as the agent: (exit status, the end of its
+        output, whether it timed out), or None when the relay is gone or never answered. Never in this container:
+        what it runs is the agent's (the repo's tests, git in its checkout)."""
+        self.runs += 1
+        rid = str(self.runs)
+        try:
+            self.ctl.sendall(b"run " + json.dumps({"id": rid, "argv": argv, "timeout": timeout}).encode() + b"\n")
+        except OSError:
+            return None
+        end = time.time() + timeout + RELAY_RUN_SLACK
+        while rid not in self.ran and not self.gone and time.time() < end:
+            self._read(min(1.0, max(0.0, end - time.time())))
+        d = self.ran.pop(rid, None)
+        if d is None:
+            return None
+        try:
+            return int(d["code"]), base64.b64decode(d.get("out") or ""), bool(d.get("timed_out"))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def close(self) -> None:
+        """The relay serves `run` until this; then it exits."""
+        for sock in (self.ctl, self.io):
+            with contextlib.suppress(OSError):
+                sock.close()
 
     def poll(self) -> int | None:
         self._pump(0)
@@ -1539,7 +1657,7 @@ class Gate:
 
     TAIL = 6000
 
-    def __init__(self, spec: dict, out: Out, args: argparse.Namespace | None = None):
+    def __init__(self, spec: dict, out: Out, args: argparse.Namespace | None = None, remote=None):
         self.command, self.cwd = spec["command"], spec["cwd"]
         self.rounds, self.deadline, self.timeout = spec["rounds"], spec["deadline"], spec["timeout"]
         self.out, self.failed = out, 0
@@ -1550,12 +1668,17 @@ class Gate:
         # integrate(#65 x #66): under the uid split the check is the agent's code (the repo's tests), so it runs as
         # the agent, in the harness's environment, never as hangar's user, whose capabilities could make it root.
         # The rounds file is the agent's too, where hangar and the Stop hook read and write it.
+        # --- KAN-187: under the driver sidecar (`remote`: Driver.agent_run) both are in the agent's container, so
+        # the relay runs them there, as the agent: never in the driver's container, as the driver's uid.
         self.agent: tuple[str, str, str] | None = None
+        self.remote = remote
         home = "~"
-        if args is not None and (user := getattr(args, "as_user", None)):
+        if remote is not None and args is not None:
+            home = getattr(args, "agent_home", None) or f"/home/{args.agent}"
+        elif args is not None and (user := getattr(args, "as_user", None)):
             home = pwd.getpwnam(user).pw_dir
             self.agent = (user, home, args.run_env)
-        self.state = os.path.expanduser(f"{home}/.hangar/runs/{os.environ.get('HANGAR_RUN_ID') or 'run'}.verify")
+        self.state = os.path.expanduser(f"{home}/.hangar/runs/{run_name()}.verify")
 
     def _argv(self, argv: list) -> list:
         if self.agent is None:
@@ -1564,12 +1687,14 @@ class Gate:
         return as_agent(user, home, run_env, self.cwd, argv)
 
     def _record(self, line: str) -> None:
+        argv = ["sh", "-c", 'mkdir -p -- "${0%/*}" && printf "%s\\n" "$1" >> "$0"', self.state, line]
         try:
-            if self.agent:
+            if self.remote is not None:  # --- KAN-187
+                self.remote(argv, 30, self.cwd)
+            elif self.agent:
                 with agent_env() as kw:  # --- harden
-                    subprocess.run(self._argv(["sh", "-c", 'printf "%s\\n" "$1" >> "$0"', self.state, line]),
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   timeout=30, **kw)
+                    subprocess.run(self._argv(argv), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=30, **kw)
             else:
                 with open(self.state, "a") as f:
                     f.write(line + "\n")
@@ -1577,7 +1702,7 @@ class Gate:
             pass
 
     @classmethod
-    def load(cls, out: Out, args: argparse.Namespace | None = None) -> Gate | None:
+    def load(cls, out: Out, args: argparse.Namespace | None = None, remote=None) -> Gate | None:
         try:
             spec = json.loads(os.environ.get("HANGAR_VERIFY_GATE") or "null")
         except ValueError:
@@ -1586,7 +1711,7 @@ class Gate:
                 and isinstance(spec.get("cwd"), str) and all(isinstance(spec.get(k), int) and spec[k] >= 0
                                                              for k in ("rounds", "deadline", "timeout"))):
             return None
-        return cls(spec, out, args)
+        return cls(spec, out, args, remote)
 
     def due(self) -> bool:
         return self.failed < self.rounds and time.time() < self.deadline
@@ -1598,16 +1723,24 @@ class Gate:
         if self.prefix:  # --- testresults
             reports = f"{self.state.removesuffix('.verify')}.tests/{self.checks}"
             command = self.prefix.replace("@D@", shlex.quote(reports)) + self.command
-        try:
-            with agent_env() as kw:  # --- harden
-                p = subprocess.run(self._argv(["bash", "-c", command]), cwd=None if self.agent else self.cwd,
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   timeout=max(1, self.timeout), **kw)
-            code, output = p.returncode, p.stdout or b""
-        except subprocess.TimeoutExpired as e:
-            code, output = 124, (e.stdout or b"") + f"\n(timed out after {self.timeout} s)".encode()
-        except OSError:
-            return None
+        if self.remote is not None:  # --- KAN-187: in the agent's container, through the relay
+            res = self.remote(["bash", "-c", command], max(1, self.timeout), self.cwd)
+            if res is None:
+                return None
+            code, output, timed_out = res
+            if timed_out:
+                code, output = 124, output + f"\n(timed out after {self.timeout} s)".encode()
+        else:
+            try:
+                with agent_env() as kw:  # --- harden
+                    p = subprocess.run(self._argv(["bash", "-c", command]), cwd=None if self.agent else self.cwd,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       timeout=max(1, self.timeout), **kw)
+                code, output = p.returncode, p.stdout or b""
+            except subprocess.TimeoutExpired as e:
+                code, output = 124, (e.stdout or b"") + f"\n(timed out after {self.timeout} s)".encode()
+            except OSError:
+                return None
         self._record("pass" if code == 0 else f"fail {code}")
         self.checks += 1  # --- testresults: one per line of the rounds file, as the Stop hook counts them
         if code == 0:
@@ -1711,14 +1844,8 @@ def main(argv: list | None = None) -> int:
 
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, stop)
-    gate = Gate.load(out, args)  # --- overnight/autofix
-    if gate is not None and args.relay:  # --- KAN-83: the check is the agent's code; it would run as the driver's uid
-        sys.stderr.write("hangar: the verify gate doesn't run under the driver sidecar yet; hangar's verify still "
-                         "runs after the turn\n")
-        gate = None
-    if args.relay:  # --- KAN-186: the checkout is in the agent's container, not this one (KAN-187)
-        drv.trees.ready, drv.trees.off = True, "sidecar"
-        out.event("tree", phase="start", skipped="sidecar")
+    # --- overnight/autofix; KAN-187: under --relay the check runs in the agent's container, through the relay
+    gate = Gate.load(out, args, drv.agent_run if args.relay else None)
     drv.trees.point("start")  # --- #165: the harness is up but has no prompt yet: nothing has changed the tree
     h.start(prompt)
     alive = True
@@ -1751,8 +1878,10 @@ def main(argv: list | None = None) -> int:
     code = h.finish()
     drv.trees.point("end")  # --- #165
     drv.trees.close()
+    if isinstance(h.proc, RemoteProc):  # --- KAN-187: the relay served `run` until now
+        h.proc.close()
     return h.status(code)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(tree_main(sys.argv[2:]) if sys.argv[1:2] == ["tree"] else main())

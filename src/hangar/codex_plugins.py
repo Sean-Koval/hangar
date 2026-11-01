@@ -27,7 +27,11 @@ matches its hash and stops running. A hardened turn runs Codex with hooks off (h
 
 Turn 1 checks it (`probe_lines`, harness_thaw.drift): the probe asks the sandbox's Codex for its hooks (app server
 `hooks/list`, with the same override) and reports each trusted key's status; one that isn't `trusted` and enabled is
-drift (`codex-hook:<key>`).
+drift (`codex-hook:<key>`). With the lock's plugin ids it also reports every other hook Codex lists for those
+plugins (not in hangar's trust, so `untrusted`) and a plugin whose hooks Codex warns it skipped (`skipped`: a prompt
+hook, say), both drift too (KAN-72). `hangar doctor` checks the same before any sandbox (`doctor_checks`): each
+Codex harness in the team harness repo whose Codex forms a claim refuses, or that declare a hook hangar wouldn't
+trust (`untrusted`), fails `codex plugin hooks`.
 """
 
 from __future__ import annotations
@@ -151,32 +155,66 @@ def _manifest_path(p: Any) -> str | None:
     return posixpath.normpath(rel)
 
 
-def hook_sources(files: dict[str, bytes]) -> list[tuple[str, dict[str, list[dict[str, Any]]]]]:
-    """[(key source path, events)] of a Codex plugin given as {relative path: content}, as Codex 0.162.1 loads them
-    (load_plugin_hooks): the manifest's `hooks` (a path, paths, an object or objects), else `hooks/hooks.json`."""
+def _load(files: dict[str, bytes]) -> tuple[list[tuple[str, dict[str, list[dict[str, Any]]]]], list[str]]:
+    """([(key source path, events)], [what Codex skips]) of a Codex plugin given as {relative path: content}, as
+    Codex 0.162.1 loads them (load_plugin_hooks): the manifest's `hooks` (a path, paths, an object or objects), else
+    `hooks/hooks.json`. A hooks file it can't find or parse is skipped whole."""
     try:
         man = json.loads(files[MANIFEST])
     except (KeyError, ValueError):
-        return []
+        return [], [f"{MANIFEST} doesn't parse"]
     hooks = man.get("hooks") if isinstance(man, dict) else None
     out: list[tuple[str, dict[str, list[dict[str, Any]]]]] = []
+    skipped: list[str] = []
     if hooks is None:
         paths = [DEFAULT_HOOKS] if DEFAULT_HOOKS in files else []
-    elif isinstance(hooks, str):
-        paths = [r for r in [_manifest_path(hooks)] if r]
-    elif isinstance(hooks, list) and all(isinstance(x, str) for x in hooks):
-        paths = [r for r in map(_manifest_path, hooks) if r]
+    elif isinstance(hooks, str) or isinstance(hooks, list) and all(isinstance(x, str) for x in hooks):
+        paths = []
+        for raw in [hooks] if isinstance(hooks, str) else hooks:
+            if (rel := _manifest_path(raw)) is None:
+                skipped.append(f"hooks path {raw!r} isn't a ./ path inside the plugin")
+            else:
+                paths.append(rel)
     else:
         inline = [hooks] if isinstance(hooks, dict) else hooks if isinstance(hooks, list) else []
+        if not inline:
+            skipped.append("the manifest's hooks are neither paths nor hooks objects")
         for i, obj in enumerate(inline):
             ev = _events(obj.get("hooks", {})) if isinstance(obj, dict) and not set(obj) - {"description",
                                                                                               "hooks"} else None
-            if ev:
+            if ev is None:
+                skipped.append(f"plugin.json#hooks[{i}] doesn't parse")
+            elif ev:
                 out.append((f"plugin.json#hooks[{i}]", ev))
-        return out
+        return out, skipped
     for rel in dict.fromkeys(paths):
-        if rel in files and (ev := _hooks_file(files[rel])):
+        if rel not in files:
+            skipped.append(f"{rel} isn't in the plugin")
+        elif (ev := _hooks_file(files[rel])) is None:
+            skipped.append(f"{rel} doesn't parse")
+        elif ev:
             out.append((rel, ev))
+    return out, skipped
+
+
+def hook_sources(files: dict[str, bytes]) -> list[tuple[str, dict[str, list[dict[str, Any]]]]]:
+    """[(key source path, events)] of a Codex plugin given as {relative path: content}, as Codex 0.162.1 loads them."""
+    return _load(files)[0]
+
+
+def untrusted(files: dict[str, bytes]) -> list[str]:
+    """--- KAN-72: what of one Codex plugin's hooks never runs under hangar's trust: a hooks file Codex skips (missing,
+    outside the plugin, unparseable), and each handler hangar doesn't trust: an empty command, or not a command (Codex
+    0.162.1 skips prompt and agent hooks as unsupported and loads mcp_tool hooks, which hangar never trusts). [] when
+    every hook it declares is trusted."""
+    sources, out = _load(files)
+    for src, events in sources:
+        for event, groups in events.items():
+            for gi, g in enumerate(groups):
+                for hi, h in enumerate(g.get("hooks", [])):
+                    if hash_handler(event, g.get("matcher"), h) is None:
+                        what = f"a {h.get('type')} hook" if h.get("type") != "command" else "an empty command"
+                        out.append(f"{src}:{EVENTS[event]}:{gi}:{hi} is {what}")
     return out
 
 
@@ -250,20 +288,31 @@ def override(t: dict[str, str]) -> str:
                                       for k, v in sorted(t.items())) + "}"
 
 
-def mounted_trust(fleet: Fleet, sb: Sandbox | None, harness: str | None) -> dict[str, str]:
-    """The trust for a Codex sandbox mounted from a lock with Codex forms ({} otherwise, or when the lock's
-    directory no longer has them: the hooks then stay untrusted and turn 1 says so)."""
+def mounted_forms(fleet: Fleet, sb: Sandbox | None, harness: str | None) -> tuple[dict[str, str], list[str]]:
+    """(trust, enabled plugin ids) for a Codex sandbox mounted from a lock with plugins (({}, []) otherwise). When the
+    lock's directory no longer has their Codex forms the trust is {}: the hooks then stay untrusted and turn 1 says
+    so."""
     from hangar import harness_thaw
 
     if harness != HARNESS:
-        return {}
+        return {}, []
     got = harness_thaw.mounted(fleet, sb)
     if got is None:
-        return {}
+        return {}, []
+    ids = []
+    for c in got[1].get("components") or []:
+        if str(c.get("id", "")).startswith("plugin:") and c.get("enabled", True):
+            ref = harness_lock.plugin_ref(c["id"])
+            ids.append(f"{ref['name']}@{ref['marketplace']}")
     try:
-        return trust(*got)
+        return trust(*got), ids
     except ValueError:
-        return {}
+        return {}, ids
+
+
+def mounted_trust(fleet: Fleet, sb: Sandbox | None, harness: str | None) -> dict[str, str]:
+    """The trust for a Codex sandbox mounted from a lock with Codex forms ({} otherwise)."""
+    return mounted_forms(fleet, sb, harness)[0]
 
 
 def turn_env(fleet: Fleet, sb: Sandbox | None, harness: str | None) -> dict[str, str]:
@@ -310,6 +359,7 @@ async def mount(prov: Any, sb: Sandbox, d: Path, lock: dict[str, Any], codex: st
 _PROBE = r"""
 import json, subprocess, sys
 codex, override, cwd, want = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+plugins = json.loads(sys.argv[5]) if len(sys.argv) > 5 else []
 p = subprocess.Popen([codex, "app-server", "-c", override], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                      stderr=subprocess.DEVNULL, text=True)
 def call(i, method, params):
@@ -327,24 +377,34 @@ try:
     p.stdin.write(json.dumps({"method": "initialized"}) + "\n"); p.stdin.flush()
     res = call(2, "hooks/list", {"cwds": [cwd]}).get("result") or {}
     seen = {h.get("key"): h for e in res.get("data") or [] for h in e.get("hooks") or []}
-    for k in want:
+    extra = [k for k, h in seen.items() if h.get("pluginId") in plugins and k not in want]
+    for k in [*want, *sorted(extra)]:
         h = seen.get(k)
         print("TAG\t%s\t%s\t%d" % (k, h.get("trustStatus") or "unknown" if h else "missing",
                                    1 if h and h.get("enabled") else 0))
+    notes = [str(m) for e in res.get("data") or [] for m in (e.get("warnings") or []) + (e.get("errors") or [])]
+    for pid in plugins:
+        name, _, mkt = pid.partition("@")
+        if any("/plugins/cache/%s/%s/" % (mkt, name) in m for m in notes):
+            print("TAG\t%s\tskipped\t0" % pid)
 finally:
     p.kill()
 """.replace("TAG", PROBE_TAG)
 
 
-def probe_lines(t: dict[str, str], codex: str, cwd: str, keys: list[str] | None = None) -> list[str]:
+def probe_lines(t: dict[str, str], codex: str, cwd: str, keys: list[str] | None = None,
+                plugins: list[str] | None = None) -> list[str]:
     """Shell for manifest.probe_script: the status of each trusted key (or of `keys`) as the sandbox's Codex reports
     it with the turn's override (`codexhook\\t<key>\\t<trusted|untrusted|modified|missing|...>\\t<enabled 1|0>`; key
-    `-` when Codex couldn't be asked)."""
+    `-` when Codex couldn't be asked). With `plugins` (the lock's plugin ids, KAN-72) also every other hook Codex
+    lists for them, which hangar didn't trust, and `codexhook\\t<plugin id>\\tskipped\\t0` when Codex warns that
+    it skipped some of a plugin's hooks."""
     keys = sorted(t) if keys is None else keys
-    if not keys:
+    plugins = sorted(plugins or [])
+    if not keys and not plugins:
         return []
     q = shlex.quote
-    args = " ".join(q(x) for x in (codex, override(t), cwd, json.dumps(keys)))
+    args = " ".join(q(x) for x in (codex, override(t), cwd, json.dumps(keys), json.dumps(plugins)))
     fail = f"printf '{PROBE_TAG}\\t-\\t%s\\t0\\n'"
     return [f"if command -v python3 >/dev/null 2>&1; then timeout {PROBE_SECONDS} python3 -I -c {q(_PROBE)} {args} "
             f"|| {fail} error; else {fail} no-python3; fi"]
@@ -357,12 +417,59 @@ def parse_probe_line(parts: list[str]) -> dict[str, Any] | None:
 
 
 def drift(probe: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Turn 1's drift for the lock's Codex hooks: each one Codex doesn't run (not trusted, or disabled)."""
+    """Turn 1's drift for the lock's Codex hooks: each one Codex doesn't run (not trusted, or disabled), and each
+    plugin whose hooks Codex skipped in part."""
     out = []
     for x in (probe or {}).get("codex_hooks") or []:
         if x.get("status") == "trusted" and x.get("enabled"):
             continue
         key = x.get("key")
         out.append({"component": f"codex-hook:{key}" if key and key != "-" else "codex-hooks", "lock": "trusted",
-                    "effective": x.get("status") if x.get("enabled") or key == "-" else "disabled"})
+                    "effective": x.get("status") if x.get("status") != "trusted" else "disabled"})
     return out
+
+
+# ====================================================================== hangar doctor (KAN-72)
+def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """`codex plugin hooks`: for each Codex harness in the team harness repo (its current revision) whose lock enables
+    plugins, whether a sandbox would run every hook of their Codex forms. Fails for a form a claim refuses (missing,
+    or a file the lock doesn't pin) and for a hook that would stay untrusted (`untrusted`). [] without such a lock."""
+    from hangar import harness_repo, harness_thaw
+    from hangar.doctor import _check
+
+    s = h.settings
+    if not getattr(s, "harness_repo", None):
+        return []
+    try:
+        reg = harness_thaw.registry(s)
+    except harness_thaw.ThawError:
+        return []  # the `harness repo` check says why
+    bad: list[str] = []
+    locks = plugins = hooks = 0
+    for name in harness_repo.names(reg):
+        try:
+            r = harness_thaw.resolve(s, name)
+        except harness_thaw.ThawError:
+            continue  # `harness channels` reports it
+        lock = r.lock
+        if lock["runtime"].get("harness") != HARNESS or not any(
+                str(c.get("id", "")).startswith("plugin:") and c.get("enabled", True)
+                for c in lock.get("components") or []):
+            continue
+        locks += 1
+        try:
+            fs = forms(reg / Path(r.path).parent, lock)
+        except ValueError as e:
+            bad.append(f"{name}: {e}")
+            continue
+        for f in fs:
+            plugins += 1
+            hooks += len(f["trust"])
+            bad += [f"{name} {f['id']}: {why}" for why in untrusted(f["files"])]
+    if not locks:
+        return []
+    detail = (f"{locks} Codex harness(es), {plugins} plugin(s), {hooks} hook(s) trusted by hash" if not bad else
+              "; ".join(bad[:6]) + (f" and {len(bad) - 6} more" if len(bad) > 6 else ""))
+    return [_check("codex plugin hooks", not bad, detail,
+                   "fix the plugin's Codex form (command hooks only, in a hooks file its manifest names), then "
+                   "re-freeze the harness and check it (`hangar harness check`; docs/harness-lock.md#codex-plugins)")]

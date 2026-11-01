@@ -13,7 +13,7 @@ hangar person link alice github alice-gh                  # 2. her accounts else
 hangar person link alice slack T0123ABCD/U012AB3CD
 hangar cred add claude-team --team --harness claude-code --kind api_key --file team-key.txt   # 3. team credentials
 hangar cred add codex-team --team --harness codex --kind api_key --file openai-key.txt
-#   alice, on her machine: hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
+#   4. alice, on her machine: hangar cred add claude-alice --harness claude-code --kind api_key --file key.txt
 hangar doctor                                             # 5. check
 ```
 

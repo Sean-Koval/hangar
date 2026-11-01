@@ -1,6 +1,8 @@
 # The Cloud Doctor
 
-A cloud agent's environment fails silently: the work just gets worse, and people blame the model. Every night the Cloud Doctor reads hangar's own [flight records](observability.md#flight-records) of failed, timed-out and slow runs, separates the failures a retry fixes from the ones that will happen again, finds their root causes with a strong model, and fixes what it is sure of with a pull request. What it isn't sure of, and anything about credentials or network access, goes to the admins. It is modelled on [Cursor's Cloud Doctor](https://cursor.com/blog/cloud-agent-environment): a scheduled automation that reads agent traces, tells transient errors from salient ones, does root-cause analysis, and opens PRs to fix skills or the environment when it is highly confident.
+A cloud agent's environment fails silently: the work just gets worse, and people blame the model. Every night the Cloud Doctor reads hangar's own [flight records](observability.md#flight-records) of failed, timed-out and slow runs, separates the failures a retry fixes from the ones that will happen again, finds their root causes with a strong model, and fixes what it is sure of with a pull request. What it isn't sure of, and anything about credentials or network access, goes to the admins. It is modelled on [Cursor's Cloud Doctor](https://cursor.com/blog/cloud-agent-environment), which does the same from agent traces.
+
+This isn't `hangar doctor`, which checks a deployment's setup, Codex plugin hooks included ([Check it](team/doctor.md)).
 
 ## What a run does
 

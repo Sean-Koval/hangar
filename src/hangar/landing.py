@@ -26,6 +26,9 @@ after a person approves. GitHub's branch protection stays the gate; hangar only 
   criteria (intake.criteria) with the evidence the agent reported (intake.EVIDENCE_SCHEMA), a cited test proven only
   when it passed in hangar's own check; the agent's "start here" files lead the file list, tests last; and a PR over
   the policy's `diff_budget_lines` gets a size warning.
+* **Self-review (KAN-228).** With `self_review: true` and `ai_review: hangar`, the PR opens as a draft and is held
+  there (aireview.hold) until hangar's own AI review, and one auto-fix round when it is blocking, is done; then
+  `mark_ready` marks it ready for review. A held PR has no ready_at yet, so review wait starts when it is released.
 """
 
 from __future__ import annotations
@@ -75,6 +78,7 @@ _ARM = ("mutation($id: ID!, $sha: GitObjectID!, $method: PullRequestMergeMethod!
         " enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $sha, mergeMethod: $method,"
         " commitBody: $body}) { pullRequest { number } } }")
 _DISARM = "mutation($id: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { number } } }"
+_READY = "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { number } } }"
 
 
 class LandingError(RuntimeError):
@@ -407,6 +411,25 @@ class Landing:
         if not st.draft and st.ready_at is None:
             st.ready_at = now()
 
+    async def mark_ready(self, job: Job) -> bool:
+        """--- KAN-228: mark the held draft PR ready for review (the App may: `pull_requests: write`)."""
+        st, repo = job.landing, parse_repo(job.repo)
+        gh = await self.client(repo, job) if repo else None
+        if gh is None or not st.node_id:
+            self.svc._event(job, "self-review: couldn't mark the PR ready for review (no GitHub client or PR id)")
+            return False
+        try:
+            await gh.graphql(_READY, {"id": st.node_id})
+        except (GitHubError, httpx.HTTPError) as e:
+            self.svc._event(job, f"self-review: couldn't mark the PR ready for review: {e}")
+            return False
+        finally:
+            await gh.close()
+        st.draft = False
+        st.ready_at = st.ready_at or now()  # --- #168: review wait starts here
+        self.svc._save(job)
+        return True
+
     async def delivered(self, job: Job) -> None:
         """After hangar pushed to the job's PR: what it touches, an approval the push made stale, the packet."""
         repo = parse_repo(job.repo)
@@ -470,6 +493,8 @@ class Landing:
 
         for part in changesets.parts_of(self.svc, job):
             self.idle(part)
+        if aireview.held(st):  # --- KAN-228: a verdict that waited for the turn, or the self-review round's end
+            self._bg(job, aireview.turn_ended(self.svc, job))
         if st.pr_state in ("merged", "closed") and not st.ended:
             self._bg(job, self.end(job))
         elif st.armed_sha and (st.armed_sha != st.head_sha or st.approved_sha != st.armed_sha):
@@ -608,6 +633,8 @@ class Landing:
         if action == "ready_for_review":  # --- AI review (#161): drafts (tainted PRs open as drafts) wait for this
             if head and not st.head_sha:
                 st.head_sha = head
+            if aireview.held(st):  # --- KAN-228: a person didn't wait for the self-review
+                self._bg(job, aireview.release(self.svc, job, "someone marked the PR ready for review"))
             aireview.request(self.svc, job, "ready for review")
         elif action == "auto_merge_disabled" and st.armed_sha:
             st.armed_sha = st.armed_at = None
@@ -1384,6 +1411,8 @@ class Landing:
             out.append(line)
         elif aireview.wanted(svc, job) is not None:
             out.append("- **AI review:** pending")
+        if line := aireview.self_review_line(job):  # --- KAN-228
+            out.append(line)
         out.append(self.landing_rule(job, policy))  # --- self-approval (#160)
         if st.receipt and st.receipt_sha:  # --- KAN-33 (spec 0015 §11): Tower's receipt for landing this head
             out.append(f"  - Tower allowed landing {_short(st.receipt_sha)}: receipt `{st.receipt}`"

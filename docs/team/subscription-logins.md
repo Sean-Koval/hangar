@@ -5,8 +5,7 @@ can still use one, and how one person's sandboxes share a sign-in file. Team cre
 [team setup](../team.md#3-team-credentials).
 
 A subscription login is a credential stored with `--kind oauth_token` or `--kind auth_file`. That is
-`claude setup-token` (Claude Pro or Max), a ChatGPT `~/.codex/auth.json`, a Google sign-in for Antigravity, and pi's
-and Gemini's sign-in files.
+`claude setup-token` (Claude Pro or Max), a ChatGPT `~/.codex/auth.json` and pi's sign-in file.
 
 The vendors' terms reserve these for one person's own use, and don't allow automated or headless use
 ([what the vendors allow](vendor-terms.md)). Anthropic has enforced this against third-party harnesses since April
@@ -35,8 +34,8 @@ The vendors' terms reserve these for one person's own use, and don't allow autom
   the cap inside hangar. Use both.
 - **Codex Enterprise access tokens** ("for trusted scripts, schedulers, and private CI runners") are for automation.
   Store one with `--kind api_key` and hangar treats it as an API key.
-- **Antigravity**: a Google sign-in is an `auth_file`, so fleets and jobs use a `GEMINI_API_KEY` credential
-  (`--kind api_key`).
+- **Antigravity** has no sign-in hangar can store: agy keeps it in the OS keyring. Use a `GEMINI_API_KEY`
+  credential (`--kind api_key`) or a service-account key.
 - The one-at-a-time lease for sign-in files ([below](#codex-logins-one-sandbox-at-a-time)) still applies to
   interactive sessions.
 
@@ -46,22 +45,19 @@ an obviously missing API key fails the submit at once, even while the pools are 
 ## Codex logins: one sandbox at a time
 
 A Codex ChatGPT login (`~/.codex/auth.json`) rotates its refresh token as it's used. So hangar leases it to one sandbox
-at a time and writes the new token back when the sandbox ends. The same holds for the other sign-in files (pi,
-Gemini). One such login serves one sandbox at once, across everyone who uses it.
+at a time and writes the new token back when the sandbox ends. The same holds for pi's sign-in file. One such login serves one sandbox at once, across everyone who uses it.
 
 A sign-in file is always someone's own, and only interactive sessions and sandboxes use one. So this is about one
 person's sessions. When a person has several logins of a kind,
 they form a pool and a sandbox takes a free one.
 
-When all are in use, a job or session **waits** and says so in its events:
+When all are in use, a session **waits** and says so in its events:
 `waiting for a free login (queued): alice's codex logins codex-1, codex-2 (all in use)`. It doesn't name the
 sandboxes holding them, which may be other people's. It starts when one is released, or fails after
 `HANGAR_LOGIN_WAIT_SECONDS` (600) with the same words. A sandbox made directly (`create_sandbox`) fails at once
 instead.
 
-A job's sandbox keeps its login while it is kept for follow-ups (`keep_minutes`, 120 by default). So a login stays busy
-for up to that long after each job. `keep_minutes: 0` releases it when the turn ends; follow-ups still resume from the
-checkpoint. To run many Codex jobs in parallel, use an OpenAI API key, which has no lease.
+Jobs never take a sign-in file, so they never wait for one. They run on an OpenAI API key, which has no lease.
 
 ### When a Codex login stops working
 

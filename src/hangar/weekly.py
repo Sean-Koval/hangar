@@ -191,13 +191,20 @@ def _cost(svc: JobService, job: Job) -> float:
     with contextlib.suppress(Exception):
         u = svc.usage(job)
         total += (u.cost_usd or 0.0) if u else 0.0
-    review = getattr(job.landing, "ai_review", None)  # --- #161: its independent review job's spend
-    for key in ("job", "confirm_job"):  # --- KAN-230: and the pass that checked its findings
+    # --- #161: its independent review jobs' spend; KAN-230: and the passes that checked their findings. Every review
+    # of every head (both passes carry `review:<job>`), not only the last one `ai_review` names: a push, or a
+    # self-review round (KAN-228), replaces it
+    review = getattr(job.landing, "ai_review", None)
+    reviews = {rj.id: rj for rj in svc.store.list_where(Job, archived=True, source_ref=f"review:{job.id}")
+               if rj.source == "review"}
+    for key in ("job", "confirm_job"):
         rid = review.get(key) if isinstance(review, dict) else None
-        if rid and (rj := svc.store.get(Job, rid)) is not None:
-            with contextlib.suppress(Exception):
-                u = svc.usage(rj)
-                total += (u.cost_usd or 0.0) if u else 0.0
+        if rid and rid not in reviews and (rj := svc.store.get(Job, rid)) is not None:
+            reviews[rid] = rj
+    for rj in reviews.values():
+        with contextlib.suppress(Exception):
+            u = svc.usage(rj)
+            total += (u.cost_usd or 0.0) if u else 0.0
     return total
 
 

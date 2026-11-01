@@ -63,6 +63,7 @@ class GH:
         self.disarm_fails = 0  # how many disable calls GitHub refuses
         self.users: dict[str, int] = {}  # --- self-approval (#160): GET /users/{login} -> its numeric id
         self.reviews_posted: list[dict] = []  # --- AI review (#161): POST /pulls/7/reviews bodies
+        self.readied: list[str] = []  # --- KAN-228: markPullRequestReadyForReview calls (the PR's node id)
 
     def __call__(self, r: httpx.Request) -> httpx.Response:
         self.calls.append(r)
@@ -77,6 +78,10 @@ class GH:
         if p == "/graphql":
             self.graphql.append(body)
             q, v, g = body["query"], body["variables"], fx("graphql")
+            if "markPullRequestReadyForReview" in q:
+                self.readied.append(v["id"])
+                return httpx.Response(200, json={"data": {"markPullRequestReadyForReview": {
+                    "pullRequest": {"number": 7}}}})
             if "enablePullRequestAutoMerge" in q:
                 if self.clean:
                     return httpx.Response(200, json=g["enable_auto_merge_clean"])

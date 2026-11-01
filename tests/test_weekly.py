@@ -153,6 +153,23 @@ def test_cost_per_merged_pr_counts_both_ai_review_passes(fixture):
     assert _metrics(fixture)["cost_per_merged_pr"]["total_usd"] == 6.75
 
 
+def test_cost_per_merged_pr_counts_every_review_and_its_check(fixture):
+    """KAN-228: a push or a self-review round replaces `ai_review`; the earlier review's passes still count."""
+    j1 = fixture.store.list_where(Job, **{"result.pr_number": 1})[0]
+    costs = {}
+    for name, usd in (("review 1", 0.5), ("check 1", 0.25), ("review 2", 0.125), ("check 2", 0.0625)):
+        rj = Job(title=name, instructions="x", environment="py", source="review", source_ref=f"review:{j1.id}",
+                 state=JobState.SUCCEEDED)
+        fixture.store.put(rj)
+        costs[rj.id] = usd
+    _r1, _c1, rid, cid = costs
+    j1.landing.ai_review = {"source": "hangar", "job": rid, "confirm_job": cid, "verdict": "comment"}
+    fixture.store.put(j1)
+    usage = fixture.usage
+    fixture.usage = lambda j: Usage(cost_usd=costs[j.id]) if j.id in costs else usage(j)
+    assert _metrics(fixture)["cost_per_merged_pr"]["total_usd"] == 6.9375
+
+
 def test_active_delegators_have_three_merged_prs(fixture):
     d = _metrics(fixture)["active_delegators"]
     assert d["value"] == 1 and d["people"] == ["ana"] and d["of"] == 2

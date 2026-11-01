@@ -1466,6 +1466,7 @@ class JobService:
         try:
             pr = await gh.find_pr(repo, job.branch)
             if pr is None:
+                draft = aireview.hold(self, job, draft)  # --- KAN-228: held as a draft for the self-review
                 title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
                 pr = await gh.open_pr(repo, job.branch, job.base_branch or await gh.default_branch(repo),
                                       secretscan.clean(self, job, title, "the PR title"),  # --- egress
