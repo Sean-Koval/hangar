@@ -30,11 +30,11 @@ The **review loop**: decide what is held, read the agent's change as a greyscale
 
 ## Where it sits
 
-Many doors bring work in; hangar runs it; the pull request is the one gate out. Around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions: its decision API is built, and hangar's wiring to it is next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture) ([spec 0015](docs/specs/0015-governance-decision-point.md)).
+Many doors bring work in; hangar runs it; the pull request is the one gate out. Around it, the team harness repo defines the harness (ai-dlc adds an optional workflow plugin), flightdeck judges the runs and [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, decides risky actions. hangar asks it once an admin turns governance on ([spec 0015](docs/specs/0015-governance-decision-point.md)).
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/front/hangar-suite-light.png">
-  <img alt="Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; the team harness repo supplies the harness lock, flightdeck reads the outbox, and hangar is to ask Tower about risky actions" src="docs/assets/front/hangar-suite-dark.png">
+  <img alt="Trackers, chat and automation send work to hangar, which runs it in sandboxes, verifies it and opens a draft PR for people to review; the team harness repo supplies the harness lock, flightdeck reads the outbox, and hangar asks Tower about risky actions" src="docs/assets/front/hangar-suite-dark.png">
 </picture>
 
 ## Use cases
@@ -76,19 +76,19 @@ To look around first without Docker or a key, run the demo hangar the recording 
 | **Hostile-sandbox security** | Credentials stay behind a gateway; intake jobs get an egress allowlist and no push rights; tainted work opens as a draft and needs a second person. See the [security model](docs/security/README.md). | Shipped |
 | **Usage and insight** | Tokens, cost and budgets per job and person ([activity](docs/activity.md)), traces as OTLP ([observability](docs/observability.md)), and run capture for [flightdeck](docs/specs/0014-sister-tool-interfaces.md). | Shipped |
 | **Shadow runs** | A repo policy samples real tickets and runs a candidate harness on each at the same base commit; it delivers nothing, and flightdeck grades it against what people merged ([shadows](docs/repo-policy.md#shadows)). | Shadow |
-| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. Today hangar's own approval rule decides; the client and contract are built ([spec 0015](docs/specs/0015-governance-decision-point.md)). | Planned ([roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture)) |
+| **Governed approvals** | Job release, landing and risky tool calls ask [Tower](https://sean-koval.github.io/agent-factory/tools/workspace/), the Govern plane, which decides and signs a receipt; hangar enforces and fails closed. On GKE it runs in shadow: hangar's rules decide and Tower answers a dry run. An admin sets a kind to `enforce` to let Tower decide ([Tower beside hangar](docs/runbooks/tower.md)). | Shadow |
 | **Overnight lane** | One Spot node kept up while the sandbox pools are powered down (01:00–10:00) for the intake jobs of repos that opt in and for evals, so evening tickets become PRs by morning; off until an admin turns it on ([the overnight lane](docs/gke.md#the-overnight-lane)). | Shipped |
 | **Plugins and events out** | Doors, trackers, notifiers and deliverers are plugins: a package of your own adds a chat bot's door or a company tracker without changing hangar, and every job change goes out as a signed `hangar.event/v1` ([plugins](docs/plugins.md)). | Shipped |
 | **Deploy on your company's cluster** | Kustomize base and components, a Terraform module that never creates a cluster, released images, secrets from your secret manager and admin configuration as reviewed files (`hangar apply`) ([company deploy](docs/deploy-company.md)). | Shipped |
-| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](docs/clients/relay.md)). | Partial |
+| **Bots that act for people** | A chat bot's relay token submits work as the linked person who asked, with their rights and audit trail, never more ([relay](docs/clients/relay.md)). | Shipped |
 
-*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress (the relay: `/mcp` doesn't accept relay tokens yet). *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
+*Shipped*: on main, on by default or behind a setting. *Shadow*: built, and runs beside real work without changing what people get. *Partial*: built and tested; its wiring is in progress. *Planned*: next on the [roadmap](https://sean-koval.github.io/agent-factory/roadmap/#p2-adopt-and-capture).
 
 ## Security posture
 
 hangar treats every sandbox as hostile. A job from an intake door (an issue, a ticket, Slack, a webhook) can fetch its repo but never push. hangar pushes the commit it verified, through the git gateway. Its network is an egress allowlist, the agent has no sudo, and automated work never uses a subscription login.
 
-Once an agent has read untrusted content, its PR opens as a draft, and a second person must approve it to land. In v0.2.0 only, two switches can turn the intake and login rules into warnings. See [the security model](docs/security/README.md) and [the safe-release upgrade](docs/releases/safe-release.md).
+Once an agent has read untrusted content, its PR opens as a draft, and a second person must approve it to land. No setting relaxes the intake and login rules: v0.2.0's warn switches are [removed](docs/upgrading.md#removed-switches). See [the security model](docs/security/README.md) and [the safe-release upgrade](docs/releases/safe-release.md).
 
 For an existing deployment, read [the upgrade guide](docs/upgrading.md) before updating. To deploy from GitHub Actions with your approval instead of from a laptop, see [deploying from CI/CD](docs/cicd.md).
 
