@@ -317,6 +317,44 @@ def test_shell_ops_and_repo_paths():
     assert traces._skill_name('{"skill": "pdf"}') == "pdf" and traces._skill_name("not json") is None
 
 
+def test_shell_ops_come_from_the_whole_command_not_the_clipped_preview(settings, broker):
+    """A long command (files written by heredoc, then tests and a commit) keeps its ops past the 200-char preview,
+    while `hangar.tool.input` stays the preview and says it was clipped. An event recorded before the parser stored
+    ops is still read from its text."""
+    from hangar.events import BRIEF_MAX, Parser
+
+    long_cmd = "cat > a.py <<'EOF'\n" + "x = 1\n" * 60 + "EOF\npython3 -m pytest -q && git commit -qm wip"
+    assert len(long_cmd) > BRIEF_MAX and traces.shell_ops(long_cmd[:BRIEF_MAX]) == []
+    lines = [{"type": "assistant", "message": {"id": "m1", "content": [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": long_cmd}},
+        {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "pytest -q"}},
+        {"type": "tool_use", "id": "t3", "name": "Read", "input": {"file_path": "/w/" + "d/" * 120 + "a.py"}}]}}]
+    evs = Parser("claude").feed(("\n".join(json.dumps(x) for x in lines) + "\n").encode())
+    starts = {ev.data["id"]: ev for ev in evs if ev.kind in ("command", "tool_call")}
+    assert starts["t1"].data["ops"] == "test,git.commit" and starts["t1"].data["clipped"] is True
+    assert len(starts["t1"].text) == BRIEF_MAX and starts["t2"].data["ops"] == "test"
+    assert "clipped" not in starts["t2"].data and starts["t3"].data["clipped"] is True
+
+    activity = Activity(settings, broker.redact)
+    svc = SimpleNamespace(activity=activity, fleet=SimpleNamespace(broker=broker))
+    t = SessionTurn(message="go", run_id="run-1", harness="claude-code", started_at=1000.0, finished_at=1100.0)
+    s = Session(name="s-ops", environment="plain", harness="claude-code", turns=[t])
+    old = RunEvent(turn=1, run_id="run-1", kind="command", text="pytest -q && git push", ts=1004.0,
+                   data={"id": "t4", "tool": "Bash"})  # recorded before ops were stored
+    activity.append(s.id, [ev.model_copy(update={"turn": 1, "run_id": "run-1", "ts": 1001.0 + i})
+                           for i, ev in enumerate(starts.values())] + [old])
+    calls = {a["gen_ai.tool.call.id"]: a for a in map(_attrs, _spans(traces.session_export(svc, s, turn=1)))
+             if a.get("hangar.kind") == "tool.call"}
+
+    def ops(a) -> list[str]:
+        return [v["stringValue"] for v in a.get("hangar.shell.ops", {}).get("values", [])]
+
+    assert ops(calls["t1"]) == ["test", "git.commit"] and calls["t1"]["hangar.tool.input_clipped"] is True
+    assert calls["t1"]["hangar.tool.input"] == starts["t1"].text  # the preview, not the whole command
+    assert ops(calls["t2"]) == ["test"] and "hangar.tool.input_clipped" not in calls["t2"]
+    assert calls["t3"]["hangar.tool.input_clipped"] is True and ops(calls["t4"]) == ["test", "git.push"]
+
+
 def _behavior(export: dict) -> dict:
     """Behavior specs written against the export alone (what the sister tool does): each is a plain predicate."""
     spans = _spans(export)

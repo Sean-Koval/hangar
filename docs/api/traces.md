@@ -102,7 +102,7 @@ words in each `&&`, `||`, `;` or `|` segment, in order, deduplicated:
 | `pr.open` | `gh pr create` |
 | `delete` | `rm`, `rmdir`, `unlink`, `shred`, `git rm`, `find … -delete` |
 
-It is a hint read from the text (hangar runs nothing to decide it): a spec that needs more reads `hangar.tool.input`.
+They are read from the whole command, not the clipped `hangar.tool.input`. A clipped input has `hangar.tool.input_clipped=true`.
 
 **Order.** Tool calls and events are timestamped when hangar read them from the run log, so several can share a
 time. `hangar.seq` is each one's position in the session's event log: a total order within a session. On
