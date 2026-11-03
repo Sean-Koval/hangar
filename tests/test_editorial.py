@@ -41,7 +41,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "activity.md": (1067, 7, LATER + "usage, budgets"),
     "api/fleet.md": (811, 14, CONTRACT),
     "api/outbox.md": (1517, 26, CONTRACT),
-    "api/traces.md": (1710, 31, CONTRACT),
+    "api/traces.md": (1705, 31, CONTRACT),
     "api/trials.md": (953, 12, CONTRACT),
     "caches.md": (1784, 26, LATER + "what is cached, the store"),
     "changesets.md": (1397, 21, LATER + "the profile, the apply"),

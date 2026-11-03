@@ -117,6 +117,7 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   webhook would, so jobs held for review capacity start. `hangar doctor` says how many it corrected
   ([docs/pr-reconcile.md](docs/pr-reconcile.md)). An MCP `submit_job` with no `ticket` takes the one Jira key its
   title and instructions name ([docs/intake.md](docs/intake.md#branch-and-pr-names-carry-the-key)).
+- **Traces see a long command's tests and commits.** `hangar.shell.ops` was read from the 200-character preview, so a test run or commit later in the command was missing (45% of commands in four real jobs were clipped). The parser now reads ops from the whole command, and clipped tool inputs carry `hangar.tool.input_clipped=true` ([docs/api/traces.md](docs/api/traces.md)).
 - A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
 
 ## v0.2.0: the safe release

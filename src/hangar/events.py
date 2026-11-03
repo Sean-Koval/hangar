@@ -254,15 +254,22 @@ def _small(d: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+BRIEF_MAX = 200
+
+
+def _brief_source(args: Any) -> str:
+    """The whole text that `_brief` shortens: the command, path, pattern or URL, else the arguments as JSON."""
+    if isinstance(args, dict):
+        for key in ("command", "CommandLine", "cmd", "file_path", "path", "TargetFile", "AbsolutePath", "pattern",
+                    "Query", "query", "url", "Url", "description"):
+            if isinstance(args.get(key), str) and args[key].strip():
+                return args[key].strip()
+    return (args if isinstance(args, str) else json.dumps(args, ensure_ascii=False, default=str)).strip()
+
+
 def _brief(args: Any) -> str:
     """One line describing a tool call's arguments."""
-    if not isinstance(args, dict):
-        return _clip(args, 200)
-    for key in ("command", "CommandLine", "cmd", "file_path", "path", "TargetFile", "AbsolutePath", "pattern",
-                "Query", "query", "url", "Url", "description"):
-        if isinstance(args.get(key), str) and args[key].strip():
-            return _clip(args[key], 200)
-    return _clip(args, 200)
+    return _clip(_brief_source(args), BRIEF_MAX)
 
 
 def _text_of(content: Any) -> str:
@@ -445,11 +452,19 @@ class Parser:
             path = next((args[k] for k in ("file_path", "path", "TargetFile", "notebook_path", "AbsolutePath")
                          if isinstance(args.get(k), str)), None)
         self.tools[tid] = [name, path]
+        full = _brief_source(args)
+        clipped = True if len(full) > BRIEF_MAX else None  # the event text (and the trace's input) is a preview
         if name in _SHELL_TOOLS:
-            return self._ev("command", _brief(args), id=tid, tool=name)
+            # The trace's `hangar.shell.ops` come from the whole command: a test run or commit after the preview's
+            # cut is still seen. Stored as text ("test,git.commit"; "" for none) because event data keeps scalars.
+            from hangar.traces import shell_ops  # traces imports this module
+
+            return self._ev("command", _brief(args), id=tid, tool=name, ops=",".join(shell_ops(full)),
+                            clipped=clipped)
         # --- interfaces: which subagent a Claude Code Task/Agent call starts (the trace's `subagent` span)
         sub = args.get("subagent_type") if name in ("Task", "Agent") and isinstance(args, dict) else None
-        return self._ev("tool_call", f"{name} {_brief(args)}".strip(), id=tid, tool=name, subagent=sub)
+        return self._ev("tool_call", f"{name} {_brief(args)}".strip(), id=tid, tool=name, subagent=sub,
+                        clipped=clipped)
 
     def _tool_end(self, tid: str, ok: bool, output: Any, path: str | None = None, **data: Any) -> list[RunEvent]:
         name, opath = self.tools.pop(tid, [data.pop("tool", None), None])
