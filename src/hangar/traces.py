@@ -410,6 +410,13 @@ def tree_attrs(events: list[RunEvent], turn: SessionTurn | None = None) -> dict[
             "hangar.git.tree.trusted": all(ev.data.get("trusted") is True for ev in tr)}
 
 
+def _shell_ops_of(start: RunEvent | None, inp: str | None) -> list[str]:
+    """The ops the parser read from the whole command; an event recorded before it stored them is read from its
+    clipped text."""
+    ops = start.data.get("ops") if start is not None else None
+    return [o for o in ops.split(",") if o] if isinstance(ops, str) else shell_ops(inp)
+
+
 def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, conv: str | None,
                start: RunEvent | None, result: RunEvent | None, turn_end: float, root: str | None = None,
                tree: RunEvent | None = None) -> None:
@@ -425,6 +432,7 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
         if start else None
     ok = bool(result.data.get("ok")) if result is not None else None
     common = {"gen_ai.tool.call.id": tid, "hangar.tool.input": inp,
+              "hangar.tool.input_clipped": True if start is not None and start.data.get("clipped") else None,
               "hangar.tool.output": result.text if result else None, "hangar.tool.ok": ok,
               "gen_ai.conversation.id": conv,  # --- review(#114): the event log's order (times can tie)
               "hangar.seq": first.seq or None, "hangar.seq.end": (result.seq or None) if result else None}
@@ -446,7 +454,7 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
             attrs["hangar.file.repo_path"] = repo_path(inp, root)
     suffix = None  # GenAI's command and skill refinements: `execute_tool {tool} {executable or skill}`
     if kind == "shell":
-        attrs["hangar.shell.ops"] = shell_ops(inp) or None
+        attrs["hangar.shell.ops"] = _shell_ops_of(start, inp) or None
         attrs["process.executable.name"] = suffix = executable(inp)
     if kind == "skill":
         attrs["gen_ai.skill.name"] = suffix = _skill_name(inp)
