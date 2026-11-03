@@ -586,6 +586,8 @@ class Landing:
         st = job.landing
         st.draft = bool(pr.get("draft"))
         if action == "closed":
+            if st.pr_state == ("merged" if pr.get("merged") else "closed"):  # --- KAN-246: the PR reconcile (prsync)
+                return {"ignored": f"PR already recorded as {st.pr_state}"}  # or a redelivery got there first
             if pr.get("merged"):
                 st.pr_state = "merged"
                 st.merged_at = _ts(pr.get("merged_at")) or now()
@@ -602,7 +604,7 @@ class Landing:
                                      pr=job.result.pr_number, sha=head, approved_by=st.approved_by,
                                      armed=bool(st.armed_at), green_to_merge_seconds=st.green_to_merge_seconds)
             else:
-                st.pr_state, st.closed_at, st.armed_sha = "closed", now(), None
+                st.pr_state, st.closed_at, st.armed_sha = "closed", _ts(pr.get("closed_at")) or now(), None
                 who = _str(_d(payload.get("sender")).get("login"))
                 self.svc._event(job, f"PR #{job.result.pr_number} closed without merging" +
                                 (f" by @{who}" if who else ""))

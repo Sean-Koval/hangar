@@ -275,6 +275,9 @@ class Settings(BaseSettings):
     # --- reconciler: at startup, ask GitHub to redeliver the webhook deliveries that failed since the last start
     # (the cluster was down, or hangar died mid-delivery); GitHub keeps them for 3 days and never retries on its own
     github_redeliver_on_start: bool = True
+    # --- KAN-246: at startup and every N minutes, read from GitHub the state of each PR hangar still counts as open,
+    # and record a merge or close that no webhook reported (prsync.py; `hangar doctor` says how many). 0: off.
+    github_pr_reconcile_minutes: float = Field(15.0, ge=0)
 
     # --- workstream C: events/usage/budgets ----------------------------------
     # USD per million tokens, merged over the built-in table in events.py (dated list prices):

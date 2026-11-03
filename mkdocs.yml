@@ -142,6 +142,7 @@ nav:
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
           - Landing: landing.md
+          - When the webhook doesn't arrive: pr-reconcile.md
           - AI first-pass review: ai-review.md
           - Change sets: changesets.md
       - Front doors:

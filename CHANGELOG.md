@@ -112,6 +112,11 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Fixed
 
+- A PR merged or closed with no webhook reaching hangar no longer counts as open (KAN-246). A pass at startup and
+  every `HANGAR_GITHUB_PR_RECONCILE_MINUTES` (15) reads each open PR from GitHub and records its merge or close as the
+  webhook would, so jobs held for review capacity start. `hangar doctor` says how many it corrected
+  ([docs/pr-reconcile.md](docs/pr-reconcile.md)). An MCP `submit_job` with no `ticket` takes the one Jira key its
+  title and instructions name ([docs/intake.md](docs/intake.md#branch-and-pr-names-carry-the-key)).
 - A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
 
 ## v0.2.0: the safe release

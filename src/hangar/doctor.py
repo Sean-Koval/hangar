@@ -177,6 +177,10 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar.setup_api import webhook_checks
 
     out += await webhook_checks(h, transport)
+    from hangar import prsync  # --- KAN-246: merges and closes no webhook reported, from the last reconcile pass
+
+    if (c := prsync.doctor_check(h.jobs)) is not None:
+        out.append(c)
     # --- landing: repos that land on approval have the branch protection that keeps it safe
     from hangar.landing import doctor_checks as landing_checks
 
