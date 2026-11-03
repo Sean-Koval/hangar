@@ -1286,7 +1286,9 @@ def doctor_cmd(as_json: bool = typer.Option(False, "--json"),
                     mark, color = marks[c["status"]]
                     typer.secho(f"{mark} {c['name']}: {c['detail']}", fg=color)
     fails = sum(c["status"] == "fail" for c in checks)
-    typer.echo(f"\n{fails} problem(s)" if fails else "\nall good")
+    warns = sum(c["status"] == "warn" for c in checks)
+    typer.echo(f"\n{fails} problem(s)" if fails else f"\nno problems; {warns} warning(s) above, each with its fix"
+               if warns else "\nall good")
     raise typer.Exit(1 if fails else 0)
 
 
