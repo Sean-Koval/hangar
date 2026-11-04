@@ -82,6 +82,7 @@
 /src/hangar/posture.py             @Sean-Koval
 /src/hangar/repopolicy.py          @Sean-Koval
 /src/hangar/landing.py             @Sean-Koval
+/src/hangar/prsync.py              @Sean-Koval
 /src/hangar/branchowners.py        @Sean-Koval
 /src/hangar/harden.py              @Sean-Koval
 /src/hangar/steer.py               @Sean-Koval
