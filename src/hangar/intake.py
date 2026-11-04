@@ -78,6 +78,30 @@ def ticket_key(labels: dict[str, str] | None, source_ref: str | None = None, tic
     return None
 
 
+_KEY_IN_TEXT = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?![0-9])")
+
+
+def ticket_from_text(settings: Any, *texts: str | None) -> tuple[str | None, str | None]:
+    """--- KAN-246: the ticket an MCP job given none names in its title or instructions: ("jira:KAN-123", note) when
+    they name exactly one key of a project in HANGAR_JIRA's `projects`; (None, note) when they name several (it can't
+    tell which); (None, None) otherwise. The note is for the job's events."""
+    projects = set(((getattr(settings, "jira", None) or {}).get("projects") or {}).keys())
+    if not projects:
+        return None, None
+    keys: list[str] = []
+    for text in texts:
+        for key in _KEY_IN_TEXT.findall(text or ""):
+            if key.rsplit("-", 1)[0] in projects and key not in keys:
+                keys.append(key)
+    if len(keys) == 1:
+        return f"jira:{keys[0]}", f"ticket {keys[0]}: the only Jira key in the job's title and instructions"
+    if len(keys) > 1:
+        shown = ", ".join(keys[:5]) + (", ..." if len(keys) > 5 else "")
+        return None, (f"no ticket: the title and instructions name several Jira keys ({shown}), so the branch and PR "
+                      "carry none; submit with ticket='jira:KEY' to link them")
+    return None, None
+
+
 def ticket_title(title: str, key: str | None) -> str:
     """`title` prefixed `<key>: `, unless it already starts with the key (the Jira door's "KAN-35: summary")."""
     if not key or re.match(rf"{re.escape(key)}(?!\d)", title):

@@ -34,6 +34,7 @@ import hangar.people as people  # --- identity
 from hangar import approvals as approvals  # --- approvals (#121): who may release a held job
 from hangar import computer_api as computer_api  # --- computer
 from hangar import exchange, mcp_steer, mcp_tasks, observe  # mcp_tasks: elicitation; mcp_steer: live turns; --- observe
+from hangar import intake as intake  # --- KAN-246: the Jira key an MCP job names
 from hangar import mcp_deadline as contract  # --- deadlines: the client-deadline contract
 from hangar import mcp_fresh as fresh  # --- deadlines: server version, stale tool lists
 from hangar import mcp_live as live  # workstream mcp-modern: typed results, hints, resources, prompts
@@ -861,6 +862,9 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
         (ci,conflicts,reviews, a subset, or off): PR CI failures, conflicts with the base and trusted reviews start
         follow-ups. `harness_lock`: name@rN.
         `changeset`: a profile (no `repo`): one PR per changed repo. `ticket`: "jira:PAY-412"."""
+        ticket_note = None
+        if not ticket:  # --- KAN-246: the one Jira key the title or instructions name (docs/intake.md)
+            ticket, ticket_note = intake.ticket_from_text(jobs.settings, title, instructions)
         req = SubmitJob(instructions=instructions, repo=repo, environment=environment, title=title, harness=harness,
                         model=model, base_branch=base_branch, verify=verify, deliver=deliver,
                         context=[ContextItem.model_validate(c) for c in context or []],
@@ -880,8 +884,11 @@ def build_mcp(fleet: Fleet, jobs: JobService | None = None, sessions: SessionSer
             from hangar.ext.notify import REPLY_TO_LABEL
 
             req = req.model_copy(update={"labels": {**req.labels, REPLY_TO_LABEL: p.reply_to}})
-        return jobs.view(jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp",  # identity
-                                     approval=hold, untrusted_source=p.on_behalf_of if hold else None))
+        job = jobs.submit(req, Caller(who, who, person=identity.person()), source="mcp",  # identity
+                          approval=hold, untrusted_source=p.on_behalf_of if hold else None)
+        if ticket_note and job.events and not any(e.message == ticket_note for e in job.events):
+            jobs._event(job, ticket_note)  # --- KAN-246 (an idempotent retry returns the job that has it)
+        return jobs.view(job)
 
     @tool()
     async def get_job(job: str) -> live.JobOut:

@@ -56,7 +56,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "harness-lock.md": (2528, 53, LATER + "the lock, the team harness repo"),
     "harnesses.md": (3114, 44, LATER + "packs, models, the canary"),
     "index.md": (268, 6, "the docs home; tests/test_front_page.py pins its security posture sentence"),
-    "intake.md": (2495, 44, LATER + "Jira, the agent ticket, deliveries"),
+    "intake.md": (2493, 42, LATER + "Jira, the agent ticket, deliveries"),
     "jobs/agent-loop.md": (1430, 12, LATER + "the loop, its stops"),
     "jobs/experiments.md": (1640, 30, LATER + "the trial, the grade"),
     "jobs/from-github-slack-jira.md": (869, 15, LATER + "one page per door"),

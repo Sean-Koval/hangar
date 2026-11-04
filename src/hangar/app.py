@@ -31,6 +31,7 @@ from hangar import inbox_notify as inbox_notify  # --- inbox delivery (#157, #15
 from hangar import modelpolicy as modelpolicy  # --- canary
 from hangar import outbox as outbox  # --- outbox (#163): run capture
 from hangar import people as people  # --- teamcreds
+from hangar import prsync as prsync  # --- KAN-246: PR state from GitHub when webhooks miss
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar import weekly as weekly  # --- #168: weekly adoption metrics and the standup line
@@ -467,6 +468,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         events_out.of(h.jobs).start(plugin_host.notifiers)  # --- plugin host: hangar.event/v1 to the notifiers
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
         weekly.of(h.jobs).start()  # --- #168: the nightly revert pass and the standup line
+        prsync.of(h.jobs).start()  # --- KAN-246: PR state from GitHub's API when its webhooks don't arrive
         modelpolicy.of(h.fleet).start()  # --- canary: providers' model lists, fetched now and kept fresh
         harness_repo.of(h.fleet).start()  # --- #138: the team harness repo's checkout, kept fresh
         missed = redeliver.start(h)  # --- reconciler: GitHub deliveries that failed while hangar was down
@@ -483,6 +485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await events_out.of(h.jobs).stop()  # --- plugin host
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
         await weekly.of(h.jobs).stop()  # --- #168
+        await prsync.of(h.jobs).stop()  # --- KAN-246
         await modelpolicy.of(h.fleet).stop()  # --- canary
         await harness_repo.of(h.fleet).stop()  # --- #138
         if prebuild:
