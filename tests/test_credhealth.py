@@ -250,3 +250,38 @@ async def test_a_login_the_vendor_refused_stays_failed_until_stored_again(fleet,
 def test_a_refused_login_with_no_credential_on_record_still_says_what_to_do(store):
     line = credhealth.login_rejected(store, [], "codex", "run-1")
     assert line.startswith(credhealth.REFUSED_PREFIXES) and "log in again" in line
+
+
+def test_a_hangar_with_no_model_credential_is_told_to_add_one(broker, store):
+    """A fresh hangar said "0 of 0 agent credential(s) checked and working" and doctor printed "all good", though no
+    turn could call a model. It warns and names the fix; a git token doesn't count, any agent harness's does."""
+    from types import SimpleNamespace
+
+    h = SimpleNamespace(store=store)
+    [chk] = credhealth.doctor_checks(h)
+    assert chk["status"] == "warn" and "no model credential" in chk["detail"]
+    assert "hangar cred add" in chk["fix"] and chk["deploy_gate"] is False
+    broker.put("git", "git", CredentialKind.GIT_TOKEN, "ghp_whatever")
+    [chk] = credhealth.doctor_checks(h)
+    assert chk["status"] == "warn"
+    broker.put("or", "pi", CredentialKind.API_KEY, "sk-or-v1-" + "k" * 40)  # no check of its own, still a model key
+    [chk] = credhealth.doctor_checks(h)
+    assert chk["status"] == "ok" and chk["detail"].startswith("1 model credential(s) stored; none is of a kind")
+
+
+def test_doctor_says_all_good_only_with_nothing_to_fix(monkeypatch):
+    """Warnings each carry a fix, so `hangar doctor` no longer ends on "all good" under them; it still exits 0."""
+    from typer.testing import CliRunner
+
+    from hangar import cli
+
+    checks = [{"name": "a", "status": "ok", "detail": "fine", "fix": None}]
+    monkeypatch.setattr(cli, "_call", lambda *a, **k: checks)
+    r = CliRunner().invoke(cli.app, ["doctor"])
+    assert r.exit_code == 0 and r.output.rstrip().endswith("all good")
+    checks.append({"name": "credential health", "status": "warn", "detail": "no model credential", "fix": "add one"})
+    r = CliRunner().invoke(cli.app, ["doctor"])
+    assert r.exit_code == 0 and r.output.rstrip().endswith("no problems; 1 warning(s) above, each with its fix")
+    checks.append({"name": "b", "status": "fail", "detail": "broken", "fix": "mend it"})
+    r = CliRunner().invoke(cli.app, ["doctor"])
+    assert r.exit_code == 1 and r.output.rstrip().endswith("1 problem(s)")

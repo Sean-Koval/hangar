@@ -451,12 +451,26 @@ def _doctor_checks(h: Any) -> list[dict[str, Any]]:
     elif soon:
         out.append(_check("credential health", None, "; ".join(f"{a['name']}: {a['why']}" for a in soon),
                           "renew each one before it expires, then `hangar cred check NAME`"))
+    elif not (models := _model_credentials(h.store)):  # a fresh hangar: "0 of 0 working" read as all good
+        out.append(_check("credential health", None, "no model credential is stored, so every agent turn will fail "
+                          "to call a model", "hangar cred add claude-api --harness claude-code --kind api_key "
+                          "--file anthropic-key.txt   (or --harness codex, pi or antigravity; docs/harnesses.md)"))
     else:
         n = sum(s["counts"].values())
         unchecked = s["counts"].get("unchecked", 0)
         out.append(_check("credential health", True, f"{n - unchecked} of {n} agent credential(s) checked and "
-                          "working" + (f"; {unchecked} not checked yet (hangar cred check)" if unchecked else "")))
+                          "working" + (f"; {unchecked} not checked yet (hangar cred check)" if unchecked else "")
+                          if n else f"{len(models)} model credential(s) stored; none is of a kind hangar can check "
+                          "without calling a model"))
     return out
+
+
+def _model_credentials(store: Store) -> list[Credential]:
+    """Credentials an agent calls a model with: any harness's but git's (a team's or a person's, of any kind)."""
+    from hangar.harnesses import HARNESSES
+
+    agents = {name for name in HARNESSES if name != "git"}
+    return [c for c in store.list(Credential) if c.harness in agents]
 
 
 # ====================================================================== front doors
