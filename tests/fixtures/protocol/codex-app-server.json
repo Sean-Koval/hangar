@@ -31,6 +31,7 @@
    "externalAgentConfig/import",
    "externalAgentConfig/import/readHistories",
    "externalAgentConfig/import/recordHistory",
+   "feedback/save",
    "feedback/upload",
    "fs/copy",
    "fs/createDirectory",
@@ -501,6 +502,7 @@
    "thread/prediction/updated",
    "thread/project/updated",
    "thread/queue/changed",
+   "thread/readState/changed",
    "thread/realtime/closed",
    "thread/realtime/error",
    "thread/realtime/item/completed",
@@ -513,6 +515,7 @@
    "thread/realtime/transcript/delta",
    "thread/realtime/transcript/done",
    "thread/reverted",
+   "thread/section/changed",
    "thread/settings/updated",
    "thread/started",
    "thread/status/changed",
@@ -744,6 +747,8 @@
       "rateLimitExceeded",
       "flexUnavailable",
       "serverOverloaded",
+      "modelNotFound",
+      "policyCapacityUnavailable",
       "cyberPolicy",
       "misalignmentPolicyViolation",
       "tooManyDenials",
@@ -1113,11 +1118,21 @@
    ]
   },
   "CommandExecutionApprovalKind": {
-   "enum": [
-    "command",
-    "writeStdin"
-   ],
-   "type": "string"
+   "oneOf": [
+    {
+     "enum": [
+      "command",
+      "writeStdin"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "humanCommand"
+     ],
+     "type": "string"
+    }
+   ]
   },
   "CommandExecutionRequestApprovalParams": {
    "properties": {
@@ -1608,6 +1623,21 @@
     }
    ]
   },
+  "ImageGenerationInputImage": {
+   "properties": {
+    "path": {
+     "$ref": "AbsolutePathBuf"
+    },
+    "sha256": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sha256"
+   ],
+   "type": "object"
+  },
   "InitializeCapabilities": {
    "properties": {
     "experimentalApi": {
@@ -1638,6 +1668,9 @@
     },
     "requestAttestation": {
      "default": false,
+     "type": "boolean"
+    },
+    "requiredHumanApproval": {
      "type": "boolean"
     }
    },
@@ -3372,6 +3405,30 @@
      "type": "object"
     },
     {
+     "anyOf": [
+      {
+       "properties": {
+        "fileId": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "fileId"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "result": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "result"
+       ],
+       "type": "object"
+      }
+     ],
      "properties": {
       "failure": {
        "anyOf": [
@@ -3384,11 +3441,21 @@
        ],
        "default": null
       },
+      "generationId": {
+       "default": null,
+       "type": [
+        "string",
+        "null"
+       ]
+      },
       "id": {
        "type": "string"
       },
-      "result": {
-       "type": "string"
+      "inputImages": {
+       "items": {
+        "$ref": "ImageGenerationInputImage"
+       },
+       "type": "array"
       },
       "revisedPrompt": {
        "type": [
@@ -3425,7 +3492,6 @@
      },
      "required": [
       "id",
-      "result",
       "status",
       "type"
      ],
@@ -3493,7 +3559,26 @@
      ],
      "type": "object"
     }
-   ]
+   ],
+   "properties": {
+    "completedAtMs": {
+     "default": null,
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "startedAtMs": {
+     "default": null,
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    }
+   },
+   "type": "object"
   },
   "ThreadResumeParams": {
    "properties": {
@@ -4279,6 +4364,9 @@
     },
     "output": {
      "$ref": "FunctionCallOutputBody"
+    },
+    "retain": {
+     "type": "boolean"
     }
    },
    "required": [
@@ -4393,20 +4481,40 @@
      "type": "object"
     },
     {
+     "anyOf": [
+      {
+       "properties": {
+        "url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "fileId": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "fileId"
+       ],
+       "type": "object"
+      }
+     ],
      "properties": {
       "type": {
        "enum": [
         "audio"
        ],
        "type": "string"
-      },
-      "url": {
-       "type": "string"
       }
      },
      "required": [
-      "type",
-      "url"
+      "type"
      ],
      "type": "object"
     },
