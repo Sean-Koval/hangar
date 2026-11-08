@@ -112,6 +112,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Fixed
 
+- The team harness checkout an older, root-run image left in `/data` works again under the non-root image
+  (KAN-170). git refused it as "dubious ownership", so `hangar doctor` failed its harness repo check and the
+  deploy rolled back. hangar now trusts that one checkout per git call.
+- The deploy's session acceptance check clones `HANGAR_ACCEPT_SESSION_REPO` (a variable of the `production`
+  environment), else hangar's own repo, instead of octocat/Hello-World. The gateway reads it as the GitHub App,
+  so it needs a repo the App is installed on.
 - A deploy whose new pod never gets Ready now says why. Before `deploy.yml` rolls back, it prints the new pods'
   state, events and last 150 log lines, with token-shaped strings masked because the repository is public. The
   deploy account's Role gains read-only `get` and `list` on pods, their logs, replica sets and events in the
