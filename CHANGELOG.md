@@ -119,6 +119,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   title and instructions name ([docs/intake.md](docs/intake.md#branch-and-pr-names-carry-the-key)).
 - **`hangar doctor` no longer says "all good" with nothing to run on** (KAN-250). With no model credential stored, credential health read "0 of 0 checked and working"; it now warns and names `hangar cred add`. A run with warnings ends on "no problems; N warning(s) above" instead of "all good", and still exits 0.
 - **Traces see a long command's tests and commits.** `hangar.shell.ops` was read from the 200-character preview, so a test run or commit later in the command was missing (45% of commands in four real jobs were clipped). The parser now reads ops from the whole command, and clipped tool inputs carry `hangar.tool.input_clipped=true` ([docs/api/traces.md](docs/api/traces.md)).
+- **A failed Antigravity command no longer shows as succeeded.** agy's stream says a step is done, not how the command
+  ended, so every `run_command` read as `ok`. A shell result is now unknown (no `hangar.tool.ok`, no error), or failed
+  when its output ends in the shell's "command not found".
 - A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
 
 ## v0.2.0: the safe release
