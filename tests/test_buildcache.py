@@ -468,6 +468,14 @@ async def _box(w, sid, **kw) -> tuple[Sandbox, Path]:
     env = await w.cache.attach(w.fake, sb, w.spec)
     await w.fleet.broker.inject(sb, w.fake, [], extra_env=env)
     box = w.fake.boxes[sb.id]
+    # node_modules is keyed by `node --version`, and a kind whose toolchain is missing is skipped: a stub node on
+    # the box's PATH keeps the key the same whether or not the machine running the tests has Node.
+    stub = box / "opt/stub-bin"
+    stub.mkdir(parents=True)
+    (stub / "node").write_text("#!/bin/sh\necho v22.0.0\n")
+    (stub / "node").chmod(0o755)
+    with (box / "home/agent/.hangar/env").open("a") as f:
+        f.write(f"PATH={stub}:$PATH\n")
     repo = box / "workspace/app"
     subprocess.run([*GIT, "init", "-q", str(repo)], check=True)
     (repo / ".gitignore").write_text("node_modules\n")
