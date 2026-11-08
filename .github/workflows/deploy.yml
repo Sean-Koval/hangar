@@ -368,12 +368,15 @@ jobs:
         timeout-minutes: 75  # a step timeout fails the step (and rolls back); the job's would cancel it
         env:
           ONLY: ${{ steps.pre.outputs.only }}
+          # The repo the session check clones through the git gateway. With no git token on the session's
+          # environment, the gateway reads it as the GitHub App, so it must be a repo the App is installed on.
+          SESSION_REPO: ${{ vars.HANGAR_ACCEPT_SESSION_REPO || 'https://github.com/Sean-Koval/hangar.git' }}
         run: |
           # --- acceptance: the core checks (CORE in gke.sh) alone decide this step, and so the rollback. The team
           # checks run in the next step, which can't fail the job: neither a failing nor a slow one rolls back.
           # shellcheck disable=SC2086 # ONLY is empty or "--only a,b,c" (forced: it narrows the core checks)
           bash scripts/acceptance/gke.sh --no-kubectl --only core --record accept.jsonl \
-            --report accept-report.json --gate core --doctor-baseline doctor-before.json $ONLY
+            --report accept-report.json --gate core --doctor-baseline doctor-before.json --repo "$SESSION_REPO" $ONLY
       # --- acceptance: the team checks (docs/acceptance.md), reported in the summary and the deploy record. Each
       # check without its fixture skips and says so; repos are variables, tokens secrets, of the production
       # environment. No model turns (they cost money) and no power cycle: those run by hand. continue-on-error keeps
