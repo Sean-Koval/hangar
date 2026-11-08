@@ -340,6 +340,29 @@ jobs:
           kubectl -n "$NS" rollout status deploy/hangar --timeout=15m
           for _ in $(seq 60); do curl -fsS --max-time 10 "$HANGAR_URL/healthz" > /dev/null && exit 0; sleep 5; done
           echo "::error::$HANGAR_URL/healthz didn't answer within 5 min of the rollout"; exit 1
+      # Why a new pod never got Ready, read before the rollback replaces it. The repo is public, so its logs are
+      # cut to the last lines and anything token-shaped is masked; describe shows envFrom by name, never values.
+      - name: Why the rollout failed (the new pods' state, events and last log lines)
+        if: failure() && steps.rollout.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          mask() { sed -E 's/(hgr|ghp|gho|ghs|ghu|github_pat|sk|xox[abprs]|AIza|ya29)[-_.A-Za-z0-9]{8,}/\1…[masked]/g'; }
+          kubectl -n "$NS" get deploy/hangar -o wide || true
+          kubectl -n "$NS" get rs,pods -l app=hangar -o wide || true
+          for pod in $(kubectl -n "$NS" get pods -l app=hangar -o name); do
+            ready=$(kubectl -n "$NS" get "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+            [ "$ready" = True ] && continue
+            echo "::group::$pod (not Ready)"
+            kubectl -n "$NS" describe "$pod" | mask || true
+            echo "--- last 150 log lines"
+            kubectl -n "$NS" logs "$pod" -c hangar --tail=150 | mask || true
+            echo "--- the previous container's last 150 lines (if it restarted)"
+            kubectl -n "$NS" logs "$pod" -c hangar --previous --tail=150 2>/dev/null | mask || true
+            echo "::endgroup::"
+          done
+          echo "::group::events in $NS, newest last"
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -40 || true
+          echo "::endgroup::"
       - name: Acceptance
         if: steps.pre.outputs.go == 'true'
         timeout-minutes: 75  # a step timeout fails the step (and rolls back); the job's would cancel it

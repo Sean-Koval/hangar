@@ -112,6 +112,11 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Fixed
 
+- A deploy whose new pod never gets Ready now says why. Before `deploy.yml` rolls back, it prints the new pods'
+  state, events and last 150 log lines, with token-shaped strings masked because the repository is public. The
+  deploy account's Role gains read-only `get` and `list` on pods, their logs, replica sets and events in the
+  namespace; rerun `deploy/gke/setup-cicd.sh` to grant it. Until then the step reports that it was forbidden and
+  the rollback goes ahead as before.
 - A PR merged or closed with no webhook reaching hangar no longer counts as open (KAN-246). A pass at startup and
   every `HANGAR_GITHUB_PR_RECONCILE_MINUTES` (15) reads each open PR from GitHub and records its merge or close as the
   webhook would, so jobs held for review capacity start. `hangar doctor` says how many it corrected
