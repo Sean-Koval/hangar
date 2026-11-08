@@ -134,12 +134,16 @@ async def test_wait_suspends_then_resumes_through_the_receiver(svc, live, gov, t
     w.since -= gov.settings.governance_suspend_after_seconds + 1  # past suspend_after: the slot is released
     await gov.receiver.tick()
     await gov.receiver.drain()
+    # what the suspend does in the background (the turn's end, the checkpoint, the release): waited for, not timed
+    await until(lambda: w.state == "suspended" and svc.get("gv-wait").state == SessionState.SUSPENDED
+                and not svc.busy(svc.get("gv-wait").id))
     s = await settle(svc, "gv-wait")
     assert w.state == "suspended" and s.state == SessionState.SUSPENDED and s.sandbox_id is None
 
     tower.allow("A-7", "RC-7")
     code, out = await gov.receiver.receive(*event("approval.decided", "A-7"))
     assert code == 200 and out.get("resumed") == "gv-wait", out
+    await until(lambda: len(svc.get("gv-wait").turns) > 1 and svc.get("gv-wait").turns[1].finished_at)
     s = await settle(svc, "gv-wait")
     t2 = s.turns[1]
     assert [(x.status, x.by, x.receipt) for x in t2.approvals] == [("allowed", "tower", "RC-7")]  # pre-cleared
