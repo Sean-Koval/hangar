@@ -57,7 +57,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "deploy-company.md": (1370, 12, LATER + "the base, the components, the Terraform module"),
     "doctor.md": (1391, 30, LATER + "the checks, the fixes"),
     "envd.md": (1971, 41, LATER + "the daemon, its API"),
-    "gke.md": (1117, 11, LATER + "install, images and packs, operations"),
+    "gke.md": (1169, 11, LATER + "install, images and packs, operations"),
     "gke/images.md": (778, 7, MOVED.format("gke.md") + "split it by question"),
     "gke/microvms.md": (1005, 12, MOVED.format("gke.md") + "split it by question"),
     "gke/power.md": (441, 8, MOVED.format("gke.md") + "split it by question"),
