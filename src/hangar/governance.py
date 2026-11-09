@@ -658,6 +658,10 @@ class PassportCredential:
             self._passport, self._expires = await self._exchange()
             return self._passport
 
+    async def exchange(self) -> tuple[str, float]:
+        """A new passport and its expiry, not cached (--- KAN-33: the Tower hook's per-sandbox passports)."""
+        return await self._exchange()
+
     async def _exchange(self) -> tuple[str, float]:
         try:
             subject = self.mint()

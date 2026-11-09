@@ -81,6 +81,11 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **A per-sandbox passport for the Tower hook** (KAN-33, #174,
+  [docs/governance-hook.md](docs/governance-hook.md#the-key)). `HANGAR_GOVERNANCE_HOOK_AUTH=passport` (the default
+  stays `key`) writes the sandbox's own passport as the run's hangar-owned key file instead of the shared agent key:
+  its token (`sub: hangar:env:<env>`, its person and their linked email) exchanged at Tower's token endpoint, checked,
+  and renewed by the refresh loop while the run lasts. The agent still can read it (the hook runs as the agent).
 - **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
   in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
   own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps
