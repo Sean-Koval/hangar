@@ -42,6 +42,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **Cost reporting for a team** (KAN-300). Weekly metrics and `GET /api/usage` report cost per verified PR next to
+  cost per merged PR. Repo policy `max_usd_per_month` and `HANGAR_PERSON_MAX_USD_PER_MONTH` hold new jobs like the
+  daily caps. `hangar usage export --month YYYY-MM --by person|repo` (`GET /api/usage/export`, admin) writes a
+  chargeback CSV. See [Cost reporting](docs/cost-reporting.md).
 - **`deploy/gke/up.sh` refuses a `-dirty` image** (KAN-172), as Tower's deploy does. Uncommitted changes to
   `src`, `envs`, `envd`, `pyproject.toml` or the `Dockerfile` stop it before any cloud call, listing the files. Pass
   `--allow-dirty` or set `ALLOW_DIRTY=1` (which `hangar up --gke` passes through) to deploy them; a `-dirty` image
