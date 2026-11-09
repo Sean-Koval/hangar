@@ -81,6 +81,14 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **Tower passports on the job API** (KAN-33, #174, [docs/tower-passports.md](docs/tower-passports.md)).
+  `HANGAR_JOB_PASSPORTS=on` (off by default) accepts a Tower passport as the bearer on `/api/jobs*`, as the person
+  its `person:<email>` names (linked by email) or an agent listed in `HANGAR_JOB_PASSPORT_AGENTS`. The signature,
+  issuer, audience (Tower's own: `<issuer>/mcp` or `<issuer>`), expiry and act chain are checked against Tower's JWKS; refusals answer 401 and are audited
+  `passport.refused`. A passport holds the `jobs` scope only and never approves a job. hangar's tokens are unchanged.
+- **Tower sees GitHub accounts by login** (KAN-33). Requesters and signers of job releases and landings are sent as
+  `github:<login>`, beside the person (found by the account's numeric id, never the login) and the email linked to
+  them; only an id with no login is sent as `github-id:<id>`, which Tower maps to nobody.
 - **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
   in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
   own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps

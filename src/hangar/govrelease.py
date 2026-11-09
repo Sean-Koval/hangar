@@ -57,8 +57,11 @@ from hangar.governance import (
     Signer,
     Subject,
     fail_closed,
+    front_door,
+    github_external,
     idempotency_key,
     parse_modes,
+    person_party,
 )
 from hangar.governed import record
 from hangar.govevents import Unavailable
@@ -93,8 +96,9 @@ def mode_of(settings: Any, kind: str) -> str:
 
 
 def _external(requester: str | None) -> str | None:
-    """A front door's id for whose work it is, when no person is (`github:...`, `jira:...`, `webhook:...`)."""
-    return requester[:200] if requester and requester != "system" and ":" in requester else None
+    """--- KAN-33: the outside account whose work it is (`github:<login>`, `jira:...`, `webhook:...`), sent beside the
+    person when there is one, so Tower can tell a requester signing their own work by either name."""
+    return front_door(requester)
 
 
 class Releases:
@@ -146,11 +150,24 @@ class Releases:
                 metrics.M.governance_disagreements.labels(req.kind).inc()
         return rec
 
-    @staticmethod
-    def signer(approver: approvals.Approver, verdict: str = "approve") -> Signer:
-        """The person who acted at a hangar surface, as Tower should know them (§4.4)."""
-        return Signer(person=approver.person, external=None if approver.person else approver.actor[:200],
-                      via=approver.via, verdict=verdict)  # type: ignore[arg-type]
+    def signer(self, approver: approvals.Approver, verdict: str = "approve") -> Signer:
+        """The person who acted at a hangar surface, as Tower should know them (§4.4). --- KAN-33: a GitHub or Jira
+        signer is always sent by the account that acted (`github:<login>`, the login GitHub reported with the
+        comment), with the person its numeric id is linked to and that person's email; a REST or MCP signer by
+        person and email."""
+        ext = None
+        if approver.via == "github":
+            ext = front_door(approver.actor)
+        elif approver.via == "jira":
+            ext = next((i for i in sorted(approver.identities) if i.startswith("jira:")), None)
+        elif not approver.person:
+            ext = front_door(approver.actor) or approver.actor[:200]
+        party = person_party(self.store, approver.person, ext)
+        return Signer(**party.model_dump(), via=approver.via, verdict=verdict)  # type: ignore[arg-type]
+
+    def requester(self, job: Job) -> Party:
+        """Whose work it is: the job's person (with their email) and the outside account that asked, if any."""
+        return person_party(self.store, job.person, _external(job.requester))
 
     # ================================================================== job release
     def release_request(self, job: Job, signer: Signer | None = None) -> DecisionRequest:
@@ -161,7 +178,7 @@ class Releases:
         detail = str(self.fleet.broker.redact(job.instructions or ""))
         return DecisionRequest(
             kind="job.release", idempotency_key=idempotency_key("job.release", job=job.id),
-            requester=Party(person=job.person, external=None if job.person else _external(job.requester)),
+            requester=self.requester(job),
             signer=signer,
             subject=Subject(job=job.id, session=job.session_id, repo=repo_key(job.repo) if job.repo else None,
                             environment=job.environment),
@@ -310,9 +327,10 @@ class Releases:
         login = st.approved_by or ""
         signer = None
         if login:
-            uid = lg._login_ids.get(login.lower())
-            signer = Signer(person=lg._person_of_login(login), external=f"github:{uid}" if uid else f"github:{login}",
-                            via="github")
+            # --- KAN-33: Tower names GitHub users by login; the person comes from the reviewer's numeric id, which
+            # the review event reported with this login (Landing._login_ids), never from the login itself
+            party = person_party(self.store, lg._person_of_login(login), github_external(login))
+            signer = Signer(**party.model_dump(), via="github")
         ai, review = st.ai_review or {}, None
         if ai.get("url") and ai.get("head_sha"):
             review = AiReview(url=str(ai["url"]), sha=str(ai["head_sha"]), harness=ai.get("harness"),
@@ -323,11 +341,12 @@ class Releases:
         detail = f"PR #{r.pr_number}" + (f": {first[0]}" if first else "")
         return DecisionRequest(
             kind="landing.approve", idempotency_key=idempotency_key("landing.approve", job=job.id, head_sha=sha),
-            requester=Party(person=job.person, external=None if job.person else _external(job.requester)),
+            requester=self.requester(job),
             signer=signer,
             subject=Subject(job=job.id, session=job.session_id, repo=repo_key(job.repo) if job.repo else None,
                             environment=job.environment, pr=r.pr_number, base_sha=r.base_sha, head_sha=sha,
-                            files=list(st.files)[:FILES_MAX], author=Party(person=job.person) if job.person else None),
+                            files=list(st.files)[:FILES_MAX],
+                            author=person_party(self.store, job.person) if job.person else None),
             action=Action(detail=str(self.fleet.broker.redact(detail))[:DETAIL_MAX]),
             context=Context(untrusted_source=job.untrusted_source, tainted=taint.tainted(job),
                             risk=st.risk if st.risk in ("low", "normal", "high") else None,  # type: ignore[arg-type]

@@ -68,14 +68,51 @@ FAIL_CLOSED: dict[str, Outcome] = {"job.release": "wait", "landing.approve": "wa
 
 # ====================================================================== the request
 class Party(BaseModel):
-    """A person (or an outsider) as the workspace should know them. `person`: hangar's person id; `email`: a verified
-    address from the person's linked identity, which the workspace maps to its user; `external`: a front door's
-    stable id (`github:<numeric id>`, `jira:<account id>`, `webhook:<source>`), never a renameable login."""
+    """A person (or an outsider) as the workspace should know them. `person`: hangar's person id; `email`: the
+    address linked to that person (`email:` link), which the workspace maps to its user; `external`: the front door
+    account that acted, as Tower names accounts: `github:<login>` (--- KAN-33: Tower's people directory and
+    `requester_claim` key GitHub users by login), `jira:<account id>`, `webhook:<source>`.
+
+    A GitHub login can be renamed and re-registered by someone else, so hangar never decides who a login is from
+    the login: the person comes from the account's numeric id (people.resolve_external), and the login sent is the
+    one GitHub reported for that id in the same event. Where hangar knows only the id, it sends `github-id:<id>`,
+    which Tower maps to nobody: an unmapped signer is a `wait`, never an allow (`github_external`)."""
 
     model_config = ConfigDict(extra="forbid")
     person: str | None = None
     email: str | None = None
     external: str | None = None
+
+
+FRONT_DOORS = ("github:", "jira:", "slack:", "webhook:", "symphony:")  # requesters that name an outside account
+
+
+def front_door(requester: str | None) -> str | None:
+    """The outside account a job's requester string names (`github:<login>`, `jira:<id>`, ...), or None for
+    hangar's own callers (token names, `@person:token`, `system`)."""
+    if not requester or not requester.startswith(FRONT_DOORS) or len(requester) > 200:
+        return None
+    return requester if requester.split(":", 1)[1] else None
+
+
+def github_external(login: str | None, uid: int | str | None = None) -> str | None:
+    """A GitHub account as Tower names it: `github:<login>`; `github-id:<numeric id>` when only the id is known
+    (Tower maps that to nobody, so it can't stand for a login that happens to be all digits)."""
+    login = (login or "").strip().lstrip("@")
+    if login:
+        return f"github:{login}"
+    return f"github-id:{uid}" if uid not in (None, "") else None
+
+
+def person_party(store: Any, person: str | None, external: str | None = None) -> Party:
+    """A hangar person, with the email linked to them (if any), and the front door account that acted."""
+    email = None
+    if person and store is not None:
+        from hangar import people
+
+        p = people.get(store, person)
+        email = next((k.split(":", 1)[1] for k in (p.links if p else []) if k.startswith("email:")), None)
+    return Party(person=person, email=email, external=external)
 
 
 class Signer(Party):
