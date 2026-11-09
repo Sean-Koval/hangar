@@ -24,13 +24,14 @@ narrow; landing refuses to land such a job, and `hangar doctor` says so.
 
 from __future__ import annotations
 
+import re
 import secrets as pysecrets
 import shlex
 from typing import TYPE_CHECKING
 
 from hangar.envbuilds import LABEL as BUILD_LABEL
 from hangar.envbuilds import VALIDATE_LABEL
-from hangar.models import Credential, ExecResult, Sandbox
+from hangar.models import Credential, ExecResult, Job, Sandbox
 
 if TYPE_CHECKING:
     from hangar.envspec import EnvSpec
@@ -41,6 +42,32 @@ GRADER_LABEL = "hangar.experiment.grader"  # --- review(#114): experiments.GRADE
 # --- sealed (#126): the labels of sandboxes that get the sealed profile. Part B adds its replay and fork labels here.
 SEALED_LABELS = (GRADER_LABEL,)
 NETWORK_LABEL = "hangar.sealed.network"  # "mirror": a sealed sandbox may read hangar's package mirror; else nothing
+
+
+# --- KAN-308: a job on a repo with no branches yet has no base to diff against; its work is everything since git's
+# empty tree, and a symbolic ref (`HEAD`, `@{-1}`) is never stored as a base branch.
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+_BRANCH_RE = re.compile(r"^(?!-)(?!/)(?!.*\.\.)(?!.*//)(?!.*@\{)[A-Za-z0-9._/-]{1,200}(?<!/)(?<!\.lock)(?<!\.)$")
+
+
+def real_branch(name: str | None) -> str | None:
+    """A branch name as git printed it, or None for nothing or a symbolic ref (`HEAD`, `@{-1}`): KAN-308."""
+    name = (name or "").strip().removeprefix("refs/heads/")
+    return name if name and name != "HEAD" and _BRANCH_RE.match(name) else None
+
+
+def base_rev(job: Job) -> str:
+    """What a job's work is diffed against: its base commit, else its base branch's remote-tracking ref, else (a repo
+    that had no branches) the empty tree, so every commit on the job branch is the work."""
+    if job.result.base_sha:
+        return job.result.base_sha
+    branch = real_branch(job.base_branch)
+    return f"origin/{branch}" if branch else EMPTY_TREE
+
+
+def log_range(base: str) -> str:
+    """A `git log` range for the commits over `base`, already shell-quoted: the empty tree is no commit to exclude."""
+    return "HEAD" if base == EMPTY_TREE else f"{shlex.quote(base)}..HEAD"
 
 
 def builds_repo_code(sb: Sandbox) -> bool:

@@ -32,6 +32,8 @@ case "$mode" in
   fail) exit 3 ;;
   sleep) sleep 60 ;;
   slow) sleep 1.5; echo s > slow.txt && git add slow.txt && git commit -qm "slow" ;;
+  onmain) git fetch -q origin main && git merge -q --allow-unrelated-histories --no-edit origin/main \
+      && echo r > r.txt && git add r.txt && git commit -qm "r: on main" ;;
   followup) grep -q "also do Y" "$HANGAR_PROMPT_FILE" && echo y > y.txt && git add y.txt && git commit -qm "y"
       echo "did Y" > "$HANGAR_JOB_DIR/RESULT.md" ;;
 esac
@@ -71,6 +73,7 @@ class Hooks:
     def __init__(self):
         self.calls: list[httpx.Request] = []
         self.prs: list[dict] = []
+        self.default_branch = "main"
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -92,7 +95,7 @@ class Hooks:
             if p.endswith("/comments") and request.method == "POST":
                 return httpx.Response(201, json={"id": 1})
             if p == "/repos/o/r":
-                return httpx.Response(200, json={"default_branch": "main"})
+                return httpx.Response(200, json={"default_branch": self.default_branch})
             return httpx.Response(404, json={"message": "nope"})
         return httpx.Response(200, json={"ok": True})
 
@@ -238,6 +241,61 @@ async def test_follow_up_same_branch(jobs, world):
     out = subprocess.run(["git", "--git-dir", str(world["remote"]), "log", "--oneline", job.branch],
                          capture_output=True, text=True).stdout
     assert " y" in out and "fix: add fix.txt" in out
+
+
+def _empty_remote(world) -> Path:
+    remote = world["root"] / "empty.git"
+    subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", "--bare", str(remote)], check=True)
+    return remote
+
+
+async def test_empty_repo_delivery_pushes_the_first_branch(jobs, world, sessions):
+    """KAN-308: a job on a repo with no branches pushes its branch as the repo's first, instead of `no_changes`,
+    and stores no symbolic ref (`@{-1}`, `HEAD`) as its base; its patch is the whole change."""
+    from hangar import exchange
+
+    remote = _empty_remote(world)
+    job = jobs.submit(SubmitJob(instructions="x", repo=f"file://{remote}", environment="jobenv", keep_minutes=60),
+                      Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED and job.reason != "no_changes", "\n".join(e.message for e in job.events)
+    assert job.base_branch is None and sessions.get(job.session_id).base_branch is None
+    assert job.result.pushed and job.result.commits == [job.result.commits[0]]
+    assert "fix: add fix.txt" in job.result.commits[0] and "fix.txt" in (job.result.diffstat or "")
+    assert _remote_has(remote, job.branch)
+    p = await exchange.session_patch(sessions, sessions.get(job.session_id))
+    assert [f["path"] for f in p["files"]] == ["fix.txt"] and "+fixed" in p["patch"]
+    # with no base branch, no PR is opened against the job's own branch (GitHub's default for an empty repo)
+    jobs.hooks.default_branch = job.branch
+    _gh_settings(jobs, jobs.broker)
+    job.repo = "https://github.com/o/r.git"
+    await jobs._ensure_pr(job, draft=True)
+    assert jobs.hooks.prs == [] and job.result.pr_number is None
+
+
+async def test_empty_repo_follow_up_delivers_into_main_once_it_exists(jobs, world):
+    """KAN-308: `main` made after the first turn: a follow-up that builds on it delivers a PR into `main`."""
+    remote = _empty_remote(world)
+    job = jobs.submit(SubmitJob(instructions="x", repo=f"file://{remote}", environment="jobenv", keep_minutes=60),
+                      Caller("svc", "svc"))
+    job = await _until(jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED and job.result.pushed and job.base_branch is None
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run([*git, "-C", str(world["root"] / "seed"), "push", "-q", str(remote), "HEAD:refs/heads/main"],
+                   check=True)
+    subprocess.run(["git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+    world["mode"].write_text("onmain")  # merges main: hangar never force-pushes, so a rebase would be rejected
+    jobs.follow_up(job.id, "build on main", requester="svc")
+    job = await _until(jobs, job.id, DONE)
+    assert job.state == JobState.SUCCEEDED and job.reason != "no_changes", "\n".join(e.message for e in job.events)
+    assert job.base_branch == "main"
+    assert len(job.result.commits) == 3 and not any(c.endswith(" init") for c in job.result.commits)
+    assert "fix.txt" in (job.result.diffstat or "") and "README" not in (job.result.diffstat or "")
+    _gh_settings(jobs, jobs.broker)
+    job.repo = "https://github.com/o/r.git"
+    await jobs._ensure_pr(job, draft=True)
+    assert job.result.pr_number == 7 and jobs.hooks.prs[-1]["base"] == "main"
+    assert jobs.hooks.prs[-1]["head"] == job.branch
 
 
 async def test_follow_up_after_the_sandbox_was_released_resumes_the_session(jobs, world, fleet):
