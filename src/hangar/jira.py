@@ -298,6 +298,8 @@ class JiraAPI:
                     msg = ""
                 raise JiraError(f"Jira {method} {path}: HTTP {r.status_code} {msg}".strip()[:500])
             if raw:
+                if r.is_redirect:  # --- KAN-292: never follow Jira elsewhere with hangar's credential
+                    raise JiraError(f"Jira {method} {path}: redirected (HTTP {r.status_code}), not followed")
                 return r.content
             return r.json() if r.content else None
         raise JiraError(f"Jira {method} {path}: {err} (gave up after 3 attempts)")
@@ -519,6 +521,7 @@ intake.TRACKERS["jira"] = update
 
 # ============================================================================ ticket context (--- KAN-292)
 ATTACHMENT_MAX = 1_000_000  # a text attachment is read only up to this size
+CONTEXT_SECONDS = 20.0  # all of it, before the job is queued without it
 _TEXT_TYPES = ("text/", "application/json", "application/xml", "application/yaml", "application/x-yaml",
                "application/x-sh", "application/javascript", "application/toml", "application/sql")
 _TEXT_EXT = (".txt", ".md", ".log", ".json", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".py", ".js", ".ts", ".sh",
@@ -596,6 +599,7 @@ async def fetch_context(api: JiraAPI, cfg: JiraConfig, key: str) -> TicketContex
             if (b := _brief(ln.get(side), str(t.get(word) or t.get("name") or "relates to"))) is not None:
                 links.append(b)
     attachments: list[dict[str, Any]] = []
+    budget = cfg.context_max_bytes  # read no more attachment bytes than the file could ever hold
     for att in fields.get("attachment") or []:
         if not isinstance(att, dict):
             continue
@@ -606,7 +610,10 @@ async def fetch_context(api: JiraAPI, cfg: JiraConfig, key: str) -> TicketContex
             item["why"] = "not text"
         elif size is None or size > ATTACHMENT_MAX:
             item["why"] = f"over {ATTACHMENT_MAX // 1_000_000} MB" if size else "size unknown"
+        elif size > budget:
+            item["why"] = "over the context_max_bytes left for this file"
         else:
+            budget -= size
             raw = await part(f"attachment {name}", api.attachment(att), None)
             if raw is None:
                 item["why"] = "could not be read from this Jira"
@@ -1250,8 +1257,11 @@ class JiraFrontDoor:
         if api is None:
             return [("problems", "## Not read\n\n- comments, links and attachments: the Jira token credential "
                                  "is not stored")]
-        try:
-            tc = await fetch_context(api, cfg, key)
+        try:  # bounded, so a slow Jira can't hold the delivery past Jira's own webhook timeout
+            tc = await asyncio.wait_for(fetch_context(api, cfg, key), CONTEXT_SECONDS)
+        except TimeoutError:
+            return [("problems", f"## Not read\n\n- comments, links and attachments: Jira took longer than "
+                                 f"{CONTEXT_SECONDS:.0f} s")]
         finally:
             await api.close()
         return context_sections(self.jobs, cfg, tc)

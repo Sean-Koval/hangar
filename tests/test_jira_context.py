@@ -158,3 +158,44 @@ def test_the_file_is_capped_with_a_note_saying_what_was_cut():
 def test_settings_are_bounded():
     with pytest.raises(ValueError):
         jira.JiraConfig.model_validate({**CLOUD, "context_max_bytes": 100})
+
+
+async def test_an_attachment_redirect_is_not_followed_and_attachments_stay_in_budget(linked):
+    data = fixture("jira_context_cloud.json")
+    data["links"]["fields"]["attachment"].append(
+        {"id": "10004", "filename": "second.log", "mimeType": "text/plain", "size": 30_000})
+    cfg = jira.JiraConfig.model_validate({**CLOUD, "context_max_bytes": 20_000})
+    inner = FakeJira(data, True)
+
+    def fake(r: httpx.Request) -> httpx.Response:
+        if r.url.path.endswith("/content/10001"):
+            return httpx.Response(303, headers={"Location": "https://api.media.atlassian.com/file/x"})
+        return inner(r)
+
+    api = jira.JiraAPI(cfg, "tok", transport=httpx.MockTransport(fake))
+    try:
+        tc = await jira.fetch_context(api, cfg, "ABC-12")
+    finally:
+        await api.close()
+    log = next(a for a in tc.attachments if a["name"] == "upload.log")
+    assert log["text"] is None and any("redirected" in x for x in tc.problems)
+    second = next(a for a in tc.attachments if a["name"] == "second.log")
+    assert second["text"] is None and "context_max_bytes" in second["why"]
+    assert not any(c.url.path.endswith("/content/10004") for c in inner.calls)
+
+
+async def test_a_slow_jira_is_cut_off_and_the_job_still_gets_its_file(linked, monkeypatch):
+    import asyncio
+
+    async def slow(api, cfg, key):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(jira, "fetch_context", slow)
+    monkeypatch.setattr(jira, "CONTEXT_SECONDS", 0.01)
+    cfg = jira.JiraConfig.model_validate(CLOUD)
+    door = jira.JiraFrontDoor.__new__(jira.JiraFrontDoor)
+    door.jobs = linked
+    nothing = httpx.MockTransport(lambda r: httpx.Response(404))
+    monkeypatch.setattr(jira, "client_for", lambda svc, cfg=None: jira.JiraAPI(cfg, "tok", transport=nothing))
+    [(what, text)] = await door._ticket_sections(cfg, "ABC-12")
+    assert what == "problems" and "longer than" in text
