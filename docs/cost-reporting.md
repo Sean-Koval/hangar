@@ -21,8 +21,8 @@ abandoned, failed, or ended without a PR. The denominator is the merged PRs whos
 `GET /api/usage/export` with an admin token. Each row is one person or repo for that calendar month in UTC.
 
 Its columns are turns, tokens by kind, `cost_usd`, `unpriced_turns`, `sandbox_hours` and `merged_prs`. Sandbox hours
-are the turns' wall time, so a kept-alive sandbox's idle time isn't charged. A person is the job's or session's owner,
-else the turn's requester.
+are the turns' wall time, so a kept-alive sandbox's idle time isn't charged. A person is the job's or session's owner.
+Older work without one is charged to the person its token belongs to, so one person gets one row.
 
 A name that starts with `=`, `+`, `-` or `@` gets a leading `'`, so a spreadsheet opens it as text, not a formula.
 
