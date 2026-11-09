@@ -790,6 +790,101 @@ class BreakGlass(BaseModel):
         return self.confirmed_by is not None and self.started_at <= t < self.until
 
 
+BREAK_GLASS_KEY = "gov-break-glass"  # kv: the one break-glass record (JSON), started, confirmed or not
+BREAK_GLASS_LOG = "gov-bg-decision:"  # kv: + idempotency key -> a decision taken under break-glass, for replay
+
+
+class BreakGlassError(ValueError):
+    """A break-glass request hangar refuses (the CLI and REST show the text)."""
+
+
+def parse_until(text: str, now_: float) -> float:
+    """`--until`: a duration (`90m`, `2h`, `1h30m`) or an RFC 3339 time. At most 24 hours ahead."""
+    t = (text or "").strip()[:64]
+    if (secs := _duration(t)) is not None:
+        until = now_ + secs
+    else:
+        try:
+            until = parse_time(t)
+        except ValueError:
+            raise BreakGlassError(f"--until '{text}' isn't a duration (2h, 90m) or an RFC 3339 time") from None
+    if not now_ < until <= now_ + BREAK_GLASS_MAX:
+        raise BreakGlassError("break-glass ends in the future and lasts at most 24 hours")
+    return until
+
+
+def _duration(t: str) -> int | None:
+    """`2h`, `90m`, `1h30m` in seconds; None for anything else. No regex: the text is the caller's."""
+    hours, mins = "", t
+    if "h" in t:
+        hours, _, mins = t.partition("h")
+        if not hours.isdigit():
+            return None
+    if mins:
+        if not mins.endswith("m") or not mins[:-1].isdigit():
+            return None
+        mins = mins[:-1]
+    if not hours and not mins:
+        return None
+    return int(hours or 0) * 3600 + int(mins or 0) * 60
+
+
+def load_break_glass(store: Any, t: float | None = None) -> BreakGlass | None:
+    """The break-glass record, started or active; None when there is none or it has ended (an expired one is
+    removed here: break-glass ends on its own)."""
+    raw = store.kv_get(BREAK_GLASS_KEY)
+    if not raw:
+        return None
+    t = time.time() if t is None else t
+    try:
+        bg = BreakGlass.model_validate_json(raw)
+    except (ValidationError, ValueError):
+        log.error("governance: an unreadable break-glass record was dropped")
+        store.kv_delete(BREAK_GLASS_KEY, durable=True)
+        return None
+    if t >= bg.until:
+        store.kv_delete(BREAK_GLASS_KEY, durable=True)
+        return None
+    return bg
+
+
+def active_break_glass(store: Any, t: float | None = None) -> BreakGlass | None:
+    """Break-glass started, confirmed by a second admin, and not yet over."""
+    bg = load_break_glass(store, t) if store is not None else None
+    return bg if bg is not None and bg.active(t) else None
+
+
+def start_break_glass(store: Any, by: str, reason: str, until: float, t: float | None = None) -> BreakGlass:
+    t = time.time() if t is None else t
+    if load_break_glass(store, t) is not None:
+        raise BreakGlassError("break-glass is already started; confirm it, or end it first")
+    try:
+        bg = BreakGlass(started_by=by, reason=reason.strip(), started_at=t, until=until)
+    except (ValidationError, ValueError) as e:
+        raise BreakGlassError(str(e).splitlines()[-1] if isinstance(e, ValidationError) else str(e)) from None
+    store.kv_set(BREAK_GLASS_KEY, bg.model_dump_json(), durable=True)
+    return bg
+
+
+def confirm_break_glass(store: Any, by: str, t: float | None = None) -> BreakGlass:
+    bg = load_break_glass(store, t)
+    if bg is None:
+        raise BreakGlassError("no break-glass is started (hangar governance local --until ... --reason ...)")
+    if bg.confirmed_by is not None:
+        raise BreakGlassError(f"break-glass is already confirmed by {bg.confirmed_by}")
+    if by == bg.started_by:
+        raise BreakGlassError("break-glass needs a second admin to confirm it, not the one who started it")
+    bg = bg.model_copy(update={"confirmed_by": by})
+    store.kv_set(BREAK_GLASS_KEY, bg.model_dump_json(), durable=True)
+    return bg
+
+
+def end_break_glass(store: Any) -> BreakGlass | None:
+    bg = load_break_glass(store)
+    store.kv_delete(BREAK_GLASS_KEY, durable=True)
+    return bg
+
+
 def parse_modes(default: str, overrides: str | dict[str, str] | None = None) -> dict[str, Mode]:
     """`HANGAR_GOVERNANCE` (the default mode) and `HANGAR_GOVERNANCE_MODES` (`{"tool.call": "shadow"}` or
     `tool.call=shadow,landing.approve=enforce`) as a mode per kind."""

@@ -5,7 +5,8 @@ back from `enforce` to `shadow` or `off`. The design is [spec 0015](../specs/001
 hangar enforces, Tower decides whether a person or a policy allows something, and nothing that goes wrong on the way
 is ever an allow.
 
-**Break-glass itself isn't built yet.** Read [what is built today](#today-hangar-decides-alone) first. With every
+Break-glass is `hangar governance local` ([the procedure](break-glass-tower.md#break-glass)). Read [what is built
+today](#today-hangar-decides-alone) first. With every
 kind `off` (the code's default), hangar never asks Tower. GKE's `deploy/k8s/config.yaml` sets `shadow`: hangar's rules
 decide and Tower answers a dry run. The [procedure](break-glass-tower.md) covers a kind in `enforce`.
 
@@ -29,10 +30,9 @@ Every approval path calls it through `HANGAR_GOVERNANCE` and `HANGAR_GOVERNANCE_
 - `govevents.py`: Tower's signed events, which suspend and resume turns and stop runs.
 - `govhook.py`: [the managed Tower hook](../governance-hook.md) for Claude Code turns.
 
-What isn't built:
+- `hangar governance local` (`governance_cli.py`, `govrelease.py`): break-glass, with a doctor warning while it is on.
 
-- **No command, no doctor check.** `hangar governance local` (break-glass) and the doctor's `governance` check are
-  planned.
+What isn't built: replaying break-glass decisions to Tower as records.
 
 With every kind `off`, every approval is decided by hangar's own rules, as before. That is an admin or a linked repo approver, never on
 their own job (`approvals.decide`, #121), the taint gate (#130) and the self-approval rule (#160).

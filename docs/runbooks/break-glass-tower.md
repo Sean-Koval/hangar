@@ -60,18 +60,22 @@ disagreements (§14).
 ## Break-glass
 
 ```bash
-hangar governance local --until <time> --reason "Tower down since 14:10, its on-call paged"    # planned command
+hangar governance local --until 4h --reason "Tower down since 14:10, its on-call paged"   # an admin
+hangar governance local --confirm                                                     # a second admin
+hangar governance status
+hangar governance local --end                                                         # once Tower answers
 ```
 
-An admin starts it, and a **second admin** confirms it. It lasts at most 24 hours and ends by itself. Its start,
-confirmation and end are audited (`governance.break_glass`). While it is active, the kinds in `enforce` are decided by
-hangar's local rules.
+An admin starts it, and a **second admin** confirms it: another person, not another token. `--until` takes a duration
+or an RFC 3339 time, at most 24 hours ahead, and it ends by itself. Each step is audited `governance.break_glass`, and
+`hangar doctor` warns while it is started or active.
 
-Each such decision is queued to be replayed to Tower as a record once it answers, so its receipts have no gap. That
-replay isn't built on either side yet (spec 0015 §16; Tower refuses a `recorded` request today). Break-glass never
-applies to kinds in `off` or `shadow`, which are local already.
+While it is active, hangar's own rules decide an admin's approval of a job release or a landing in `enforce`. That
+happens only when Tower can't answer. A Tower that answers still decides, and a member's approval still waits. Each such
+decision is audited `governance.break_glass.decision`.
 
-Unlike a mode change, break-glass ends by itself and needs two people.
+Each decision is also kept to replay to Tower as a record, so its receipts have no gap. That replay isn't built on
+either side yet (spec 0015 §16). Break-glass never applies to kinds in `off` or `shadow`, which are local already.
 
 ## When Tower denies what it shouldn't
 
