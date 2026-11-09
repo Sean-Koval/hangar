@@ -517,7 +517,8 @@ class Settings(BaseSettings):
     governance_token_url: str | None = None
     # --- KAN-33 (#174): Tower passports on hangar's job API (/api/jobs*), as the person (`sub: person:<email>`,
     # linked by email) or a listed agent (`agent=person,...`) in them. off: only hangar's own tokens. The issuer
-    # defaults to HANGAR_GOVERNANCE_URL and the audience to HANGAR_PUBLIC_URL (what Tower mints them for).
+    # defaults to HANGAR_GOVERNANCE_URL; the audiences to Tower's own, `<issuer>/mcp` and `<issuer>` (Tower mints
+    # passports for nothing else), or a comma-separated override.
     job_passports: Literal["off", "on"] = "off"
     job_passport_issuer: str | None = None
     job_passport_audience: str | None = None

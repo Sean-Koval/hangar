@@ -125,8 +125,12 @@ class Hangar:
             if not issuer.startswith(("https://", "http://localhost", "http://127.0.0.1")):
                 raise ValueError("HANGAR_JOB_PASSPORTS=on needs Tower's https URL (HANGAR_JOB_PASSPORT_ISSUER or "
                                  "HANGAR_GOVERNANCE_URL)")
-            audience = (self.settings.job_passport_audience or self.settings.public_url).rstrip("/")
-            self._passports = PassportAuth(self.store, PassportVerifier(issuer, audience),
+            # Tower mints passports only for its own audiences (aw/workload.py: `<origin>/mcp` and the origin), never
+            # for another service's URL; HANGAR_JOB_PASSPORT_AUDIENCE overrides them (comma-separated)
+            override = [a.strip().rstrip("/") for a in (self.settings.job_passport_audience or "").split(",")
+                        if a.strip()]
+            audiences = override or [f"{issuer}/mcp", issuer]
+            self._passports = PassportAuth(self.store, PassportVerifier(issuer, audiences),
                                            agents=parse_agents(self.settings.job_passport_agents),
                                            audit=self.fleet.audit)
         return self._passports

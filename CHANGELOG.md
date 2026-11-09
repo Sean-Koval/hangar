@@ -84,7 +84,7 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 - **Tower passports on the job API** (KAN-33, #174, [docs/tower-passports.md](docs/tower-passports.md)).
   `HANGAR_JOB_PASSPORTS=on` (off by default) accepts a Tower passport as the bearer on `/api/jobs*`, as the person
   its `person:<email>` names (linked by email) or an agent listed in `HANGAR_JOB_PASSPORT_AGENTS`. The signature,
-  issuer, audience, expiry and act chain are checked against Tower's JWKS; refusals answer 401 and are audited
+  issuer, audience (Tower's own: `<issuer>/mcp` or `<issuer>`), expiry and act chain are checked against Tower's JWKS; refusals answer 401 and are audited
   `passport.refused`. A passport holds the `jobs` scope only and never approves a job. hangar's tokens are unchanged.
 - **Tower sees GitHub accounts by login** (KAN-33). Requesters and signers of job releases and landings are sent as
   `github:<login>`, beside the person (found by the account's numeric id, never the login) and the email linked to

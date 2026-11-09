@@ -21,11 +21,12 @@ from hangar.jobs import Caller, SubmitJob
 from tests.test_passports import ORIGIN, Tower, b64d, b64e
 
 HANGAR = "http://localhost:8787"
+AUDS = [f"{ORIGIN}/mcp", ORIGIN]  # Tower mints passports for its own audiences only (aw/workload.py)
 ADMIN_H = {"Authorization": "Bearer t0ken"}
 
 
 def passport(tower: Tower, sub: str = "person:alice@example.com", chain: list[str] | None = None, **over) -> str:
-    return tower.sign(tower.passport(sub=sub, chain=chain or ["claude-code"], **{"aud": HANGAR, **over}))
+    return tower.sign(tower.passport(sub=sub, chain=chain or ["claude-code"], **{"aud": f"{ORIGIN}/mcp", **over}))
 
 
 @pytest.fixture
@@ -80,7 +81,7 @@ def test_a_person_passport_is_that_person_with_the_jobs_scope_only(world, tower)
 async def test_the_principal_names_the_person_and_the_chain(store, tower):
     people.add(store, "alice", role="admin")
     people.link(store, "alice", "email", "alice@example.com")
-    pa = PassportAuth(store, PassportVerifier(ORIGIN, HANGAR, client=httpx.AsyncClient(
+    pa = PassportAuth(store, PassportVerifier(ORIGIN, AUDS, client=httpx.AsyncClient(
         transport=httpx.MockTransport(tower))))
     p = await pa.principal(passport(tower, chain=["claude-code", "hangar"]))
     assert (p.person, p.role, p.id, p.scopes) == ("alice", "admin", "passport:alice", ["jobs"])
@@ -110,11 +111,12 @@ def _tampered(tower: Tower) -> str:
 CASES = {
     "tampered": (_tampered, "bad signature"),
     "expired": (lambda t: passport(t, exp=int(time.time()) - 3600), "expired"),
-    "wrong audience": (lambda t: passport(t, aud=f"{ORIGIN}/mcp"), "another audience"),
+    "wrong audience": (lambda t: passport(t, aud=HANGAR), "another audience"),
+    "another tower's audience": (lambda t: passport(t, aud="https://other-tower.test/mcp"), "another audience"),
     "unknown issuer": (lambda t: passport(t, iss="https://evil.test"), "another issuer"),
-    "unknown key": (lambda t: t.sign(t.passport(sub="person:alice@example.com", aud=HANGAR),
+    "unknown key": (lambda t: t.sign(t.passport(sub="person:alice@example.com", aud=f"{ORIGIN}/mcp"),
                                      key=Ed25519PrivateKey.generate(), kid="x9"), "key Tower doesn't publish"),
-    "not EdDSA": (lambda t: t.sign(t.passport(sub="person:alice@example.com", aud=HANGAR), alg="HS256"), "EdDSA"),
+    "not EdDSA": (lambda t: t.sign(t.passport(sub="person:alice@example.com", aud=ORIGIN), alg="HS256"), "EdDSA"),
     "bad act chain": (lambda t: passport(t, act={"sub": "agent:someone-else"}), "act claim"),
     "unlinked email": (lambda t: passport(t, sub="person:mallory@example.com"), "isn't linked"),
     "unlisted agent": (lambda t: passport(t, sub="agent:rogue", chain=["rogue"]), "HANGAR_JOB_PASSPORT_AGENTS"),
@@ -132,7 +134,7 @@ def test_refusals(world, tower, case):
 
 async def test_refusals_are_audited_without_the_token(store, tower):
     seen = []
-    pa = PassportAuth(store, PassportVerifier(ORIGIN, HANGAR, client=httpx.AsyncClient(
+    pa = PassportAuth(store, PassportVerifier(ORIGIN, AUDS, client=httpx.AsyncClient(
         transport=httpx.MockTransport(tower))), audit=lambda *a, **kw: seen.append((a, kw)))
     tok = passport(tower, sub="person:nobody@example.com")
     with pytest.raises(PassportRejected):
@@ -180,3 +182,13 @@ def test_helpers():
     assert parse_agents(" ci-bot = bob , x=y") == {"ci-bot": "bob", "x": "y"} and parse_agents("") == {}
     with pytest.raises(ValueError):
         parse_agents("lonely")
+
+
+def test_towers_own_audiences_by_default_or_the_override(world, tower, settings):
+    c, h = world["client"], world["h"]
+    assert h.passports().verifier.audiences == AUDS
+    assert c.get("/api/jobs", headers=bearer(passport(tower, aud=ORIGIN))).status_code == 200
+    assert c.get("/api/jobs", headers=bearer(passport(tower, aud=[f"{ORIGIN}/mcp", "x"]))).status_code == 200
+    settings.job_passport_audience = f"{ORIGIN}/hooks, {ORIGIN}/jobs/"
+    h._passports = None
+    assert h.passports().verifier.audiences == [f"{ORIGIN}/hooks", f"{ORIGIN}/jobs"]

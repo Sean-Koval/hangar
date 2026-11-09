@@ -368,8 +368,9 @@ class PassportAuth:
     """Tower passports on hangar's job API (KAN-33, hangar#174; spec 0015 §9).
 
     A caller holding a passport Tower issued (RFC 8693 token exchange, EdDSA, Tower's JWKS) sends it as its bearer
-    on `/api/jobs*`. `verifier` (governance.PassportVerifier) checks the signature, issuer, audience (hangar's own
-    URL by default), expiry and the `act` chain. Then the subject must be someone hangar knows:
+    on `/api/jobs*`. `verifier` (governance.PassportVerifier) checks the signature, issuer, audience (Tower's own,
+    `<origin>/mcp` or the origin, by default: Tower mints passports for no other), expiry and the `act` chain.
+    Then the subject must be someone hangar knows:
 
     * `sub: person:<email>`: the hangar person that email is linked to (`hangar person link <id> email <email>`);
     * `sub: agent:<id>`: only an agent listed in HANGAR_JOB_PASSPORT_AGENTS, as the person listed beside it.
