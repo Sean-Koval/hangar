@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -271,6 +272,45 @@ async def test_empty_repo_delivery_pushes_the_first_branch(jobs, world, sessions
     job.repo = "https://github.com/o/r.git"
     await jobs._ensure_pr(job, draft=True)
     assert jobs.hooks.prs == [] and job.result.pr_number is None
+
+
+def test_real_branch_takes_the_names_git_allows_and_no_symbolic_refs():
+    """KAN-308 (review of PR 461): `+` and non-ASCII names are real branches; symbolic refs and names a shell would
+    read as code are not."""
+    from hangar import delivery
+
+    for ok in ("main", "refs/heads/main", "feat+x", "développement", "release/1.2", "a@b", "x=y,z"):
+        assert delivery.real_branch(ok) == ok.removeprefix("refs/heads/")
+    for bad in (None, "", "HEAD", "@{-1}", "@", "-x", "a..b", "a b", "a;rm -rf", "$(id)", "a`b", "x.lock", "x/", "x."):
+        assert delivery.real_branch(bad) is None
+
+
+async def test_delivery_keeps_the_stored_base_when_the_remote_cant_be_asked(jobs, monkeypatch):
+    """KAN-308 (review of PR 461): delivery looks for a new default branch, and a failed look (a dead sandbox)
+    leaves the job's stored base in place rather than failing the delivery there."""
+    calls = []
+
+    async def boom(job):
+        calls.append(job.id)
+        raise RuntimeError("sandbox gone")
+
+    from types import SimpleNamespace
+
+    from hangar.models import Job
+
+    ran: list[str] = []
+
+    async def sh(job, cmd, *a, **k):
+        ran.append(cmd)
+        return SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+    monkeypatch.setattr(jobs, "_resolve_base", boom)
+    monkeypatch.setattr(jobs, "_sh", sh)
+    job = Job(title="t", instructions="x", environment="e", base_branch="main", deliver="none")
+    with contextlib.suppress(Exception):  # the rest of delivery needs a sandbox; only the base lookup is under test
+        await jobs._deliver(job, draft=True)
+    assert calls == [job.id] and job.base_branch == "main"
+    assert any("origin/main..HEAD" in c for c in ran), ran
 
 
 async def test_empty_repo_follow_up_delivers_into_main_once_it_exists(jobs, world):

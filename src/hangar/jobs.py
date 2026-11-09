@@ -1425,7 +1425,8 @@ class JobService:
                 self._event(job, f"{len(changed)} uncommitted files; not committing them automatically")
             else:
                 await scratch.commit_leftovers(self, job, len(changed))  # --- frontdoor: minus agent scratch files
-        await self._resolve_base(job)  # --- KAN-308: a repo with no default branch at submit may have one now
+        with contextlib.suppress(Exception):  # --- KAN-308: a repo with no default branch at submit may have one now;
+            await self._resolve_base(job)  # a failed look (a dead sandbox) keeps the stored base, as before
         base = delivery.base_rev(job)
         if job.deliver != "none":
             await scratch.drop_committed(self, job, base)  # --- frontdoor: and those it committed itself

@@ -47,7 +47,9 @@ NETWORK_LABEL = "hangar.sealed.network"  # "mirror": a sealed sandbox may read h
 # --- KAN-308: a job on a repo with no branches yet has no base to diff against; its work is everything since git's
 # empty tree, and a symbolic ref (`HEAD`, `@{-1}`) is never stored as a base branch.
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-_BRANCH_RE = re.compile(r"^(?!-)(?!/)(?!.*\.\.)(?!.*//)(?!.*@\{)[A-Za-z0-9._/-]{1,200}(?<!/)(?<!\.lock)(?<!\.)$")
+# git's refname rules (check-ref-format) over letters in any script, digits and `_ . / - + @ = ,`: `+` and non-ASCII
+# names are real branches (review of PR 461); quotes, `$`, `;` and the like stay out, so a name is safe in a shell word.
+_BRANCH_RE = re.compile(r"^(?!-)(?!/)(?!.*\.\.)(?!.*//)(?!.*@\{)(?!@$)[\w.+/@=,-]{1,200}(?<!/)(?<!\.lock)(?<!\.)$")
 
 
 def real_branch(name: str | None) -> str | None:
