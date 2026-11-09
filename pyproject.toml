@@ -42,7 +42,7 @@ command = "hangar.deliverers.command:PLUGIN"
 image-ready = "hangar.deliverers.image_ready:PLUGIN"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=1.4.1", "ruff>=0.17.3",
+dev = ["pytest>=8", "pytest-asyncio>=1.4.1.post1", "ruff>=0.17.3",
        "opentelemetry-sdk>=1.30", "opentelemetry-exporter-otlp-proto-http>=1.30",  # observe: span tests
        "pytest-xdist>=3.8", "pytest-rerunfailures>=16"]  # CI: parallel shards; one rerun on main (docs/ci.md)
 
