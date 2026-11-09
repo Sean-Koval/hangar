@@ -49,8 +49,10 @@ def test_two_admins_at_most_a_day_and_it_ends_on_its_own(store):
     assert parse_until("90m", t) == t + 5400 and parse_until("1h30m", t) == t + 5400
     with pytest.raises(BreakGlassError):
         parse_until("25h", t)
-    with pytest.raises(BreakGlassError):
-        parse_until("soon", t)
+    for bad in ("soon", "h5m", "1h30", "5mm", "2", "1hm", ""):
+        with pytest.raises(BreakGlassError):
+            parse_until(bad, t)
+    assert parse_until("2027-01-15T08:00:00Z", 1_800_000_000.0 - 3600 * 23) - (1_800_000_000.0 - 3600 * 23) < 86400
     bg = start_break_glass(store, "ada", "Tower down", t + 7200, t)
     assert not bg.active(t) and active_break_glass(store, t) is None  # not until a second admin confirms
     with pytest.raises(BreakGlassError, match="already started"):

@@ -759,12 +759,9 @@ class BreakGlassError(ValueError):
 
 def parse_until(text: str, now_: float) -> float:
     """`--until`: a duration (`90m`, `2h`, `1h30m`) or an RFC 3339 time. At most 24 hours ahead."""
-    import re
-
-    t = (text or "").strip()
-    m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", t)
-    if t and m and any(m.groups()):
-        until = now_ + int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60
+    t = (text or "").strip()[:64]
+    if (secs := _duration(t)) is not None:
+        until = now_ + secs
     else:
         try:
             until = parse_time(t)
@@ -773,6 +770,22 @@ def parse_until(text: str, now_: float) -> float:
     if not now_ < until <= now_ + BREAK_GLASS_MAX:
         raise BreakGlassError("break-glass ends in the future and lasts at most 24 hours")
     return until
+
+
+def _duration(t: str) -> int | None:
+    """`2h`, `90m`, `1h30m` in seconds; None for anything else. No regex: the text is the caller's."""
+    hours, mins = "", t
+    if "h" in t:
+        hours, _, mins = t.partition("h")
+        if not hours.isdigit():
+            return None
+    if mins:
+        if not mins.endswith("m") or not mins[:-1].isdigit():
+            return None
+        mins = mins[:-1]
+    if not hours and not mins:
+        return None
+    return int(hours or 0) * 3600 + int(mins or 0) * 60
 
 
 def load_break_glass(store: Any, t: float | None = None) -> BreakGlass | None:
