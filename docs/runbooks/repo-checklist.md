@@ -39,16 +39,16 @@ hangar repo get acme/app
 
 **The review rule.** The person who asked for the work may be its PR's only approver only for a low-risk PR (docs and
 tests). It also needs an independent AI review of the approved head
-([self-approval](../landing.md#self-approval-who-may-be-the-only-approver)).
+([self-approval](../landing/how-a-pr-lands.md#self-approval-who-may-be-the-only-approver)).
 
 Anything else, and every tainted PR (every Jira-door job), needs a second reviewer from `--approver`. With
 `--ai-review hangar`, a different harness from the author's reviews every agent PR first
-([AI review](../landing.md#6a-ai-first-pass-review)).
+([AI review](../landing/review.md#6a-ai-first-pass-review)).
 
 ## 6. Doors
 
 - **Jira**: map the project to the repo with `hangar setup jira`. Moving an issue to *Ready for agent* starts a job
-  unless you pass another `--trigger-status` or a `--trigger-label` ([the configuration](../intake.md#3-the-configuration)).
+  unless you pass another `--trigger-status` or a `--trigger-label` ([the configuration](../intake/jira.md#3-the-configuration)).
 - Create that status in the project's workflow first. Run `hangar setup jira` again with `--project` for repos 2 and
   3: it keeps the projects already mapped. Tickets follow the
   [agent ticket template](https://github.com/Sean-Koval/hangar/blob/main/docs/templates/jira-agent-ticket.md).
@@ -73,6 +73,6 @@ It reads the App installation, the webhook, the label, the policy, branch protec
 the gateway, the environments' credential mode, sudo, egress and logins, and the Jira and Slack mappings.
 
 It ends with `ready` or `not ready (N failing)`, each failure with its fix
-([is this repo ready](../repo-policy.md#is-this-repo-ready)). Fix and run it again until it says `ready`. Then record
+([is this repo ready](../repo-policy/readiness.md#is-this-repo-ready)). Fix and run it again until it says `ready`. Then record
 the engineer-hours in [the onboarding table](onboarding.md#engineer-hours), and go on to
 [the first day](onboarding.md#8-first-day-phase-1).

@@ -42,6 +42,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`deploy/gke/up.sh` refuses a `-dirty` image** (KAN-172), as Tower's deploy does. Uncommitted changes to
+  `src`, `envs`, `envd`, `pyproject.toml` or the `Dockerfile` stop it before any cloud call, listing the files. Pass
+  `--allow-dirty` or set `ALLOW_DIRTY=1` (which `hangar up --gke` passes through) to deploy them; a `-dirty` image
+  is then rebuilt every time instead of reusing an older build under the same tag.
 - **How far production is behind main** (KAN-216). `hangar doctor` (`production lag`) and the Fleet page show the
   deployed commit, its tag, and the commits and days it is behind `main`, from GitHub with hangar's own token ("unknown"
   without one). A new `deploy-lag` alert (a ticket) fires past `HANGAR_DEPLOY_LAG_ALERT_WORKING_DAYS` (2) while the
@@ -81,6 +85,25 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **Break-glass: `hangar governance local`** (KAN-33, spec 0015 §7,
+  [docs/runbooks/break-glass-tower.md](docs/runbooks/break-glass-tower.md#break-glass)). One admin starts it
+  (`--until`, at most 24 h, `--reason`), a second admin confirms it, and it ends on its own or with `--end`. While it
+  is active and Tower can't answer, an admin's approval of a job release or landing in `enforce` is decided by
+  hangar's rules; a Tower that answers still decides. Every step and decision is audited and kept for replay, and
+  `hangar doctor` warns while it is on.
+- **A per-sandbox passport for the Tower hook** (KAN-33, #174,
+  [docs/governance-hook.md](docs/governance-hook.md#the-key)). `HANGAR_GOVERNANCE_HOOK_AUTH=passport` (the default
+  stays `key`) writes the sandbox's own passport as the run's hangar-owned key file instead of the shared agent key:
+  its token (`sub: hangar:env:<env>`, its person and their linked email) exchanged at Tower's token endpoint, checked,
+  and renewed by the refresh loop while the run lasts. The agent still can read it (the hook runs as the agent).
+- **Tower passports on the job API** (KAN-33, #174, [docs/tower-passports.md](docs/tower-passports.md)).
+  `HANGAR_JOB_PASSPORTS=on` (off by default) accepts a Tower passport as the bearer on `/api/jobs*`, as the person
+  its `person:<email>` names (linked by email) or an agent listed in `HANGAR_JOB_PASSPORT_AGENTS`. The signature,
+  issuer, audience (Tower's own: `<issuer>/mcp` or `<issuer>`), expiry and act chain are checked against Tower's JWKS; refusals answer 401 and are audited
+  `passport.refused`. A passport holds the `jobs` scope only and never approves a job. hangar's tokens are unchanged.
+- **Tower sees GitHub accounts by login** (KAN-33). Requesters and signers of job releases and landings are sent as
+  `github:<login>`, beside the person (found by the account's numeric id, never the login) and the email linked to
+  them; only an id with no login is sent as `github-id:<id>`, which Tower maps to nobody.
 - **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
   in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
   own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps
@@ -112,6 +135,20 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Fixed
 
+- The team harness checkout an older, root-run image left in `/data` works again under the non-root image
+  (KAN-170). git refused it as "dubious ownership", so `hangar doctor` failed its harness repo check and the
+  deploy rolled back. hangar now trusts that one checkout per git call.
+- Git plugin mirrors in `/data/plugin-git` that a root-run image made get the same fix (KAN-307). Before it, an
+  environment with a git plugin failed to build with "has no commit" after the upgrade. A new test runs every git
+  cache on the data volume as a foreign owner, and fails on a raw git call in the control plane.
+- The deploy's session acceptance check clones `HANGAR_ACCEPT_SESSION_REPO` (a variable of the `production`
+  environment), else hangar's own repo, instead of octocat/Hello-World. The gateway reads it as the GitHub App,
+  so it needs a repo the App is installed on.
+- A deploy whose new pod never gets Ready now says why. Before `deploy.yml` rolls back, it prints the new pods'
+  state, events and last 150 log lines, with token-shaped strings masked because the repository is public. The
+  deploy account's Role gains read-only `get` and `list` on pods, their logs, replica sets and events in the
+  namespace; rerun `deploy/gke/setup-cicd.sh` to grant it. Until then the step reports that it was forbidden and
+  the rollback goes ahead as before.
 - A PR merged or closed with no webhook reaching hangar no longer counts as open (KAN-246). A pass at startup and
   every `HANGAR_GITHUB_PR_RECONCILE_MINUTES` (15) reads each open PR from GitHub and records its merge or close as the
   webhook would, so jobs held for review capacity start. `hangar doctor` says how many it corrected
@@ -119,6 +156,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   title and instructions name ([docs/intake.md](docs/intake.md#branch-and-pr-names-carry-the-key)).
 - **`hangar doctor` no longer says "all good" with nothing to run on** (KAN-250). With no model credential stored, credential health read "0 of 0 checked and working"; it now warns and names `hangar cred add`. A run with warnings ends on "no problems; N warning(s) above" instead of "all good", and still exits 0.
 - **Traces see a long command's tests and commits.** `hangar.shell.ops` was read from the 200-character preview, so a test run or commit later in the command was missing (45% of commands in four real jobs were clipped). The parser now reads ops from the whole command, and clipped tool inputs carry `hangar.tool.input_clipped=true` ([docs/api/traces.md](docs/api/traces.md)).
+- **A failed Antigravity command no longer shows as succeeded.** agy's stream says a step is done, not how the command
+  ended, so every `run_command` read as `ok`. A shell result is now unknown (no `hangar.tool.ok`, no error), or failed
+  when its output ends in the shell's "command not found".
 - A pull request opened in the same second a notifier was first enabled is now sent to it. GitHub dates a PR in whole seconds, so it looked older than the notifier and was dropped (KAN-201).
 
 ## v0.2.0: the safe release

@@ -7,7 +7,7 @@ plugins it runs. Then which of its MCP servers can carry text nobody you trust w
 
 An environment spec's `sudo` gives the sandbox user passwordless sudo, which makes the agent root whenever it likes.
 It is admin-set; a repo's own file can't set it. It is **`false` by default** (#124). With sudo the agent can rewrite
-files hangar owns (managed harness settings), and the [uid split](../steering.md#the-uid-split) protects nothing.
+files hangar owns (managed harness settings), and the [uid split](../steering/uid-split.md) protects nothing.
 
 - **Install at build time.** `tools.apt`, mise and `setup` steps run as root in the image build. So the shipped
   environments (`base`, `bare`, `python` and the rest) need no runtime root. A repo's `install` runs as the sandbox

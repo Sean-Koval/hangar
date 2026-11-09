@@ -21,20 +21,20 @@ daily loop, and how to back out.
     - steer classes (#162): start a follow-up with `fix:`, `redirect:` or `info:`; only corrections count in the
       weekly metrics and the Friday queue ([classifying steers](../steering.md#classifying-steers));
     - run capture: on in the GKE deploy, where `deploy/gke/up.sh` sets `HANGAR_OUTBOX_URL` (#273). Elsewhere it is off
-      until that is set ([run capture](../observability.md#run-capture); operating it: [the outbox runbook](outbox.md)).
+      until that is set ([run capture](../observability/operator.md#run-capture); operating it: [the outbox runbook](outbox.md)).
 4. The weekly adoption metrics start counting active delegators (#168; `hangar metrics weekly`,
    [metrics.md](../metrics.md)).
 5. Once the last 14 days' agent PR yield is at least 60% (`hangar metrics weekly`), consider the overnight lane. That
    is one Spot node 01:00–10:00 (~$87 a month). Evening tickets of the repos set to `overnight: true` are then PRs
-   by the 10:00 triage ([the overnight lane](../gke.md#the-overnight-lane)).
+   by the 10:00 triage ([the overnight lane](../gke/power.md#the-overnight-lane)).
 6. Below 60% the lane only adds to the morning's review queue, and `hangar power overnight on` refuses.
 
 ## The daily loop
 
 | When | What | Where |
 | --- | --- | --- |
-| Any time | An agent's question or approval reaches its person in a Slack DM within a minute, linked to the thread, ticket or PR to answer in | [landing.md, delivery](../landing.md#delivery-it-comes-to-you); `hangar person set <id> --dm …` |
-| 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs). Questions and approvals clear when answered; ack the rest in the console or with `POST /api/inbox/{id}/ack`. The 10:15 Slack digest lists it, questions first; reviews are a count and a link to GitHub's review queue | `hangar inbox` ([landing.md §7](../landing.md#7-the-inbox-what-needs-you)) |
+| Any time | An agent's question or approval reaches its person in a Slack DM within a minute, linked to the thread, ticket or PR to answer in | [landing.md, delivery](../landing/review.md#delivery-it-comes-to-you); `hangar person set <id> --dm …` |
+| 10:00–10:20 | Triage: each engineer clears their inbox (PRs to review, questions, approvals, failed jobs). Questions and approvals clear when answered; ack the rest in the console or with `POST /api/inbox/{id}/ack`. The 10:15 Slack digest lists it, questions first; reviews are a count and a link to GitHub's review queue | `hangar inbox` ([landing.md §7](../landing/review.md#7-the-inbox-what-needs-you)) |
 | 10:20 | Standup, with the bot's line at 10:18 ET: yesterday's merged and abandoned agent PRs (by reason), review wait p50, top failure; Mondays, last week's summary | `HANGAR_STANDUP_CHANNEL` ([metrics.md](../metrics.md#the-standup-line)) |
 | 16:00 | The afternoon digest catches what came in since | Slack DM ([team.md](../team/linked-accounts.md#inbox-delivery-dms-and-the-digest)) |
 | Friday, 30 min | Harness review: label the first failure on failed or abandoned jobs, until 20 candidate tasks | `hangar review queue` ([harness-review.md](harness-review.md)) |

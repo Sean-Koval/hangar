@@ -556,6 +556,20 @@ def test_approvals_steers_and_redaction_without_a_sandbox(settings, broker):
     assert _attrs(turn)["gen_ai.provider.name"] == "anthropic" and _attrs(turn)["hangar.approvals"] == "ask"
 
 
+def test_a_shell_result_with_no_known_outcome_is_not_an_error():
+    """agy gives no exit code: its shell results carry no ok, and the span is neither ok nor an error."""
+    x = traces.Export(traces.trace_id("j"), lambda v: v)
+    for i, ok in enumerate((None, False, True)):
+        start = RunEvent(turn=1, kind="command", text="slugkit x", data={"id": f"s{i}", "tool": "run_command"}, ts=1.0)
+        res = RunEvent(turn=1, kind="tool_result", text="out", data={"id": f"s{i}", "ok": ok}, ts=2.0)
+        traces._tool_span(x, None, f"t/{i}", "antigravity", None, start, res, 3.0)
+    unknown, failed, passed = x.spans
+    assert "hangar.tool.ok" not in unknown["attrs"] and unknown["error"] is None
+    assert "error.type" not in unknown["attrs"]
+    assert failed["attrs"]["hangar.tool.ok"] is False and failed["error"] == ""
+    assert passed["attrs"]["hangar.tool.ok"] is True and passed["error"] is None
+
+
 def test_an_export_stops_at_its_limit(settings, broker):
     x = traces.Export(traces.trace_id("s"), broker.redact, limit=3)
     sp = x.span("a", "a", 1.0, 2.0, {"hangar.kind": "turn"})

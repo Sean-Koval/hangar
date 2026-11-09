@@ -51,7 +51,7 @@ Never while anyone waits. After every clone, one exec reads the file and the loc
 background, for the next sandbox, when the active build is behind. That is when the default branch's config, its
 lockfiles or the environment's image moved on.
 
-Startup's prebuild ([#83](../gke.md#3-environment-images)) rebuilds the builds an environment change made stale. A
+Startup's prebuild ([#83](../gke/images.md)) rebuilds the builds an environment change made stale. A
 build that failed isn't retried until something changes (the file, a lockfile, the image) or someone runs
 `hangar env build-repo`. At most `HANGAR_ENV_BUILDS_CONCURRENCY` (2) builds run at once, one per repo, each within
 `HANGAR_ENV_BUILD_TIMEOUT_MINUTES` (30).

@@ -139,3 +139,12 @@ async def test_intake_jobs_run_from_the_default_harness(jobs, world, settings): 
     assert checks["default harness"]["status"] == "fail"
     settings.harness_repo = None
     assert harness_repo.doctor_checks(jobs)[0]["status"] == "fail"  # a default without a repo
+
+
+def test_safe_git_trusts_only_the_named_checkout():
+    """An older root-run image's checkout stays owned by root; git would refuse it as "dubious ownership"."""
+    from hangar.harness_repo import safe_git
+
+    assert safe_git(["git", "-C", "/data/harness-repo/x", "fetch"]) == [
+        "git", "-c", "safe.directory=/data/harness-repo/x", "-C", "/data/harness-repo/x", "fetch"]
+    assert safe_git(["git", "clone", "-q", "u", "/tmp/y"]) == ["git", "clone", "-q", "u", "/tmp/y"]
