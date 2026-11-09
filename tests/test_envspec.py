@@ -336,3 +336,32 @@ def test_a_childs_own_skill_stays_relative_to_the_child(tmp_path):
     child = EnvCatalog([shipped, saved]).get("child")
     assert [s.path for s in child.skills] == ["skills/mine"]  # component lists replace (#132)
     assert skill_dir(child, "skills/mine") == (saved / "skills" / "mine").resolve()
+
+
+def test_repo_bin_dirs_go_first_on_the_image_path(tmp_path):
+    """KAN-313: `repo.bin` puts the checkout's own bin dirs (a uv venv) ahead of mise's Python on the image PATH."""
+    (tmp_path / "v.yaml").write_text(
+        "name: v\nrepo: {url: 'https://github.com/o/proj.git', setup: uv sync, bin: [.venv/bin, node_modules/.bin]}\n")
+    (tmp_path / "p.yaml").write_text(
+        "name: p\nrepo: {url: 'https://github.com/o/proj.git', path: /srv/p, bin: [.venv/bin]}\n")
+    (tmp_path / "bad.yaml").write_text("name: bad\nrepo: {url: 'https://github.com/o/proj.git', bin: [../escape]}\n")
+    (tmp_path / "abs.yaml").write_text("name: abs\nrepo: {url: 'https://github.com/o/proj.git', bin: [/usr/bin]}\n")
+    cat = EnvCatalog([tmp_path])
+    line = next(ln for ln in render(cat.get("v"), workspace="/workspace").dockerfile.splitlines()
+                if ln.startswith("ENV PATH="))
+    assert line.startswith("ENV PATH=/workspace/proj/.venv/bin:/workspace/proj/node_modules/.bin:"
+                           "/home/agent/.local/bin:")
+    assert ":$PATH " in line
+    assert "ENV PATH=/srv/p/.venv/bin:" in render(cat.get("p")).dockerfile
+    for name in ("bad", "abs"):
+        with pytest.raises(ValueError, match="relative to the checkout"):
+            cat.get(name)
+
+
+def test_hangar_envs_put_the_repo_venv_on_path():
+    """KAN-313: a hangar-jobs job's `python -m pytest` verify runs the repo's .venv, where pytest is installed."""
+    cat = EnvCatalog([Path(__file__).parent.parent / "envs"])
+    for name in ("hangar", "hangar-jobs"):
+        spec = cat.get(name)
+        assert spec.repo and spec.repo.bin == [".venv/bin"]
+        assert "ENV PATH=/workspace/hangar/.venv/bin:" in render(spec).dockerfile
