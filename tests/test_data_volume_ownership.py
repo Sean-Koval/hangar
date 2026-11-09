@@ -33,11 +33,23 @@ def _git(*args: str, cwd: Path | None = None) -> str:
 
 def _foreign_owner(monkeypatch: pytest.MonkeyPatch, upstream: Path) -> None:
     """From here on git treats every repo as another user's. The upstream is trusted, as an https remote needs no
-    trust: in a global config, since git drops GIT_CONFIG_COUNT for a file:// remote's upload-pack."""
+    trust: in a global config, since git drops GIT_CONFIG_COUNT for a file:// remote's upload-pack. No system
+    config and no user config is read, so a machine that trusts every directory (`safe.directory = *`, as CI
+    runners can) doesn't hide the refusal. If git still doesn't refuse, the tests here skip: they'd prove nothing."""
     cfg = upstream.parent / "gitconfig"
     cfg.write_text(f"[safe]\n\tdirectory = {upstream}\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("HOME", str(upstream.parent))  # no ~/.gitconfig or XDG config either
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    probe = upstream.parent / "probe"
+    if not (probe / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(probe)], check=True, capture_output=True)
+    r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--git-dir"], capture_output=True, text=True)
+    if r.returncode == 0 or "dubious ownership" not in r.stderr:
+        pytest.skip("capability: this git doesn't honor GIT_TEST_ASSUME_DIFFERENT_OWNER (git 2.35.2+), so it can't "
+                    f"stand in for a foreign owner: {(r.stderr or r.stdout).strip()[:200]}")
 
 
 @pytest.fixture
