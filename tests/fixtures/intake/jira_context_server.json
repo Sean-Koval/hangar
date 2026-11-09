@@ -1,0 +1,21 @@
+{
+  "_note": "KAN-292: Jira Data Center REST v2 shapes (wiki-markup strings, the Epic Link custom field) for ABC-12, following Atlassian's Data Center REST v2 reference.",
+  "fields": [{"id": "summary", "name": "Summary", "schema": {"type": "string", "system": "summary"}},
+             {"id": "customfield_10008", "name": "Epic Link",
+              "schema": {"type": "any", "custom": "com.pyxis.greenhopper.jira:gh-epic-link", "customId": 10008}}],
+  "comments": {"startAt": 0, "maxResults": 30, "total": 1, "comments": [
+    {"id": "201", "created": "2025-10-14T11:04:00.000+0000",
+     "author": {"key": "JIRAUSER10100", "name": "dana", "displayName": "Dana Lee"},
+     "body": "Retries must log the {{attempt}} number."}]},
+  "links": {"key": "ABC-12", "fields": {
+    "customfield_10008": "ABC-1", "subtasks": [], "issuelinks": [],
+    "attachment": [
+      {"id": "301", "filename": "notes.md", "mimeType": "text/markdown", "size": 20,
+       "content": "https://jira.acme.internal/secure/attachment/301/notes.md"},
+      {"id": "302", "filename": "elsewhere.txt", "mimeType": "text/plain", "size": 20,
+       "content": "https://evil.example/secure/attachment/302/elsewhere.txt"}]}},
+  "parent": {"key": "ABC-1", "fields": {"summary": "Upload reliability", "issuetype": {"name": "Epic"},
+                                       "status": {"name": "Open"}, "description": "Uploads must survive a flaky network."}},
+  "attachment_301": "Use exponential backoff.",
+  "remotelinks": [{"id": 5, "object": {"url": "https://confluence.acme.internal/display/ENG/Uploads", "title": "Uploads"}}]
+}

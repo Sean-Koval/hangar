@@ -117,6 +117,9 @@ class JiraConfig(BaseModel):
     # transition (or label) within this many minutes of the request arriving; and at most this many per issue a day
     automation_max_transition_age_minutes: int = Field(10, ge=1, le=1440)
     automation_max_starts_per_issue_per_day: int = Field(3, ge=1, le=100)
+    # --- KAN-292: what jira-KEY.md carries besides the description: the newest comments, and a cap on its size
+    context_comments: int = Field(30, ge=0, le=200)
+    context_max_bytes: int = Field(200_000, ge=20_000, le=2_000_000)
 
     @field_validator("url")
     @classmethod
@@ -257,6 +260,8 @@ class JiraAPI:
 
     def __init__(self, cfg: JiraConfig, token: str, transport: httpx.AsyncBaseTransport | None = None):
         self.cloud = cfg.deployment == "cloud"
+        self.base = cfg.url
+        self._epic_field: str | None | Literal[False] = False  # --- KAN-292: Data Center's Epic Link field
         self.api = "/rest/api/3" if self.cloud else "/rest/api/2"
         auth = ("Basic " + base64.b64encode(f"{cfg.email}:{token}".encode()).decode()) if self.cloud \
             else f"Bearer {token}"
@@ -268,7 +273,7 @@ class JiraAPI:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _req(self, method: str, path: str, **kw: Any) -> Any:
+    async def _req(self, method: str, path: str, *, raw: bool = False, **kw: Any) -> Any:
         err = "no attempt"
         for attempt in range(3):
             try:
@@ -292,6 +297,8 @@ class JiraAPI:
                 except (ValueError, AttributeError):
                     msg = ""
                 raise JiraError(f"Jira {method} {path}: HTTP {r.status_code} {msg}".strip()[:500])
+            if raw:
+                return r.content
             return r.json() if r.content else None
         raise JiraError(f"Jira {method} {path}: {err} (gave up after 3 attempts)")
 
@@ -299,6 +306,61 @@ class JiraAPI:
         return await self._req("GET", f"{self.api}/issue/{key}", params={
             "fields": "summary,description,labels,components,project,status,reporter,creator,issuetype,priority,"
                       "created"})
+
+    # --- KAN-292: the rest of the ticket, for jira-KEY.md
+    async def links(self, key: str) -> dict[str, Any]:
+        """The parent (or epic), subtasks, issue links and attachments. Data Center keeps an epic in its Epic Link
+        custom field, which is looked up by its schema once."""
+        names = "parent,subtasks,issuelinks,attachment"
+        epic = await self.epic_field() if not self.cloud else None
+        res = await self._req("GET", f"{self.api}/issue/{key}", params={"fields": names + (f",{epic}" if epic
+                                                                                           else "")})
+        fields = dict((res or {}).get("fields") or {}) if isinstance(res, dict) else {}
+        if epic and isinstance(fields.get(epic), str) and not fields.get("parent"):
+            fields["parent"] = {"key": fields[epic], "epic": True}
+        return fields
+
+    async def epic_field(self) -> str | None:
+        if self._epic_field is False:
+            self._epic_field = None
+            for f in await self._req("GET", f"{self.api}/field") or []:
+                if isinstance(f, dict) and str((f.get("schema") or {}).get("custom") or "").endswith(":gh-epic-link"):
+                    self._epic_field = str(f.get("id") or "") or None
+                    break
+        return self._epic_field
+
+    async def comments(self, key: str, n: int) -> list[dict[str, Any]]:
+        """The newest `n` comments, oldest first."""
+        if n <= 0:
+            return []
+        res = await self._req("GET", f"{self.api}/issue/{key}/comment",
+                              params={"orderBy": "-created", "maxResults": n, "startAt": 0}) or {}
+        got = [c for c in (res.get("comments") or [] if isinstance(res, dict) else []) if isinstance(c, dict)]
+        total = res.get("total") if isinstance(res, dict) else None
+        if isinstance(total, int) and not isinstance(total, bool) and total > len(got) and got and \
+                str(got[0].get("created") or "") < str(got[-1].get("created") or ""):
+            # an older Data Center that ignores orderBy pages oldest first: read the last page instead
+            res = await self._req("GET", f"{self.api}/issue/{key}/comment",
+                                  params={"startAt": max(0, total - n), "maxResults": n}) or {}
+            got = [c for c in (res.get("comments") or []) if isinstance(c, dict)]
+        return sorted(got, key=lambda c: str(c.get("created") or ""))[-n:]
+
+    async def remote_links(self, key: str) -> list[dict[str, Any]]:
+        res = await self._req("GET", f"{self.api}/issue/{key}/remotelink")
+        return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
+
+    async def attachment(self, att: dict[str, Any]) -> bytes | None:
+        """An attachment's bytes, read with hangar's own credential only from this Jira: Cloud by its id (with
+        `redirect=false`, so the client never follows Jira to the media host), Data Center by its content URL when
+        that URL is on this site. None when neither holds."""
+        aid = str(att.get("id") or "")
+        if self.cloud and aid.isdigit():
+            return await self._req("GET", f"{self.api}/attachment/content/{aid}", params={"redirect": "false"},
+                                   raw=True)
+        url = str(att.get("content") or "")
+        if url.startswith(self.base + "/") and ".." not in url:
+            return await self._req("GET", url[len(self.base):], raw=True)
+        return None
 
     async def history(self, key: str) -> list[dict[str, Any]]:
         """--- review: the issue's latest changes (oldest first), each with its `author` and `items`. Cloud pages
@@ -453,6 +515,181 @@ async def update(svc: JobService, job: Job, ref: str, stage: str) -> None:
 # what the app runs, and adds the door (plugin host, docs/plugins.md).
 NOTIFIERS["jira"] = notify
 intake.TRACKERS["jira"] = update
+
+
+# ============================================================================ ticket context (--- KAN-292)
+ATTACHMENT_MAX = 1_000_000  # a text attachment is read only up to this size
+_TEXT_TYPES = ("text/", "application/json", "application/xml", "application/yaml", "application/x-yaml",
+               "application/x-sh", "application/javascript", "application/toml", "application/sql")
+_TEXT_EXT = (".txt", ".md", ".log", ".json", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".py", ".js", ".ts", ".sh",
+             ".toml", ".ini", ".cfg", ".sql", ".diff", ".patch", ".html", ".go", ".rs", ".java", ".rb")
+
+
+class TicketContext(NamedTuple):
+    """What jira-KEY.md says beyond the description, already fetched (fixtures build one directly)."""
+
+    comments: list[dict[str, Any]]  # oldest first
+    parent: dict[str, Any] | None  # {"key", "type", "status", "summary", "description", "epic"}
+    subtasks: list[dict[str, Any]]
+    links: list[dict[str, Any]]  # {"relation", "key", "type", "status", "summary"}
+    attachments: list[dict[str, Any]]  # {"name", "size", "text" (or None), "why" (when text is None)}
+    confluence: list[str]  # remote links to Confluence, by URL, for KAN-293 to resolve
+    problems: list[str]  # what couldn't be read
+
+
+def _brief(issue: Any, relation: str = "") -> dict[str, Any] | None:
+    if not isinstance(issue, dict) or not _KEY.match(str(issue.get("key") or "")):
+        return None
+    f = issue.get("fields") or {}
+    return {"relation": relation, "key": issue["key"], "type": str((f.get("issuetype") or {}).get("name") or ""),
+            "status": str((f.get("status") or {}).get("name") or ""),
+            "summary": " ".join(str(f.get("summary") or "").split())[:300]}
+
+
+def _is_text(att: dict[str, Any]) -> bool:
+    mime = str(att.get("mimeType") or "").lower()
+    name = str(att.get("filename") or "").lower()
+    return mime.startswith(_TEXT_TYPES) or name.endswith(_TEXT_EXT)
+
+
+def _confluence(link: dict[str, Any]) -> str | None:
+    obj = link.get("object") or {}
+    url = str(obj.get("url") or "") if isinstance(obj, dict) else ""
+    if not url.startswith("https://"):
+        return None
+    app = str(((link.get("application") or {}).get("type")) or "") if isinstance(link.get("application"), dict) else ""
+    host = httpx.URL(url).host
+    if "confluence" in app.lower() or "confluence" in host or (host.endswith(".atlassian.net") and
+                                                               httpx.URL(url).path.startswith("/wiki/")):
+        return url
+    return None
+
+
+async def fetch_context(api: JiraAPI, cfg: JiraConfig, key: str) -> TicketContext:
+    """The ticket's comments, parent or epic, subtasks, links and text attachments. Every part is read on its own,
+    so one that fails (permissions, an old Data Center) is a line in `problems`, never a job that doesn't start."""
+    problems: list[str] = []
+
+    async def part(what: str, coro: Any, default: Any) -> Any:
+        try:
+            return await coro
+        except (JiraError, httpx.HTTPError) as e:
+            problems.append(f"{what}: {str(e)[:200]}")
+            return default
+
+    comments = await part("comments", api.comments(key, cfg.context_comments), [])
+    fields = await part("links, subtasks and attachments", api.links(key), {})
+    parent = None
+    p = fields.get("parent") if isinstance(fields.get("parent"), dict) else None
+    if p and _KEY.match(str(p.get("key") or "")):
+        got = await part(f"parent {p['key']}", api.issue(p["key"]), {}) or {}
+        parent = _brief({"key": p["key"], "fields": {**(p.get("fields") or {}), **(got.get("fields") or {})}}) or {}
+        parent["description"] = adf_text((got.get("fields") or {}).get("description")).strip()
+        parent["epic"] = bool(p.get("epic")) or parent.get("type", "").casefold() == "epic"
+    subtasks = [b for b in (_brief(x, "subtask") for x in fields.get("subtasks") or []) if b]
+    links: list[dict[str, Any]] = []
+    for ln in fields.get("issuelinks") or []:
+        if not isinstance(ln, dict):
+            continue
+        t = ln.get("type") or {}
+        for side, word in (("outwardIssue", "outward"), ("inwardIssue", "inward")):
+            if (b := _brief(ln.get(side), str(t.get(word) or t.get("name") or "relates to"))) is not None:
+                links.append(b)
+    attachments: list[dict[str, Any]] = []
+    for att in fields.get("attachment") or []:
+        if not isinstance(att, dict):
+            continue
+        name = " ".join(str(att.get("filename") or "attachment").split())[:200]
+        size = att.get("size") if isinstance(att.get("size"), int) else None
+        item: dict[str, Any] = {"name": name, "size": size, "text": None, "why": None}
+        if not _is_text(att):
+            item["why"] = "not text"
+        elif size is None or size > ATTACHMENT_MAX:
+            item["why"] = f"over {ATTACHMENT_MAX // 1_000_000} MB" if size else "size unknown"
+        else:
+            raw = await part(f"attachment {name}", api.attachment(att), None)
+            if raw is None:
+                item["why"] = "could not be read from this Jira"
+            elif len(raw) > ATTACHMENT_MAX:
+                item["why"] = f"over {ATTACHMENT_MAX // 1_000_000} MB"
+            else:
+                item["text"] = raw.decode("utf-8", "replace")
+        attachments.append(item)
+    remote = await part("remote links", api.remote_links(key), [])
+    confluence = sorted({u for u in (_confluence(x) for x in remote) if u})
+    return TicketContext(comments, parent, subtasks, links, attachments, confluence, problems)
+
+
+def _line(b: dict[str, Any]) -> str:
+    rel = f"{b['relation']} " if b.get("relation") and b["relation"] != "subtask" else ""
+    meta = ", ".join(x for x in (b.get("type"), b.get("status")) if x)
+    return f"- {rel}{b['key']}" + (f" ({meta})" if meta else "") + f": {b.get('summary') or '(no summary)'}"
+
+
+def context_sections(svc: JobService, cfg: JiraConfig, tc: TicketContext) -> list[tuple[str, str]]:
+    """(what, markdown) in the order jira-KEY.md gives them. A comment is marked trusted when its author is linked
+    to a hangar person, untrusted otherwise; the whole file stays fenced as untrusted either way, as the description
+    is, since anyone who can comment or edit the issue writes it."""
+    cloud = cfg.deployment == "cloud"
+    out: list[tuple[str, str]] = []
+    shown = [c for c in tc.comments if not adf_text(c.get("body")).strip().startswith(OWN)]
+    if shown:
+        parts = [f"## Comments (newest {len(shown)}, oldest first)"]
+        for c in shown:
+            author = c.get("author") or c.get("updateAuthor")
+            account = _account(author, cloud)
+            person = intake.person_for(svc.store, "jira", account)
+            mark = (f"trusted: linked to hangar person {person}" if person
+                    else "untrusted: not linked to a hangar person")
+            parts.append(f"### {_who(author, account)}, {str(c.get('created') or '')[:19]} ({mark})\n\n"
+                         f"{adf_text(c.get('body')).strip() or '(empty)'}")
+        out.append(("comments", "\n\n".join(parts)))
+    if tc.parent:
+        p = tc.parent
+        label = "Epic" if p.get("epic") else "Parent"
+        out.append((label.lower(), f"## {label}: {p['key']}: {p.get('summary') or '(no summary)'}\n\n"
+                                   f"{p.get('description') or '(no description)'}"))
+    if tc.subtasks or tc.links:
+        rows = [*(_line(b) for b in tc.subtasks), *(_line(b) for b in tc.links)]
+        out.append(("subtasks and linked issues", "## Subtasks and linked issues\n\n" + "\n".join(rows)))
+    if tc.attachments:
+        parts = ["## Attachments"]
+        for a in tc.attachments:
+            if a.get("text") is None:
+                parts.append(f"- {a['name']} (not included: {a.get('why')})")
+        for a in tc.attachments:
+            if a.get("text") is not None:
+                parts.append(f"### {a['name']}\n\n```\n{a['text'].replace('```', '` ` `')}\n```")
+        out.append(("attachments", "\n\n".join(parts)))
+    if tc.confluence:
+        out.append(("confluence links", "## Confluence pages linked from the issue (not read)\n\n"
+                    + "\n".join(f"- {u}" for u in tc.confluence)))
+    if tc.problems:
+        out.append(("problems", "## Not read\n\n" + "\n".join(f"- {x}" for x in tc.problems)))
+    return out
+
+
+def assemble(head: str, sections: list[tuple[str, str]], cap: int) -> str:
+    """The file, at most `cap` bytes: whole sections while they fit, then as much of the next as fits, and a note
+    naming what was cut."""
+    out, used, cut = [head], len(head.encode()), []
+    for what, text in sections:
+        size = len(text.encode()) + 2
+        if not cut and used + size <= cap - 400:
+            out.append(text)
+            used += size
+            continue
+        if not cut and cap - 400 - used > 200:
+            room = cap - 400 - used
+            out.append(text.encode()[:room].decode("utf-8", "ignore") + "…")
+            used = cap
+            cut.append(f"the rest of {what}")
+        else:
+            cut.append(what)
+    if cut:
+        out.append(f"## Cut\n\nThis file is capped at {cap} bytes (HANGAR_JIRA context_max_bytes). Left out: "
+                   + ", ".join(cut) + ". Read the issue in Jira for the rest.")
+    return "\n\n".join(out) + "\n"
 
 
 # ============================================================================ intake
@@ -963,12 +1200,16 @@ class JiraFrontDoor:
                 *([f"type {(fields.get('issuetype') or {}).get('name')}"] if fields.get("issuetype") else []),
                 *([f"labels: {labels}"] if labels else []), *([f"components: {comps}"] if comps else [])]
         description = adf_text(fields.get("description")).strip() or "(no description)"
+        # --- KAN-292: the comments, parent or epic, subtasks, links and text attachments, where acceptance details
+        # usually are
+        sections = await self._ticket_sections(cfg, key)
         # --- review: always untrusted: anyone with Edit Issues can rewrite the summary and description, whoever
         # reported it; and the summary stays out of the instructions
-        context = [ContextItem(name=f"jira-{key}.md", kind="issue", untrusted=True, content=(
-            f"# {key}: {summary}\n\n{description[:50_000]}\n\n---\n{cfg.url}/browse/{key}\n" + "; ".join(meta)))]
-        instructions = (f"Resolve Jira issue {key}. Its summary, description and details are in the context file "
-                        f"`jira-{key}.md`.")
+        head = f"# {key}: {summary}\n\n{description[:50_000]}\n\n---\n{cfg.url}/browse/{key}\n" + "; ".join(meta)
+        context = [ContextItem(name=f"jira-{key}.md", kind="issue", untrusted=True,
+                               content=assemble(head, sections, cfg.context_max_bytes))]
+        instructions = (f"Resolve Jira issue {key}. Its summary, description and details (comments, parent or epic, "
+                        f"subtasks, linked issues and text attachments) are in the context file `jira-{key}.md`.")
         if extra and person:
             instructions += f"\n\nAdditional instructions from {who}:\n{extra}"
         requester = f"jira:{account or 'unknown'}"
@@ -999,6 +1240,21 @@ class JiraFrontDoor:
                         + intake.queued_notes(svc, job, "jira"))  # --- #156
             svc._spawn(notify(svc, job, ref, note, "note"))
         return res
+
+    async def _ticket_sections(self, cfg: JiraConfig, key: str) -> list[tuple[str, str]]:
+        """--- KAN-292: the rest of the ticket, or a line saying why it couldn't be read."""
+        try:
+            api = client_for(self.jobs, cfg)
+        except JiraConfigError as e:
+            return [("problems", f"## Not read\n\n- comments, links and attachments: {e}")]
+        if api is None:
+            return [("problems", "## Not read\n\n- comments, links and attachments: the Jira token credential "
+                                 "is not stored")]
+        try:
+            tc = await fetch_context(api, cfg, key)
+        finally:
+            await api.close()
+        return context_sections(self.jobs, cfg, tc)
 
     # ------------------------------------------------------------------ comments
     async def on_comment(self, cfg: JiraConfig, payload: dict[str, Any]) -> dict[str, Any]:
