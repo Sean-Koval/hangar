@@ -7,7 +7,7 @@ repo:
   url: https://github.com/Sean-Koval/hangar.git
   branch: main
   setup: uv sync
-  # KAN-313: `uv sync` installs into .venv; put it first on PATH so `python -m pytest` in a verify finds pytest
+  # KAN-313: `uv sync` installs into .venv; the job's check puts it first on PATH, so `python -m pytest` finds pytest
   bin: [.venv/bin]
 # The check every job on this repo runs unless the job or the repo's policy names another (docs/jobs/agent-loop.md):
 # ruff and the tests the change can break, as pre-merge CI selects them.
