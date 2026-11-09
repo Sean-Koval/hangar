@@ -105,7 +105,7 @@ A replay (#179, `src/hangar/replay.py`) re-executes a recorded run in a fresh sa
 answers instead of the provider's, runs every tool call for real, and each request it sends, which carries those
 tools' outputs, is compared with the tape's request for that step. The first that doesn't match is the
 **divergence**. A replay is made for a sandbox labelled with its id (`hangar.replay`) by a [fork at a
-step](sessions.md#fork-at-a-step) or the [determinism report](observability.md#the-determinism-report); its plan and
+step](sessions/forks.md#fork-at-a-step) or the [determinism report](observability/operator.md#the-determinism-report); its plan and
 progress are kept in `<data>/replays/<id>.json`, so a control-plane restart carries on.
 
 | Mode | |

@@ -86,9 +86,17 @@ def _safe_url(url: str) -> str:
     return re.sub(r"//[^/@]*@", "//", url)  # never show a token someone put in the URL
 
 
+def safe_git(args: list[str]) -> list[str]:
+    """`git -C DIR ...` with DIR trusted for this one call. The checkout is hangar's own cache, but one an older,
+    root-run image cloned stays owned by root, and git refuses it to the image's user ("dubious ownership")."""
+    if args[:2] == ["git", "-C"] and len(args) > 2:
+        return ["git", "-c", f"safe.directory={args[2]}", *args[1:]]
+    return args
+
+
 def _git(root: Path, *args: str, env: dict[str, str] | None = None, timeout: int = 20) -> str | None:
     try:
-        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=timeout,
+        r = subprocess.run(safe_git(["git", "-C", str(root), *args]), capture_output=True, text=True, timeout=timeout,
                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})})
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -97,7 +105,7 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None, timeout: int
 
 def _run(args: list[str], env: dict[str, str]) -> tuple[bool, str]:
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        r = subprocess.run(safe_git(args), capture_output=True, text=True, timeout=GIT_TIMEOUT,
                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **env})
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)

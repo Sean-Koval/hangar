@@ -4,7 +4,7 @@ How does a turn under [the driver sidecar](driver-sidecar.md) keep per-edit tree
 
 ## The checkout is in the agent's container
 
-[Trees](../steering.md#trees) hash the working tree after each edit. The verify gate runs the job's check when the agent settles. Both need the checkout, and only the `sandbox` container has it. The driver must never run the agent's code as its own uid.
+[Trees](../steering/how-it-works.md#trees) hash the working tree after each edit. The verify gate runs the job's check when the agent settles. Both need the checkout, and only the `sandbox` container has it. The driver must never run the agent's code as its own uid.
 
 ## Run through the relay
 

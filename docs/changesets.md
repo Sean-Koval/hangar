@@ -4,7 +4,7 @@ Some work doesn't fit in one repository. A ticket that adds a table, the queue t
 
 - **One agent, one sandbox.** The agent works in every repo of the set at once, each checked out at `/workspace/<role>`, in one session (one conversation, one set of checkpoints).
 - **One PR per changed repo.** At the end of a turn hangar checks each repo the agent changed with that repo's own `verify`, scans it for secrets and pushes it, then opens one PR in each, every PR linking its siblings.
-- **Landing in order.** Each PR lands under its own repo's [policy](repo-policy.md) (its approvers, CODEOWNERS, [self-approval](landing.md#self-approval-who-may-be-the-only-approver), taint), with one more gate: the repos earlier in the profile's `land_order` have merged.
+- **Landing in order.** Each PR lands under its own repo's [policy](repo-policy.md) (its approvers, CODEOWNERS, [self-approval](landing/how-a-pr-lands.md#self-approval-who-may-be-the-only-approver), taint), with one more gate: the repos earlier in the profile's `land_order` have merged.
 - **The deploy repo last.** Once every changed repo has merged, a deterministic step (no agent) changes the trigger-deployment repo, for example bumping an image tag, and opens its PR under that repo's own policy. Its merge is your CD's input.
 
 Single-repo jobs are unchanged: a job without `changeset` runs exactly as [jobs](jobs/README.md) describes.

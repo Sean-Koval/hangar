@@ -28,7 +28,7 @@ hangar doctor --fix      # adds pull_request to every mapped repo's hook
 
 ### 9c. Jira
 
-**Optional.** [intake.md](../intake.md#jira-cloud) has the details, and Data Center's differences.
+**Optional.** [intake.md](../intake/jira.md#jira-cloud) has the details, and Data Center's differences.
 
 ```bash
 hangar cred add jira-api --harness webhook --kind generic        # the hangar account's API token (Ctrl-D)
@@ -123,19 +123,19 @@ Nothing to set: an environment opts in with `computer: true` (its image gets a l
 **Optional** (off until a `heavy` tier is configured; [environments.md](../environments/heavy-tier.md)). Docker inside a VM of the sandbox's own, and the `large` and `xlarge` profiles.
 
 - **The admission policy (applied by step 5, whether you use the tier or not).** `kubectl apply -k deploy/k8s` now also applies `heavy-policy.yaml`: ValidatingAdmissionPolicies (Kubernetes 1.30 or later) that refuse, in `hangar-sandboxes`, privileged containers and added capabilities unless the pod runs under a Kata runtime class, and host namespaces, `hostPath` volumes and `hostPort` under any runtime; and, cluster-wide, a RuntimeClass named `kata*` whose handler isn't `kata*`. hangar's own sandbox pods use none of these (heavy ones are privileged under Kata), so nothing changes for them. If anything else runs pods in `hangar-sandboxes`, check them first with `kubectl apply --dry-run=server`.
-- **The tier (required for it):** the heavy pool from step 4, then Kata on it and the tier in `hangar-site` ([gke.md §4a](../gke.md#4a-the-heavy-tier-optional)), or E2B or Cube microVMs ([microvm.md](../microvm.md#the-heavy-tier-on-microvms)):
+- **The tier (required for it):** the heavy pool from step 4, then Kata on it and the tier in `hangar-site` ([gke.md §4a](../gke/microvms.md#4a-the-heavy-tier-optional)), or E2B or Cube microVMs ([microvm.md](../microvm.md#the-heavy-tier-on-microvms)):
   ```bash
   KATA=1 bash deploy/gke/up.sh     # kata-deploy on the Kata and heavy pools
   hangar config set HANGAR_TIERS '{"isolated": ["kubernetes"], "heavy": ["kubernetes"]}'   # keep your other tiers; restart
   ```
-  `HANGAR_HEAVY_RUNTIME_CLASS` (`kata-qemu-runtime-rs`) and `HANGAR_HEAVY_NODE_SELECTOR` (`true`) fit that setup. **On a cluster with GKE's Agent Sandbox add-on (required there):** its policy refuses privileged Kata pods, so run the open-source Agent Sandbox controller instead of the add-on, or put the tier on microVMs (`HANGAR_TIERS='{"heavy": ["e2b"]}'`); [gke.md §4a](../gke.md#4a-the-heavy-tier-optional) has the trade-offs.
+  `HANGAR_HEAVY_RUNTIME_CLASS` (`kata-qemu-runtime-rs`) and `HANGAR_HEAVY_NODE_SELECTOR` (`true`) fit that setup. **On a cluster with GKE's Agent Sandbox add-on (required there):** its policy refuses privileged Kata pods, so run the open-source Agent Sandbox controller instead of the add-on, or put the tier on microVMs (`HANGAR_TIERS='{"heavy": ["e2b"]}'`); [gke.md §4a](../gke/microvms.md#4a-the-heavy-tier-optional) has the trade-offs.
 - **Which repos get Docker (required per repo that asks): deny by default.** A heavy environment (an admin's `heavy: true` or `tier: heavy`) has it. A repo's own `.hangar/environment.yaml` asking for it (`heavy: true`) is only honored where you allow it, and otherwise runs on the default tier with the agent told why and how you enable it:
   ```bash
   hangar repo set acme/app --heavy allow       # the repo's file may ask for Docker; `on`: all its sandboxes have it
   hangar repo set acme/app --max-profile large # what a job or the repo's file may ask for
   ```
 - **Docker Hub through hangar (optional).** With the remote repository from step 4: `HANGAR_HEAVY_MIRROR=true` and `HANGAR_HEAVY_MIRROR_UPSTREAM` set to terraform's `dockerhub_mirror` output, so heavy sandboxes pull through hangar's read-only mirror on the gateway. `HANGAR_HEAVY_REGISTRY_MIRRORS='["https://mirror.gcr.io"]'` adds others.
-- **Caps and cost (optional).** `HANGAR_HEAVY_PERSON_MAX` (3 `large` or larger and 1 `xlarge` per person; work no person owns shares one bucket with the same caps), `HANGAR_HEAVY_WARM_POOLS` (off: a warm heavy node costs; [team-scale.md](../team-scale.md#heavy-tier)).
+- **Caps and cost (optional).** `HANGAR_HEAVY_PERSON_MAX` (3 `large` or larger and 1 `xlarge` per person; work no person owns shares one bucket with the same caps), `HANGAR_HEAVY_WARM_POOLS` (off: a warm heavy node costs; [team-scale.md](../team-scale/heavy-tier.md)).
 - **Check it:** `bash scripts/acceptance/gke.sh --only heavy` (a Compose Postgres and a Testcontainers test, and no metadata server reachable from inside the VM).
 
 ### 10g. Build caches
@@ -163,11 +163,11 @@ hangar config set HANGAR_MODEL_LIST_CREDENTIALS '{"anthropic": "anthropic-models
 hangar env list                                                      # each harness's model, its policy and list price
 ```
 
-Env setup (`hangar env setup`) uses the same lists; it used to list with the team's harness API keys. [harnesses.md](../harnesses.md#models-the-latest-strong-model-per-provider) has how each provider's strongest model is picked.
+Env setup (`hangar env setup`) uses the same lists; it used to list with the team's harness API keys. [harnesses.md](../harnesses/models.md) has how each provider's strongest model is picked.
 
 ### 11b. The harness canary
 
-On **hangar's own repository**, not the repos agents work on ([harnesses.md](../harnesses.md#setup)). The contract tests (`harness-contract.yml`) run on their own; the nightly canary (`harness-canary.yml`, 03:17 ET) opens a lock-bump PR that lands on one approval (`harness-canary-land.yml`).
+On **hangar's own repository**, not the repos agents work on ([harnesses.md](../harnesses/canary.md#setup)). The contract tests (`harness-contract.yml`) run on their own; the nightly canary (`harness-canary.yml`, 03:17 ET) opens a lock-bump PR that lands on one approval (`harness-canary-land.yml`).
 
 1. **Branch protection on `main` (required** before the first bump lands): a required approval, dismiss stale approvals, and **`contract` as a required check**; and under Settings → General, **Allow auto-merge**. Without required approvals, auto-merge would merge a bump nobody approved.
 2. **A dedicated GitHub App (optional, recommended):** Contents and Pull requests: Read and write, no Workflows permission, installed on this repository only; not hangar's own App. Store it as repository secrets `CANARY_APP_CLIENT_ID` and `CANARY_APP_PRIVATE_KEY`. Without it the bump PR comes from the workflow token, so no checks run on it (close and reopen it) and `images` doesn't run on its merge (run it by hand).

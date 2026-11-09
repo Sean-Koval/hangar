@@ -427,7 +427,9 @@ if ! skipped accounts; then
   narrow sa "$DEPLOY_SA" "$FEDERATED" "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER" \
     "roles/iam.workloadIdentityUser=$DEPLOY_MEMBER_IDS"
   # get: the running image and `set image`'s read; list and watch: `rollout status` lists and watches with a
-  # metadata.name field selector, which resourceNames allows; patch: `set image`. No secrets, no exec, no other object.
+  # metadata.name field selector, which resourceNames allows; patch: `set image`. Read-only on pods, their logs,
+  # replica sets and events in $NS: when a rollout fails, deploy.yml prints why the new pod never got Ready.
+  # No secrets, no exec, no write to any other object.
   role=$(cat <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -437,6 +439,12 @@ rules:
     resources: [deployments]
     resourceNames: [hangar]
     verbs: [get, list, watch, patch]
+  - apiGroups: [""]
+    resources: [pods, pods/log, events]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

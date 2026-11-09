@@ -6,7 +6,7 @@ How can an `ask` or `deny-risky` turn on GKE keep its driver out of the agent's 
 
 ## Why Docker's split doesn't carry over
 
-On Docker, [the uid split](../steering.md#the-uid-split) gives the driver a user of its own inside the sandbox. Docker's exec picks the uid, and root sets the user up. A GKE Sandbox pod has neither: its container runs as one non-root user with no capabilities. So the second user has to come from a second container.
+On Docker, [the uid split](../steering/uid-split.md) gives the driver a user of its own inside the sandbox. Docker's exec picks the uid, and root sets the user up. A GKE Sandbox pod has neither: its container runs as one non-root user with no capabilities. So the second user has to come from a second container.
 
 ## The pod
 

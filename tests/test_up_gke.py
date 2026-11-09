@@ -409,3 +409,45 @@ def test_the_hardening_is_documented():
     assert "security/gke-cluster.md" in (REPO / "docs/gke.md").read_text()
     assert "gke-cluster.md" in (REPO / "docs/security/README.md").read_text()
     assert "security/gke-cluster.md" in (REPO / "mkdocs.yml").read_text()
+
+
+def _dirty(root: Path) -> None:
+    """A committed file in the image's tree (src/), then changed and not committed."""
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-C", str(root)]
+    (root / "src").mkdir(exist_ok=True)
+    (root / "src/app.py").write_text("x = 1\n")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "src"], check=True)
+    (root / "src/app.py").write_text("x = 2\n")
+
+
+def test_up_sh_refuses_a_dirty_tree_unless_allowed(gke, monkeypatch):
+    """--- KAN-172: like Tower, no -dirty image without --allow-dirty, and the refusal runs before any cloud call."""
+    root = setup_gke.checkout()
+    _dirty(root)
+    up = ["bash", str(root / "deploy/gke/up.sh")]
+    r = subprocess.run(up, capture_output=True, text=True)
+    assert r.returncode == 1 and "refusing to deploy uncommitted changes" in r.stderr
+    assert "src/app.py" in r.stderr and "--allow-dirty" in r.stderr and "ALLOW_DIRTY=1" in r.stderr
+    assert gke.calls() == [] and gke.config() is None
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 1  # hangar up --gke hits the same guard
+    assert gke.config() is None and not gke.ran("gcloud", "builds")
+
+    r = subprocess.run([*up, "--allow-dirty"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    submit = [c for c in gke.calls() if c[:3] == ["gcloud", "builds", "submit"]]
+    # The fake registry says every tag exists; a -dirty tag is rebuilt all the same, since it names no one tree.
+    assert len(submit) == 1 and submit[0][submit[0].index("--tag") + 1].endswith("-dirty")
+    deployed = "".join(f.read_text() for f in Path(str(gke.config_path()) + ".d").glob("*.yaml"))
+    assert "control-plane:" in deployed and submit[0][submit[0].index("--tag") + 1] in deployed
+
+    monkeypatch.setenv("ALLOW_DIRTY", "1")  # the env form, which hangar up --gke passes through
+    assert runner.invoke(cli.app, ["up", "--gke", "--yes"]).exit_code == 0
+    assert subprocess.run([*up, "--bogus"], capture_output=True).returncode == 2
+
+
+def test_up_sh_reuses_a_clean_image(gke):
+    """A clean tree's tag names one commit, so an image already in the registry is deployed as it is."""
+    r = subprocess.run(["bash", str(setup_gke.checkout() / "deploy/gke/up.sh")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "already built" in r.stdout and not gke.ran("gcloud", "builds")

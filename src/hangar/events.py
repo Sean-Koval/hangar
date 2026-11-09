@@ -466,7 +466,7 @@ class Parser:
         return self._ev("tool_call", f"{name} {_brief(args)}".strip(), id=tid, tool=name, subagent=sub,
                         clipped=clipped)
 
-    def _tool_end(self, tid: str, ok: bool, output: Any, path: str | None = None, **data: Any) -> list[RunEvent]:
+    def _tool_end(self, tid: str, ok: bool | None, output: Any, path: str | None = None, **data: Any) -> list[RunEvent]:
         name, opath = self.tools.pop(tid, [data.pop("tool", None), None])
         out = [self._ev("tool_result", _text_of(output), id=tid, tool=name, ok=ok, **data)]
         path = path or opath
@@ -649,7 +649,8 @@ class Parser:
                 if state in ("DONE", "ERROR") and f"t{idx}" not in self.seen:
                     self.seen.append(f"t{idx}")
                     err = ti.get("error") or {}
-                    out += self._tool_end(tid, state == "DONE", ti.get("output") or err.get("message") or "",
+                    output = ti.get("output") or err.get("message") or ""
+                    out += self._tool_end(tid, _agy_ok(name, state, _text_of(output)), output,
                                           duration_s=su.get("duration_seconds"))
             elif st == "error_message" and state == "DONE":
                 out.append(self._ev("error", su.get("error") or "the model request failed", fatal=False))
@@ -663,6 +664,22 @@ class Parser:
             if r.get("status") not in (None, "SUCCESS"):
                 out.append(self._ev("error", r.get("error") or r.get("status"), fatal=True, status=r.get("status")))
         return out
+
+
+# agy 1.3.3's stream-json carries no exit code: a run_command step is DONE when the command finished, whether or not
+# it failed (the model reads "The command exited with code N." in its own transcript, which the stream leaves out).
+_NOT_FOUND = re.compile(r"^(?:\S+: )?(?:line \d+: )?\S+: command not found$")
+
+
+def _agy_ok(name: str, state: str | None, output: str) -> bool | None:
+    """A finished agy step's ok: False for ERROR, None (unknown) for a shell command, unless its output ends on the
+    shell's own "command not found"; True for the rest, which agy marks ERROR when they fail."""
+    if state != "DONE":
+        return False
+    if name != "run_command":
+        return True
+    last = next((ln.strip() for ln in reversed(output.splitlines()) if ln.strip()), "")
+    return False if _NOT_FOUND.match(last) else None
 
 
 _DECIDED = {"allow": "allowed", "allow_always": "allowed_always", "deny": "denied", "cancelled": "cancelled"}

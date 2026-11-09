@@ -54,7 +54,9 @@ def test_every_harness_yields_the_same_kinds(harness):
     assert kinds <= set(KINDS)
     assert any(e.kind == "file_change" and e.text.endswith(("hello.txt", "notes.md")) for e in evs)
     assert any(e.kind == "command" and "hello.txt" in e.text for e in evs)
-    assert any(e.kind == "tool_result" and "hello from the capture" in e.text and e.data["ok"] for e in evs)
+    # agy's stream gives no exit code, so its shell result is neither ok nor failed (test_agy_shell_ok)
+    want = None if harness == "antigravity" else True
+    assert any(e.kind == "tool_result" and "hello from the capture" in e.text and e.data.get("ok") is want for e in evs)
     assert [e for e in evs if e.kind == "message"][-1].text.endswith("Done.")
     assert usage.tokens > 0 and usage.cost_usd and usage.cost_usd > 0
     assert all(e.off is not None for e in evs)
@@ -97,6 +99,32 @@ def test_pi_and_agy_usage():
     _, agy = parsed("antigravity", "antigravity")
     assert (agy.input_tokens, agy.output_tokens, agy.cache_read_tokens) == (8608, 240, 8192)
     assert agy.cost_source == "prices"
+
+
+def _agy_step(idx: int, state: str, tool: str, output: str) -> bytes:
+    info = {"name": tool, "parameters": {"CommandLine": "x"}, "output": output}
+    step = {"step_index": idx, "state": state, "step_type": "tool", "tool_name": tool, "tool_info": info}
+    return (json.dumps({"event": "step_update", "step_update": step}) + "\n").encode()
+
+
+@pytest.mark.parametrize("state,tool,output,ok", [
+    # seen in a real agy 1.3.3 run: the stream said DONE, the model was told "exited with code 127"
+    ("DONE", "run_command", "bash: line 1: slugkit: command not found\n", False),
+    ("DONE", "run_command", "sh: slugkit: command not found", False),
+    # a traceback the command printed before it went on: agy doesn't say how it ended
+    ("DONE", "run_command", "Traceback (most recent call last):\nImportError: x\nslugged-ok\n", None),
+    ("DONE", "run_command", "hello\n", None),
+    ("DONE", "run_command", "", None),
+    ("ERROR", "run_command", "", False),
+    ("DONE", "write_to_file", "Created file", True),
+    ("ERROR", "write_to_file", "denied", False),
+])
+def test_agy_shell_ok(state, tool, output, ok):
+    """agy 1.3.3's stream-json has no exit code, so a finished shell command is not proof it succeeded."""
+    data = _agy_step(4, "ACTIVE", tool, "") + _agy_step(4, state, tool, output)
+    evs, _ = parse_log(data, "antigravity")
+    (res,) = [e for e in evs if e.kind == "tool_result"]
+    assert res.data.get("ok") is ok
 
 
 @pytest.mark.parametrize("name,harness,needle", [

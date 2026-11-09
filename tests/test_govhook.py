@@ -399,3 +399,149 @@ def test_the_manifest_records_the_hooks_digest_in_harness_digest():
 def test_the_command_quotes_what_it_is_given():
     cmd = govhook.command("/var/lib/hangar/runs/run-1", "https://tower.test/a b", 30)
     assert "'https://tower.test/a b'" in cmd and shlex.split(cmd)[-5:] == ["--wait", "30", "||", "exit", "2"]
+
+
+# ====================================================================== --- KAN-33: a per-sandbox passport
+async def test_a_passport_turn_writes_the_sandboxs_own_passport_not_the_shared_key(
+        svc, live, hook_on, split_turns, sandbox_sh, monkeypatch):  # noqa: F811
+    import time
+
+    asked = []
+
+    async def passport(fleet, sb, **kw):
+        asked.append(sb.id)
+        return "pp.jwt.sig", time.time() + 900
+
+    monkeypatch.setattr(govhook, "sandbox_passport", passport)
+    s, sb, puts = await _box(svc, live, "gp1", split_turns)
+    hook_on.governance_hook_auth, hook_on.oidc_issuer = "passport", "https://hangar.test"
+    turn = SessionTurn(message="x")
+    run_id, _ = await steering.prepare(svc, s, turn, sb, HARNESSES["live-claude"])
+    steering.forget(svc, run_id)
+    # hangar's user writes it beside the run: the agent can read it (the hook runs as the agent), never change it
+    assert puts[isolation.RUNS][f"{run_id}.tower-key"] == (b"pp.jwt.sig", 0o644) and asked == [sb.id]
+    assert turn.governance_hook["auth"] == "passport" and turn.governance_hook["key_expires_at"] > time.time()
+    assert json.loads(svc.store.kv_get(govhook.PASS + run_id))["sandbox"] == sb.id  # renewed while it runs
+
+
+async def test_no_passport_no_turn(svc, live, hook_on, split_turns, sandbox_sh, monkeypatch):  # noqa: F811
+    async def refused(fleet, sb, **kw):
+        raise ValueError("Tower gave this sandbox no passport: HTTP 400 invalid_grant")
+
+    monkeypatch.setattr(govhook, "sandbox_passport", refused)
+    s, sb, _ = await _box(svc, live, "gp2", split_turns)
+    hook_on.governance_hook_auth, hook_on.oidc_issuer = "passport", "https://hangar.test"
+    with pytest.raises(steering.SteerError, match="no passport"):
+        await steering.prepare(svc, s, SessionTurn(message="x"), sb, HARNESSES["live-claude"])
+
+
+def test_passport_mode_needs_hangars_issuer_not_a_stored_key():
+    s = Settings(governance_url="https://tower.test", governance_hook_auth="passport", public_url="http://x")
+    claude = SimpleNamespace(live="claude", name="claude-code")
+    assert "HANGAR_OIDC_ISSUER" in govhook.why_not(s, claude)
+    s.oidc_issuer = "https://hangar.test"
+    assert govhook.why_not(s, claude) is None  # no HANGAR_GOVERNANCE_HOOK_CREDENTIAL needed
+
+
+class PersonTower:
+    """Tower's token endpoint for a sandbox: a federated `hangar:env:*` token with an email becomes a person's
+    passport (its requester_claim), for agent `hangar`."""
+
+    def __init__(self, sub: str | None = "person:alice@example.com"):
+        from tests.test_passports import Tower
+
+        self.t, self.sub, self.subjects = Tower(), sub, []
+
+    def __call__(self, request):
+        from urllib.parse import parse_qs
+
+        import httpx
+
+        from tests.test_passports import b64d
+
+        if request.url.path == "/oauth/token":
+            form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            self.subjects.append(json.loads(b64d(form["subject_token"].split(".")[1])))
+            claims = self.t.passport(sub=self.sub, chain=["hangar"], aud="https://tower.test/hooks")
+            return httpx.Response(200, json={"access_token": self.t.sign(claims), "expires_in": 900})
+        return self.t(request)
+
+
+async def test_the_sandbox_passport_is_exchanged_from_its_own_token_and_checked(fleet, settings):
+    import httpx
+
+    from hangar import people
+    from hangar.models import Sandbox
+
+    settings.governance_url, settings.oidc_issuer = "https://tower.test", "https://hangar.test"
+    people.add(fleet.store, "alice")
+    people.link(fleet.store, "alice", "email", "alice@example.com")
+    sb = Sandbox(name="b", environment="plain", provider="docker", person="alice")
+    tw = PersonTower()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(tw))
+    from tests.test_passports import ORIGIN
+
+    assert ORIGIN == "https://tower.test"
+    passport, exp = await govhook.sandbox_passport(fleet, sb, client=client)
+    [sub] = tw.subjects
+    assert (sub["sub"], sub["person"], sub["email"], sub["aud"]) == ("hangar:env:plain", "alice", "alice@example.com",
+                                                                     "https://tower.test/oauth/token")
+    assert sub["exp"] - sub["iat"] <= 6 * 60 and passport.count(".") == 2 and exp > 0
+    # a sandbox with a person must get that person's passport, not an agent's own
+    with pytest.raises(ValueError, match="not its person"):
+        await govhook.sandbox_passport(fleet, sb, client=httpx.AsyncClient(
+            transport=httpx.MockTransport(PersonTower(sub=None))))
+    # a passport for another agent is refused (governance_hook_agent)
+    settings.governance_hook_agent = "claude-code"
+    with pytest.raises(ValueError, match="no passport"):
+        await govhook.sandbox_passport(fleet, sb, client=client)
+
+
+async def test_refresh_renews_running_runs_and_forgets_ended_ones(fleet, monkeypatch):
+    import time
+
+    from hangar.models import Sandbox, SandboxState
+
+    sb = Sandbox(name="b", environment="plain", provider="docker", state=SandboxState.RUNNING)
+    gone = Sandbox(name="g", environment="plain", provider="docker", state=SandboxState.STOPPED)
+    fleet.store.put(sb)
+    fleet.store.put(gone)
+    govhook.follow(fleet, sb, "run-a", time.time() + 100)  # due
+    govhook.follow(fleet, sb, "run-b", time.time() + 800)  # not yet
+    govhook.follow(fleet, sb, "run-c", time.time() + 100)  # its run ended: the key is gone
+    govhook.follow(fleet, gone, "run-d", time.time() + 100)
+    puts, cmds = [], []
+
+    async def passport(fleet_, sb_, **kw):
+        return "new.jwt.sig", time.time() + 900
+
+    async def put(prov, sb_, parent, files):
+        puts.append((parent, files))
+
+    async def sh(prov, sb_, command, timeout=60):
+        cmds.append(command)
+        return ExecResult(exit_code=0, stdout="gone\n" if "run-c" in command else "renewed\n", stderr="")
+
+    monkeypatch.setattr(govhook, "sandbox_passport", passport)
+    monkeypatch.setattr(isolation, "put", put)
+    monkeypatch.setattr(isolation, "sh", sh)
+    monkeypatch.setattr(fleet, "_running", lambda sid: (sb, object()))
+    assert await govhook.refresh(fleet) == 1
+    assert puts[0] == (isolation.RUNS, {"run-a.tower-key.new": (b"new.jwt.sig", 0o644)})
+    assert json.loads(fleet.store.kv_get(govhook.PASS + "run-a"))["expires"] > time.time() + 800
+    assert fleet.store.kv_get(govhook.PASS + "run-b") is not None
+    assert fleet.store.kv_get(govhook.PASS + "run-c") is None and fleet.store.kv_get(govhook.PASS + "run-d") is None
+    # the swap only replaces a key that is still there: a run that ended never gets its passport back
+    script = govhook.renew_script("run-a")
+    assert script.startswith(f"if [ -e {isolation.RUNS}/run-a.tower-key ]") and "rm -f" in script
+
+
+def test_a_renewed_key_replaces_only_a_key_still_there(tmp_path, monkeypatch):
+    monkeypatch.setattr(isolation, "RUNS", str(tmp_path))
+    (tmp_path / "r.tower-key.new").write_text("new")
+    assert subprocess.run(govhook.renew_script("r"), shell=True, capture_output=True, text=True).stdout == "gone\n"
+    assert not (tmp_path / "r.tower-key.new").exists() and not (tmp_path / "r.tower-key").exists()
+    (tmp_path / "r.tower-key").write_text("old")
+    (tmp_path / "r.tower-key.new").write_text("new")
+    assert subprocess.run(govhook.renew_script("r"), shell=True, capture_output=True, text=True).stdout == "renewed\n"
+    assert (tmp_path / "r.tower-key").read_text() == "new"

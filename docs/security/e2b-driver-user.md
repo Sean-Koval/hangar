@@ -6,7 +6,7 @@ Can an `ask` or `deny-risky` turn on E2B keep hangar's driver out of the agent's
 
 ## What happens today
 
-An E2B sandbox is one microVM with one user and no second container, so there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings would belong to the agent's user. The agent could then answer its own approvals (security review H-1).
+An E2B sandbox is one microVM with one user and no second container, so there is no [uid split](../steering/uid-split.md). The driver, its run key and the harness settings would belong to the agent's user. The agent could then answer its own approvals (security review H-1).
 
 So when `HANGAR_UID_SPLIT` is unset, E2B treats it as `required`. A turn with `ask`, `deny-risky` or `governed` approvals is refused there, saying why. `auto` turns run as before. Docker and Kubernetes keep their own defaults.
 
