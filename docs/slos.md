@@ -12,7 +12,7 @@ Each error budget is over a rolling 28 days.
 | [Queued to running](#queued-to-running) | 95% of starts leave the queue within 5 minutes | 5% may wait longer | `queue-slow` (ticket) |
 | [Sandbox creates](#sandbox-creates) | At most 2% of sandbox creates fail | 2% of creates | `sandbox-creates-failing` (page) |
 
-The latency targets for creates, turn starts and resumes stay where they were. `hangar status` shows them ([observability](observability.md#slos)).
+The latency targets for creates, turn starts and resumes stay where they were. `hangar status` shows them ([observability](observability/operator.md#slos)).
 
 ## Where the numbers come from
 

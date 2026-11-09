@@ -292,7 +292,7 @@ async def test_landing_in_enforce_arms_only_on_towers_allow(intake, rel, tower):
     [req] = tower.asked
     assert req.kind == "landing.approve" and req.idempotency_key == f"hangar:job:{job.id}:landing:{'a' * 40}"
     assert (req.subject.pr, req.subject.head_sha, req.subject.repo) == (7, "a" * 40, "o/r")
-    assert req.signer.external == "github:31337" and req.context.risk == "low"
+    assert req.signer.external == "github:lee" and req.context.risk == "low"  # KAN-33: Tower keys GitHub by login
     assert [c.name for c in req.context.checks] == ["ci"]
     assert intake.store.kv_get(LAND + "A-1") == job.id and job.landing.receipt is None
     tower.decisions["A-1"] = Decision(outcome="allow", approval_id="A-1", receipt="RC-55", status="approved")
@@ -336,3 +336,52 @@ async def test_landing_in_shadow_records_both_and_lands_as_before(intake, rel, t
     g = job.landing.governance
     assert (g["hangar"]["outcome"], g["tower"]["outcome"], g["sha"]) == ("allow", "wait", "a" * 40)
     assert [e.target for e in audits(intake, "governance.disagree")] == [job.id]
+
+
+# ====================================================================== identities Tower sees (KAN-33)
+def test_github_signers_and_requesters_go_to_tower_by_login(intake, rel):
+    from hangar.governance import front_door, github_external
+
+    people.add(intake.store, "sean", role="admin")
+    people.link(intake.store, "sean", "github", "4242")
+    people.link(intake.store, "sean", "email", "Sean@Example.com")
+    # a /hangar approve comment from a linked account: the login GitHub reported, the person by its id, the email
+    s = rel.signer(approvals.from_github("sean", "sean", True))
+    assert (s.external, s.person, s.email, s.via) == ("github:sean", "sean", "sean@example.com", "github")
+    s = rel.signer(approvals.from_github("rando", None, False), "reject")
+    assert (s.external, s.person, s.email, s.verdict) == ("github:rando", None, None, "reject")
+    # REST and MCP signers by person and email only; hangar's token names are never sent as an account
+    s = rel.signer(approvals.Approver("@sean:cc", "sean", "rest", frozenset({"@sean:cc"})))
+    assert (s.external, s.person, s.email) == (None, "sean", "sean@example.com")
+    s = rel.signer(approvals.from_jira("557058:abc", "sean"))
+    assert (s.external, s.person) == ("jira:557058:abc", "sean")
+    # the requester: the person and the account that asked, both, so Tower sees self-approval by either name
+    job = intake.submit(SubmitJob(instructions="x", environment="jobenv", deliver="none"),
+                        tj.Caller("github:sean", "github:sean", person="sean"), source="github")
+    r = rel.release_request(job).requester
+    assert (r.person, r.email, r.external) == ("sean", "sean@example.com", "github:sean")
+    job = intake.submit(SubmitJob(instructions="x", environment="jobenv", deliver="none"),
+                        tj.Caller("@sean:cc", "tok-1", person="sean"), source="api")
+    assert rel.release_request(job).requester.external is None
+    assert front_door("github:octo") == "github:octo" and front_door("@sean:cc") is None
+    assert front_door("system") is None and front_door("github:") is None
+    assert github_external("@Octo") == "github:Octo" and github_external(None, 31337) == "github-id:31337"
+    assert github_external(None) is None
+
+
+async def test_a_landing_reviewer_is_their_login_and_their_person_by_id(intake, rel, tower):
+    mode(intake, "enforce", "landing.approve")
+    people.add(intake.store, "lee", role="member")
+    people.link(intake.store, "lee", "github", "31337")
+    people.link(intake.store, "lee", "email", "lee@example.com")
+    job = approved(intake)
+    await rel.landing(job)
+    [req] = tower.asked
+    assert (req.signer.external, req.signer.person, req.signer.email) == ("github:lee", "lee", "lee@example.com")
+    # a login renamed and taken by someone else: hangar has no id for it, so no person, only the login
+    tower.asked.clear()
+    job2 = approved(intake, sha="c" * 40)
+    job2.landing.approved_by = "lee-new-owner"
+    await rel.landing(job2)
+    [req] = tower.asked
+    assert (req.signer.external, req.signer.person) == ("github:lee-new-owner", None)

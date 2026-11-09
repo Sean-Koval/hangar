@@ -52,7 +52,7 @@ hangar doctor --fix                                                         # ap
 For one repo, `hangar repo check acme/app` puts what matters for agent work in one report. It covers the GitHub App,
 branch protection and required checks, and the gateway. It covers the environments' credential mode, sudo, egress and
 logins, and the Jira and Slack mappings. It ends with `ready` or `not ready (N failing)`: see
-[is this repo ready](../repo-policy.md#is-this-repo-ready).
+[is this repo ready](../repo-policy/readiness.md#is-this-repo-ready).
 
 `hangar doctor --fix` offers each fix it can make safely on its own. That is building an environment, or creating or
 repairing a repo's webhook (events, JSON, and the stored secret). `--yes` applies them without asking. For the rest it
@@ -108,9 +108,9 @@ EOF
 | Field | Meaning |
 | --- | --- |
 | `instructions` | What to do (required, up to 64 KB). |
-| `repo`, `base_branch`, `branch` | The repo to work in: `owner/name` for GitHub, or any clone URL. The base defaults to the repo's default branch. The branch defaults to `hangar/<job>`, or `hangar/<key>-<job>` for a Jira ticket's job ([branch names](../intake.md#branch-and-pr-names-carry-the-key)), or the repo policy's [`branch_template`](../repo-policy.md). A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
+| `repo`, `base_branch`, `branch` | The repo to work in: `owner/name` for GitHub, or any clone URL. The base defaults to the repo's default branch. The branch defaults to `hangar/<job>`, or `hangar/<key>-<job>` for a Jira ticket's job ([branch names](../intake/jira.md#branch-and-pr-names-carry-the-key)), or the repo policy's [`branch_template`](../repo-policy.md). A custom branch must be under `hangar/` and must not exist yet: jobs never push to existing branches. |
 | `environment`, `harness`, `model`, `provider` | Where and with what to run. Left out: the repo's [policy](../repo-policy.md), then the first environment mapped in `HANGAR_GITHUB_REPOS`. |
-| `harness_lock` | Run from a [harness lock](../harness-lock.md#thaw-and-drift) in the registry: `name`, `name@rN`, `name@sha256:…` or `name@stable`. It fixes the harness, model and approvals (a conflicting `harness` or `model` is refused). A lock on another CLI version than `harnesses.lock.yaml` pins is refused at submit. Turn 1 is checked against it: see [drift](../harness-lock.md#thaw-and-drift). |
+| `harness_lock` | Run from a [harness lock](../harness-lock/thaw.md) in the registry: `name`, `name@rN`, `name@sha256:…` or `name@stable`. It fixes the harness, model and approvals (a conflicting `harness` or `model` is refused). A lock on another CLI version than `harnesses.lock.yaml` pins is refused at submit. Turn 1 is checked against it: see [drift](../harness-lock/thaw.md). |
 | `harness_lock` drift | Drift from the lock is a warning, an event and a review-packet line. Under `HANGAR_HARNESS_DRIFT=fail`, the job fails with `reason: "harness_drift"` and delivers nothing. |
 | `verify` | The repo's own check. It runs inside the agent's turn, where a failure goes back to the agent ([the agent loop](agent-loop.md)), and hangar runs it again after the turn. A failing check still delivers, as a draft PR. Left out: the repo's [policy](../repo-policy.md), then the environment's `verify:`; `""` means no check. |
 | `verify_in_loop`, `max_verify_rounds` | Whether `verify` also runs inside the turn (default `true`), and how many failures go back to the agent per turn (default 3). See [the agent loop](agent-loop.md). |
@@ -121,7 +121,7 @@ EOF
 | `idempotency_key` | Resubmitting with the same key returns the existing job. |
 | `timeout_minutes`, `keep_minutes` | Limit per agent turn, and how long the sandbox stays after a turn for follow-ups. |
 | `budget` | `{"max_minutes", "max_tokens", "max_cost_usd"}` per agent turn. A turn that crosses it is stopped, and what it did is delivered as a draft (`reason: "over_budget"`). See [Activity, usage and budgets](../activity.md). |
-| `job_budget` | `{"max_cost_usd", "max_tokens", "max_turns"}` for all the job's turns together: follow-ups, verify-fix and auto-fix turns, best-of-N attempts and the judge. Left out: the repo's policy, then `HANGAR_JOB_BUDGET_*`. See [repo-policy.md](../repo-policy.md#budgets). |
+| `job_budget` | `{"max_cost_usd", "max_tokens", "max_turns"}` for all the job's turns together: follow-ups, verify-fix and auto-fix turns, best-of-N attempts and the judge. Left out: the repo's policy, then `HANGAR_JOB_BUDGET_*`. See [repo-policy.md](../repo-policy/budgets.md#budgets). |
 | `output_schema` | JSON Schema for a structured result; it comes back as `result.data`. See [context exchange](../context-exchange.md). |
 
 `context` can also carry your local work in progress: `patch` (uncommitted changes) and `bundle` (unpushed commits)

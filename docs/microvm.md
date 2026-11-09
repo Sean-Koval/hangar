@@ -39,7 +39,7 @@ tier: fast          # fast | isolated | default | heavy
 
 The heavy tier ([environments.md](environments/heavy-tier.md): Docker inside the sandbox, and the large and
 xlarge profiles) can run here as well as on GKE's Kata pool, and on a cluster with GKE's Agent Sandbox add-on it has
-to, since the add-on refuses privileged Kata pods ([gke.md](gke.md#4a-the-heavy-tier-optional)):
+to, since the add-on refuses privileged Kata pods ([gke.md](gke/microvms.md#4a-the-heavy-tier-optional)):
 
 ```bash
 HANGAR_TIERS='{"fast": ["e2b"], "heavy": ["e2b"]}'   # or ["kubernetes", "e2b"]: Kata first, microVMs when it's full
@@ -61,92 +61,6 @@ HANGAR_TIERS='{"fast": ["e2b"], "heavy": ["e2b"]}'   # or ["kubernetes", "e2b"]:
 - **Hot resume** pauses the VM with its memory, so a resumed session finds dockerd, its images and running stacks as
   they were.
 
-## The e2b provider
-
-### Flavours
-
-| | `cloud` | `selfhosted` | `cube` |
-| --- | --- | --- | --- |
-| Control API | `https://api.<domain>` (default `api.e2b.app`) | `HANGAR_E2B_API_URL`, or `https://api.<HANGAR_E2B_DOMAIN>` | `HANGAR_E2B_API_URL` (CubeAPI listens on `:3000`), required |
-| API key | `HANGAR_E2B_API_KEY`, required | required | optional (CubeAPI has no auth unless its `AUTH_CALLBACK_URL` is set) |
-| Create / connect | `POST /v2/sandboxes`, `POST /v2/sandboxes/{id}/connect` | same | `POST /sandboxes`, `POST /sandboxes/{id}/connect`: CubeAPI answers the v2 routes with 405 |
-| envd URL | `https://sandbox.<domain>`, routed by the `E2b-Sandbox-Id` header | `https://49983-<id>.<domain>` | `https://49983-<id>.<domain>` through CubeProxy |
-| envd access token | yes | yes | **none** ([Security](#security)) |
-| Template builds | `Template.build` from your pushed image (e2b SDK) | same | CubeAPI's image builds (`POST /templates`) |
-| Snapshots | `POST /sandboxes/{id}/snapshots` | same | same |
-
-`HANGAR_E2B_SANDBOX_URL` overrides where envd is reached. With `{sandbox_id}` (and `{port}`) in it, it is filled in per sandbox. That is for a CubeProxy without TLS on a private network, for example `http://{port}-{sandbox_id}.cube.internal`. Without placeholders, every sandbox is reached at that one URL and routed by header. That fits a single-host test.
-
-### What changed from the old provider
-
-- **Lifecycle.** The provider uses its own thin httpx client for the control API, the same for every flavour. The e2b SDK from 2.51 on only posts to the v2 routes, which CubeAPI lacks (spec 0013 §5.4). The SDK is now needed only to build templates on E2B itself.
-- **Commands, files and terminals** go to the sandbox's envd through hangar's own Connect client (`envd.py`), the one the Docker and Kubernetes providers use for hangar-envd. That means the same output tail (`MAX_OUTPUT`), the same read limits (#48), deadlines, and refusal of compressed or oversized answers. The difference is authentication: E2B's `X-Access-Token`, plus the traffic token when there is one, instead of hangar-envd's per-request signatures.
-- **One login shell per command.** The old `exec` ran `bash -lc '<cmd>'` through `commands.run`, which itself runs `/bin/bash -l -c`, so the profile ran twice on every call. Now envd starts `timeout … bash -lc <cmd>` once, which also gives a timeout that kills the command.
-- **Ports are private.** Every sandbox is created with `network.allowPublicTraffic=false`, so the edge wants the traffic token, which only hangar holds.
-- **Tokens stay in memory.** The access token comes from create and connect, is never stored or logged, and is fetched again after a control-plane restart. The one exception is the traffic token: CubeAPI returns it only from create (its connect and resume read the sandbox back without it), so the provider keeps it with the sandbox record, encrypted with a key derived from hangar's secret key, and uses it whenever connect doesn't hand one out. On a running sandbox, `connect` only extends its timeout. A paused sandbox is never connected implicitly, because connecting would resume it.
-- **Errors are honest.** `status` raises when the API can't be reached, rather than reporting the sandbox stopped. `list_refs` returns nothing on failure, so reconciliation doesn't mark every sandbox gone.
-
-### Templates
-
-A hangar environment becomes an E2B or Cube template in one of two ways:
-
-1. **Built by hangar** (`hangar env publish`, or the first create). hangar builds the image, pushes it to `HANGAR_REGISTRY`, then:
-   - on `cloud` or `selfhosted`, runs `Template.build` from that image, named `hangar-<env>:<digest>`. E2B adds its own envd;
-   - on `cube`, posts `{image, name: hangar-<env>-<digest16>, cpu (millicores), memory (MiB), exposedPorts: [49983], probePort: 49983, probePath: /health, writableLayerSize}` to CubeAPI's `/templates`, then polls `/templates/{id}/builds/{job}/status` until it is `ready`. Creates look the alias up for its `tpl-…` id.
-2. **Built out of band and mapped**: `HANGAR_E2B_ENVIRONMENT_TEMPLATES='{"python": "tpl-0a1b2c", "node": "my-team/node-22"}'`. The provider uses the mapped template and builds nothing. A mapped template has to contain what the environment would have (its tools, its harness, the `agent` user and `/workspace`), because hangar can't check it.
-
-**What has to happen out of band on CubeSandbox.** Cube templates don't get an envd injected the way E2B's do. The image must start E2B's envd on 49983 itself, or Cube's build probe never succeeds:
-
-- Set the environment's `base:` to `ghcr.io/tencentcloud/cubesandbox-base:2026.16`. That is Ubuntu 22.04 with envd, and its entrypoint (`cube-entrypoint.sh`) starts envd and then runs the image's command. hangar's rendered image keeps that entrypoint and adds `sleep infinity` as the command.
-- Add `env: {ENVD_LOG_FILE: "-"}` to the environment. hangar's image ends as the unprivileged `agent` user, and the entrypoint's default log file under `/var/log` would make it exit.
-- Make the image pullable by CubeMaster: a public registry, or `HANGAR_E2B_REGISTRY_USERNAME`/`_PASSWORD`, which go to Cube as `registryUsername`/`registryPassword`.
-- Alternatively, build with Cube's own tooling (`cubemastercli tpl`, or its template guide) and map the result with `HANGAR_E2B_ENVIRONMENT_TEMPLATES`.
-
-None of this ran here: no Cube cluster was available. The request body is taken from CubeAPI's `openapi.yml` and `services/templates.rs` at commit `8d3d991`.
-
-### Settings
-
-| Setting | Default | |
-| --- | --- | --- |
-| `HANGAR_E2B_FLAVOR` | `cloud` | `cloud`, `selfhosted` or `cube` |
-| `HANGAR_E2B_API_URL` | `https://api.<domain>` | The control API (required for `cube`) |
-| `HANGAR_E2B_DOMAIN` | `e2b.app` | Sandbox host names are `<port>-<id>.<domain>` |
-| `HANGAR_E2B_SANDBOX_URL` | unset | Where envd is reached, overriding the domain rule (see above) |
-| `HANGAR_E2B_API_KEY` | unset | Required for `cloud` and `selfhosted` |
-| `HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD` | `false` | Accept sandboxes whose envd has no token (CubeSandbox), on a private network only |
-| `HANGAR_E2B_ENVIRONMENT_TEMPLATES` | `{}` | environment → template built out of band |
-| `HANGAR_E2B_REQUEST_TIMEOUT_SECONDS` | `60` | One control API call |
-| `HANGAR_E2B_TEMPLATE_BUILD_TIMEOUT_SECONDS` | `1800` | A Cube template build |
-| `HANGAR_TIERS` | `{"fast": ["e2b"], "isolated": ["kubernetes"]}` | Tier → providers in order |
-| `HANGAR_TIER_COOLDOWN_SECONDS` | `60` | How long a full or unreachable provider is skipped |
-| `HANGAR_SESSION_HOT_RESUME_MINUTES` | `1440` | How long a suspended session's sandbox stays paused for hot resume; 0 turns it off |
-| `HANGAR_SESSION_HOT_RESUME_MAX` | `20` | Most sandboxes kept paused for hot resume at once |
-
-## Hot resume
-
-On a provider whose pause keeps the VM's memory and whose resume restores it fast, the provider declares the `hot_resume` capability. The `e2b` provider does, on every flavour. A session suspend then works like this (`hot_resume.py`, spec 0010 M4):
-
-1. **The checkpoint comes first, as always.** The conversation, commits and uncommitted work go to the checkpoint store. If that fails and there is no earlier checkpoint, the sandbox is kept, exactly as before.
-2. **The sandbox is paused instead of destroyed.** It is kept for `HANGAR_SESSION_HOT_RESUME_MINUTES` (24 h), then the reaper removes it. The store records which sandbox is parked for the session and which checkpoint was the latest at that moment.
-3. **The next turn resumes it.** E2B's connect, or CubeSandbox's, restores the memory snapshot, and hangar checks that a command runs. The session is back on the same machine: running processes, caches, build artifacts, ignored directories and anything else a checkpoint leaves out are all still there.
-
-It falls back to restoring the checkpoint in a new sandbox whenever the parked sandbox can't be trusted to be the latest state:
-
-- a newer checkpoint exists (the session resumed elsewhere and was suspended again);
-- the sandbox is gone (reaped, or lost by the provider);
-- resuming it fails, or it doesn't answer a command afterwards.
-
-In every fallback the parked sandbox is destroyed. No checkpoint is ever deleted by any of this. A parked sandbox survives a control-plane restart; startup doesn't count it as an orphan. Archiving or deleting the session destroys it.
-
-Parked sandboxes are a cache, so hangar bounds them. When a suspend would break one of these rules, the sandbox is destroyed as before, and the next resume restores the checkpoint:
-
-- **A cap.** At most `HANGAR_SESSION_HOT_RESUME_MAX` (20) sandboxes are parked at once; past that, the longest-parked goes first.
-- **Headroom.** Paused sandboxes count against `HANGAR_MAX_SANDBOXES`, so nothing is parked while the fleet is three-quarters full. If the fleet fills up later, a create evicts the longest-parked sandbox instead of being refused.
-- **No rotating tokens.** A sandbox holding an exclusive credential, such as a Claude Code OAuth login with its rotating refresh token, isn't parked. The token goes back to the vault, so other sandboxes can use it, and a paused copy can't go stale.
-- **Gateway grants.** A parked sandbox holds no live grant: it is revoked before the pause. Wake mints a new one for the session's branch as it is then (best-of-N's take-over moves the winner to the job's branch) and writes it where git reads it, as a cold boot would. If that fails, the session restores its checkpoint instead.
-
-**Cost.** A paused sandbox isn't running, but it isn't free either: E2B keeps its snapshot (check your plan's terms for paused sandboxes), and CubeSandbox keeps the snapshot files on the node's disk. Turn hot resume off with `HANGAR_SESSION_HOT_RESUME_MINUTES=0` if that matters more than the restore time.
-
 ## Security
 
 - **CubeSandbox's envd has no token.** CubeAPI returns `envdAccessToken: null` (spec 0013 §5.4, `services/sandboxes.rs`), so the envd inside a Cube sandbox answers anyone who can reach it. hangar therefore **refuses such sandboxes and kills them**, unless `HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true`. Set that only when all of these hold:
@@ -158,79 +72,6 @@ Parked sandboxes are a cache, so hangar bounds them. When a suspend would break 
 - **API key.** The key is sent only to `HANGAR_E2B_API_URL`, never logged, and missing from every error message. For `cube`, CubeAPI can check keys against hangar through its `AUTH_CALLBACK_URL` (spec 0013 §8.3), which isn't built yet.
 - **A sandbox's answers are untrusted.** Output is cut to a tail, reads stop at their limit, frames are capped and compression is refused, as for hangar-envd. Sandbox ids from the API are checked before they go into a URL path.
 - **Not a hangar-envd provider.** The provider deliberately has no `envd` attribute, so the preview proxy never mistakes it for one.
-
-## Deployment
-
-Both platforms need `/dev/kvm` and host-level setup, and neither runs as an unprivileged Pod (spec 0013 §5.3).
-
-### Option A: a nested-virtualization pool on GKE (start here)
-
-`deploy/terraform/gke/microvm.tf` adds the pool, off by default:
-
-```hcl
-enable_microvm_pool  = true
-microvm_machine_type = "c3-standard-8"   # c3, c4, c4d, n2, n4, n4d: series with nested virtualization
-microvm_node_count   = 1                 # fixed: templates and snapshots are cached per node
-microvm_hugepages_2m = 2048              # E2B: 4 GiB of 2 MiB hugepages before the kubelet starts; Cube: 0
-microvm_local_ssds   = 0                 # Cube: raw local NVMe (a -lssd machine type), formatted XFS for /data/cubelet
-```
-
-The pool runs Ubuntu with nested virtualization (`advanced_machine_features.enable_nested_virtualization`), is labelled `hangar.dev/runtime=microvm` and `nested-virtualization=enabled`, and is tainted `hangar.dev/runtime=microvm:NoSchedule`. It was checked with `terraform fmt` and `terraform validate` (Terraform 1.13.4, google provider 8.7.0). Nothing was applied.
-
-The constraints, from GKE's docs as spec 0013 §6.1 records them [G1][G2] (re-read on 2026-10-13):
-
-- **Machines.** C3, C4, C4D, N2, N4 or N4D. Google's own ComputeClass example uses C3, C4 and C4D. E2, N2D, Arm and memory-optimized machines lack nested virtualization. GKE can't run `-metal` machine types [G4].
-- **Immutable.** Nested virtualization can't be turned on for an existing pool, and the setting can't be changed later. An org policy that disables nested virtualization blocks it.
-- **Privileged Pods.** Pods that use the nested VMs need `securityContext.privileged: true`. Both stacks also want `hostNetwork`. That is why the pool is tainted and dedicated: nothing else, including hangar's own sandboxes, may share these nodes.
-- **ComputeClass instead of a pool.** A ComputeClass with `enableNestedVirtualization: true` needs GKE **1.37.0-gke.4713000** or later. It works with auto-created pools and Autopilot. On Autopilot, privileged Pods need a `WorkloadAllowlist`. Google's example:
-  ```yaml
-  apiVersion: cloud.google.com/v1
-  kind: ComputeClass
-  metadata: {name: microvm}
-  spec:
-    priorities:
-    - {machineFamily: c3, spot: true, enableNestedVirtualization: true}
-    - {machineFamily: c4, spot: false, enableNestedVirtualization: true}
-    - {machineFamily: c4d, spot: true, enableNestedVirtualization: true}
-    nodePoolConfig: {imageType: cos_containerd}   # use ubuntu_containerd for E2B (not COS)
-    nodePoolAutoCreation: {enabled: true}
-    whenUnsatisfiable: DoNotScaleUp
-  ```
-- **The cost.** Google states a CPU penalty of 10% or more for nested virtualization, and more for I/O-bound work [G1].
-- **No PVM.** CubeSandbox's PVM kernel, its way to run without VT-x, needs a custom host kernel, which GKE doesn't allow. On GKE it is real nested KVM or nothing.
-
-**CubeSandbox on the pool.** Cube's Helm chart installs four DaemonSets (the node agent "Big Pod", an installer, bootstrap, and PVM; leave PVM off), all `hostNetwork` [C12]. To fit this pool:
-
-- add `nodeSelector: {hangar.dev/runtime: microvm}` and a toleration for the taint;
-- give `/data/cubelet` an XFS filesystem with reflink, either formatted from local NVMe SSDs by the installer or, for a trial, as an XFS loop image on the boot disk;
-- run CubeAPI, CubeMaster and CubeProxy as ordinary Deployments in the same namespace.
-
-hangar then uses:
-
-```bash
-HANGAR_ENABLED_PROVIDERS='["kubernetes","e2b"]'
-HANGAR_E2B_FLAVOR=cube
-HANGAR_E2B_API_URL=http://cubeapi.cube-system.svc:3000
-HANGAR_E2B_SANDBOX_URL='http://{port}-{sandbox_id}.cubeproxy.cube-system.svc.cluster.local'  # or your CubeProxy domain
-HANGAR_E2B_ALLOW_UNAUTHENTICATED_ENVD=true   # only with the NetworkPolicy below
-```
-
-Pair it with a NetworkPolicy on the Cube namespace that admits ingress only from the hangar namespace.
-
-**E2B self-hosted on the pool.** E2B's Embed is a one-node StatefulSet with `hostNetwork`, privileged init containers, NBD and 2 MiB hugepages [E4]. That is why the pool defaults to Ubuntu and 2048 hugepages. hangar then uses `HANGAR_E2B_FLAVOR=selfhosted`, `HANGAR_E2B_DOMAIN=<your E2B domain>`, `HANGAR_E2B_API_URL` if the API isn't at `api.<domain>`, and an E2B API key from that deployment.
-
-### Option B: bare-metal C3 outside GKE
-
-A managed instance group of `c3-standard-192-metal` runs CubeSandbox or E2B directly, and hangar reaches it over the VPC.
-
-- **For:** no nested-virtualization penalty, so the published numbers apply, and very high density. Cube measured 1,000 idle 2 GiB VMs in about 25 GiB [C8].
-- **Against:** the smallest metal machine has 192 vCPUs, about $9.68/h (≈ $7k/month; from a secondary source [G5]). It is billed per vCPU and memory like a VM, so it only pays above roughly 100 concurrent sandboxes. It needs a dedicated host and Hyperdisk, and it stops (`TERMINATE`) for maintenance, so plan for snapshots to be lost on maintenance. It is a second fleet to run, outside GKE's scheduling.
-
-The provider settings are the same as on GKE, with addresses on the VPC. Restrict the firewall to the control plane's subnet. This is not in Terraform yet.
-
-### Option C: GKE's managed `microvm` RuntimeClass
-
-GKE's Agent Sandbox add-on allows a `microvm` RuntimeClass (managed Kata on Cloud Hypervisor), but node pools couldn't be created with it as of gcloud 588 [H2]. Its restore speed and snapshot API are unknown. Revisit it when it ships; it would plug in as the `kubernetes` provider with `runtime_class`, not as `e2b`.
 
 ## Expected latencies
 
@@ -274,3 +115,18 @@ The provider adds little on top. One control-API round trip creates a sandbox, a
 4. **Native fork.** E2B's `POST /sandboxes/{id}/fork` and CubeSandbox's snapshot-and-clone for `fork_session` and best-of-N, instead of hangar's snapshot-then-create.
 5. **hangar-envd as the template's envd.** A Cube or E2B template could carry hangar-envd, which is authenticated and smaller, so Cube templates wouldn't depend on `cubesandbox-base`.
 6. **Option B in Terraform** (a bare-metal MIG), if A misses P4's gate.
+
+## Moved from this page
+
+| Section | Now on |
+| --- | --- |
+| <span id="the-e2b-provider"></span>The e2b provider | [The e2b provider and hot resume](microvm/e2b.md#the-e2b-provider) |
+| <span id="flavours"></span>Flavours | [The e2b provider and hot resume](microvm/e2b.md#flavours) |
+| <span id="what-changed-from-the-old-provider"></span>What changed from the old provider | [The e2b provider and hot resume](microvm/e2b.md#what-changed-from-the-old-provider) |
+| <span id="templates"></span>Templates | [The e2b provider and hot resume](microvm/e2b.md#templates) |
+| <span id="settings"></span>Settings | [The e2b provider and hot resume](microvm/e2b.md#settings) |
+| <span id="hot-resume"></span>Hot resume | [The e2b provider and hot resume](microvm/e2b.md#hot-resume) |
+| <span id="deployment"></span>Deployment | [Deploying the microVM tiers](microvm/deployment.md) |
+| <span id="option-a-a-nested-virtualization-pool-on-gke-start-here"></span>Option A: a nested-virtualization pool on GKE (start here) | [Deploying the microVM tiers](microvm/deployment.md#option-a-a-nested-virtualization-pool-on-gke-start-here) |
+| <span id="option-b-bare-metal-c3-outside-gke"></span>Option B: bare-metal C3 outside GKE | [Deploying the microVM tiers](microvm/deployment.md#option-b-bare-metal-c3-outside-gke) |
+| <span id="option-c-gkes-managed-microvm-runtimeclass"></span>Option C: GKE's managed `microvm` RuntimeClass | [Deploying the microVM tiers](microvm/deployment.md#option-c-gkes-managed-microvm-runtimeclass) |

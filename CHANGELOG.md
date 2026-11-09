@@ -42,6 +42,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`deploy/gke/up.sh` refuses a `-dirty` image** (KAN-172), as Tower's deploy does. Uncommitted changes to
+  `src`, `envs`, `envd`, `pyproject.toml` or the `Dockerfile` stop it before any cloud call, listing the files. Pass
+  `--allow-dirty` or set `ALLOW_DIRTY=1` (which `hangar up --gke` passes through) to deploy them; a `-dirty` image
+  is then rebuilt every time instead of reusing an older build under the same tag.
 - **How far production is behind main** (KAN-216). `hangar doctor` (`production lag`) and the Fleet page show the
   deployed commit, its tag, and the commits and days it is behind `main`, from GitHub with hangar's own token ("unknown"
   without one). A new `deploy-lag` alert (a ticket) fires past `HANGAR_DEPLOY_LAG_ALERT_WORKING_DAYS` (2) while the
@@ -81,6 +85,25 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **Break-glass: `hangar governance local`** (KAN-33, spec 0015 §7,
+  [docs/runbooks/break-glass-tower.md](docs/runbooks/break-glass-tower.md#break-glass)). One admin starts it
+  (`--until`, at most 24 h, `--reason`), a second admin confirms it, and it ends on its own or with `--end`. While it
+  is active and Tower can't answer, an admin's approval of a job release or landing in `enforce` is decided by
+  hangar's rules; a Tower that answers still decides. Every step and decision is audited and kept for replay, and
+  `hangar doctor` warns while it is on.
+- **A per-sandbox passport for the Tower hook** (KAN-33, #174,
+  [docs/governance-hook.md](docs/governance-hook.md#the-key)). `HANGAR_GOVERNANCE_HOOK_AUTH=passport` (the default
+  stays `key`) writes the sandbox's own passport as the run's hangar-owned key file instead of the shared agent key:
+  its token (`sub: hangar:env:<env>`, its person and their linked email) exchanged at Tower's token endpoint, checked,
+  and renewed by the refresh loop while the run lasts. The agent still can read it (the hook runs as the agent).
+- **Tower passports on the job API** (KAN-33, #174, [docs/tower-passports.md](docs/tower-passports.md)).
+  `HANGAR_JOB_PASSPORTS=on` (off by default) accepts a Tower passport as the bearer on `/api/jobs*`, as the person
+  its `person:<email>` names (linked by email) or an agent listed in `HANGAR_JOB_PASSPORT_AGENTS`. The signature,
+  issuer, audience (Tower's own: `<issuer>/mcp` or `<issuer>`), expiry and act chain are checked against Tower's JWKS; refusals answer 401 and are audited
+  `passport.refused`. A passport holds the `jobs` scope only and never approves a job. hangar's tokens are unchanged.
+- **Tower sees GitHub accounts by login** (KAN-33). Requesters and signers of job releases and landings are sent as
+  `github:<login>`, beside the person (found by the account's numeric id, never the login) and the email linked to
+  them; only an id with no login is sent as `github-id:<id>`, which Tower maps to nobody.
 - **The managed Tower hook** (KAN-78, [docs/governance-hook.md](docs/governance-hook.md)). `governance.hook: required`
   in an environment, or `HANGAR_GOVERNANCE_HOOK=required`, runs Claude Code turns with hangar's PreToolUse hook in its
   own `--settings`: it asks Tower's `/hooks/claude-code` before every call and fails closed. The driver then keeps

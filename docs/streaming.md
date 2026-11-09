@@ -61,7 +61,7 @@ Without a daemon a process runs detached (`setsid`), its output goes to `~/.hang
 
 Background processes and streamed commands run as the sandbox user, like `exec`. On Docker they don't get
 `no_new_privs`, unlike a turn's harness: they are commands hangar runs as the agent outside a turn
-([what the split doesn't cover](steering.md#the-uid-split)). On GKE the pod's `allowPrivilegeEscalation: false`
+([what the split doesn't cover](steering/uid-split.md)). On GKE the pod's `allowPrivilegeEscalation: false`
 covers them.
 
 ## Turn events, live
@@ -73,7 +73,7 @@ agent writes it. Polling takes over whenever following isn't possible: no daemon
 like any stream; past the cap polling's bounded reads carry on). The read position is saved with the turn as before, so a restart
 resumes without recording an event twice. `HANGAR_STREAM_TURN_LOGS=false` turns following off.
 
-In a split sandbox ([the uid split](steering.md#the-uid-split)) the follower tails hangar's own copy of the run log,
+In a split sandbox ([the uid split](steering/uid-split.md)) the follower tails hangar's own copy of the run log,
 never the agent's link to it. The daemon runs as the agent, so what it passes on is informational, like the rest of
 the log: approvals still come from the driver's own file, and the turn's status, exit code and summary from hangar's
 own reads.

@@ -35,7 +35,7 @@ approval, who may continue a job, and which text is an instruction. Linking acco
    workspace in a signed Slack event. In a signed Jira webhook it is the user.
     - A Jira Automation request isn't signed, and its body is written by whoever edits the rule. So hangar reads who
       moved the issue from the issue's own history instead
-      ([an Automation rule](../intake.md#fallback-an-automation-rule)).
+      ([an Automation rule](../intake/jira.md#fallback-an-automation-rule)).
 6. **A review starts an auto-fix round only from someone the job's person or the repo trusts.** A round runs with the
    job's person's login, like a follow-up.
     - On a person's job it takes their linked account, an admin's linked account, or a login in the repo policy's

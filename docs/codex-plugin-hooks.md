@@ -12,7 +12,7 @@ Nothing would fail, and the A/B would quietly compare different things.
 ## What hangar trusts
 
 hangar trusts exactly the hooks of a lock's Codex forms, by their content hash. A Codex form is
-`native/codex/<name>/` in the lock's directory, every file pinned by the lock ([Codex plugins](harness-lock.md#codex-plugins)).
+`native/codex/<name>/` in the lock's directory, every file pinned by the lock ([Codex plugins](harness-lock/thaw.md#codex-plugins)).
 
 - The hash is Codex's own: over the hook's event, matcher, command, timeout and options.
 - hangar computes it from the lock's files on the control plane, never from the sandbox.
@@ -54,7 +54,7 @@ locked hook that isn't `trusted` and enabled is drift, `codex-hook:<key>`, with 
 The probe also lists every other hook Codex loaded for the lock's plugins. hangar didn't trust those, so each is
 drift with status `untrusted`. A plugin whose hooks Codex warns it skipped is drift as `codex-hook:<name>@<marketplace>`,
 status `skipped`. Drift shows on the turn, in its events and in the job's review packet ([thaw and
-drift](harness-lock.md#thaw-and-drift)).
+drift](harness-lock/thaw.md)).
 
 ## Check it with the real CLI
 

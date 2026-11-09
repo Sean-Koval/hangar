@@ -4,7 +4,7 @@ hangar's control plane deploys from GitHub Actions, not from a laptop. `.github/
 environment images and harness packs on every push to `main`; `.github/workflows/deploy.yml` builds the control-plane
 image, waits for your approval, rolls it out, proves it with the acceptance checks and rolls back on failure. A merge
 to `main` starts a deploy while the infra is up, and skips it while the infra is off, held or powered down
-([Infra states](#infra-states)). The nightly harness canary needs no cloud access. This page takes you through the
+([Infra states](cicd/infra-states.md)). The nightly harness canary needs no cloud access. This page takes you through the
 first deploy, end to end.
 
 ## 1. Set up the identities, once
@@ -45,7 +45,7 @@ copies the vault key from the `hangar` Secret into Secret Manager (`hangar-vault
 creates the PyPI and npm remote repositories for the package mirrors. It prints, without doing them, what needs you:
 the quota requests (Google reviews each, so they can't be automated reliably), the `terraform apply` for the node pool
 in the power-down window, branch protection, the GitHub Apps, Jira, and the optional
-[acceptance fixtures](acceptance.md#before-the-first-run-fixtures).
+[acceptance fixtures](acceptance/first-run.md#before-the-first-run-fixtures).
 
 Re-running it narrows an earlier, wider setup: it removes any other project role from both accounts (an earlier
 `deploy.yml` setup gave `roles/container.developer` to one of them), any other federated identity bound to them, a
@@ -113,36 +113,6 @@ then show **deploy pending** with the command to run, `gh workflow run deploy.ym
 the next deploy is recorded. Nothing is recorded at merge time: what's pending is worked out at power-up, from GitHub
 and hangar, so it can't go stale.
 
-## Infra states
-
-| State | What runs | What it costs a week (*estimate*, [team-scale.md](team-scale.md#cost)) | Webhooks | Jobs and sessions | A merge to main | How to get back |
-| --- | --- | --- | --- | --- | --- | --- |
-| **up** | System node, hangar, sandbox pools (gVisor at its warm floor, autoscaling) | Idle, the warm floor around the clock ~$78; a typical team week on the schedule ~$157 | Received | Run | Builds, waits for your approval, deploys | - |
-| **down** (nightly, 01:00 to 09:50 ET) | System node and hangar; sandbox pools at 0 nodes | The system node, ~$18 for a whole week down | Received and queued | Queued jobs wait (`waiting: sandboxes power on at 10:00`); creates answer `503` with `Retry-After`; sessions are suspended (checkpointed) and resume on their next message | Skips green; deploys on the next power-up | The 09:50 power-up, `hangar power up`, or `bash deploy/gke/power.sh up` |
-| **held** (`power.sh hold`, `hangar power hold`) | Whatever ran when the hold began: the scheduled power-ups and power-downs skip until it ends | That state's | That state's | That state's | Skips green while held | It ends by itself at its date and the schedule resumes at its next time (nothing powers up early); `power.sh release` / `hangar power release` end it now; `power.sh up` / `hangar power up` end it and power on |
-| **off** (`power.sh off`) | Nothing: every pool at 0 nodes, hangar scaled to 0. Kept: the cluster, the `hangar-data` disk with the SQLite store, the bucket and checkpoints, images, the IP and the load balancer | ~$5, plus GKE's management fee when the free tier is spent on another cluster | **Not received** (the load balancer answers 502). GitHub's are redelivered on the next start if at most 3 days old; Jira's and Slack's are lost | Nothing runs; queued jobs and suspended sessions wait in the store and carry on after `up` | Skips green; `power.sh up` deploys main | `bash deploy/gke/power.sh up`; or when the hold `off` set ends, the next scheduled power-up brings everything back (without the catch-up deploy) |
-
-### Taking a week off
-
-```bash
-hangar status                                 # anything running you want to finish first?
-bash deploy/gke/power.sh off --until 2026-10-26   # drain, checkpoint and suspend sessions, then everything to 0
-                                              # nodes; held until then so the schedule leaves it off
-# ... keep developing: merges build images (images.yml) and skip the deploy, green
-bash deploy/gke/power.sh status               # cluster: off (everything at 0 nodes); held until Mon 26 Oct 00:00
-bash deploy/gke/power.sh up                   # system pool, hangar (ready), sandbox pools, warm floor and prepull;
-                                              # ends the hold; starts deploy.yml for main if it's ahead: approve it
-hangar doctor                                 # the deploy, the loops, anything stale
-```
-
-While it's off, nothing receives webhooks. On its next start hangar asks GitHub to redeliver the deliveries it missed,
-but GitHub keeps them for 3 days only ([redelivering webhooks][redeliver]: "You can redeliver webhook deliveries that
-occurred in the past 3 days"), so a `/hangar` label or comment from earlier in the week is lost: add it again. Jira
-retries a failed webhook up to five times, 5 to 15 minutes apart ([Jira webhooks][jirahooks]), and has no
-redelivery, so a Jira issue moved during the week is lost: move it again. Slack events and slash commands are lost
-too. A hold from `off` ends by itself at its date, and the next scheduled power-up then brings everything back; pick a
-date after your return, or come back with `power.sh up`.
-
 ## 3. Read the result in the run summary
 
 Once approved, the job drains hangar (creates and destroys in flight finish), runs `kubectl set image`, waits for the
@@ -188,3 +158,10 @@ To go back to an earlier release later, push or re-run a `v*` tag that points at
 [jirahooks]: https://developer.atlassian.com/cloud/jira/platform/webhooks/
 [immutable]: https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-GitHub-actions-oidc-tokens/
 [review]: https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments
+
+## Moved from this page
+
+| Section | Now on |
+| --- | --- |
+| <span id="infra-states"></span>Infra states | [Infra states and deploys](cicd/infra-states.md) |
+| <span id="taking-a-week-off"></span>Taking a week off | [Infra states and deploys](cicd/infra-states.md#taking-a-week-off) |
