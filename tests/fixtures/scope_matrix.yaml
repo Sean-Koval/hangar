@@ -2229,6 +2229,12 @@ usage.get:
   rest: GET /api/usage
   scope: admin
   owner: admin
+usage.get_export:
+  server: hangar
+  mcp: null
+  rest: GET /api/usage/export
+  scope: admin
+  owner: admin
 well_known.get_oauth_authorization_server:
   server: hangar
   mcp: null
