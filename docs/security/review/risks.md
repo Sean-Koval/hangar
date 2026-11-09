@@ -29,9 +29,5 @@ next release. A row leaves this page when its fix lands, and its finding moves t
 
 ## Decided, in review
 
-Sean decided these on 2026-10-27. Each fix is a pull request, and its row leaves when it merges.
-
-| Decision | Pull request | What changes for users |
-| --- | --- | --- |
-| GKE ships with `allowlist` egress (L-9) | #387 | Sandboxes reach model APIs, the package mirror and the gateway. Direct GitHub, run-time toolchain downloads and arbitrary sites need an `allow` entry |
-| The warn switches are removed (KAN-74) | #388 | Automated jobs refuse subscription logins and need the gateway. Each harness needs an API-key credential first |
+None. Both decisions Sean made on 2026-10-27 have merged: GKE ships with `allowlist` egress (L-9, #387), and the warn
+switches are removed (KAN-74, #388).

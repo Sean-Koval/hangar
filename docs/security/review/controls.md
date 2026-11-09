@@ -28,7 +28,7 @@ shipped).
 | Secrets never reach images, API responses, MCP results, logs or audit entries | In place | [Boundaries](../README.md#the-boundaries); [redaction](../secret-scanning.md#redaction) |
 | A sandbox never holds the GitHub token; the gateway grants per-sandbox, short-lived access | In place | [The git credential gateway](../git-gateway.md) |
 | TLS at the edge with a Google-managed certificate | In place | `deploy/k8s/ingress.yaml` |
-| TLS between pods (git grants cross nodes in plain HTTP) | Open | KAN-180 turns on inter-node encryption (L-10) |
+| TLS between pods (git grants cross nodes in plain HTTP) | Partial | Inter-node encryption is in Terraform, not yet applied ([GKE cluster](../gke-cluster.md), KAN-180, L-10) |
 | Kubernetes Secrets encrypted with a Cloud KMS key | Open | KAN-180 |
 
 ## Isolation and network
@@ -39,7 +39,7 @@ shipped).
 | Sandboxes can't reach RFC1918, link-local or each other; all ingress denied | In place | `deploy/k8s/sandbox-network.yaml` |
 | Egress by hostname allowlist through hangar's proxy, in `allowlist` and `none` environments | In place | [Egress allowlists](../egress.md) |
 | Intake jobs (GitHub, Jira, Slack, webhooks) get at least `allowlist` and the gateway | In place | [Intake posture](../front-doors.md#intake-posture) |
-| GKE's default egress is `open` | Open | A decision: KAN-174, L-9 |
+| GKE's default egress is `allowlist` | In place | [The egress default](../egress-default.md); `deploy/k8s/config.yaml` (KAN-174, L-9) |
 | Approvals inside a turn bind the agent on GKE (no uid split) | Partial | `required` refuses such turns on GKE; the [driver sidecar](../driver-sidecar.md) is built, off until its cluster checks pass (KAN-186) |
 | The control-plane pod: restricted security context and an ingress NetworkPolicy | Open | KAN-174, L-8 |
 

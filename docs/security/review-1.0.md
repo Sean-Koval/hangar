@@ -20,8 +20,8 @@ Each is tracked in Jira. What remains open, with its owner and reason, is on
 | hangar's Google roles are project-wide | Medium | KAN-172 | Fixed in hangar; Tower's own registry is its half |
 | The console: no CSP, the admin token in browser storage | Low (L-7) | KAN-174 | Fixed: a strict CSP, audited sinks, the token in `sessionStorage`; an `HttpOnly` cookie is accepted as later work |
 | The control-plane pod's security context and NetworkPolicy | Low (L-8) | KAN-174, KAN-170 | Fixed; IAP stays off, with the [reason](control-plane-pod.md) |
-| GKE ships with `open` egress | Low (L-9) | KAN-174 | Decided: `allowlist`, in review (#387) |
-| Git grants in plain HTTP between nodes | Low (L-10) | KAN-180 | Fixed: [inter-node encryption](gke-cluster.md) |
+| GKE ships with `open` egress | Low (L-9) | KAN-174 | Fixed: GKE ships with [`allowlist`](egress-default.md) (#387) |
+| Git grants in plain HTTP between nodes | Low (L-10) | KAN-180 | In Terraform, not yet applied: [inter-node encryption](gke-cluster.md) |
 | Tower is not consulted yet | Low (L-1) | KAN-77 to KAN-79, KAN-33 | Wired and off by default; release and landing are KAN-33 |
 | Predictable custom session branches | Known gap 8 | KAN-174 | Fixed: [checked against their creator](branch-creators.md) |
 | E2B buffers a command's whole output | Known gap 9 | KAN-174 | Closed: hangar's envd client keeps a bounded tail, re-tested |
@@ -62,8 +62,8 @@ Fixed. The image installs from `uv.lock` with hashes, pins every base image by d
 
 - **The console** sends a strict Content-Security-Policy. An audit replaced the riskiest HTML sinks, and a test fails on a new one. The admin token is in `sessionStorage`; an `HttpOnly` cookie needs CSRF checks first.
 - **The control-plane pod** runs non-root with a restricted security context. An ingress NetworkPolicy limits who reaches its ports ([control-plane pod](control-plane-pod.md)).
-- **GKE ships with `open` egress.** #387 makes it `allowlist`. Until it merges, set `HANGAR_EGRESS_DEFAULT=allowlist` for untrusted work.
-- **Grants and keys crossed the pod network in plain HTTP.** GKE's inter-node encryption now covers them (KAN-180).
+- **GKE shipped with `open` egress.** It now ships with `allowlist` (#387); see [the egress default](egress-default.md).
+- **Grants and keys cross the pod network in plain HTTP.** GKE's inter-node encryption covers them once applied. It is in Terraform, not yet applied to the cluster (KAN-180).
 - **Tower decides only when governance is on.** Tool calls, egress and secret requests can ask it; the default mode is `off`. Job release and landing are KAN-33. hangar refuses an answer about a different approval.
 
 These are tracked in KAN-174, with the review's notes on each known gap in [what is not covered](not-covered.md).
