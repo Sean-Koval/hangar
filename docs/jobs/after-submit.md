@@ -15,7 +15,7 @@ A job is `queued`, `awaiting_approval`, `provisioning`, `running`, `needs_input`
   admin lets one through with `hangar job admit <id>`.
 
 `source` says which door it came through (`api`, `mcp`, `cli`, `github`, `slack`, `jira`, `schedule`, …). `review` is
-an [AI first-pass review](../landing.md#6a-ai-first-pass-review) of an agent PR. It delivers nothing and never waits
+an [AI first-pass review](../landing/review.md#6a-ai-first-pass-review) of an agent PR. It delivers nothing and never waits
 for review capacity.
 
 ## Following it

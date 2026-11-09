@@ -33,7 +33,7 @@ Your platform team provides these. Neither the module nor the manifests change a
 - **Workload Identity** on the cluster and its node pools, for the `gke-workload-identity` component.
 - **Kubernetes 1.36** for harness packs mounted as image volumes. On older clusters set
   `HANGAR_K8S_IMAGE_VOLUMES=false` and hangar bakes the harness into a per-harness image instead
-  ([Harness packs](gke.md#harness-packs)).
+  ([Harness packs](gke/images.md#harness-packs)).
 - **External Secrets Operator** (`external-secrets.io/v1`, ESO 0.17 or later) and a `ClusterSecretStore`, if you use
   the `external-secrets` component.
 
@@ -76,7 +76,7 @@ features are on.
 **The power schedule is off unless you set it.** With
 `power_schedule = { cluster = "shared", zone = "us-central1-a" }`, two Cloud Run jobs that Cloud Scheduler starts
 scale the node pools matching `pools` (default `^sandboxes-`) to zero at `down_cron` and back at `up_cron`, as on the
-owner's cluster ([section 6](gke.md#6-sandbox-nodes-off-at-night-optional)). Its service account gets
+owner's cluster ([section 6](gke/power.md)). Its service account gets
 `roles/container.admin` on the project, and the cluster must be zonal. Most shared clusters leave it off.
 
 The owner-only parts of `deploy/terraform/gke` aren't in the module: the cluster and node pools, the overnight lane,
@@ -144,7 +144,7 @@ Every `v*` tag runs `release.yml`. It publishes:
 Pin the digest, not the tag: running the workflow by hand for an existing tag rebuilds it and moves the tag.
 
 Environment images are yours: build them from your environments in CI with `hangar images build` into your
-`HANGAR_REGISTRY` ([Images and packs, built in CI](gke.md#images-and-packs-built-in-ci)). hangar looks packs up under
+`HANGAR_REGISTRY` ([Images and packs, built in CI](gke/images.md#images-and-packs-built-in-ci)). hangar looks packs up under
 `HANGAR_REGISTRY` by name and tag. If your cluster can't pull from GHCR, copy each pack to the same name and tag
 under your registry, by digest. Otherwise let `hangar images build` build them there too.
 

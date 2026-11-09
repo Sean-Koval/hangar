@@ -52,7 +52,24 @@ The hook must sit where the agent can't remove it. So a turn that requires it st
 
 This holds whatever `HANGAR_UID_SPLIT` says. On Docker, the script is `/var/lib/hangar/tower_hook.py`, beside the driver. The settings are the turn's own file, loaded with `--setting-sources ''`. The agent's `~/.claude/settings.json`, the repository's `.claude/` and their `disableAllHooks` don't count. Deleting them changes nothing.
 
-The hook runs as the agent, so the agent can read the key. It can ask Tower what the hook asks, nothing more. Passports replace the key later ([#174](https://github.com/Sean-Koval/hangar/issues/174)).
+## The key
+
+`HANGAR_GOVERNANCE_HOOK_AUTH` picks what the hook sends Tower. Either way it is a file of the run, written by hangar's user. The agent can't change it, and it is removed when the run ends.
+
+| Value | The key |
+| --- | --- |
+| `key` (default) | The coding agent's key in Tower, from `HANGAR_GOVERNANCE_HOOK_CREDENTIAL`, shared by every sandbox |
+| `passport` | The sandbox's own passport, about 15 minutes, renewed while the run lasts |
+
+With `passport`, the control plane mints the sandbox's token. Its subject is `hangar:env:<env>`, with the sandbox's person and the email linked to them, for Tower's `requester_claim`. hangar exchanges it at Tower's token endpoint and checks the passport before it writes it.
+
+The passport must name the agent `HANGAR_GOVERNANCE_HOOK_AGENT` (`hangar`), and a sandbox with a person must get that person's passport. No passport, no turn.
+
+The refresh loop renews a passport with under ten minutes left. It swaps the new file in only while the run's key is still there, so a run that ended never gets one back.
+
+**What the isolation can't do.** The hook runs as the agent, so the agent can read the key, whichever it is. It can ask Tower what the hook asks, as the sandbox's person, nothing more.
+
+A passport limits that to one sandbox, one person and a quarter of an hour. The shared key is every sandbox's, for as long as it lives. Keeping the key from the agent entirely would need the hook to call Tower through the driver, which runs as hangar's user. That isn't built.
 
 ## Integrity
 
@@ -64,4 +81,4 @@ Before writing it again, hangar reads what is there. A script that changed since
 
 Codex turns that require the hook are refused for now. Codex 0.162.1 has PreToolUse hooks, and it accepts one from a `-c` flag with its trust hash.
 
-But a hardened Codex turn runs with `--disable hooks`. Turning hooks on would also run hooks the agent writes and trusts in `~/.codex`. A safe version needs hangar to refuse a turn with any other hook, as it does for rules files ([KAN-169](steering.md#hangar-owned-harness-settings)).
+But a hardened Codex turn runs with `--disable hooks`. Turning hooks on would also run hooks the agent writes and trusts in `~/.codex`. A safe version needs hangar to refuse a turn with any other hook, as it does for rules files ([KAN-169](steering/harness-settings.md)).

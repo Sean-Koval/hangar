@@ -15,7 +15,7 @@ no agent started. The agents get the failing build's output and update the exist
 ## Models and budget
 
 Both agents run on the `balanced` model policy, the same one jobs default to
-([models](../harnesses.md#models-the-latest-strong-model-per-provider)). It is resolved from the provider's model list
+([models](../harnesses/models.md)). It is resolved from the provider's model list
 when each agent's session is created, and pinned there. The list is read with `HANGAR_MODEL_LIST_CREDENTIALS`, or is
 OpenRouter's public list for pi.
 

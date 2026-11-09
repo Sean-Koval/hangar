@@ -92,6 +92,10 @@ def why_not(settings: Settings, h: Harness) -> str | None:
         return CODEX if h.live == "codex" else f"{h.name} has no hook hangar can own"
     if not settings.governance_url:
         return "HANGAR_GOVERNANCE_URL isn't set"
+    if getattr(settings, "governance_hook_auth", "key") == "passport":  # --- KAN-33: no stored key; hangar's issuer
+        if not (settings.oidc_issuer or settings.public_url.startswith("https://")):
+            return "HANGAR_GOVERNANCE_HOOK_AUTH=passport needs HANGAR_OIDC_ISSUER or an https HANGAR_PUBLIC_URL"
+        return None
     if not settings.governance_hook_credential:
         return "HANGAR_GOVERNANCE_HOOK_CREDENTIAL isn't set"
     return None
@@ -124,18 +128,22 @@ def merge(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def apply(fleet: Any, hard: Plan, run_id: str, wait: int) -> dict[str, Any]:
+def apply(fleet: Any, hard: Plan, run_id: str, wait: int, passport: tuple[str, float] | None = None) -> dict[str, Any]:
     """Add the hook and its key to a hardened Claude Code turn's files. Returns the turn's record. Raises
-    ValueError with the reason when it can't."""
+    ValueError with the reason when it can't. `passport`: the sandbox's own (`sandbox_passport`) instead of the
+    shared agent key (--- KAN-33)."""
     settings = fleet.settings
     r = f"{isolation.RUNS}/{run_id}"
     name = f"{run_id}.settings.json"
     if name not in hard.files or hard.files[name][0] is None:
         raise ValueError("the turn has no hangar-owned settings file")
-    try:
-        key = fleet.broker.secret_text(settings.governance_hook_credential)
-    except Exception as e:  # noqa: BLE001 - CredentialError, or no vault: no hook, no turn
-        raise ValueError(f"the hook's key ({settings.governance_hook_credential}) can't be read: {e}") from e
+    if passport is not None:
+        key = passport[0]
+    else:
+        try:
+            key = fleet.broker.secret_text(settings.governance_hook_credential)
+        except Exception as e:  # noqa: BLE001 - CredentialError, or no vault: no hook, no turn
+            raise ValueError(f"the hook's key ({settings.governance_hook_credential}) can't be read: {e}") from e
     if not key or "\n" in key:
         raise ValueError(f"the hook's key ({settings.governance_hook_credential}) is empty or not one line")
     entry = hooks(r, settings.governance_url or "", wait)
@@ -144,7 +152,107 @@ def apply(fleet: Any, hard: Plan, run_id: str, wait: int) -> dict[str, Any]:
     hard.files[f"{run_id}.tower-key"] = (key.encode(), 0o644)  # the hook runs as the agent: it must read it
     return {"runtime": "claude-code", "source": SOURCE, "path": INSTALLED, "digest": digest(), "matcher": MATCHER,
             "url": settings.governance_url, "wait_seconds": int(wait), "timeout_seconds": int(wait) + SLACK,
-            "fail": "closed"}
+            "fail": "closed", "auth": "passport" if passport is not None else "key",
+            **({"key_expires_at": passport[1]} if passport is not None else {})}
+
+
+# ====================================================================== --- KAN-33 (#174): per-sandbox passports
+PASS = "govhook-pass:"  # kv: + run id -> {"sandbox", "at"}: a run whose hook holds a passport hangar renews
+RENEW_BELOW = 600.0  # seconds left: the refresh loop runs every 300 s, a passport lives 900 s
+RUN_MAX = 48 * 3600  # a run older than this is no longer renewed
+
+
+def _person_email(fleet: Any, person: str | None) -> str | None:
+    from hangar import people
+
+    p = people.get(fleet.store, person) if person else None
+    return next((k.split(":", 1)[1] for k in (p.links if p else []) if k.startswith("email:")), None)
+
+
+async def sandbox_passport(fleet: Any, sb: Sandbox, *, client: Any = None) -> tuple[str, float]:
+    """The sandbox's own passport for Tower's hooks: hangar mints the sandbox's token (`sub: hangar:env:<env>`, its
+    person, and the email linked to that person, for Tower's `requester_claim`) for Tower's token endpoint,
+    exchanges it (RFC 8693), and checks the passport (issuer, audience, expiry, chain, the agent). A sandbox with a
+    person must get a passport naming a person. Returns (passport, expiry); ValueError says why not."""
+    from hangar.governance import CredentialUnavailable, PassportCredential, PassportRefused, PassportVerifier
+
+    settings = fleet.settings
+    url = (settings.governance_url or "").rstrip("/")
+    if not url:
+        raise ValueError("HANGAR_GOVERNANCE_URL isn't set")
+    token_url = settings.governance_token_url or f"{url}/oauth/token"
+    email = _person_email(fleet, sb.person)
+
+    def mint() -> str:
+        return fleet.cloud.mint(sb, token_url, 5, email=email)[0]
+
+    verifier = PassportVerifier(url, [f"{url}/hooks", f"{url}/mcp", url], client=client)
+    cred = PassportCredential(mint, token_url, agent=settings.governance_hook_agent, verifier=verifier, client=client)
+    try:
+        passport, exp = await cred.exchange()
+        claims = await verifier.verify(passport)
+    except (CredentialUnavailable, PassportRefused) as e:
+        raise ValueError(f"Tower gave this sandbox no passport: {e}") from None
+    finally:
+        if client is None:
+            await cred.close()
+    if sb.person and not str(claims.get("sub") or "").startswith("person:"):
+        raise ValueError(f"Tower's passport for this sandbox names {claims.get('sub')!r}, not its person")
+    return passport, exp
+
+
+def follow(fleet: Any, sb: Sandbox, run_id: str, expires: float) -> None:
+    """Renew this run's passport while it runs (`refresh`)."""
+    import time
+
+    fleet.store.kv_set(PASS + run_id, json.dumps({"sandbox": sb.id, "at": time.time(), "expires": expires}),
+                       durable=True)
+
+
+def renew_script(run_id: str) -> str:
+    """As hangar's user: replace the run's key with the new one beside it, only while the run's key is still there
+    (a run that ended removed it, and its passport must not come back)."""
+    q = shlex.quote
+    key = q(f"{isolation.RUNS}/{run_id}.tower-key")
+    new = q(f"{isolation.RUNS}/{run_id}.tower-key.new")
+    return f"if [ -e {key} ]; then mv -f {new} {key} && echo renewed; else rm -f {new}; echo gone; fi"
+
+
+async def refresh(fleet: Any, *, client: Any = None) -> int:
+    """Renew the passports of running hooked runs that have under RENEW_BELOW seconds left. Returns how many."""
+    import time
+
+    from hangar.models import Sandbox as SandboxModel
+    from hangar.models import SandboxState
+
+    n = 0
+    for key in fleet.store.kv_keys(PASS):
+        run_id = key[len(PASS):]
+        try:
+            rec = json.loads(fleet.store.kv_get(key) or "{}")
+        except ValueError:
+            rec = {}
+        sb = fleet.store.get(SandboxModel, rec.get("sandbox") or "")
+        if sb is None or sb.state != SandboxState.RUNNING or time.time() - float(rec.get("at") or 0) > RUN_MAX:
+            fleet.store.kv_delete(key, durable=True)
+            continue
+        if float(rec.get("expires") or 0) - time.time() > RENEW_BELOW:
+            continue
+        try:
+            passport, exp = await sandbox_passport(fleet, sb, client=client)
+            _, prov = fleet._running(sb.id)
+            await isolation.put(prov, sb, isolation.RUNS, {f"{run_id}.tower-key.new": (passport.encode(), 0o644)})
+            res = await isolation.sh(prov, sb, renew_script(run_id), timeout=30)
+        except Exception as e:  # noqa: BLE001 - one run must not stop the others; its hook fails closed
+            log.warning("run %s: the Tower hook's passport wasn't renewed: %s", run_id, e)
+            continue
+        if "gone" in (res.stdout or "") or res.exit_code != 0:
+            fleet.store.kv_delete(key, durable=True)  # the run ended
+            continue
+        rec["expires"] = exp
+        fleet.store.kv_set(key, json.dumps(rec), durable=True)
+        n += 1
+    return n
 
 
 # Run as hangar's user. The digest of what is there now (or -), then nothing else.

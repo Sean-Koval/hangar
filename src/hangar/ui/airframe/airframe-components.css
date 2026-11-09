@@ -1,4 +1,4 @@
-/* Airframe theme-v15 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
+/* Airframe theme-v16 components: the af- classes. Generated from airframe/styles/ by scripts/airframe.py;
    do not edit. Load after airframe.css. Reference and previews: airframe/components/, and the
    gallery on https://sean-koval.github.io/agent-factory/airframe/ */
 @import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=DM+Mono:wght@400;500&family=Red+Hat+Text:ital,wght@0,400..700;1,400..700&display=swap');
@@ -457,11 +457,14 @@ button.af-avatar--agent:hover::after,a.af-avatar--agent:hover::after{background:
 
 /* ---- terminal: always dark, mono ---- */
 .af-term{background:var(--af-terminal-bg);color:var(--af-terminal-fg);border-radius:var(--af-radius-card);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--af-terminal-fg) 8%,transparent);overflow:hidden;min-width:0}
-.af-term__bar{display:flex;align-items:center;gap:14px;height:34px;padding:0 14px;border-bottom:1px solid color-mix(in srgb,var(--af-terminal-fg) 9%,transparent);color:var(--af-terminal-dim);white-space:nowrap;overflow:hidden;
-  font-family:var(--af-font-mono);font-weight:500;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
-.af-term__bar .af-ic{width:14px;height:14px}
-.af-term__id{color:var(--af-terminal-fg);letter-spacing:.04em}
-.af-term__live{margin-left:auto;display:inline-flex;align-items:center;gap:7px}
+/* the bar is a sentence-case label (sans 12.5px): the product name in the terminal's fg, the rest in its muted dim */
+.af-term__bar{display:flex;align-items:center;gap:6px;height:34px;padding:0 14px;border-bottom:1px solid color-mix(in srgb,var(--af-terminal-fg) 9%,transparent);color:var(--af-terminal-dim);white-space:nowrap;overflow:hidden;
+  font-family:var(--af-font-sans);font-weight:500;font-size:12.5px;line-height:1.2}
+.af-term__bar .af-ic{width:14px;height:14px;margin-right:2px;flex:none}
+.af-term__bar > span:not([class]){min-width:0;overflow:hidden;text-overflow:ellipsis}
+.af-term__product{color:var(--af-terminal-fg);font-weight:500;flex:none}
+.af-term__id{font-family:var(--af-font-mono);font-size:12px;letter-spacing:.01em;flex:none}
+.af-term__live{margin-left:auto;padding-left:8px;display:inline-flex;align-items:center;gap:7px;flex:none}
 .af-term__live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--af-terminal-ok)}
 .af-term pre{margin:0;padding:14px 16px 16px;overflow-x:auto;font-family:var(--af-font-mono);font-size:12.5px;line-height:1.75;font-variant-numeric:tabular-nums}
 .af-term__p{color:var(--af-brand)}

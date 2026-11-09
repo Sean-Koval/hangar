@@ -64,7 +64,7 @@ talks to it.
 The supervisor is a standard-library python3 script (python3 is in the
 [image contract](../specs/0006-environments-and-harness-packs.md)). It is installed in each sandbox at claim like
 `hangar-agent`, with no image rebuild. It holds nothing secret. Its socket and state live in `~/.hangar/svc` (0700).
-Under the [uid split](../steering.md#the-uid-split) it stays the agent's: hangar's own user never runs it, and it never
+Under the [uid split](../steering/uid-split.md) it stays the agent's: hangar's own user never runs it, and it never
 reaches hangar's runs.
 
 In the source, the in-sandbox half is `svc_agent.py`. The control-plane half (install, manifest, the agent's

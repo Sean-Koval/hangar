@@ -809,6 +809,30 @@ git.post:
   scope: grant
   owner: any
   enforced_by: 'gateway: the sandbox''s git grant (hgs_...) or egress credential, scoped to its own repo'
+governance.get_break_glass:
+  server: hangar
+  mcp: null
+  rest: GET /api/governance/break-glass
+  scope: admin
+  owner: admin
+governance.post_break_glass:
+  server: hangar
+  mcp: null
+  rest: POST /api/governance/break-glass
+  scope: admin
+  owner: admin
+governance.post_break_glass_confirm:
+  server: hangar
+  mcp: null
+  rest: POST /api/governance/break-glass/confirm
+  scope: admin
+  owner: admin
+governance.post_break_glass_end:
+  server: hangar
+  mcp: null
+  rest: POST /api/governance/break-glass/end
+  scope: admin
+  owner: admin
 governance.post_events:
   server: hangar
   mcp: null

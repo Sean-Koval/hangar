@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from hangar import harness_lock
+from hangar import harness_lock, harness_repo
 
 if TYPE_CHECKING:
     from hangar.envspec import EnvSpec
@@ -90,7 +90,8 @@ def registry(settings: Any) -> Path:
 
 def _git(root: Path, *args: str) -> str | None:
     try:
-        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=20)
+        r = subprocess.run(harness_repo.safe_git(["git", "-C", str(root), *args]), capture_output=True, text=True,
+                           timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout if r.returncode == 0 else None
@@ -252,7 +253,8 @@ def _registry_files(root: Path, r: Resolved) -> dict[str, bytes]:
         if not rel or not needed(rel) or not harness_lock.safe_path(rel):
             continue
         try:
-            p = subprocess.run(["git", "-C", str(root), "show", _blob(r.commit, full)], capture_output=True, timeout=20)
+            p = subprocess.run(harness_repo.safe_git(["git", "-C", str(root), "show", _blob(r.commit, full)]),
+                               capture_output=True, timeout=20)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if p.returncode == 0:
