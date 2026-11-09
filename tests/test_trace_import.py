@@ -276,6 +276,29 @@ def test_a_cloud_session_sums_its_results(tmp_path: Path) -> None:
     assert [(e.kind, e.text, e.data) for e in again.events] == [(e.kind, e.text, e.data) for e in imp.events]
 
 
+QUEUED = [  # a second prompt reaches the same CLI run: one result covers both turns
+    _cloud("user", "2026-11-02T09:00:00Z", message={"role": "user", "content": "Check the build."}),
+    _cloud("system", "2026-11-02T09:00:01Z", subtype="init", model=MODEL),
+    _cloud_msg("msg_q1", {"type": "text", "text": "Running it."}, 8, "2026-11-02T09:00:02Z"),
+    _cloud("user", "2026-11-02T09:00:03Z", message={"role": "user", "content": "And the docs?"}),
+    _cloud_msg("msg_q2", {"type": "text", "text": "Both pass."}, 5, "2026-11-02T09:00:04Z"),
+    _cloud("result", "2026-11-02T09:00:05Z", subtype="success", total_cost_usd=0.75,
+           usage=_usage(20, 4022, 900000, 0, 61000)),
+]
+
+
+def test_a_result_that_covers_two_prompts_is_counted_once(tmp_path: Path) -> None:
+    p = tmp_path / "session.events.json"
+    p.write_text(json.dumps(QUEUED))
+    spans = [_attrs(s) for s in _spans(trace_import.import_transcript(p).trace)]
+    session = next(a for a in spans if a["hangar.kind"] == "session")
+    first, second = [a for a in spans if a["hangar.kind"] == "turn"]
+    assert first["hangar.usage.source"] == "calls" and second["hangar.usage.source"] == "result"
+    assert first["hangar.cost_usd"] + second["hangar.cost_usd"] == pytest.approx(0.75)  # not 0.75 plus the first's
+    assert session["hangar.cost_usd"] == pytest.approx(0.75)
+    assert first["gen_ai.usage.output_tokens"] + second["gen_ai.usage.output_tokens"] == 4022
+
+
 def test_secret_patterns_are_masked(tmp_path: Path) -> None:
     token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
     p = _jsonl(tmp_path / f"{SID}.jsonl", [

@@ -177,6 +177,20 @@ def _result_usage(rec: dict[str, Any], prev_cost: float | None) -> tuple[Usage, 
                  cost_source="harness" if cost is not None else None), total if total is not None else prev_cost
 
 
+def _less(u: Usage, b: Usage | None) -> Usage:
+    """`u` less `b`, never below zero: a result less the turns it also covers that have no result of their own."""
+    if b is None:
+        return u
+    def sub(x: int, y: int) -> int:
+        return max(0, x - y)
+    cost = u.cost_usd if u.cost_usd is None or b.cost_usd is None else max(0.0, u.cost_usd - b.cost_usd)
+    return u.model_copy(update={
+        "input_tokens": sub(u.input_tokens, b.input_tokens), "output_tokens": sub(u.output_tokens, b.output_tokens),
+        "cache_read_tokens": sub(u.cache_read_tokens, b.cache_read_tokens),
+        "cache_write_tokens": sub(u.cache_write_tokens, b.cache_write_tokens),
+        "cache_write_1h_tokens": sub(u.cache_write_1h_tokens, b.cache_write_1h_tokens), "cost_usd": cost})
+
+
 def _call_usage(d: dict[str, Any]) -> Usage:
     return Usage(input_tokens=d.get("call_input_tokens") or 0, output_tokens=d.get("call_output_tokens") or 0,
                  cache_read_tokens=d.get("call_cache_read_tokens") or 0,
@@ -213,6 +227,7 @@ def import_transcript(path: Path, session_id: str | None = None) -> Imported:
     events: list[RunEvent] = []
     model = version = cwd = None
     cost_so_far: float | None = None
+    since: list[Turn] = []  # turns since the last `result`: one CLI run (one result) can span several prompts
     for ln in lines:
         rec = ln.rec
         m = (rec.get("message") or {}).get("model") if rec.get("type") == "assistant" else None
@@ -221,6 +236,7 @@ def import_transcript(path: Path, session_id: str | None = None) -> Imported:
         text = None if ln.file else prompt_of(rec)
         if text is not None:
             turns.append(Turn(len(turns) + 1, text, ln.ts))
+            since.append(turns[-1])
             events.append(_stamp(RunEvent(kind="message", text=_clip(text, MESSAGE_MAX), data={"role": "user"}),
                                  ln, turns[-1], sid))
         evs = parser.feed(json.dumps(rec, ensure_ascii=False).encode() + b"\n")
@@ -228,11 +244,19 @@ def import_transcript(path: Path, session_id: str | None = None) -> Imported:
             if not evs and rec.get("type") != "result":
                 continue
             turns.append(Turn(1, "", ln.ts))
+            since.append(turns[-1])
         parent = rec.get("parent_tool_use_id")
         turn = turns[tool_turn[parent] - 1] if isinstance(parent, str) and parent in tool_turn else turns[-1]
         if rec.get("type") == "result" and not ln.file:
             u, cost_so_far = _result_usage(rec, cost_so_far)
-            turn.results.append(u)
+            # The result covers every turn since the last one. Those without a result of their own keep their
+            # calls' usage, and this turn takes the rest, so the session still sums to the result totals.
+            covered: Usage | None = None
+            for t in since:
+                if t is not turn and not t.results:
+                    covered = add_usage(covered, t.calls)
+            turn.results.append(_less(u, covered))
+            since = []
         for ev in evs:
             _stamp(ev, ln, turn, sid)
             if ev.kind in ("tool_call", "command") and ev.data.get("id"):
