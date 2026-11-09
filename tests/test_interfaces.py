@@ -184,7 +184,7 @@ def _check_otlp(export: dict) -> None:
         assert sp["kind"] == 1 and isinstance(sp["startTimeUnixNano"], str) and sp["startTimeUnixNano"].isdigit()
         assert int(sp["endTimeUnixNano"]) >= int(sp["startTimeUnixNano"])
         assert "parentSpanId" not in sp or sp["parentSpanId"] in ids
-        assert _attrs(sp)["hangar.kind"] in ("session", "job", "turn", "tool.call", "subagent", "approval")
+        assert _attrs(sp)["hangar.kind"] in ("session", "job", "turn", "tool.call", "subagent", "approval", "model.call")
         for a in sp["attributes"]:
             (t, v), = a["value"].items()
             assert t in ("stringValue", "intValue", "doubleValue", "boolValue", "arrayValue")
