@@ -674,7 +674,8 @@ _JOB_DONE = {"succeeded", "failed", "cancelled"}
 
 
 def _job_line(j: dict) -> str:
-    pr = (j.get("result") or {}).get("pr_url") or ""
+    r = j.get("result") or {}
+    pr = r.get("pr_url") or ("no PR (result.pr_error)" if r.get("pr_error") else "")  # KAN-339
     reason = f" ({j['reason']})" if j.get("reason") else ""
     return f"{j['id']}  {j['state']:12}{reason:16} {j['title'][:60]:60} {pr}"
 
