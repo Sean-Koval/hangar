@@ -55,6 +55,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from hangar import harness_repo
+
 if TYPE_CHECKING:
     from hangar.envspec import EnvSpec
     from hangar.fleet import Fleet
@@ -141,8 +143,9 @@ def git_tree(p: Plugin) -> Path:
 
 
 def _gitrun(args: list[str], env: dict[str, str] | None = None) -> tuple[bool, bytes]:
+    # --- KAN-307: the mirrors live on the data volume, where an older root-run image's stay owned by root
     try:
-        r = subprocess.run(["git", *args], capture_output=True, timeout=GIT_TIMEOUT,
+        r = subprocess.run(harness_repo.safe_git(["git", *args]), capture_output=True, timeout=GIT_TIMEOUT,
                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})})
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e).encode()

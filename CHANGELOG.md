@@ -115,6 +115,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 - The team harness checkout an older, root-run image left in `/data` works again under the non-root image
   (KAN-170). git refused it as "dubious ownership", so `hangar doctor` failed its harness repo check and the
   deploy rolled back. hangar now trusts that one checkout per git call.
+- Git plugin mirrors in `/data/plugin-git` that a root-run image made get the same fix (KAN-307). Before it, an
+  environment with a git plugin failed to build with "has no commit" after the upgrade. A new test runs every git
+  cache on the data volume as a foreign owner, and fails on a raw git call in the control plane.
 - The deploy's session acceptance check clones `HANGAR_ACCEPT_SESSION_REPO` (a variable of the `production`
   environment), else hangar's own repo, instead of octocat/Hello-World. The gateway reads it as the GitHub App,
   so it needs a repo the App is installed on.
