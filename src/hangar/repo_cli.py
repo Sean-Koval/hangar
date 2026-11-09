@@ -105,7 +105,7 @@ def repo_set(
     job_max_turns: int | None = typer.Option(None, "--job-max-turns", help="Job budget: agent turns in all."),
     max_usd_per_day: float | None = typer.Option(None, "--max-usd-per-day", help="Daily cap on the repo's spend "
                                                  "(UTC days); new jobs over it wait for approval."),
-    max_usd_per_month: float | None = typer.Option(None, "--max-usd-per-month", help="--- KAN-300: monthly cap on "
+    max_usd_per_month: float | None = typer.Option(None, "--max-usd-per-month", help="Monthly cap on "
                                                    "the repo's spend; new jobs over it wait for approval."),
     credentials: str | None = typer.Option(None, "--credentials", help="Whose login jobs use: person (the person "
                                            "the job runs for), team, or person_then_team (the default)."),
@@ -219,6 +219,7 @@ def repo_set(
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
+                                                             "max_usd_per_month, "
                                                              "credentials, egress, build_secrets, land, approvers, "
                                                              "merge_method, risk_paths, diff_budget_lines, "
                                                              "require_stale_dismissal, verify_reports, "

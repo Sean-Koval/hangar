@@ -379,6 +379,17 @@ def test_usage_route(app_client):
     assert c.get("/api/usage", headers={"Authorization": ""}).status_code == 401
 
 
+def test_usage_route_survives_a_failed_pr_cost_lookup(app_client, monkeypatch):
+    from hangar import weekly
+
+    def boom(*a, **k):
+        raise RuntimeError("store read failed")
+
+    monkeypatch.setattr(weekly, "window", boom)
+    r = app_client.get("/api/usage", params={"since": "1d"})
+    assert r.status_code == 200 and r.json()["prs"] is None and "total" in r.json()
+
+
 # ---------------------------------------------------------------------------- usage aggregation
 DAY = 86400
 T0 = 1_791_000_000.0  # 2026-10-03 (UTC)
@@ -621,6 +632,46 @@ def test_usage_export_quotes_cells_a_spreadsheet_would_run_as_formulas():
     ss = SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions)
     keys = {r["key"] for r in csv.DictReader(io.StringIO(usage.export(ss, None, "2026-10", "person")))}
     assert keys == {"'=HYPERLINK(\"http://x\")", "'+1", "'-2", "'@SUM(A1)", "plain", "a=b"}
+
+
+def test_usage_export_charges_one_row_per_person_however_the_work_was_asked_for():
+    import csv
+    import io
+
+    from hangar.models import ApiToken
+
+    linked = Session(name="l", environment="e", repo="https://github.com/acme/widgets.git", person="ana")
+    linked.turns = [_turn(T0, 1.0, finished_at=T0 + 60)]
+    unlinked = Session(name="u", environment="e", repo=linked.repo)  # from before people: no person on the record
+    unlinked.turns = [_turn(T0, 2.0, requester="@ana:laptop", finished_at=T0 + 60),
+                      _turn(T0, 4.0, requester="mcp:ana-ci", finished_at=T0 + 60),  # ana's token, by its name
+                      _turn(T0, 8.0, requester="shared", finished_at=T0 + 60)]  # a name two people use
+    sessions = {x.id: x for x in (linked, unlinked)}
+    ss = SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions)
+    tokens = [ApiToken(name="ana-ci", token_hash="x", person="ana"), ApiToken(name="shared", token_hash="y"),
+              ApiToken(name="shared", token_hash="z", person="bo")]
+    names = usage.token_people(tokens)
+    assert names == {"ana-ci": "ana"}
+    got = {r["key"]: r for r in csv.DictReader(io.StringIO(usage.export(ss, None, "2026-10", "person", names)))}
+    assert set(got) == {"ana", "shared"} and float(got["ana"]["cost_usd"]) == 7.0 and got["ana"]["turns"] == "3"
+
+
+def test_usage_export_counts_merged_prs_as_the_weekly_metrics_do():
+    import csv
+    import io
+
+    from hangar import experiments
+
+    jobs = {}
+    for i, (source, labels) in enumerate([("api", {}), ("shadow", {}), ("api", {experiments.EXP_LABEL: "job-x"})]):
+        j = Job(title=f"j{i}", instructions="x", environment="e", repo="https://github.com/acme/api.git",
+                person="bo", source=source, labels=labels)
+        j.result.pr_number, j.landing.merged_at = i + 1, T0
+        jobs[j.id] = j
+    ss = SimpleNamespace(touched_since=lambda t: [], exists=lambda sid: False)
+    js = SimpleNamespace(touched_since=lambda t: list(jobs.values()))
+    rows = list(csv.DictReader(io.StringIO(usage.export(ss, js, "2026-10", "person"))))
+    assert [(r["key"], r["merged_prs"]) for r in rows] == [("bo", "1")]
 
 
 def test_usage_export_route_and_cli(app_client, monkeypatch):

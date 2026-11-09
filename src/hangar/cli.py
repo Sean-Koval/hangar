@@ -924,7 +924,7 @@ def usage_export(
     by: str = typer.Option("person", "--by", help="person | repo"),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write the CSV here instead of stdout."),
 ):
-    """--- KAN-300: a month's chargeback CSV, one row per person or repo: tokens, cost, sandbox hours, merged PRs."""
+    """A month's chargeback CSV, one row per person or repo: tokens, cost, sandbox hours, merged PRs."""
     with _client() as c:
         r = c.get("/api/usage/export", params={"month": month, "by": by})
     if r.status_code >= 400:

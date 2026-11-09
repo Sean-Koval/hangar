@@ -8,6 +8,7 @@ turns of jobs from before sessions carried them, each turn once. A turn counts o
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -16,6 +17,8 @@ from urllib.parse import urlsplit
 
 from hangar.events import total_usage
 from hangar.github import parse_repo
+
+log = logging.getLogger(__name__)
 
 GROUPS = ("day", "model", "environment", "requester", "repo", "harness",
           "session", "job", "cache_ttl",  # --- overnight/cache: per session and job, and by the TTL turns asked for
@@ -190,10 +193,29 @@ def month_bounds(month: str) -> tuple[float, float]:
     return lo.timestamp(), hi.timestamp()
 
 
-def _export_key(by: str, person: str | None, requester: str | None, repo: str | None) -> str:
+def _export_key(by: str, person: str | None, requester: str | None, repo: str | None,
+                names: dict[str, str] | None = None) -> str:
+    """The row a turn or a PR is charged to. By person: the record's person, else the person its requester names
+    (fairness.person_of: `@ana:laptop` and `mcp:ana` are ana), with a token's name mapped to its owner by `names`,
+    so one person's linked and unlinked work share a row."""
+    from hangar import fairness
+
     if by == "repo":
         return _repo(repo)
-    return person or requester or "(unknown)"
+    if person:
+        return person
+    who = fairness.person_of(requester)
+    return (names or {}).get(who, who) if who else "(unknown)"
+
+
+def token_people(tokens: Any) -> dict[str, str]:
+    """Token name -> its person, for the names that belong to one person only (token names aren't unique)."""
+    from hangar import people
+
+    seen: dict[str, set[str]] = {}
+    for t in tokens:
+        seen.setdefault(t.name, set()).add(people.token_person(t.person))
+    return {name: next(iter(ps)) for name, ps in seen.items() if len(ps) == 1}
 
 
 _FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
@@ -205,11 +227,13 @@ def _csv_text(v: str) -> str:
     return "'" + v if v.startswith(_FORMULA_START) else v
 
 
-def export(sessions: Any, jobs: Any, month: str, by: str = "person") -> str:
+def export(sessions: Any, jobs: Any, month: str, by: str = "person", names: dict[str, str] | None = None) -> str:
     """One CSV row per person (or repo) for a calendar month (UTC): tokens, cost, sandbox hours (the turns' wall
     time) and the agent PRs merged that month, for whoever pays (docs/cost-reporting.md#chargeback-export)."""
     import csv
     import io
+
+    from hangar import weekly
 
     if by not in EXPORT_BY:
         raise ValueError(f"by must be one of {', '.join(EXPORT_BY)}")
@@ -222,15 +246,15 @@ def export(sessions: Any, jobs: Any, month: str, by: str = "person") -> str:
     for rec in _turns(sessions, jobs, lo):
         if not lo <= rec["ts"] < hi:
             continue
-        r = row(_export_key(by, rec.get("person"), rec["requester"], rec["repo"]))
+        r = row(_export_key(by, rec.get("person"), rec["requester"], rec["repo"], names))
         _add(r, rec["usage"], rec["outcome"] == "over_budget", rec.get("turns", 1))
         r["seconds"] += rec.get("seconds") or 0.0
     if jobs is not None:
         for j in jobs.touched_since(lo):
-            if j.source in ("experiment", "review") or not j.result.pr_number:
+            if not weekly.is_agent_job(j) or not j.result.pr_number:
                 continue
             if lo <= (j.landing.merged_at or 0) < hi:
-                row(_export_key(by, j.person, j.requester, j.repo))["merged_prs"] += 1
+                row(_export_key(by, j.person, j.requester, j.repo, names))["merged_prs"] += 1
     out = io.StringIO()
     w = csv.writer(out, lineterminator="\n")
     w.writerow(EXPORT_COLUMNS)
@@ -255,7 +279,11 @@ def mount(app: Any, h: Any, admin: Any) -> None:
             raise HTTPException(400, str(e)) from e
         from hangar import weekly  # --- KAN-300: what the window's spend bought, next to what it cost
 
-        out["prs"] = await asyncio.to_thread(weekly.window, h.jobs, t0, time.time())
+        try:
+            out["prs"] = await asyncio.to_thread(weekly.window, h.jobs, t0, time.time())
+        except Exception:  # the PR costs are extra: a failed lookup leaves the usage report standing
+            log.warning("usage: cost per PR lookup failed", exc_info=True)
+            out["prs"] = None
         return out
 
     @app.get("/api/usage/export")  # --- KAN-300: GET /api/usage/export?month=YYYY-MM&by=person|repo (admin), a CSV
@@ -263,7 +291,8 @@ def mount(app: Any, h: Any, admin: Any) -> None:
         from fastapi.responses import PlainTextResponse
 
         try:
-            body = await asyncio.to_thread(export, h.sessions, h.jobs, month, by)
+            names = token_people(h.auth.list()) if getattr(h, "auth", None) is not None else None
+            body = await asyncio.to_thread(export, h.sessions, h.jobs, month, by, names)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return PlainTextResponse(body, media_type="text/csv",

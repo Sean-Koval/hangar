@@ -254,17 +254,24 @@ def mapped_repos(settings: Any, repo: str | None = None) -> list[str]:
 
 
 # ====================================================================== computing
+def is_agent_job(j: Job) -> bool:
+    """Delegated work: not an experiment trial, a shadow run or a review job (flightdeck's *agent jobs*; the
+    chargeback export counts merged PRs the same way)."""
+    from hangar import experiments
+
+    return j.source not in ("experiment", "review", "shadow") and experiments.EXP_LABEL not in j.labels
+
+
 def agent_jobs(store: Any, since: float, repo: str | None = None, person: str | None = None) -> list[Job]:
     """flightdeck's *agent jobs*: delegated work (not experiment trials, shadow runs or review jobs) changed since
     `since`, archived ones included, narrowed to a repo and a person."""
-    from hangar import experiments
     from hangar.repopolicy import repo_key
     from hangar.store import Ge
 
     want = repo_key(repo) if repo else None
     out = []
     for j in store.list_where(Job, archived=True, updated_at=Ge(since)):
-        if j.source in ("experiment", "review", "shadow") or experiments.EXP_LABEL in j.labels:
+        if not is_agent_job(j):
             continue
         if (want and repo_key(j.repo) != want) or (person and j.person != person):
             continue
@@ -323,7 +330,7 @@ def compute(svc: JobService, lo: float, hi: float, repo: str | None = None,
     cohort = [j for j in prs if _in(j.landing.merged_at, cohort_lo, cohort_hi)]
     reverted = [j for j in cohort if _reverted(j)]
     cost = sum(_cost(svc, j) for j in merged)
-    verified = pr_costs(svc, merged, denom)
+    per_verified = pr_costs(svc, merged, denom)
     per_person = Counter(j.person for j in merged if j.person)
     delegators = sorted(p for p, n in per_person.items() if n >= DELEGATOR_MIN)
     active = {j.person for j in jobs if j.person and any(_in(t.started_at, lo, hi) or _in(t.finished_at, lo, hi)
@@ -345,7 +352,7 @@ def compute(svc: JobService, lo: float, hi: float, repo: str | None = None,
                         "cohort_start": cohort_lo, "cohort_end": cohort_hi},
         "cost_per_merged_pr": {"usd": round(cost / len(merged), 4) if merged else None,
                                "total_usd": round(cost, 4), "merged": len(merged)},
-        "cost_per_verified_pr": verified,  # --- KAN-300
+        "cost_per_verified_pr": per_verified,  # --- KAN-300
         "reviewer_attention": reviewer_attention(store, merged),
         "active_delegators": {"value": len(delegators), "of": len(active), "min_merged": DELEGATOR_MIN,
                               **({"people": delegators} if person is None else {})},
