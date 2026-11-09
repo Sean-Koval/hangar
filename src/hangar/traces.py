@@ -430,7 +430,7 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
     t1 = result.ts if result else turn_end
     inp = start.text if start is not None and start.kind == "command" else _after_name(start.text, name) \
         if start else None
-    ok = bool(result.data.get("ok")) if result is not None else None
+    ok = result.data.get("ok") if result is not None and isinstance(result.data.get("ok"), bool) else None
     common = {"gen_ai.tool.call.id": tid, "hangar.tool.input": inp,
               "hangar.tool.input_clipped": True if start is not None and start.data.get("clipped") else None,
               "hangar.tool.output": result.text if result else None, "hangar.tool.ok": ok,

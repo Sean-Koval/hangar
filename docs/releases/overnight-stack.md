@@ -64,7 +64,7 @@ gcloud compute snapshots create "hangar-pre-upgrade-$(date +%Y%m%d-%H%M)" --proj
   --source-disk "$NAME" --source-disk-zone "$ZONE"
 ```
 
-A snapshot of a running hangar is crash-consistent, like a power loss: SQLite recovers it, and may drop the last commits. For a clean one, run `kubectl -n hangar scale deploy/hangar --replicas=0` first. Sandboxes keep running meanwhile, and `up.sh` sets the replicas back to 1. [gke.md §7](../gke.md#7-backups-and-restore) explains how to restore a snapshot.
+A snapshot of a running hangar is crash-consistent, like a power loss: SQLite recovers it, and may drop the last commits. For a clean one, run `kubectl -n hangar scale deploy/hangar --replicas=0` first. Sandboxes keep running meanwhile, and `up.sh` sets the replicas back to 1. [gke.md §7](../gke/backups.md) explains how to restore a snapshot.
 
 ## 2. What happens to your data
 

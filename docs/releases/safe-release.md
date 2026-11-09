@@ -42,7 +42,7 @@ hangar doctor                                                                   
 | `HANGAR_EGRESS_URL` | unset | The egress proxy for `allowlist` and `none` environments and for intake jobs' sandboxes. **Required** on GKE for the intake jobs' allowlist floor. `deploy/k8s/config.yaml` sets it | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
 | `HANGAR_INTAKE_POSTURE` | `enforce`, `warn`, `off` | `enforce`: an intake job without the gateway is refused at submit, with a message on its issue, ticket or thread. Its sandbox gets at least `allowlist` egress and cold-starts; on Docker it runs with `no-new-privileges`. A heavy environment needs the repo policy's `allow_heavy_for_intake`. `warn` and `off`: **v0.2.0 only**; the next release refuses them (#123, #124, #223) | [2](#2-turn-on-the-gateway-and-the-egress-proxy) |
 | `HANGAR_SELF_APPROVAL` | `deny`, `allow_solo` | `deny`: nobody approves their own job, landing or egress request. `allow_solo` lets a self-approval through while exactly one person exists, audited as `self_approved: true` (#121) | [6](#6-hangar-doctor) |
-| `sudo:` on an environment | `false` | `false`: the agent isn't root, and on Docker the [uid split](../steering.md#the-uid-split) applies. Set `true` only for an environment whose people need runtime root (#124) | [4](#4-prebuild-images) |
+| `sudo:` on an environment | `false` | `false`: the agent isn't root, and on Docker the [uid split](../steering/uid-split.md) applies. Set `true` only for an environment whose people need runtime root (#124) | [4](#4-prebuild-images) |
 
 ## What changes for people
 
@@ -54,7 +54,7 @@ hangar doctor                                                                   
 | **Reviewers of agent PRs** | A turn that read untrusted content (an outsider's issue, any Jira issue, a web page, an untrusted MCP server) stays tainted. Its PR opens as a **draft** labelled `hangar:tainted`. A **second person**, not the job's own or its requester, must approve it to land. Its egress requests need an admin or a repo approver (#129, #130) | Use `approvals: deny-risky` for intake jobs ([taint gates](../security/taint.md#taint-gates)) |
 | **People with saved environments** | `EnvSpec.sudo` was `true` and is now `false`, so a runtime `apt-get` fails (#124). In `extends`, component lists such as `skills` replace the parent's; `skills_remove` drops inherited ones (#132) | Move installs to `tools.apt`, or set `sudo: true`. Act on step 3's report |
 | **Experiment authors** | Graders ran with the environment's network and credentials. Now they are sealed: egress `none`, no credential, fetch-only (#126). Hidden tests run from a pristine copy. Tests that pass on the base make the task `invalid_task`, and canaries flag `contaminated` trials (#127) | A grader that needs packages sets `grader.network: mirror` ([grading](../jobs/experiments.md#grading)) |
-| **Jira admins using an Automation rule** | The static token started a job at any time. Now it works only within 10 minutes of the trigger transition, at most 3 times a day per issue. Bad requests alert the admins (#128) | Prefer the signed webhook. Rotate with `hangar cred add NAME --rotate` ([intake.md](../intake.md#fallback-an-automation-rule)) |
+| **Jira admins using an Automation rule** | The static token started a job at any time. Now it works only within 10 minutes of the trigger transition, at most 3 times a day per issue. Bad requests alert the admins (#128) | Prefer the signed webhook. Rotate with `hangar cred add NAME --rotate` ([intake.md](../intake/jira.md#fallback-an-automation-rule)) |
 | **The sister tool, reading manifests** | `hangar.manifest/v1` gains optional `harness_digest` and `environment_digest` beside `config_digest` (#131) | Nothing |
 
 ## 1. Add API-key credentials
@@ -105,7 +105,7 @@ uv run hangar images build --registry "$REG"        # or let the images workflow
 ## 5. Deploy in the power-down window
 
 This release changes every environment's image, so on GKE it goes out by hand between 01:00 and 09:50 ET. The
-sandbox pools are down then and the control plane is up ([team-scale.md](../team-scale.md#applying-it)). No running
+sandbox pools are down then and the control plane is up ([team-scale.md](../team-scale/gke-capacity.md#applying-it)). No running
 sandbox is cut off, and events wait in the queue. A routine `deploy.yml` deploy refuses while the pools are down
 ([when to deploy](../upgrading.md#when-to-deploy)).
 

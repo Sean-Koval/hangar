@@ -1449,6 +1449,9 @@ app.add_typer(_setup.config_app, name="config")
 from hangar.people_cli import person_app as _person_app  # noqa: E402
 
 app.add_typer(_person_app, name="person")
+from hangar.governance_cli import governance_app as _governance_app  # noqa: E402  --- KAN-33: break-glass
+
+app.add_typer(_governance_app, name="governance")
 
 # ---------------------------------------------------------------------------- --- computer (computer_cli.py)
 from hangar import computer_cli as _computer  # noqa: E402

@@ -63,7 +63,7 @@ Clients without elicitation see the requests in `pending_approvals` (on `wait_fo
 | `hangar://jobs/<id>/events` | its agent's last 200 events |
 | `.../events?since=<seq>` | only the events after `seq` (what a subscriber reads after a notification) |
 | `hangar://sandboxes/<sandbox>/watch?path=<dir>` | file changes under a directory, watched while you subscribe ([streaming](../streaming.md#file-watches)) |
-| `hangar://inbox` | what needs you: PRs to review, agents' questions, approvals, failed jobs ([landing](../landing.md#7-the-inbox-what-needs-you)); it changes with any job or session |
+| `hangar://inbox` | what needs you: PRs to review, agents' questions, approvals, failed jobs ([landing](../landing/review.md#7-the-inbox-what-needs-you)); it changes with any job or session |
 
 `exec(stream=true)` sends a command's output as progress notifications while it runs, and `process` runs background
 commands you attach to later; see [streaming](../streaming.md).

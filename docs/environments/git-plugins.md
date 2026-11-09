@@ -19,7 +19,7 @@ plugins:
 
 `ref` must be a full commit id. A branch or a tag can move between two builds, so the build refuses one. The
 refusal names the commit the ref points at now, as the refusal of a floating model alias does
-([concrete ids](../harnesses.md#concrete-ids-and-floating-aliases)):
+([concrete ids](../harnesses/models.md#concrete-ids-and-floating-aliases)):
 
 ```text
 plugin workflow: ref `main` of https://github.com/acme/team-harness is a branch, which can move between two

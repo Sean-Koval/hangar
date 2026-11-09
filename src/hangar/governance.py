@@ -68,14 +68,51 @@ FAIL_CLOSED: dict[str, Outcome] = {"job.release": "wait", "landing.approve": "wa
 
 # ====================================================================== the request
 class Party(BaseModel):
-    """A person (or an outsider) as the workspace should know them. `person`: hangar's person id; `email`: a verified
-    address from the person's linked identity, which the workspace maps to its user; `external`: a front door's
-    stable id (`github:<numeric id>`, `jira:<account id>`, `webhook:<source>`), never a renameable login."""
+    """A person (or an outsider) as the workspace should know them. `person`: hangar's person id; `email`: the
+    address linked to that person (`email:` link), which the workspace maps to its user; `external`: the front door
+    account that acted, as Tower names accounts: `github:<login>` (--- KAN-33: Tower's people directory and
+    `requester_claim` key GitHub users by login), `jira:<account id>`, `webhook:<source>`.
+
+    A GitHub login can be renamed and re-registered by someone else, so hangar never decides who a login is from
+    the login: the person comes from the account's numeric id (people.resolve_external), and the login sent is the
+    one GitHub reported for that id in the same event. Where hangar knows only the id, it sends `github-id:<id>`,
+    which Tower maps to nobody: an unmapped signer is a `wait`, never an allow (`github_external`)."""
 
     model_config = ConfigDict(extra="forbid")
     person: str | None = None
     email: str | None = None
     external: str | None = None
+
+
+FRONT_DOORS = ("github:", "jira:", "slack:", "webhook:", "symphony:")  # requesters that name an outside account
+
+
+def front_door(requester: str | None) -> str | None:
+    """The outside account a job's requester string names (`github:<login>`, `jira:<id>`, ...), or None for
+    hangar's own callers (token names, `@person:token`, `system`)."""
+    if not requester or not requester.startswith(FRONT_DOORS) or len(requester) > 200:
+        return None
+    return requester if requester.split(":", 1)[1] else None
+
+
+def github_external(login: str | None, uid: int | str | None = None) -> str | None:
+    """A GitHub account as Tower names it: `github:<login>`; `github-id:<numeric id>` when only the id is known
+    (Tower maps that to nobody, so it can't stand for a login that happens to be all digits)."""
+    login = (login or "").strip().lstrip("@")
+    if login:
+        return f"github:{login}"
+    return f"github-id:{uid}" if uid not in (None, "") else None
+
+
+def person_party(store: Any, person: str | None, external: str | None = None) -> Party:
+    """A hangar person, with the email linked to them (if any), and the front door account that acted."""
+    email = None
+    if person and store is not None:
+        from hangar import people
+
+        p = people.get(store, person)
+        email = next((k.split(":", 1)[1] for k in (p.links if p else []) if k.startswith("email:")), None)
+    return Party(person=person, email=email, external=external)
 
 
 class Signer(Party):
@@ -658,6 +695,10 @@ class PassportCredential:
             self._passport, self._expires = await self._exchange()
             return self._passport
 
+    async def exchange(self) -> tuple[str, float]:
+        """A new passport and its expiry, not cached (--- KAN-33: the Tower hook's per-sandbox passports)."""
+        return await self._exchange()
+
     async def _exchange(self) -> tuple[str, float]:
         try:
             subject = self.mint()
@@ -747,6 +788,101 @@ class BreakGlass(BaseModel):
     def active(self, t: float | None = None) -> bool:
         t = time.time() if t is None else t
         return self.confirmed_by is not None and self.started_at <= t < self.until
+
+
+BREAK_GLASS_KEY = "gov-break-glass"  # kv: the one break-glass record (JSON), started, confirmed or not
+BREAK_GLASS_LOG = "gov-bg-decision:"  # kv: + idempotency key -> a decision taken under break-glass, for replay
+
+
+class BreakGlassError(ValueError):
+    """A break-glass request hangar refuses (the CLI and REST show the text)."""
+
+
+def parse_until(text: str, now_: float) -> float:
+    """`--until`: a duration (`90m`, `2h`, `1h30m`) or an RFC 3339 time. At most 24 hours ahead."""
+    t = (text or "").strip()[:64]
+    if (secs := _duration(t)) is not None:
+        until = now_ + secs
+    else:
+        try:
+            until = parse_time(t)
+        except ValueError:
+            raise BreakGlassError(f"--until '{text}' isn't a duration (2h, 90m) or an RFC 3339 time") from None
+    if not now_ < until <= now_ + BREAK_GLASS_MAX:
+        raise BreakGlassError("break-glass ends in the future and lasts at most 24 hours")
+    return until
+
+
+def _duration(t: str) -> int | None:
+    """`2h`, `90m`, `1h30m` in seconds; None for anything else. No regex: the text is the caller's."""
+    hours, mins = "", t
+    if "h" in t:
+        hours, _, mins = t.partition("h")
+        if not hours.isdigit():
+            return None
+    if mins:
+        if not mins.endswith("m") or not mins[:-1].isdigit():
+            return None
+        mins = mins[:-1]
+    if not hours and not mins:
+        return None
+    return int(hours or 0) * 3600 + int(mins or 0) * 60
+
+
+def load_break_glass(store: Any, t: float | None = None) -> BreakGlass | None:
+    """The break-glass record, started or active; None when there is none or it has ended (an expired one is
+    removed here: break-glass ends on its own)."""
+    raw = store.kv_get(BREAK_GLASS_KEY)
+    if not raw:
+        return None
+    t = time.time() if t is None else t
+    try:
+        bg = BreakGlass.model_validate_json(raw)
+    except (ValidationError, ValueError):
+        log.error("governance: an unreadable break-glass record was dropped")
+        store.kv_delete(BREAK_GLASS_KEY, durable=True)
+        return None
+    if t >= bg.until:
+        store.kv_delete(BREAK_GLASS_KEY, durable=True)
+        return None
+    return bg
+
+
+def active_break_glass(store: Any, t: float | None = None) -> BreakGlass | None:
+    """Break-glass started, confirmed by a second admin, and not yet over."""
+    bg = load_break_glass(store, t) if store is not None else None
+    return bg if bg is not None and bg.active(t) else None
+
+
+def start_break_glass(store: Any, by: str, reason: str, until: float, t: float | None = None) -> BreakGlass:
+    t = time.time() if t is None else t
+    if load_break_glass(store, t) is not None:
+        raise BreakGlassError("break-glass is already started; confirm it, or end it first")
+    try:
+        bg = BreakGlass(started_by=by, reason=reason.strip(), started_at=t, until=until)
+    except (ValidationError, ValueError) as e:
+        raise BreakGlassError(str(e).splitlines()[-1] if isinstance(e, ValidationError) else str(e)) from None
+    store.kv_set(BREAK_GLASS_KEY, bg.model_dump_json(), durable=True)
+    return bg
+
+
+def confirm_break_glass(store: Any, by: str, t: float | None = None) -> BreakGlass:
+    bg = load_break_glass(store, t)
+    if bg is None:
+        raise BreakGlassError("no break-glass is started (hangar governance local --until ... --reason ...)")
+    if bg.confirmed_by is not None:
+        raise BreakGlassError(f"break-glass is already confirmed by {bg.confirmed_by}")
+    if by == bg.started_by:
+        raise BreakGlassError("break-glass needs a second admin to confirm it, not the one who started it")
+    bg = bg.model_copy(update={"confirmed_by": by})
+    store.kv_set(BREAK_GLASS_KEY, bg.model_dump_json(), durable=True)
+    return bg
+
+
+def end_break_glass(store: Any) -> BreakGlass | None:
+    bg = load_break_glass(store)
+    store.kv_delete(BREAK_GLASS_KEY, durable=True)
+    return bg
 
 
 def parse_modes(default: str, overrides: str | dict[str, str] | None = None) -> dict[str, Mode]:

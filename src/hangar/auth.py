@@ -334,3 +334,95 @@ def bearer_from_headers(headers) -> str | None:
     if auth and auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return None
+
+
+# ---------------------------------------------------------------------------- --- KAN-33 (#174): Tower passports
+PASSPORT_NAME = "passport"  # a passport principal's name: `passport:<agent>[><agent>...]` (`:` can't be in a token's)
+PASSPORT_ID = "passport:"  # + the person's id: the ownership key of the jobs a passport submits
+
+
+class PassportRejected(identity.Forbidden):
+    """A Tower passport hangar won't act on. The job API answers 401 with the text (never the token)."""
+
+
+def looks_like_passport(raw: str | None) -> bool:
+    """A bearer that is a JWT (three dot-separated parts), not a hangar token. Hangar's tokens never contain a dot."""
+    return bool(raw) and not raw.startswith(PREFIX) and raw.count(".") == 2 and len(raw) < 16_384  # type: ignore[union-attr]
+
+
+def parse_agents(text: str | None) -> dict[str, str]:
+    """`HANGAR_JOB_PASSPORT_AGENTS`: `agent=person,...`, the Tower agents that may act as themselves (`sub:
+    agent:<id>`) and the hangar person each one runs as. Empty: only passports naming a person are accepted."""
+    out: dict[str, str] = {}
+    for part in (p.strip() for p in (text or "").split(",")):
+        if not part:
+            continue
+        agent, sep, person = (x.strip() for x in part.partition("="))
+        if not sep or not agent or not person:
+            raise ValueError(f"HANGAR_JOB_PASSPORT_AGENTS: '{part}' isn't agent=person")
+        out[agent] = person
+    return out
+
+
+class PassportAuth:
+    """Tower passports on hangar's job API (KAN-33, hangar#174; spec 0015 §9).
+
+    A caller holding a passport Tower issued (RFC 8693 token exchange, EdDSA, Tower's JWKS) sends it as its bearer
+    on `/api/jobs*`. `verifier` (governance.PassportVerifier) checks the signature, issuer, audience (Tower's own,
+    `<origin>/mcp` or the origin, by default: Tower mints passports for no other), expiry and the `act` chain.
+    Then the subject must be someone hangar knows:
+
+    * `sub: person:<email>`: the hangar person that email is linked to (`hangar person link <id> email <email>`);
+    * `sub: agent:<id>`: only an agent listed in HANGAR_JOB_PASSPORT_AGENTS, as the person listed beside it.
+
+    Anyone else is refused, and so is a tampered, expired, wrong-audience or unknown-issuer passport; every refusal
+    is audited `passport.refused`. The principal holds the `jobs` scope only, like a service token: it sees the jobs
+    it submitted, under the person's caps, and never approves or rejects one (a passport always names an agent, and
+    an agent doesn't sign for a person). Hangar's own tokens work exactly as before."""
+
+    def __init__(self, store: Store, verifier: Any, *, agents: Mapping[str, str] | None = None,
+                 audit: Callable[..., Any] | None = None):
+        self.store, self.verifier = store, verifier
+        self.agents = dict(agents or {})
+        self.audit = audit
+
+    async def principal(self, raw: str) -> Principal:
+        """The person (or listed agent) a passport names, as a `jobs` principal. Raises PassportRejected."""
+        from hangar import governance, people
+
+        try:
+            claims = await self.verifier.verify(raw)
+        except governance.PassportRefused as e:
+            self._refuse(None, f"Tower passport refused: {e}")
+        chain = [str(a) for a in claims.get("chain") or []]
+        sub = str(claims.get("sub") or "")
+        kind, _, ident = sub.partition(":")
+        person = None
+        if kind == "person" and ident:
+            person = people.resolve_external(self.store, "email", ident)
+            if person is None:
+                self._refuse(sub, f"{sub} isn't linked to a hangar person; an admin links it with "
+                                  f"`hangar person link <person> email {ident}`")
+        elif kind == "agent" and ident:
+            pid = self.agents.get(ident)
+            if pid is None:
+                self._refuse(sub, f"agent {ident} may not act as itself on hangar's job API "
+                                  "(HANGAR_JOB_PASSPORT_AGENTS)")
+            person = people.get(self.store, pid)
+            if person is None:
+                self._refuse(sub, f"agent {ident} is listed as person '{pid}', who doesn't exist")
+        else:
+            self._refuse(sub or None, "a passport's subject must be person:<email> or agent:<id>")
+        assert person is not None
+        return Principal(f"{PASSPORT_NAME}:{'>'.join(chain)}"[:200], PASSPORT_ID + person.id, ["jobs"],
+                         person=person.id, role=person.role)
+
+    def _refuse(self, sub: str | None, why: str) -> NoReturn:
+        log.info("passport refused: %s", why)
+        if self.audit is not None:
+            self.audit("tower", "passport.refused", sub, why=why[:300])
+        raise PassportRejected(why)
+
+
+def is_passport(p: Principal | None) -> bool:
+    return p is not None and p.id.startswith(PASSPORT_ID)

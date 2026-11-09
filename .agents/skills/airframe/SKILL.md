@@ -78,7 +78,7 @@ component contracts in `airframe/components/*.md` before writing markup.
 | Question | Governance | `af-card af-card--lit af-question`: an agent asks a person; the approval diamond with the word Needs input; `af-question__q`, `__ctx`, `__opts` chips, `__free` text (dismisses the options), one primary Answer. |
 | Diff | Data | `af-diff` > `__file` (`__path`, `__stat` +N −M), `__hunk` (`__hh`, `__line--ctx\|add\|del` with numbers, sign column, `__code`, `__cmt`), `__thread` with `af-comment` and a Composer; `af-diff__hunk--failed` carries the only color. Greyscale: no red, no green. |
 | FleetTable | Data | Dense 32px rows on a tonal panel: tail number, environment, harness and model, status, CPU, age, cost. |
-| Terminal | Data | Always dark in both themes; quiet ✓ lines, red ✗ lines, prompt and cursor in brand. |
+| Terminal | Data | Always dark in both themes; a sentence-case sans bar with the product name bright; quiet ✓ lines, red ✗ lines, prompt and cursor in brand. |
 | TraceSpans | Data | One agent turn as a span tree on a timeline; the critical path in brand. |
 | DecisionDeck | Fleet | `af-deck` > `af-deck__stack` of `af-decision` sheets (`data-k` 0 on top, 1–2 peek) + `af-deck__side` (n of N over the decisions only, prev/next, skip, up-next, then `af-deck__subtitle` "Stopped" and `af-deck__stopped` for failed and denied); peek cards carry no status edge; inline approve, deny with a required reason (`af-reason`), answer with chips, retry, acknowledge; `af-verdict-line`; calm empty. `deck` in airframe.js. |
 | AgentRow | Fleet | `af-runway` > `af-agent` > `af-agent__line` (mark, tail, work + now-line + Heartbeat, owner, harness, StageRail, stage times, sparkline, cost, chevron) and `af-agent__body` > `af-console`; opens in place (`expand`). The **List** view. |
@@ -121,7 +121,12 @@ own CSS, and note it for agent-factory. The brand book has the detailed rules, o
 `airframe/guide/`: `brand.md` (the hub and the principles), `Writing.md` (voice, casing, words to avoid), `IDs.md`
 (tail numbers, units, ratios), `Color.md` (roles, Night and Day), `People.md` (who has the controls, avatars),
 `Type.md`, `Layout.md` (spacing, radius, borders, cards, texture), `Motion.md` (motion and focus), `Iconography.md`,
-`Consume.md` (loading the theme), plus `Status.md`, `Data.md` and `Products.md`. On the site they are
+`Consume.md` (loading the theme). `Status.md` is a hub of its own: `Cockpit.md` (when a status takes color, the
+accepted bends), `Attention.md` (edge, mark, word), `Grouping.md` (which status a group shows), `Examples.md` (status
+words by product), `Decisions.md` (Needs approval, Needs input, Approve and Deny, waiting on others, alert inhibition).
+So is `Data.md`: `Tables.md`, `Inline.md` (keyed inline data, objects by reference), `Charts.md` (readouts, charts,
+sparklines, gauges), `Traces.md` (traces and lanes), `Fleet.md` (the fleet board), `Diffs.md`. `Products.md` is whole.
+On the site they are
 https://sean-koval.github.io/agent-factory/airframe/guide/brand/ and its siblings (lowercase). The gallery renders
 every component in both themes:
 https://sean-koval.github.io/agent-factory/airframe/gallery/

@@ -42,7 +42,7 @@ is on [who is trusted](who-is-trusted.md).
 
 ## Inbox delivery: DMs and the digest
 
-What needs someone ([the inbox](../landing.md#7-the-inbox-what-needs-you)) reaches them in Slack through their linked
+What needs someone ([the inbox](../landing/review.md#7-the-inbox-what-needs-you)) reaches them in Slack through their linked
 Slack account. They get a DM for each new agent question or approval, and a digest at 10:15 and 16:00 on weekdays.
 
 Someone without a linked Slack account gets nothing, and `hangar doctor` lists them under "inbox not delivered". The

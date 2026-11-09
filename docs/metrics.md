@@ -27,7 +27,7 @@ hangar computes no intervals and no trends. Flightdeck does that over the outbox
 
 ## What hangar records for them
 
-On `job.landing` ([landing.md](landing.md#what-hangar-records)):
+On `job.landing` ([landing.md](landing/how-a-pr-lands.md#what-hangar-records)):
 
 | Field | Meaning |
 | --- | --- |
