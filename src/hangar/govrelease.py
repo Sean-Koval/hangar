@@ -42,6 +42,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, Field
+
 from hangar.governance import (
     CHECKS_MAX,
     DETAIL_MAX,
@@ -219,6 +221,15 @@ class Releases:
             self._release(job, approver, d, words, t)
             return job
         if t.source == "fail_closed":
+            if (glass := self._glass(approver.person, job.id, t)) is not None:  # --- KAN-33: break-glass
+                local = Decision(outcome="allow", source="local", status="local", rule="break_glass",
+                                 reason=f"approved by admin {approver.actor} under break-glass ({glass.reason})"[:500])
+                self._keep(job, {**record("break_glass", local, local=local, tower=t), "break_glass": glass.until})
+                self._release(job, approver, d, words, local)
+                self._glass_record("job.release", f"hangar:job:{job.id}:release", job.id, approver.actor, glass, t)
+                self._tell(job, f"Hangar job `{job.id}` was approved by {approver.actor} under break-glass: Tower "
+                                f"was unavailable ({t.failure}), and hangar's own rules decided.")
+                return job
             self._unavailable(job, t)
             raise ApprovalPending(f"{t.reason}; hangar job {job.id} stays waiting for approval")
         if t.outcome == "wait":
@@ -353,6 +364,9 @@ class Releases:
             return None
         if st.receipt and st.receipt_sha == sha:
             return None
+        g = st.governance or {}
+        if g.get("sha") == sha and g.get("rule") == "break_glass":  # --- KAN-33: decided under break-glass already
+            return None
         if st.workspace_approval and (st.governance or {}).get("sha") != sha:  # an approval of an older head
             old = st.workspace_approval
             self._unfollow(LAND, old)
@@ -377,6 +391,17 @@ class Releases:
                 self.jobs.landing._bg(job, self.jobs.landing.post_packet(job))
             return None
         if t.source == "fail_closed":
+            reviewer = self.jobs.landing._person_of_login(st.approved_by or "") if st.approved_by else None
+            if (glass := self._glass(reviewer, job.id, t)) is not None:  # --- KAN-33: break-glass
+                local = Decision(outcome="allow", source="local", status="local", rule="break_glass",
+                                 reason=f"approved by admin @{st.approved_by} on {sha[:7]} under break-glass "
+                                        f"({glass.reason})"[:500])
+                st.governance = {**record("break_glass", local, local=local, tower=t), "sha": sha,
+                                 "break_glass": glass.until}
+                self.jobs._save(job)
+                self._glass_record("landing.approve", f"hangar:job:{job.id}:landing:{sha}", job.id,
+                                   f"github:{st.approved_by}", glass, t)
+                return None
             st.governance["told"] = told or now()
             self.jobs._save(job)
             return f"{UNAVAILABLE} ({t.failure}); auto-merge isn't armed until Tower answers"
@@ -497,6 +522,41 @@ class Releases:
         except Unavailable as e:
             log.info("governance: %s: %s", aid, e)
 
+    # ================================================================== break-glass (--- KAN-33, spec 0015 §7)
+    def _glass(self, person: str | None, job_id: str, t: Decision) -> Any:
+        """The active break-glass, when it lets this person decide now: Tower couldn't answer (`t` is fail-closed,
+        never a deny Tower gave), and the person is a hangar admin. A Tower that answers still decides: break-glass
+        is for an outage, never for getting around a decision. None otherwise."""
+        from hangar import people
+        from hangar.governance import active_break_glass
+
+        if t.source != "fail_closed":
+            return None
+        glass = active_break_glass(self.store, self.clock())
+        p = people.get(self.store, person) if glass is not None and person else None
+        if glass is None:
+            return None
+        if p is None or p.role != "admin":
+            self.fleet.audit("hangar", "governance.break_glass.refused", job_id, person=person,
+                             why="only an admin decides under break-glass")
+            return None
+        return glass
+
+    def _glass_record(self, kind: str, key: str, job_id: str, actor: str, glass: Any, t: Decision) -> None:
+        """Audit a decision taken under break-glass, and keep it to replay to Tower as a record (spec 0015 §15 item
+        21; Tower doesn't take one yet, so it stays here, and in the audit log)."""
+        import json
+
+        from hangar.governance import BREAK_GLASS_LOG
+
+        rec = {"kind": kind, "key": key, "job": job_id, "decided_by": actor, "rule": "break_glass", "at": now(),
+               "failure": t.failure, "started_by": glass.started_by, "confirmed_by": glass.confirmed_by,
+               "reason": glass.reason}
+        self.store.kv_set(BREAK_GLASS_LOG + key, json.dumps(rec), durable=True)
+        self.fleet.audit(actor, "governance.break_glass.decision", job_id, kind=kind, key=key, failure=t.failure,
+                         started_by=glass.started_by, confirmed_by=glass.confirmed_by, until=glass.until)
+        log.warning("governance: %s decided %s locally under break-glass (Tower: %s)", actor, key, t.failure)
+
     # ================================================================== helpers
     def _keep(self, job: Job, rec: dict[str, Any]) -> None:
         """The record of what was asked and answered, on the job's approval; `told` survives within an outage."""
@@ -564,3 +624,88 @@ class Releases:
         with contextlib.suppress(BaseException):
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
         self._tasks.clear()
+
+
+# ====================================================================== break-glass routes (--- KAN-33)
+class GlassStart(BaseModel):
+    until: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def glass_view(bg: Any, t: float | None = None) -> dict[str, Any]:
+    if bg is None:
+        return {"state": "off"}
+    t = time.time() if t is None else t
+    return {"state": "active" if bg.active(t) else "awaiting_confirmation", "started_by": bg.started_by,
+            "confirmed_by": bg.confirmed_by, "reason": bg.reason, "started_at": bg.started_at, "until": bg.until,
+            "left_seconds": max(0, int(bg.until - t))}
+
+
+def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """`hangar doctor`: a loud warning while break-glass is started or active."""
+    from hangar.doctor import _check
+    from hangar.governance import load_break_glass, rfc3339
+
+    bg = load_break_glass(h.store)
+    if bg is None:
+        return []
+    v = glass_view(bg)
+    if v["state"] == "active":
+        return [_check("governance break-glass", None,
+                       f"ACTIVE until {rfc3339(bg.until)} ({v['left_seconds'] // 60} min left): hangar's own rules "
+                       f"decide job releases and landings Tower can't answer, for admins only. Started by "
+                       f"{bg.started_by}, confirmed by {bg.confirmed_by}: {bg.reason}",
+                       "end it as soon as Tower answers: hangar governance local --end")]
+    return [_check("governance break-glass", None,
+                   f"started by {bg.started_by}, waiting for a second admin to confirm: {bg.reason}",
+                   "a second admin runs hangar governance local --confirm, or end it: hangar governance local --end")]
+
+
+def mount(app: Any, h: Any, admin: Any) -> None:
+    """`GET|POST /api/governance/break-glass` (admins): see, start, confirm and end break-glass. The person behind
+    the admin token counts, so one admin with two tokens can't confirm their own."""
+    from hangar import identity
+    from hangar.governance import (
+        BreakGlassError,
+        confirm_break_glass,
+        end_break_glass,
+        load_break_glass,
+        parse_until,
+        start_break_glass,
+    )
+
+    def who() -> str:
+        p = identity.principal()
+        if p is None or not p.person:
+            raise BreakGlassError("break-glass needs an admin person's token")
+        return p.person
+
+    @app.get("/api/governance/break-glass")
+    async def glass_get(_: str = admin):
+        return glass_view(load_break_glass(h.store))
+
+    @app.post("/api/governance/break-glass")
+    async def glass_start(body: GlassStart, actor: str = admin):
+        t = time.time()
+        bg = start_break_glass(h.store, who(), body.reason, parse_until(body.until, t), t)
+        h.fleet.audit(actor, "governance.break_glass", None, step="start", person=bg.started_by, until=bg.until,
+                      reason=bg.reason)
+        log.warning("governance: break-glass started by %s until %.0f: %s", bg.started_by, bg.until, bg.reason)
+        return glass_view(bg)
+
+    @app.post("/api/governance/break-glass/confirm")
+    async def glass_confirm(actor: str = admin):
+        bg = confirm_break_glass(h.store, who())
+        h.fleet.audit(actor, "governance.break_glass", None, step="confirm", person=bg.confirmed_by,
+                      started_by=bg.started_by, until=bg.until)
+        log.warning("governance: break-glass ACTIVE until %.0f (started by %s, confirmed by %s)", bg.until,
+                    bg.started_by, bg.confirmed_by)
+        return glass_view(bg)
+
+    @app.post("/api/governance/break-glass/end")
+    async def glass_end(actor: str = admin):
+        person = who()
+        bg = end_break_glass(h.store)
+        h.fleet.audit(actor, "governance.break_glass", None, step="end", person=person,
+                      was=glass_view(bg).get("state"))
+        return {"state": "off", "ended": bg is not None}

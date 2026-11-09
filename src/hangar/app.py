@@ -1256,6 +1256,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import govevents  # --- KAN-77: POST /api/governance/events, signed by Tower (no token)
 
     govevents.mount(app, h)
+    from hangar import govrelease  # --- KAN-33: break-glass, admins only
+
+    govrelease.mount(app, h, A)
     inbox_notify.mount(app, h, U)  # --- inbox delivery (#157, #158): PUT /api/people/{id}/delivery
     inbox_notify.register(h)  # the digests ride the ops loop
     from hangar import slolog  # --- KAN-144: the stuck-jobs gauge and log line ride it too
