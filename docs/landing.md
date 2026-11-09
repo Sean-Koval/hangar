@@ -2,8 +2,8 @@
 
 An agent's PR used to need three things from a person: read it, approve it, then come back after CI and click merge. With landing on, a person reads the PR and approves it. hangar takes it from there, and GitHub's branch protection stays the gate.
 
-- **Agent PRs come from a GitHub App** (`hangar-agents[bot]`), not from a person's token. A PR's author can't approve it, so with the App as author GitHub lets the person who asked for the work approve it. Whether that approval alone lands the PR is the [self-approval rule](#self-approval-who-may-be-the-only-approver): by default only for a low-risk PR (docs and tests) with an independent AI review of the approved head, never for a tainted PR; otherwise a second reviewer must approve.
-- **An independent AI review comes first** ([section 6a](#6a-ai-first-pass-review)): a hangar job on another harness than the author's (or an org review bot's check) reviews each agent PR and posts one advisory COMMENT review.
+- **Agent PRs come from a GitHub App** (`hangar-agents[bot]`), not from a person's token. A PR's author can't approve it, so with the App as author GitHub lets the person who asked for the work approve it. Whether that approval alone lands the PR is the [self-approval rule](landing/how-a-pr-lands.md#self-approval-who-may-be-the-only-approver): by default only for a low-risk PR (docs and tests) with an independent AI review of the approved head, never for a tainted PR; otherwise a second reviewer must approve.
+- **An independent AI review comes first** ([section 6a](landing/review.md#6a-ai-first-pass-review)): a hangar job on another harness than the author's (or an org review bot's check) reviews each agent PR and posts one advisory COMMENT review.
 - **The control plane, never the agent, arms auto-merge.** It does so after a qualifying approval of the PR's current head and green required checks, and only for that commit.
 - **A push after the approval needs a new review.** hangar disarms before any agent turn starts on the job, and GitHub dismisses the stale approval.
 - **hangar knows when work lands.** Each job records its PR's state (`open`, `approved`, `merged`, `closed`), when it merged, and how long it took from green checks to merged. A merged or closed PR ends the job's session.
@@ -67,7 +67,7 @@ hangar repo set acme/app --land auto_after_approval --approver alice --approver 
 | `merge_method` | `squash` (default), `merge` or `rebase` |
 | `risk_paths` | globs that make a PR **high risk** in its packet, on top of `.github/**` and `.hangar/**` |
 | `require_stale_dismissal` | unset or `true`: arm only when the base branch dismisses stale approvals ([section 3](#3-the-branch-protection-to-enable)); `false` (`--no-require-stale-dismissal`) opts the repo out |
-| `self_approval` | whether the job's own person may be its PR's only approver: `never`, `low_risk_with_ai_review` (the default) or `any` (the old behaviour). See [section 4](#self-approval-who-may-be-the-only-approver) |
+| `self_approval` | whether the job's own person may be its PR's only approver: `never`, `low_risk_with_ai_review` (the default) or `any` (the old behaviour). See [section 4](landing/how-a-pr-lands.md#self-approval-who-may-be-the-only-approver) |
 | `ai_review`, `ai_review_harness`, `ai_review_model`, `ai_review_budget_usd`, `ai_review_inline_max` | the [AI first-pass review](ai-review.md): `hangar`, `check:<name>` or `off` (unset). Then the reviewing harness, its model, what one review may spend, and its most inline comments |
 | `max_open_agent_prs` | [review capacity](team-scale.md#review-capacity): open agent PRs awaiting a person before their new jobs here wait |
 
@@ -89,171 +89,13 @@ hangar arms auto-merge; **GitHub decides when it merges**. These settings on the
 
 `hangar doctor` checks these for every repo with `land: auto_after_approval` and warns about what else is missing. It reads classic protection with the control token when that token has Administration: read, and rulesets through `GET /rules/branches/{b}`, which the App can read. It also warns when no App is configured, and when jobs don't use the git gateway. In direct mode a job's sandbox holds a GitHub token that could arm auto-merge itself, so branch protection would be the only gate.
 
-## 4. How a PR lands
-
-<figure class="af-figure af-figure--wide">
---8<-- "landing-states.svg"
-<figcaption>How a PR lands: open, approved, armed, merged; a push, changes requested, a dismissed approval or a new agent turn takes it back to open</figcaption>
-</figure>
-<figure class="af-figure af-figure--stacked">
---8<-- "landing-states-stacked.svg"
-<figcaption>How a PR lands: open, approved, armed, merged; a push, changes requested, a dismissed approval or a new agent turn takes it back to open</figcaption>
-</figure>
-
-- **Only the approved commit.** hangar arms with `enablePullRequestAutoMerge(expectedHeadOid: <approved sha>)`. GitHub has no REST route for auto-merge, so this is GraphQL. When the PR is already mergeable, GitHub refuses to arm ("Pull request is in clean status") and hangar merges it with `PUT /pulls/{n}/merge` and `sha: <approved sha>`. Either call fails if the head moved.
-- **A push clears the approval.** Any new head, from the agent, auto-fix, a follow-up or a person, clears the approval in hangar's record and disarms. A later push needs a new review, which "dismiss stale approvals" and "most recent push" enforce on GitHub's side.
-- **No agent runs while armed.** Before arming, the job's session takes a checkpoint and its sandbox goes, and with it the sandbox's gateway grant, so nothing the agent left running can push. Before any later agent turn on the job (a follow-up, an auto-fix round, a verify-fix turn), hangar disarms; if it can't, the turn doesn't start. After a turn that pushed nothing, the approval still covers the head and hangar arms again. Arming also waits for any queued or running turn on the job.
-- **Checks.** "Green" means every check the base branch requires (from its protection summary and rulesets) passed on the head: `success`, `neutral` or `skipped`. GitHub saying `mergeable_state: clean` also counts, in case a webhook was missed. A failed check holds landing even when it isn't required: an agent's red PR goes to [auto-fix](jobs/agent-loop.md), not to main. With no required checks, GitHub merges as soon as auto-merge is armed, so make CI required (`hangar doctor` warns).
-- **Requests for changes win.** A "changes requested" review from anyone, or a dismissed approval, takes the PR back to open and disarms.
-- **GitHub's record decides.** Review webhooks can arrive late, out of order (hangar redelivers missed ones after a restart) or replayed, so right before arming hangar lists the PR's reviews (`GET /pulls/{n}/reviews`, Pull requests: read): the approver's latest review must still be an approval of the head, and nobody's latest may request changes. A push, dismissal or follow-up that arrives while GitHub is arming is caught after the arm and disarmed; a disarm GitHub refused is tried again after the job's next turn and on restart.
-- **The merge commit says which harness wrote it** (#137). The message hangar gives GitHub is the agent's summary
-  followed by the job's [trailers](jobs/working-with-the-agent.md#the-pull-request) (`Hangar-Job`, `Harness-Digest`, `Environment-Digest`,
-  `Harness-Lock`): `commitBody` when it arms auto-merge, `commit_message` when it merges an already mergeable PR, so
-  the merged commit carries them whichever way it lands. That holds for the `squash` and `merge` methods; `rebase`
-  keeps the agent's commits as they are, so the trailers are in the PR body only. A metric that reads them from the
-  PR body through the API doesn't depend on the method.
-- **Drafts wait.** A PR hangar opened as a draft (the check failed, the agent changed the check's own tests, or it read untrusted content) isn't armed until someone marks it ready for review.
-
-### Tainted PRs
-
-When the job's agent read untrusted content (`hangar:tainted`, [security/taint.md](security/taint.md#taint-gates)), the approval
-that lands it must come from someone other than the job's own person and its requester: a reviewer whose GitHub
-account is linked to the job's person, or who asked for the job, doesn't land it (the job's timeline says why), and
-another approver or code owner does. The rule is `approvals.can_decide(kind="land")`, so
-`HANGAR_SELF_APPROVAL=allow_solo` lets a one-person install land its own. The review packet lists what untrusted
-content was read. Each decision is audited as `taint.gate` (`sink: land`).
-
-### Agent-drafted ADRs
-
-A PR from [`@hangar adr`](slack.md#hangar-adr-a-thread-becomes-a-decision-record) (labels `agent-drafted` and `adr`)
-follows the tainted-PR rule even if nothing tainted it: the job's own person and its requester can't be the approval
-that lands it, whatever `self_approval` says (`any` included); another approver or code owner can. The packet's
-Landing rule line says so, and an ADR line gives the thread, the content hash, a warning when the PR touches files
-outside `docs/decisions/`, and any other open ADR job that took the same number.
-
-**Loosening a decision's checks is high risk.** For any PR, not only these: removing or changing a line inside an
-existing ADR's `checks:` block (or deleting the ADR) makes the packet's risk `high`, naming the file, so the
-self-approval rule needs a second reviewer. Adding a check doesn't.
-
-### Self-approval: who may be the only approver
-
-The job's own person (their GitHub account, matched by its numeric user id through `hangar person link`, never by
-login) can approve their agent's PR on GitHub. That approval lands it only under the repo policy's `self_approval`:
-
-| `self_approval` | The requester's own approval lands the PR when |
-| --- | --- |
-| `low_risk_with_ai_review` (default) | the PR is **low** risk (docs and tests only, [the packet's tier](#6-the-review-packet)) **and** an [independent AI review](#6a-ai-first-pass-review) of the approved head exists with a verdict other than `blocking` |
-| `never` | never: a second reviewer always approves |
-| `any` | always (the behaviour before #160) |
-
-Otherwise the approval is recorded but doesn't arm anything: the job's timeline and `landing.note` say why ("self-approval doesn't land this PR (risk normal): it needs a second reviewer"), `pr_state` stays `open`, the audit log has `landing.self_approval` (`decision: refused`), and the [inbox](#7-the-inbox-what-needs-you) gives the repo's other approvers (the people linked to the policy's `approvers`; admins when none is linked) a `review` item. Another approver's or code owner's approval lands it as usual. An AI review of an older head stops counting after a push; when the review of the approved head arrives after the approval, hangar looks at that approval again.
-
-**When it applies, precisely.** Only to a *person's* job (team jobs from GitHub issues, Slack or webhooks have no person and are unchanged) and only where an approval lands the PR (`land: auto_after_approval`). It runs **after** the [taint gate](#tainted-prs), which has already refused the job's own person and requester on a tainted PR, whatever `self_approval` says (low risk and an AI review included; `any` too). So every Jira-door job, tainted from turn 1 by its ticket text, still needs a second human. The rule can only refuse more, never allow what the taint gate refused. As for every other approval, `HANGAR_SELF_APPROVAL=allow_solo` lets the one person of a one-person install land their own. GitHub's "require approval of the most recent reviewable push" still applies on its side.
-
-Everything that needs GitHub runs in the background, under a per-job lock, so a webhook is answered at once. hangar's record lives on the job, so a restart loses nothing: approved PRs are evaluated again and merged PRs' sessions ended at startup. Deliveries missed while hangar was down are [redelivered](upgrading.md).
-
-### What hangar records
-
-`job.landing` (in `GET /api/jobs/<id>`, `get_job` and `hangar://jobs/<id>`):
-
-| Field | |
-| --- | --- |
-| `pr_state` | `open`, `approved`, `merged` or `closed` |
-| `approved_by`, `approved_sha`, `approved_at` | the approval that counts |
-| `armed_sha`, `armed_at` | auto-merge armed by hangar, for that commit |
-| `checks`, `checks_sha` | each check run, suite or status context on the head and its conclusion |
-| `ci_green_at`, `ci_green_sha` | when the required checks first all passed on that commit |
-| `merged_at`, `merged_by`, `closed_at` | from GitHub |
-| `green_to_merge_seconds` | from `ci_green_at` to `merged_at`, when the merged head is the one that went green |
-| `files`, `risk` | what the PR touches, and its tier |
-| `note` | why it isn't landing yet |
-| `ai_review` | the [AI first-pass review](ai-review.md): `{source, job, confirm_job, harness, model, head_sha, verdict, findings, unconfirmed, inline, summary, independent, at, review_id, url}`. `findings` are the confirmed ones, each with `severity` and `evidence`. `verdict` is `null` while pending and `error` when there was none |
-| `approver_people`, `needs_second` | the hangar people linked to the policy's approvers, and whether the requester's own approval was refused ([self-approval](#self-approval-who-may-be-the-only-approver)) |
-| `opened_at`, `ready_at` | when hangar opened the PR; when it was opened non-draft or marked ready (#168) |
-| `first_review_at`, `first_review_by` | the first review a human submitted, any state; bots, the App's AI review included, never count (#168) |
-| `merge_commit_sha` | what the merge put on the base branch: reverts of a squash merge are matched against it (#168) |
-| `abandon_reason`, `abandon_by`, `abandon_at` | why a PR closed unmerged was abandoned (below) |
-| `reverted_at`, `revert_sha`, `fix_forward_pr`, `fix_forward_at` | a revert of it on the default branch, or a PR that fixed it forward, found by the nightly pass ([metrics.md](metrics.md)) |
-
-**Abandon reasons** (#168). When you close an agent PR without merging it, say why: comment `/hangar abandon <reason>` on it (a trusted person), or add the label `agent-abandon:<reason>`. The reason is one of `wrong_approach`, `bad_ticket`, `flaky_env`, `too_big`, `superseded` or `other`; anything else is refused with the list. The inbox lists closed agent PRs without one. The weekly abandon rate counts them by reason ([metrics.md](metrics.md)).
-
-The audit log has `landing.approved`, `landing.arm`, `landing.disarm`, `landing.merge`, `landing.merged`, `landing.self_approval` and `landing.abandon_reason`.
-
-**The end of the session.** A merged or closed PR ends the job's session: it takes a final checkpoint, then the sandbox is released (a paused hot-resume sandbox too). A turn still running when the PR closes is stopped first. A job still waiting on a question is cancelled, because nobody needs the answer any more. If the checkpoint fails, the sandbox stays until it idles out, so no work is lost.
-
-**Schedules update their own PR.** When a schedule's last job still has an open PR, the next run is a follow-up on that job: the agent updates the PR instead of opening another each week. Once that PR is merged or closed, the next run is a new job. If the old job can't take a follow-up (no checkpoint, budget spent), a new job runs and the old job's events say why.
-
 ## 5. The webhook
 
 `hangar setup github` (and `hangar doctor --fix`) registers these events on each mapped repo: `issues`, `issue_comment`, `pull_request_review_comment`, `pull_request_review`, `check_run`, `check_suite`, `status` and **`pull_request`**, which is new for landing. A hook set up before needs `pull_request` added; `hangar doctor` names it.
 
 To use the **App's webhook** instead of per-repo hooks, point it at `https://<hangar>/api/hooks/github` with the same secret as `HANGAR_GITHUB_WEBHOOK_SECRET_CREDENTIAL`, and subscribe to: Pull request, Pull request review, Pull request review comment, Check run, Check suite, Status, Issues and Issue comment. GitHub only offers an event to an App holding read access to it, so this needs three more read-only permissions on top of section 1: **Checks: Read** (check run, check suite), **Commit statuses: Read** (status) and **Issues: Read** (issues, issue comment). Tokens hangar mints keep asking for contents and pull requests only. Use one webhook or the other, not both.
 
-## 6. The review packet
-
-hangar writes one comment on each agent PR when it delivers, and edits it on every later push. Built from the job record, it works for any repo without a CI job:
-
-- **Verification**: the command and its result, "base was red" when the [check on the base](repo-policy.md#the-check-on-the-base-commit) failed, and whether the agent changed the check's own tests;
-- **Risk**: `high` when a path matches `.github/**`, `.hangar/**` (the repo's environment, which runs in every build and sandbox) or the policy's `risk_paths`, or when the PR removes or changes a line of an existing ADR's `checks:` block ([above](#agent-drafted-adrs)), `low` for docs and tests only, `normal` otherwise;
-- **Files** touched, with the diffstat;
-- **Cost**: tokens and dollars so far, the job budget, and the agent turns;
-- **Agent**: harness and the version its pack installed, model, environment, and the harness it ran with: the short
-  `harness_digest` (`sha256:abcd1234…`, linking to `/api/jobs/{id}/manifest`) and the lock it was thawed from, if any
-  (each distinct digest with its turns when they differed);
-- **Session**: its name, and how to pull or continue it (`/hangar <message>`);
-- **Recorded demos**: links to the video and GIF artifacts it handed back;
-- **AI review**: the verdict, who reviewed (harness and model, or the bot's check), the head it reviewed, the confirmed findings, the unconfirmed ones dropped, and a link; "pending" until it is in (a PR delivered during a power-down is reviewed after power-up);
-- **Landing rule**: who may land it, and why (a second reviewer, or the requester alone for a low-risk PR with an independent AI review; a tainted PR always needs someone other than its person);
-- **Landing**: who can land it and how.
-
-Ticket jobs also ask the agent for `evidence` and `start_here`:
-
-| Line | What it shows |
-| --- | --- |
-| **Acceptance criteria** | One row per criterion of the ticket, with the evidence the agent cites: tests, a command or an artifact. A cited test counts only when it passed in hangar's own run of the check; otherwise the row says "unproven". A command or artifact alone is "claimed". All of it shows as inline code, never as Markdown. |
-| **Start here** | At most 3 files the agent names, checked against the diff. The Files line then lists the rest, tests last. |
-| **Size** | For any job: a warning when the changed lines pass the repo policy's `diff_budget_lines`. |
-
-## 6a. AI first-pass review
-
-Each non-draft agent PR on a repo with `ai_review` set gets an advisory first-pass review before a person reads it. A hangar job on another harness reviews it, or an org review bot's check decides. A second, cheaper pass keeps only the findings it can confirm. The App posts them as one COMMENT review with at most 5 inline comments, most severe first. [AI first-pass review](ai-review.md) covers the reviewer, the two passes, the verdict and the spend.
-
-## 7. The inbox: what needs you
-
-One list per person, newest first, from the records hangar keeps:
-
-| Kind | When | What to do |
-| --- | --- | --- |
-| `review` | your agent's PR is open and its job is done; or it is approved but can't land (`land: manual`, a draft, a failed check) | review and approve it, or merge it |
-| `review` | a PR whose requester's own approval doesn't land it ([self-approval](#self-approval-who-may-be-the-only-approver)): for the people linked to the repo policy's approvers (admins when none is linked) | review it as the second reviewer |
-| `question` | a job in `needs_input`, or a session's open question | answer with a follow-up or `send_to_session` |
-| `approval` | a job waiting for approval (an untrusted trigger, a spend cap); a turn waiting on a tool approval; requests other modules add (egress, secrets) | approve or deny |
-| `failed` | a job that failed in the last 7 days and has no open PR | read why, then follow up or resubmit |
-| `denied` | policy denied a step of a turn that is still running (the agent carried on without it) | steer the session, or let it be |
-| `abandon` | your agent's PR was closed without merging in the last 7 days and has no [abandon reason](#what-hangar-records) | comment `/hangar abandon <reason>` on it ([metrics.md](metrics.md#what-hangar-records-for-them)) |
-| `credential` | a credential failed its check or expires soon: yours, or for admins the team's ([observability.md](observability.md)) | renew it, then `hangar cred check NAME` |
-| `report` | admins only: a [Cloud Doctor](doctor.md) finding it didn't fix | `hangar admin doctor show ID`, or `dismiss ID` |
-| `alert` | admins only: a front door saw use that a real sender wouldn't make, such as a Jira Automation token used for an issue nobody just moved ([intake.md](intake.md#fallback-an-automation-rule)); kept 7 days | check the rule, rotate the token if it doesn't explain it |
-
-It is per person, like everything since [people](security/people.md#people): a member sees their own jobs and sessions. An admin sees their own, plus work nobody in particular owns (jobs from GitHub issues, Slack and inbound webhooks). Read it:
-
-- MCP: the resource `hangar://inbox` (not a tool, so it adds nothing to the tool list). Subscribe to it to hear when it changes; it changes with any job or session.
-- CLI: `hangar inbox` (`--json` for the raw list).
-- REST: `GET /api/inbox` with an admin token or a person's `user` token: `{"person", "counts": {"review": 2, …}, "items": [{"id", "kind", "reason", "action", "since", "job", "pr", "links", …}]}`.
-
-Each item carries a stable `id` (reading the inbox again gives the same id) and `links` to the native object where you act on it: `{"pr", "ticket", "thread", "job"}`. A `failed`, `denied`, `review`, `alert` or `abandon` item can be put away: `POST /api/inbox/{id}/ack` (per person; it leaves your list for 7 days, the failed window; `DELETE` brings it back). An `approval`, `question`, `credential` or `report` can't: it clears when decided, renewed or dismissed. `ticket` is the Jira issue (`<HANGAR_JIRA url>/browse/ABC-12`) or the GitHub issue the job came from; `thread` the Slack thread it talks in (Slack's own permalink once hangar has fetched it with `chat.getPermalink`); `job` the job on the dashboard (`<HANGAR_PUBLIC_URL>/#jobs?job=<id>`).
-
-### Delivery: it comes to you
-
-Nobody runs `hangar inbox` to find out an agent is blocked on them, so hangar sends it in Slack to each person with a linked Slack account ([team.md](team/linked-accounts.md#inbox-delivery-dms-and-the-digest)):
-
-- **At once: questions and approvals.** A new `question` or `approval` item goes to its person in a DM within a minute: the reason, "Answer here: <link>" (the Slack thread, the Jira issue, the PR, else the job), and the CLI fallback. There are no buttons: the answer is given where it's recorded with your identity. A burst (five approvals in ten seconds) is one DM, and an item is sent once (hangar remembers it for 7 days).
-- **Twice a day: the digest**, at 10:15 and 16:00 in your time zone on weekdays: questions oldest first with their age, approvals with their expiry, jobs that failed since the last digest, approved PRs that aren't landing and why, PRs closed without a reason; then one line, "N agent PRs await your review", linking GitHub's review-request queue (reviews are never listed one by one: GitHub stays the review queue), and a footer with your open agent PRs (against the review-capacity cap, when set) and jobs held for it. At most 20 items, then "and N more: hangar inbox". An empty digest isn't sent. It runs on the control plane, which stays up while the sandbox pools are powered down (01:00-10:00), so the 10:15 digest goes out even when power-up is late; it then says "sandboxes not up yet". A restart never sends a slot twice; a slot missed while hangar was down goes out on recovery if it is under 2 hours late.
-- **Not sent:** `failed` items wait for the digest, and `review` items stay in GitHub. `denied`, `alert`, `credential` and `report` items stay in the inbox. Work nobody in particular owns (GitHub, Slack and webhook jobs) goes only to admins who chose `--dm all`.
-
-The digest's review link needs your GitHub login: hangar looks it up from your linked GitHub user id (`GET /user/{id}`, cached), and with `HANGAR_GITHUB_APP_SLUG` set narrows it to the App's PRs (`author:app/<slug>`). Without a GitHub token the line has no link.
-
-Other modules add kinds of request through `inbox.SOURCES`: a function from the job service and the caller to items, which decides what that caller may see.
+If the `pull_request` webhook never arrives, a merged PR stays open in hangar's records. [When GitHub's webhook doesn't arrive](pr-reconcile.md) covers the fallback.
 
 ## What it doesn't cover
 
@@ -268,3 +110,17 @@ Other modules add kinds of request through `inbox.SOURCES`: a function from the 
 - GitHub GraphQL: `enablePullRequestAutoMerge` (`pullRequestId`, `expectedHeadOid`, `mergeMethod`, `commitBody`) and `disablePullRequestAutoMerge` ([mutations](https://docs.github.com/en/graphql/reference/pulls)). There is no REST route for enabling auto-merge on a PR.
 - [Automatically merging a pull request](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/automatically-merging-a-pull-request): people with write access enable it; it is disabled when someone *without* write access pushes, which is why hangar disarms on every push itself.
 - [Webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads): the permission each event needs for an App, and the `pull_request` actions (`closed` with `merged`, `synchronize`, `auto_merge_enabled`, `auto_merge_disabled`, `ready_for_review`, …).
+
+## Moved from this page
+
+| Section | Now on |
+| --- | --- |
+| <span id="4-how-a-pr-lands"></span>4. How a PR lands | [How a PR lands](landing/how-a-pr-lands.md) |
+| <span id="tainted-prs"></span>Tainted PRs | [How a PR lands](landing/how-a-pr-lands.md#tainted-prs) |
+| <span id="agent-drafted-adrs"></span>Agent-drafted ADRs | [How a PR lands](landing/how-a-pr-lands.md#agent-drafted-adrs) |
+| <span id="self-approval-who-may-be-the-only-approver"></span>Self-approval: who may be the only approver | [How a PR lands](landing/how-a-pr-lands.md#self-approval-who-may-be-the-only-approver) |
+| <span id="what-hangar-records"></span>What hangar records | [How a PR lands](landing/how-a-pr-lands.md#what-hangar-records) |
+| <span id="6-the-review-packet"></span>6. The review packet | [The review packet and the inbox](landing/review.md#6-the-review-packet) |
+| <span id="6a-ai-first-pass-review"></span>6a. AI first-pass review | [The review packet and the inbox](landing/review.md#6a-ai-first-pass-review) |
+| <span id="7-the-inbox-what-needs-you"></span>7. The inbox: what needs you | [The review packet and the inbox](landing/review.md#7-the-inbox-what-needs-you) |
+| <span id="delivery-it-comes-to-you"></span>Delivery: it comes to you | [The review packet and the inbox](landing/review.md#delivery-it-comes-to-you) |

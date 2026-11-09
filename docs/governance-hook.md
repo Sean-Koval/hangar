@@ -81,4 +81,4 @@ Before writing it again, hangar reads what is there. A script that changed since
 
 Codex turns that require the hook are refused for now. Codex 0.162.1 has PreToolUse hooks, and it accepts one from a `-c` flag with its trust hash.
 
-But a hardened Codex turn runs with `--disable hooks`. Turning hooks on would also run hooks the agent writes and trusts in `~/.codex`. A safe version needs hangar to refuse a turn with any other hook, as it does for rules files ([KAN-169](steering.md#hangar-owned-harness-settings)).
+But a hardened Codex turn runs with `--disable hooks`. Turning hooks on would also run hooks the agent writes and trusts in `~/.codex`. A safe version needs hangar to refuse a turn with any other hook, as it does for rules files ([KAN-169](steering/harness-settings.md)).

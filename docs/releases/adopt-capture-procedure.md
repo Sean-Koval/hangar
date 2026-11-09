@@ -116,18 +116,18 @@ Each is off until set; turn them on one at a time.
   and restarts hangar when it changes (#273); add flightdeck's compactor to `run_bucket_readers`. Step 5's `deploy.yml`
   only changes the image, so run `up.sh` once for it, or set the URL by hand and restart. Operating it:
   [the outbox runbook](../runbooks/outbox.md).
-- **The Jira door** (#156): `hangar setup jira` ([intake.md](../intake.md#3-the-configuration)); then
+- **The Jira door** (#156): `hangar setup jira` ([intake.md](../intake/jira.md#3-the-configuration)); then
   `hangar repo set acme/app --verify-allowed 'make test*'` if tickets may name their check.
 - **The team harness repo** (#138): `hangar config set HANGAR_HARNESS_REPO https://github.com/acme/harnesses.git`, add
   the `push` event to that repo's webhook, and `HANGAR_DEFAULT_HARNESS=team-default@stable` once a lock is promoted
   ([harness-lock.md](../harness-lock.md#the-team-harness-repo)).
 - **The standup line** (#168): `hangar config set HANGAR_STANDUP_CHANNEL C0123ABCD` ([metrics.md](../metrics.md#the-standup-line)).
 - **Shadows and canaries** (#183, #184): repo policy `shadow`, refused while the review-wait p50 is over 4 h
-  ([repo-policy.md](../repo-policy.md#shadows)).
+  ([repo-policy.md](../repo-policy/budgets.md#shadows)).
 - **Record and replay** (#177, #179): `model_gateway: record` on an environment ([model-gateway.md](../model-gateway.md));
   the nightly determinism report then replays its recorded runs.
 - **The overnight lane** (#186): `enable_overnight_lane = true` and `terraform apply`, then `hangar power overnight on`,
-  refused below 60% agent PR yield ([gke.md](../gke.md#the-overnight-lane)).
+  refused below 60% agent PR yield ([gke.md](../gke/power.md#the-overnight-lane)).
 
 ## 10. `hangar doctor`
 

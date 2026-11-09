@@ -24,7 +24,7 @@ Once untrusted content has been read, nothing leaves the sandbox on the agent's 
 | Sink | Gate | Untainted |
 | --- | --- | --- |
 | **The PR** ([jobs/reference.md](../jobs/reference.md#tainted-jobs)) | Opened as a draft whatever `deliver` says (`pr` becomes `draft_pr`), labelled `hangar:tainted`. `deliver: branch` stays limited to `refs/heads/hangar/**`; job sandboxes still only fetch and hangar pushes after its checks | as before |
-| **Landing** ([landing.md](../landing.md#tainted-prs)) | The approving reviewer must not be the job's own person or its requester, through their linked GitHub account: `approvals.can_decide(kind="land")`, the same self-approval rule as every other approval (`HANGAR_SELF_APPROVAL=allow_solo` included). The review packet says so | the job's own person may approve |
+| **Landing** ([landing.md](../landing/how-a-pr-lands.md#tainted-prs)) | The approving reviewer must not be the job's own person or its requester, through their linked GitHub account: `approvals.can_decide(kind="land")`, the same self-approval rule as every other approval (`HANGAR_SELF_APPROVAL=allow_solo` included). The review packet says so | the job's own person may approve |
 | **Egress requests** | Approving a host for a tainted session or job goes through `approvals.can_decide(kind="egress")`: an admin, or a repo policy approver, never the work's own person. The refusal says who can. Denying is still the owner's | the owner or an admin |
 | **In-turn approvals** ([steering.md](../steering.md#taint)) | Under `ask` and `deny-risky`: any `git push`, `gh pr create`, `curl`/`wget`/`nc` to a host (not the sandbox itself) and the environment's MCP write tools (`mcp.<name>.write_tools`) are risky. `deny-risky` denies them "after reading untrusted content"; `ask` asks a person and says why | as before |
 
@@ -36,7 +36,7 @@ The driver learns of the taint at the turn's start (`--tainted`) and, mid-turn, 
 
 ## Injection canaries
 
-Shadows (#183, [repo-policy.md](../repo-policy.md#shadows)) deliver nothing and run with egress `none`, so they are a safe
+Shadows (#183, [repo-policy.md](../repo-policy/budgets.md#shadows)) deliver nothing and run with egress `none`, so they are a safe
 place to measure how often a harness takes orders from untrusted text. A repo's `shadow.canary: {p, placements}` gives
 a share `p` of its shadows one benign instruction from a small template set (`src/hangar/canaries.py`), each carrying a
 fresh token `CANARY-<8 hex>`:

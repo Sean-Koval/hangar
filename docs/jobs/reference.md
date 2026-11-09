@@ -52,9 +52,9 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](../api/
 | `HANGAR_JOB_CALLBACK_HOSTS` | `[]` | Hosts allowed for http or internal callbacks |
 | `HANGAR_JOB_RESTART_RESUMES`, `HANGAR_JOB_RESTART_STAGGER_SECONDS` | 2, 20 | How often a job a restart interrupted resumes on its own, and how far apart such jobs re-enter the queue (§5) |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD`, `HANGAR_MODEL_PRICES` | unset | Default budget per turn and the price table; see [activity.md](../activity.md) |
-| `HANGAR_JOB_BUDGET_MAX_COST_USD` / `_MAX_TOKENS` / `_MAX_TURNS` | unset | Default budget for a whole job; see [repo-policy.md](../repo-policy.md#budgets) |
+| `HANGAR_JOB_BUDGET_MAX_COST_USD` / `_MAX_TOKENS` / `_MAX_TURNS` | unset | Default budget for a whole job; see [repo-policy.md](../repo-policy/budgets.md#budgets) |
 | `HANGAR_BUDGET_DAY_TIMEZONE` | `UTC` | The IANA zone whose midnight starts a day for daily spend caps, e.g. `America/New_York` |
-| `HANGAR_PERSON_MAX_USD_PER_DAY` | unset | What one person's sessions and jobs may spend in a day before their new jobs wait for approval; see [repo-policy.md](../repo-policy.md#budgets) |
+| `HANGAR_PERSON_MAX_USD_PER_DAY` | unset | What one person's sessions and jobs may spend in a day before their new jobs wait for approval; see [repo-policy.md](../repo-policy/budgets.md#budgets) |
 | `HANGAR_TRIAL_INFRA_RETRIES` | 2 | How often an experiment trial that ended in `infra_error` runs again; an experiment's retries together stop at 10% of its trials ([experiments](experiments.md#infrastructure-errors-are-retried-and-left-out)) |
 | `HANGAR_EVAL_WINDOW` | `20:00-00:15` | When eval jobs (experiment trials) may start, `HH:MM-HH:MM` (may cross midnight) or `always` ([experiments](experiments.md#the-eval-queue)) |
 | `HANGAR_EVAL_TZ` | `America/New_York` | The eval window's time zone |
@@ -73,7 +73,7 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](../api/
 | `HANGAR_GITHUB_TRUSTED`, `HANGAR_JOB_APPROVAL_TTL_HOURS`, `HANGAR_INBOUND_WEBHOOKS`, `HANGAR_SCHEDULE_POLL_SECONDS` | | See [triggers.md](../triggers.md) |
 | `HANGAR_SLACK_SIGNING_SECRET_CREDENTIAL`, `HANGAR_SLACK_BOT_TOKEN_CREDENTIAL`, `HANGAR_SLACK_CHANNELS`, `HANGAR_SLACK_USERS` | | See [slack.md](../slack.md) |
 | `HANGAR_JIRA` | `{}` | See [intake.md](../intake.md) |
-| `HANGAR_HARNESS_REPO`, `HANGAR_HARNESS_DRIFT` | unset, `warn` | The harness registry `harness_lock` resolves against, and what turn 1's drift from the lock does (`warn` or `fail`); see [harness-lock.md](../harness-lock.md#thaw-and-drift) |
+| `HANGAR_HARNESS_REPO`, `HANGAR_HARNESS_DRIFT` | unset, `warn` | The harness registry `harness_lock` resolves against, and what turn 1's drift from the lock does (`warn` or `fail`); see [harness-lock.md](../harness-lock/thaw.md) |
 | `HANGAR_SUBSCRIPTION_LOGINS` | `interactive` | Jobs never use a subscription login (`oauth_token`, `auth_file`): they need an API key. `interactive` is the only value: `any` was [removed](../upgrading.md#removed-switches) after v0.2.0. See [team.md](../team/subscription-logins.md) |
 
 ## Tainted jobs
@@ -81,7 +81,7 @@ as `hangar.outcome.class` and `hangar.outcome.infra_reason` ([traces.md](../api/
 A job whose agent read untrusted content (its input was untrusted, or it fetched a page, or called an untrusted MCP
 server: [security/taint.md](../security/taint.md)) delivers its PR as a **draft**, whatever `deliver` says, labelled
 `hangar:tainted`, and the timeline says so. Landing then needs a reviewer other than the job's own person
-([landing.md](../landing.md#tainted-prs)). `deliver: branch` is unchanged: hangar pushes `hangar/<job>` after its checks.
+([landing.md](../landing/how-a-pr-lands.md#tainted-prs)). `deliver: branch` is unchanged: hangar pushes `hangar/<job>` after its checks.
 
 ## Security notes
 

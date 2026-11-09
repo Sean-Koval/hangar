@@ -48,7 +48,7 @@ decision was made, on a mapped channel, and hangar drafts an ADR from the thread
   the job is tainted from turn 1, so hangar opens the PR after the turn as a draft labelled `hangar:tainted`
   ([security/taint.md](security/taint.md#taint-gates)); the agent never pushes or opens it.
 - **The PR.** Title `ADR: <title>`, labels `agent-drafted` and `adr`, and a body linking the thread. It never lands on
-  the requester's approval, whatever the repo's `self_approval` says ([landing.md](landing.md#agent-drafted-adrs)).
+  the requester's approval, whatever the repo's `self_approval` says ([landing.md](landing/how-a-pr-lands.md#agent-drafted-adrs)).
 - **hangar checks it** after the turn, as the job's verify: exactly one new file, numbered one past the highest in
   `docs/decisions/`, named after the title, with the frontmatter and sections above. The optional `checks:` block (a
   fenced ```` ```yaml ```` block starting `checks:`, trace predicates flightdeck runs nightly) must be valid YAML; hangar
@@ -118,7 +118,7 @@ Under hangar's "Continuing hangar job …" answer to a thread reply, three butto
 
 ## Inbox DMs
 
-hangar also DMs people what needs them ([the inbox](landing.md#delivery-it-comes-to-you)): each new question or approval of their agents at once, and a digest at 10:15 and 16:00. It opens the DM with `conversations.open` and posts with `chat.postMessage`, so the app needs the **`im:write`** bot scope (in the [manifest](slack-app-manifest.yaml); an app installed before it needs the scope added and a reinstall). `hangar doctor` warns when the bot token lacks it. A DM goes to a person's linked Slack account (`hangar person link <id> slack T…/U…`); settings per person are `hangar person set <id> --dm off|questions|all --tz … --digest … --quiet …` ([team.md](team/linked-accounts.md#inbox-delivery-dms-and-the-digest)). DM text is escaped and redacted like thread posts, and links to the thread, ticket or PR where the answer is given; there are no buttons in it.
+hangar also DMs people what needs them ([the inbox](landing/review.md#delivery-it-comes-to-you)): each new question or approval of their agents at once, and a digest at 10:15 and 16:00. It opens the DM with `conversations.open` and posts with `chat.postMessage`, so the app needs the **`im:write`** bot scope (in the [manifest](slack-app-manifest.yaml); an app installed before it needs the scope added and a reinstall). `hangar doctor` warns when the bot token lacks it. A DM goes to a person's linked Slack account (`hangar person link <id> slack T…/U…`); settings per person are `hangar person set <id> --dm off|questions|all --tz … --digest … --quiet …` ([team.md](team/linked-accounts.md#inbox-delivery-dms-and-the-digest)). DM text is escaped and redacted like thread posts, and links to the thread, ticket or PR where the answer is given; there are no buttons in it.
 
 ## Security notes
 
