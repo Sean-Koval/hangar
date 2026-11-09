@@ -63,6 +63,8 @@ Alternatively, a label starts jobs: `"trigger": {"label": "hangar"}`, or `{"stat
 | `statuses` | The status to move the issue to at each stage, by name. Leave out any you don't want. The transition into it must exist from where the issue is; if it doesn't, hangar notes that on the job and leaves the status alone |
 | `max_age_minutes` | How old a delivery's `timestamp` may be (120) |
 | `automation_max_transition_age_minutes`, `automation_max_starts_per_issue_per_day` | The [Automation fallback](#fallback-an-automation-rule) only: how recent the issue's trigger transition must be (10), and how many jobs one issue may start a day (3) |
+| `context_comments` | How many of the issue's newest comments the agent reads (30; 0 for none) |
+| `context_max_bytes` | The most [`jira-<key>.md`](#what-the-agent-reads) may hold (1,000,000 bytes, and at most half of `HANGAR_JOB_MAX_CONTEXT_BYTES`). What doesn't fit is cut, and the file names it |
 
 A stage's status can't be the trigger status: hangar would move the issue back into the trigger and start the job again. `hangar doctor` checks the configuration, that the credentials are stored, that the token works (`GET /myself`) and that every mapped repo is allowlisted, and shows the trigger (`jira trigger`).
 
@@ -95,6 +97,24 @@ hangar cred add jira-automation --rotate    # a new random token, shown once, an
 ```
 
 The old token stops working at once. In the rule's **Send web request** action, set the `X-Hangar-Token` header to the new value (still Hidden), publish, and move a test issue. `hangar doctor` warns when the token is more than 90 days old, and while `automation_token_credential` is set but issue events don't arrive through the signed webhook (no `webhook_secret_credential`, or no signed issue event in 30 days). `automation_max_transition_age_minutes` and `automation_max_starts_per_issue_per_day` go in `HANGAR_JIRA` beside `max_age_minutes`.
+
+### What the agent reads
+
+| In `jira-<key>.md`, in this order | What hangar reads |
+| --- | --- |
+| Summary, description and details | As before. The description is fenced: it is always untrusted |
+| Comments | The newest `context_comments`, oldest first. A comment is marked trusted only when its author, and whoever last edited it, is linked to a hangar person. hangar's own comments, and those restricted to a group or role, are left out |
+| Parent and epic | Summary and description. On Data Center, the epic comes from the Epic Link field |
+| Subtasks and linked issues | One level deep: key, type, status and summary |
+| Attachments | Each one by name. Text attachments up to 1 MB are shown, read from the Jira site itself |
+| Confluence pages | The URLs of remote links to Confluence, listed but not read |
+| Not included | What couldn't be read, and what was cut to fit `context_max_bytes` |
+
+| Rule | Why |
+| --- | --- |
+| Every piece of Jira text is fenced, with a fence longer than any it holds | Jira text can't write a heading that looks like hangar's |
+| The file stays untrusted as a whole | The description, which anyone with Edit Issues can rewrite, is in it |
+| A failed or slow read (15 s for them all) leaves a note | The job starts with what came back |
 
 ### Talking to the job from the issue
 

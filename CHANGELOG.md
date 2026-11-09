@@ -42,6 +42,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **The Jira door gives the agent the rest of the ticket** (KAN-292, [docs/intake/jira.md](docs/intake/jira.md#what-the-agent-reads)).
+  `jira-<key>.md` adds, after the description, the newest comments (`context_comments`, 30), each marked trusted
+  only when its author and last editor are linked to a hangar person; the parent or epic; subtasks and linked issues,
+  one level deep; text attachments up to 1 MB; and the Confluence pages the issue links, by URL. Every piece of Jira
+  text is fenced. The file stays within `context_max_bytes` (1,000,000) and says what it cut. Cloud (REST v3) and
+  Data Center (REST v2, the Epic Link field) both work; a failed read leaves a note and the job still starts.
 - **`deploy/gke/up.sh` refuses a `-dirty` image** (KAN-172), as Tower's deploy does. Uncommitted changes to
   `src`, `envs`, `envd`, `pyproject.toml` or the `Dockerfile` stop it before any cloud call, listing the files. Pass
   `--allow-dirty` or set `ALLOW_DIRTY=1` (which `hangar up --gke` passes through) to deploy them; a `-dirty` image

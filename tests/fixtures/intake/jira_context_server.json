@@ -1,0 +1,241 @@
+{
+ "_note": "Jira Data Center REST v2 shapes (docs.atlassian.com/software/jira/docs/api/REST/9.12.0): GET field; GET issue/{key}?fields=parent,subtasks,issuelinks,attachment,<Epic Link>; GET issue/{key}/comment?orderBy=-created; GET issue/{key}/remotelink; attachments at /secure/attachment/{id}/{filename}. Bodies are wiki markup; users have a key.",
+ "fields": [
+  {
+   "id": "summary",
+   "name": "Summary",
+   "custom": false,
+   "schema": {
+    "type": "string",
+    "system": "summary"
+   }
+  },
+  {
+   "id": "customfield_10100",
+   "name": "Epic Name",
+   "custom": true,
+   "schema": {
+    "type": "string",
+    "custom": "com.pyxis.greenhopper.jira:gh-epic-label",
+    "customId": 10100
+   }
+  },
+  {
+   "id": "customfield_10101",
+   "name": "Epic Link",
+   "custom": true,
+   "schema": {
+    "type": "any",
+    "custom": "com.pyxis.greenhopper.jira:gh-epic-link",
+    "customId": 10101
+   }
+  }
+ ],
+ "related": {
+  "id": "10012",
+  "key": "ABC-12",
+  "fields": {
+   "customfield_10101": "ABC-1",
+   "subtasks": [
+    {
+     "id": "10013",
+     "key": "ABC-13",
+     "self": "https://jira.acme.com/rest/api/2/issue/ABC-13",
+     "fields": {
+      "summary": "Add a retry counter metric",
+      "status": {
+       "name": "Open",
+       "statusCategory": {
+        "key": "new"
+       }
+      },
+      "priority": {
+       "name": "Medium"
+      },
+      "issuetype": {
+       "name": "Sub-task",
+       "subtask": true
+      }
+     }
+    }
+   ],
+   "issuelinks": [
+    {
+     "id": "10200",
+     "type": {
+      "id": "10000",
+      "name": "Blocks",
+      "inward": "is blocked by",
+      "outward": "blocks"
+     },
+     "inwardIssue": {
+      "id": "10009",
+      "key": "ABC-9",
+      "self": "https://jira.acme.com/rest/api/2/issue/ABC-9",
+      "fields": {
+       "summary": "Upgrade the HTTP client",
+       "status": {
+        "name": "Closed",
+        "statusCategory": {
+         "key": "new"
+        }
+       },
+       "priority": {
+        "name": "Medium"
+       },
+       "issuetype": {
+        "name": "Task",
+        "subtask": false
+       }
+      }
+     }
+    }
+   ],
+   "attachment": [
+    {
+     "self": "https://jira.acme.com/rest/api/2/attachment/10100",
+     "id": "10100",
+     "filename": "retry plan.md",
+     "author": {
+      "self": "https://jira.acme.com/rest/api/2/user?username=dana",
+      "name": "dana",
+      "key": "JIRAUSER10100",
+      "displayName": "Dana Lee",
+      "active": true
+     },
+     "created": "2025-10-14T09:00:00.000+0000",
+     "size": 35,
+     "mimeType": "application/octet-stream",
+     "content": "https://jira.acme.com/secure/attachment/10100/retry+plan.md"
+    },
+    {
+     "self": "https://jira.acme.com/rest/api/2/attachment/10101",
+     "id": "10101",
+     "filename": "dump.bin",
+     "author": {
+      "self": "https://jira.acme.com/rest/api/2/user?username=dana",
+      "name": "dana",
+      "key": "JIRAUSER10100",
+      "displayName": "Dana Lee",
+      "active": true
+     },
+     "created": "2025-10-14T09:00:00.000+0000",
+     "size": 8,
+     "mimeType": "text/plain",
+     "content": "https://jira.acme.com/secure/attachment/10101/dump.bin"
+    }
+   ]
+  }
+ },
+ "comments": {
+  "startAt": 0,
+  "maxResults": 50,
+  "total": 3,
+  "comments": [
+   {
+    "id": "10302",
+    "author": {
+     "self": "https://jira.acme.com/rest/api/2/user?username=omar",
+     "name": "omar",
+     "key": "JIRAUSER10200",
+     "displayName": "Omar",
+     "active": true
+    },
+    "updateAuthor": {
+     "self": "https://jira.acme.com/rest/api/2/user?username=omar",
+     "name": "omar",
+     "key": "JIRAUSER10200",
+     "displayName": "Omar",
+     "active": true
+    },
+    "body": "Can we also log the upload id? {{upload_id}}",
+    "created": "2025-10-14T10:20:00.000+0000",
+    "updated": "2025-10-14T10:20:00.000+0000"
+   },
+   {
+    "id": "10301",
+    "author": {
+     "self": "https://jira.acme.com/rest/api/2/user?username=dana",
+     "name": "dana",
+     "key": "JIRAUSER10100",
+     "displayName": "Dana Lee",
+     "active": true
+    },
+    "updateAuthor": {
+     "self": "https://jira.acme.com/rest/api/2/user?username=omar",
+     "name": "omar",
+     "key": "JIRAUSER10200",
+     "displayName": "Omar",
+     "active": true
+    },
+    "body": "Retry 3 times. h2. Edited later by Omar",
+    "created": "2025-10-14T10:10:00.000+0000",
+    "updated": "2025-10-14T10:40:00.000+0000"
+   },
+   {
+    "id": "10300",
+    "author": {
+     "self": "https://jira.acme.com/rest/api/2/user?username=dana",
+     "name": "dana",
+     "key": "JIRAUSER10100",
+     "displayName": "Dana Lee",
+     "active": true
+    },
+    "updateAuthor": {
+     "self": "https://jira.acme.com/rest/api/2/user?username=dana",
+     "name": "dana",
+     "key": "JIRAUSER10100",
+     "displayName": "Dana Lee",
+     "active": true
+    },
+    "body": "Use exponential backoff, capped at 8 s.",
+    "created": "2025-10-14T10:00:00.000+0000",
+    "updated": "2025-10-14T10:00:00.000+0000"
+   }
+  ]
+ },
+ "remotelinks": [
+  {
+   "id": 10000,
+   "self": "https://jira.acme.com/rest/api/2/issue/ABC-12/remotelink/10000",
+   "globalId": "appId=1b2c&pageId=4242",
+   "application": {
+    "type": "com.atlassian.confluence",
+    "name": "Confluence"
+   },
+   "relationship": "Wiki Page",
+   "object": {
+    "url": "https://wiki.acme.com/pages/viewpage.action?pageId=4242",
+    "title": "Retry policy"
+   }
+  }
+ ],
+ "issues": {
+  "ABC-1": {
+   "id": "10001",
+   "key": "ABC-1",
+   "self": "https://jira.acme.com/rest/api/2/issue/ABC-1",
+   "fields": {
+    "summary": "Upload reliability",
+    "status": {
+     "name": "In Progress",
+     "statusCategory": {
+      "key": "new"
+     }
+    },
+    "priority": {
+     "name": "Medium"
+    },
+    "issuetype": {
+     "name": "Epic",
+     "subtask": false
+    },
+    "description": "h1. Goal\nUploads must survive a flaky network."
+   }
+  }
+ },
+ "attachments": {
+  "10100": "# Retry plan\n\n1. Retry on timeout.\n",
+  "10101": "\u0000\u0001binary"
+ }
+}
