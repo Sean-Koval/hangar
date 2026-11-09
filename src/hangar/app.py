@@ -93,6 +93,7 @@ class Hangar:
         from hangar.govrelease import Releases  # --- KAN-33: job release and landing ask Tower (#172)
 
         self.releases = Releases(self.jobs, self.governance_events)
+        self._passports: Any = None  # --- KAN-33 (#174): built on first use (job_passports)
         from hangar.backup import Backups, backup_store  # --- overnight/sweep: database backups
 
         self.backups = Backups(self.settings, self.vault, backup_store(self.settings, self.sessions.blobs))
@@ -110,6 +111,25 @@ class Hangar:
         from hangar.opstatus import Ops  # --- clouddoctor: SLO samples, record pruning, the nightly pass
 
         self.ops = Ops(self)
+
+    def passports(self) -> Any:
+        """--- KAN-33 (#174): the job API's Tower passport check, or None when HANGAR_JOB_PASSPORTS is off. Refuses
+        to build (ValueError) without an issuer: no passport is accepted from a Tower hangar can't name."""
+        if self.settings.job_passports != "on":
+            return None
+        if self._passports is None:
+            from hangar.auth import PassportAuth, parse_agents
+            from hangar.governance import PassportVerifier
+
+            issuer = (self.settings.job_passport_issuer or self.settings.governance_url or "").rstrip("/")
+            if not issuer.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+                raise ValueError("HANGAR_JOB_PASSPORTS=on needs Tower's https URL (HANGAR_JOB_PASSPORT_ISSUER or "
+                                 "HANGAR_GOVERNANCE_URL)")
+            audience = (self.settings.job_passport_audience or self.settings.public_url).rstrip("/")
+            self._passports = PassportAuth(self.store, PassportVerifier(issuer, audience),
+                                           agents=parse_agents(self.settings.job_passport_agents),
+                                           audit=self.fleet.audit)
+        return self._passports
 
 
 # ---------------------------------------------------------------------------- the GitHub door (plugin host)
@@ -567,9 +587,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         identity.current.set(p)
         return f"ui:{p.name}"
 
+    async def job_principal(request: Request) -> auth_mod.Principal | None:
+        """--- KAN-33 (#174): the caller's hangar token, or (HANGAR_JOB_PASSPORTS=on) the Tower passport it sends.
+        A passport hangar refuses answers 401 with why; it never falls through to anything else."""
+        raw = bearer_from_headers(request.headers)
+        p = h.auth.principal(raw)
+        if p is None and auth_mod.looks_like_passport(raw):
+            try:
+                passports = h.passports()
+            except ValueError as e:
+                log.error("job passports: %s", e)
+                passports = None
+            if passports is not None:
+                try:
+                    p = await passports.principal(raw)
+                except auth_mod.PassportRejected as e:
+                    raise HTTPException(401, str(e),
+                                        headers={"WWW-Authenticate": 'Bearer error="invalid_token"'}) from None
+        return p
+
     async def job_caller(request: Request) -> Caller:  # perf: async
-        """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted."""
-        p = h.auth.principal(bearer_from_headers(request.headers))
+        """Admin sees every job; a `jobs`-scoped token is restricted and sees only jobs it submitted. --- KAN-33: so
+        does a Tower passport, as the person it names."""
+        p = await job_principal(request)
         if p is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
         if p.admin:
@@ -1042,9 +1082,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- approvals (#121): an admin, or a repo policy approver with their own login token, never on their own job;
     # the same rule and the same refusal text as MCP approve_job / reject_job (approvals.py)
     async def approver(request: Request) -> approvals.Approver:
-        p = h.auth.principal(bearer_from_headers(request.headers))
+        p = await job_principal(request)
         if p is None:
             raise HTTPException(401, "unauthorized", headers={"WWW-Authenticate": "Bearer"})
+        if auth_mod.is_passport(p):  # --- KAN-33: a passport always names an agent, and an agent signs for nobody
+            raise HTTPException(403, "a Tower passport can't approve or reject a job: it carries an agent, and "
+                                     "approving is a person's own act; use your hangar login token, or sign in Tower")
         identity.current.set(p)
         return approvals.from_principal(p, via="rest")
 

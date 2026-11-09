@@ -515,6 +515,13 @@ class Settings(BaseSettings):
     # checked against Tower's JWKS before use (phase 2: no stored key).
     governance_auth: Literal["key", "passport"] = "key"
     governance_token_url: str | None = None
+    # --- KAN-33 (#174): Tower passports on hangar's job API (/api/jobs*), as the person (`sub: person:<email>`,
+    # linked by email) or a listed agent (`agent=person,...`) in them. off: only hangar's own tokens. The issuer
+    # defaults to HANGAR_GOVERNANCE_URL and the audience to HANGAR_PUBLIC_URL (what Tower mints them for).
+    job_passports: Literal["off", "on"] = "off"
+    job_passport_issuer: str | None = None
+    job_passport_audience: str | None = None
+    job_passport_agents: str = ""
     # --- overnight/cache: prompt caching (cache.py, docs/sessions.md#prompt-caching). The TTL turns ask for when
     # neither the session nor its environment says: auto (1h when the session waits on people for more than
     # 5 min, else 5m), 5m, 1h or off. And how long best-of-N attempts and forks started together hold back for the
