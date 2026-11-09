@@ -42,6 +42,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **`deploy/gke/up.sh` refuses a `-dirty` image** (KAN-172), as Tower's deploy does. Uncommitted changes to
+  `src`, `envs`, `envd`, `pyproject.toml` or the `Dockerfile` stop it before any cloud call, listing the files. Pass
+  `--allow-dirty` or set `ALLOW_DIRTY=1` (which `hangar up --gke` passes through) to deploy them; a `-dirty` image
+  is then rebuilt every time instead of reusing an older build under the same tag.
 - **How far production is behind main** (KAN-216). `hangar doctor` (`production lag`) and the Fleet page show the
   deployed commit, its tag, and the commits and days it is behind `main`, from GitHub with hangar's own token ("unknown"
   without one). A new `deploy-lag` alert (a ticket) fires past `HANGAR_DEPLOY_LAG_ALERT_WORKING_DAYS` (2) while the

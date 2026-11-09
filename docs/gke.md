@@ -29,6 +29,8 @@ The quick way is one script. It reads the Terraform outputs, builds the control-
 bash deploy/gke/up.sh            # KATA=1 also installs Kata on the microVM pool (step 4)
 ```
 
+`up.sh` refuses a tree with uncommitted changes in what goes into the image (`src`, `envs`, `envd`, `pyproject.toml`, `Dockerfile`). Such an image is tagged `-dirty`, and no commit describes it. Commit or stash first, or pass `--allow-dirty` (or `ALLOW_DIRTY=1`, which also reaches `up.sh` from `hangar up --gke`). A `-dirty` image is rebuilt on every run.
+
 Without `DOMAIN=...` it serves on `https://<static-ip>.sslip.io`, a public wildcard DNS name, so the certificate needs no DNS setup. The admin token is saved to `~/.hangar/gke-admin-token`. On a first install `up.sh` also sets `HANGAR_SESSION_STORE` to the bucket terraform made (`session_bucket`), so checkpoints outlive the control plane's disk. On a running hangar with checkpoints on its disk it leaves the setting alone: switching would strand them. On every install it sets `HANGAR_OUTBOX_URL` to the run bucket (`run_bucket`, [below](#run-capture-bucket)), so finished runs reach flightdeck. The manual steps below do the same thing by hand.
 
 

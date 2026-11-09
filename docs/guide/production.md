@@ -15,7 +15,8 @@ hangar connect claude-code                # and any other MCP client
 
 `hangar up --gke` never applies a plan that destroys or replaces anything unless you pass `--allow-destroy`. Without a
 terminal it applies nothing unless you pass `--yes`. The steps it runs are the ones in [Running on GKE](../gke.md),
-which you can also run by hand.
+which you can also run by hand. `up.sh` refuses uncommitted changes to the image's files unless you set
+`ALLOW_DIRTY=1` ([why](../gke.md#2-control-plane)).
 
 On a first install, `up.sh` points `HANGAR_SESSION_STORE` at the checkpoint bucket terraform made. If the certificate
 isn't Active yet, `hangar up --gke` prints the `hangar login` command to run once it is.

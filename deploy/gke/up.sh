@@ -5,23 +5,46 @@
 #   KATA=1 bash deploy/gke/up.sh     # also install Kata on the nested-virt pools (enable_kata_pool, enable_heavy_pool)
 #   DOMAIN=hangar.me.dev bash ...    # use your own DNS name (A record -> terraform output static_ip)
 #   PREBUILD=0 bash ...              # skip building environment images and harness packs before rollout
+#   bash deploy/gke/up.sh --allow-dirty   # deploy uncommitted changes as a -dirty image (or ALLOW_DIRTY=1)
 #
 # Without DOMAIN it uses <static-ip>.sslip.io, a public wildcard DNS name that resolves to the IP, so the
 # Google-managed certificate can provision with no DNS setup. Certificates take ~15-60 min the first time.
 # The admin token is generated once and saved to ~/.hangar/gke-admin-token (mode 0600); it is never printed.
 set -euo pipefail
+ALLOW_DIRTY=${ALLOW_DIRTY:-0}
+for arg in "$@"; do
+  case $arg in
+    --allow-dirty) ALLOW_DIRTY=1 ;;
+    *) echo "up.sh: unknown argument $arg (want --allow-dirty)" >&2; exit 2 ;;
+  esac
+done
 cd "$(dirname "$0")/../.."
+# What goes into the image. Uncommitted changes there make a -dirty tag: an image no commit describes, which no one
+# can rebuild or review. Like Tower's deploy, refuse it unless asked (KAN-172).
+BUILT=(src envs envd pyproject.toml Dockerfile)
+DIRTY=
+if ! git diff --quiet HEAD -- "${BUILT[@]}"; then
+  DIRTY=-dirty
+  if [ "$ALLOW_DIRTY" != 1 ]; then
+    echo "up.sh: refusing to deploy uncommitted changes as a -dirty image. Changed since $(git rev-parse --short HEAD):" >&2
+    git diff --name-only HEAD -- "${BUILT[@]}" | sed 's/^/  /' >&2
+    echo "Commit or stash them, or pass --allow-dirty (ALLOW_DIRTY=1, also for hangar up --gke) to deploy them anyway." >&2
+    exit 1
+  fi
+  echo "== deploying uncommitted changes as a -dirty image (--allow-dirty)" >&2
+fi
 TF=deploy/terraform/gke
 tfo() { terraform -chdir=$TF output -raw "$1"; }
 REG=$(tfo registry); SA=$(tfo service_account); IP=$(tfo static_ip)
 BUCKET=$(tfo session_bucket 2>/dev/null || true)  # null (enable_session_bucket=false) fails -raw: no bucket
 PROJECT=$(cut -d/ -f2 <<<"$REG"); REGION=${REG%%-docker.pkg.dev*}
 DOMAIN=${DOMAIN:-$IP.sslip.io}
-IMAGE="$REG/control-plane:$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- src envs envd pyproject.toml Dockerfile || echo -dirty)"
+IMAGE="$REG/control-plane:$(git rev-parse --short HEAD)$DIRTY"
 
 echo "== cluster credentials"; eval "$(tfo get_credentials)"
 
-if gcloud artifacts docker images describe "$IMAGE" --project "$PROJECT" >/dev/null 2>&1; then
+# A -dirty tag names a different tree each time, so it is always rebuilt rather than reused.
+if [ -z "$DIRTY" ] && gcloud artifacts docker images describe "$IMAGE" --project "$PROJECT" >/dev/null 2>&1; then
   echo "== image $IMAGE already built"
 else
   echo "== building $IMAGE with Cloud Build"
