@@ -509,6 +509,12 @@ class Settings(BaseSettings):
     governance_hook: Literal["off", "required"] = "off"
     governance_hook_credential: str | None = None
     governance_hook_wait_seconds: int = Field(300, ge=0, le=540)
+    # --- KAN-33 (#174): what the hook sends Tower. key: the shared agent key in governance_hook_credential. passport:
+    # a per-sandbox passport, from the sandbox's own token (`sub: hangar:env:<env>`, its person and their linked
+    # email) exchanged by the control plane at Tower's token endpoint, naming `governance_hook_agent`; written as a
+    # hangar-owned file of the run and renewed while it runs (docs/governance-hook.md#the-key)
+    governance_hook_auth: Literal["key", "passport"] = "key"
+    governance_hook_agent: str = "hangar"
     # --- KAN-33 (#174, spec 0015 §9): how the control plane proves itself to Tower. key: the service key in
     # `governance_credential` (phase 1). passport: a token hangar mints itself (`sub: hangar:control-plane`, from its
     # OIDC issuer) exchanged at Tower's token endpoint (default `<governance_url>/oauth/token`) for a passport,

@@ -270,7 +270,7 @@ class Issuer:
 
     # ------------------------------------------------------------------ tokens
     def mint(self, sb: Sandbox, audience: str, lifetime_minutes: int, now_: float | None = None,
-             env: str | None = None) -> tuple[str, float]:
+             env: str | None = None, email: str | None = None) -> tuple[str, float]:
         """An RS256 ID token for a sandbox and one audience, speaking for `env` (subject_env; default the
         sandbox's environment). Returns (token, expiry)."""
         from cryptography.hazmat.primitives import hashes
@@ -288,6 +288,8 @@ class Issuer:
                   "sandbox_environment": sb.environment,
                   "repo": repo_key(sb.repo) or "", "person": sb.person or "", "sandbox": sb.id,
                   "session": sb.labels.get("hangar.session", ""), "job": sb.labels.get("hangar.job", "")}
+        if email:  # --- KAN-33 (#174): for Tower only, its requester_claim: the email linked to the sandbox's person
+            claims["email"] = email
         head = _b64url(json.dumps({"alg": "RS256", "typ": "JWT", "kid": k["kid"]}, separators=(",", ":")).encode())
         body = _b64url(json.dumps(claims, separators=(",", ":")).encode())
         key = load_pem_private_key(k["pem"].encode(), password=None)
@@ -403,6 +405,9 @@ class Issuer:
             try:
                 self.scheduled()  # --- egress2
                 await self.refresh()
+                from hangar import govhook  # --- KAN-33: renew the Tower hook's per-sandbox passports
+
+                await govhook.refresh(self.fleet)
                 metrics.loop_tick("cloud-tokens")
             except Exception:  # noqa: BLE001
                 log.exception("cloud token refresh failed")

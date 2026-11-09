@@ -174,7 +174,9 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
     hook_rec = None
     if hooked and hard is not None:  # --- KAN-78: the hook in hangar's settings, its key a file of the run
         try:
-            hook_rec = govhook.apply(svc.fleet, hard, run_id, svc.settings.governance_hook_wait_seconds)
+            passport = (await govhook.sandbox_passport(svc.fleet, sb)  # --- KAN-33: the sandbox's own, not a shared key
+                        if svc.settings.governance_hook_auth == "passport" else None)
+            hook_rec = govhook.apply(svc.fleet, hard, run_id, svc.settings.governance_hook_wait_seconds, passport)
         except ValueError as e:
             raise SteerError(f"governance.hook is required here, and hangar can't install its Tower hook: {e}") from e
         await govhook.before(svc.fleet, prov, sb, s, turn)
@@ -218,6 +220,8 @@ async def prepare(svc: SessionService, s: Session, turn: SessionTurn, sb: Sandbo
             raise SteerError(f"governance.hook is required here, and hangar's Tower hook isn't in place: {why} "
                              "(docs/governance-hook.md#integrity)")
         turn.governance_hook = {**hook_rec, "policy": asked}
+        if hook_rec.get("auth") == "passport":  # --- KAN-33: renewed while the run lasts
+            govhook.follow(svc.fleet, sb, run_id, float(hook_rec["key_expires_at"]))
         if asked != pol:
             turn.warnings.append(f"approvals={asked}: Tower decides each call through hangar's Tower hook, and the "
                                  "driver keeps hangar's deny-risky rules as a guard rail, so no call is asked about "

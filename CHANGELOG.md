@@ -87,6 +87,11 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   is active and Tower can't answer, an admin's approval of a job release or landing in `enforce` is decided by
   hangar's rules; a Tower that answers still decides. Every step and decision is audited and kept for replay, and
   `hangar doctor` warns while it is on.
+- **A per-sandbox passport for the Tower hook** (KAN-33, #174,
+  [docs/governance-hook.md](docs/governance-hook.md#the-key)). `HANGAR_GOVERNANCE_HOOK_AUTH=passport` (the default
+  stays `key`) writes the sandbox's own passport as the run's hangar-owned key file instead of the shared agent key:
+  its token (`sub: hangar:env:<env>`, its person and their linked email) exchanged at Tower's token endpoint, checked,
+  and renewed by the refresh loop while the run lasts. The agent still can read it (the hook runs as the agent).
 - **Tower passports on the job API** (KAN-33, #174, [docs/tower-passports.md](docs/tower-passports.md)).
   `HANGAR_JOB_PASSPORTS=on` (off by default) accepts a Tower passport as the bearer on `/api/jobs*`, as the person
   its `person:<email>` names (linked by email) or an agent listed in `HANGAR_JOB_PASSPORT_AGENTS`. The signature,
