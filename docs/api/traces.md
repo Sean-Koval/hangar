@@ -126,7 +126,7 @@ exported in that order. Order across sessions (best-of-N attempts) is by time on
 | `taint` | `turn` | `hangar.taint.ref`, `hangar.seq`: the session first read untrusted content here ([security/taint.md](../security/taint.md)) |
 | `git.commit` | `job` | `vcs.ref.head.revision` (the commit), `hangar.git.subject`. Each commit of the delivered branch, stamped when hangar delivered it (after its check): when the *agent* committed is its shell call with `hangar.shell.ops` `git.commit` |
 | `git.push` | `job` | `vcs.ref.head.name` (the branch), `vcs.ref.head.revision`, `hangar.git.pushed` |
-| `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft` |
+| `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft`, `hangar.pr.title`, `hangar.pr.head_ref`, `hangar.pr.tracker_line` |
 | `ci.check` | `job` | `hangar.ci.name`, `hangar.ci.conclusion`, `vcs.ref.head.revision` |
 | `pr.merge` | `job` | `hangar.pr.number`, `hangar.pr.merged_by` |
 | `job.state` | `job` | `hangar.job.state`, `hangar.text`: each entry of the job's timeline |
@@ -240,10 +240,10 @@ answered: a person, `policy`, `timeout` or `harness`), `hangar.approval.message`
 `gen_ai.operation.name=invoke_workflow`, `gen_ai.workflow.name` (`hangar.session` or `hangar.job`),
 `hangar.environment`, `hangar.harness`, `gen_ai.request.model`, totals over all turns (`gen_ai.usage.*`,
 `hangar.cost_usd`), and for jobs `hangar.job.state`, `hangar.job.reason`, `hangar.job.strategy`, `hangar.repo`,
-`hangar.diff.stat` (the delivered diff's stat), `hangar.diff.files` and `hangar.diff.deleted` (its files,
+`hangar.diff.stat` (its stat), `hangar.diff.files` and `hangar.diff.deleted` (its files,
 repo-relative, at most 1,000: what the change touched however it was made, shell commands included),
-`hangar.pr.url`. Both carry `hangar.taint`: whether any of its turns read untrusted content (a job whose own input is
-untrusted is tainted from the start).
+`hangar.pr.url`, `hangar.ticket.key`, `hangar.jira.ready_at`. Both carry `hangar.taint`: whether any of its turns
+read untrusted content (a job whose own input is untrusted is tainted from the start).
 
 A job labelled in the Friday harness review ([runbook](../runbooks/harness-review.md), #169, added within
 `hangar.trace/v1`) also carries `hangar.failure.category` (`env`, `tooling`, `instructions`, `skill`, `model`,

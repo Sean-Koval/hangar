@@ -25,7 +25,7 @@ import logging
 import math
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import httpx
@@ -508,6 +508,18 @@ def _jira_time(value: Any) -> float | None:
     return t.timestamp() if t.tzinfo is not None else None
 
 
+READY_LABEL = "jira.ready_at"  # --- KAN-320 (traces.JIRA_READY_AT reads it)
+
+
+def ready_label(ready_at: float | None) -> dict[str, str]:
+    """--- KAN-320: the `jira.ready_at` job label (UTC, ISO 8601): when the issue moved into the trigger status, by
+    the history entry the door read (Automation) or the webhook event's own time. Traces carry it as
+    `hangar.jira.ready_at`, so flightdeck can measure Ready for Agent to merged. Empty when unknown."""
+    if ready_at is None or not math.isfinite(ready_at) or ready_at <= 0:
+        return {}
+    return {READY_LABEL: datetime.fromtimestamp(ready_at, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
 def _who(user: Any, account: str | None) -> str:
     name = str((user or {}).get("displayName") or "") if isinstance(user, dict) else ""
     return " ".join(name.split())[:80] or account or "someone"
@@ -847,7 +859,8 @@ class JiraFrontDoor:
             refused = self._automation_refusal(cfg, key, change)
             if refused is not None:
                 return refused
-            res = await self.start(cfg, issue, (change or {}).get("author"), delivery)
+            res = await self.start(cfg, issue, (change or {}).get("author"), delivery,
+                                   ready_at=_jira_time((change or {}).get("created")))  # --- KAN-320
             if res.get("ok") and res.get("job"):
                 self._count_start(key)
             return res
@@ -858,7 +871,8 @@ class JiraFrontDoor:
         self.jobs.store.kv_set(SIGNED_ISSUE_EVENT_KEY, json.dumps(time.time()))
         if not self._triggered(cfg, event, issue, payload.get("changelog")):
             return {"ignored": "not the trigger status or label"}
-        return await self.start(cfg, issue, payload.get("user"), delivery)
+        return await self.start(cfg, issue, payload.get("user"), delivery,
+                                ready_at=_timestamp(payload.get("timestamp")))  # --- KAN-320: the move is this event
 
     # ------------------------------------------------------------------ the Automation fallback (#128)
     def _automation_refusal(self, cfg: JiraConfig, key: str, change: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -935,7 +949,7 @@ class JiraFrontDoor:
         return p.repo, p
 
     async def start(self, cfg: JiraConfig, issue: dict[str, Any], actor: Any, delivery: str = "",
-                    extra: str = "") -> dict[str, Any]:
+                    extra: str = "", ready_at: float | None = None) -> dict[str, Any]:
         svc = self.jobs
         key = str(issue.get("key") or "")
         if not _KEY.match(key):
@@ -976,6 +990,7 @@ class JiraFrontDoor:
                         environment=proj.environment, context=context,
                         idempotency_key=f"jira-delivery:{delivery}" if delivery else None,
                         labels={"jira.issue": key, "jira.project": project, intake.TRACKER: ref,
+                                **ready_label(ready_at),  # --- KAN-320: cycle time from Ready for Agent
                                 **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: an env setup
                                     str(x) for x in fields.get("labels") or []])})
         intake.apply_ticket(svc, req, description, key)  # --- #156: acceptance criteria and a suggested check

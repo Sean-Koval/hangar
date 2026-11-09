@@ -706,7 +706,11 @@ class Outbox:
         out: list[tuple[str, float | None, dict[str, Any], str]] = []
         if r.pr_url:
             opened = next((e.ts for e in job.events if r.pr_url in (e.message or "")), None)
-            out.append(("pr.open", opened, {"draft": land.draft}, "pr.open"))
+            from hangar import traces  # --- KAN-320: title, head ref, tracker line, as the job's trace has them
+
+            facts = {k.removeprefix("hangar.pr."): v for k, v in traces.pr_facts(self.jobs, job).items()}
+            facts["ticket"] = traces.ticket_key(job)
+            out.append(("pr.open", opened, {"draft": land.draft, **facts}, "pr.open"))
         if land.ready_at:  # --- #168: review wait starts here
             out.append(("pr.ready", land.ready_at, {}, "pr.ready"))
         if land.approved_at:

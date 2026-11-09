@@ -635,6 +635,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         "gen_ai.request.model": job.model, "hangar.repo": job.repo, "hangar.diff.stat": job.result.diffstat,
         "hangar.diff.files": list(job.result.files) or None, "hangar.diff.deleted": list(job.result.deleted) or None,
         "hangar.pr.url": job.result.pr_url, "hangar.taint": bool(job.taint and job.taint.get("tainted")),  # #129
+        "hangar.ticket.key": ticket_key(job), "hangar.jira.ready_at": job.labels.get(JIRA_READY_AT),  # KAN-320
         **harness_review.trace_attrs(job), **_usage_attrs(usage)},  # --- #169: hangar.failure.*
         error=(job.reason or "") if job.state.value == "failed" else None)
     pid = root["id"] if root else None
@@ -650,7 +651,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
             if t.started_at:
                 _turn_span(x, pid, s, n, t, _events_of(grouped, n, t),
                            {**extra, **turn_attrs(job_turns.get(t.run_id) if t.run_id else None)}, root=where)
-    _job_events(x, root, job)
+    _job_events(x, root, job, pr_facts(jobs, job))
     if root is not None:  # each check's test.run / test.case events on the job (testresults.py)
         testresults.add_to_export(x, root, jobs.store, job)
     main = next((z for z in sessions if z.id == job.session_id), None)
@@ -669,7 +670,32 @@ async def export_job(jobs: JobService, job: Job) -> dict[str, Any]:
     return await asyncio.to_thread(job_export, jobs, job.model_copy(deep=True), sessions, jobs.usage(job))
 
 
-def _job_events(x: Export, root: dict[str, Any] | None, job: Job) -> None:
+# --- KAN-320: the ticket and PR facts the work-system specs judge (flightdeck), without reading GitHub or Jira
+JIRA_READY_AT = "jira.ready_at"  # the job label: when the Jira door saw the issue move into its trigger status
+
+
+def ticket_key(job: Job) -> str | None:
+    """The tracker key the job works on (`KAN-320`), as its PR body's `Jira:` line names it; None without one."""
+    from hangar import intake
+
+    return intake.ticket_key(job.labels, job.source_ref, job.ticket)
+
+
+def pr_facts(jobs: Any, job: Job) -> dict[str, Any]:
+    """The `pr.open` facts hangar wrote, without asking GitHub: the title it gives the PR (the repo policy's
+    `title_template`, else the job's title), the head ref, and whether the body carries the tracker line."""
+    from hangar import changesets
+
+    policies = getattr(jobs, "policies", None)
+    try:
+        title = changesets.title_for(policies.get(job.repo) if policies is not None else None, job)
+    except Exception:  # noqa: BLE001 - a broken template never breaks an export
+        title = job.title
+    return {"hangar.pr.title": (title or "")[:TEXT] or None, "hangar.pr.head_ref": job.branch,
+            "hangar.pr.tracker_line": ticket_key(job) is not None}
+
+
+def _job_events(x: Export, root: dict[str, Any] | None, job: Job, pr: dict[str, Any] | None = None) -> None:
     r = job.result
     delivered = next((e.ts for e in reversed(job.events) if e.state == "delivering"), None) or job.updated_at
     verified = next((e.ts for e in reversed(job.events) if e.state == "verifying"), None)
@@ -691,7 +717,8 @@ def _job_events(x: Export, root: dict[str, Any] | None, job: Job) -> None:
                                               "vcs.ref.head.revision": r.head_sha, "hangar.git.pushed": r.pushed})
     if r.pr_url:
         x.event(root, "pr.open", delivered, {"hangar.kind": "pr.open", "hangar.pr.number": r.pr_number,
-                                             "hangar.pr.url": r.pr_url, "hangar.pr.draft": job.landing.draft})
+                                             "hangar.pr.url": r.pr_url, "hangar.pr.draft": job.landing.draft,
+                                             **(pr or {})})
     land = job.landing
     for name, conclusion in sorted(land.checks.items()):
         x.event(root, "ci.check", land.ci_green_at or job.updated_at, {
