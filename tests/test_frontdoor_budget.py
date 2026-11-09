@@ -246,3 +246,37 @@ async def test_a_spent_job_budget_starts_no_judge(jobs, world):  # noqa: F811
     turns = [t for s in jobs.sessions._sessions.values() if s.job_id == job.id for t in s.turns]
     assert not any((t.message or "").startswith("judge") for t in turns), events
     assert "no judge: " in events and "ranking: " in events
+
+
+async def test_monthly_caps_hold_new_work_beside_the_daily_ones(jobs, world):  # noqa: F811
+    """KAN-300: a repo's `max_usd_per_month` and HANGAR_PERSON_MAX_USD_PER_MONTH count since the first of the month
+    and hold new work like the daily caps; no daily cap needs to be set."""
+    update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=0.002), "admin")
+    first = await until(jobs, _submit(jobs, world).id, DONE)
+    assert first.state == JobState.SUCCEEDED
+    key = first.repo.removesuffix(".git")
+    assert jobbudget.repo_spent_this_month(jobs, key) == pytest.approx(0.003)
+    held = _submit(jobs, world)
+    assert held.state == JobState.AWAITING_APPROVAL
+    assert held.approval.reason.endswith("monthly cap is spent: $0.0030 of $0.0020 this month (UTC)")
+    jobs.cancel(held.id, "t")
+    update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=None), "admin")
+    jobs.settings.person_max_usd_per_month = 0.001
+    mine = jobs.submit(SubmitJob(instructions="go", repo=world["url"], environment="seamenv"),
+                       Caller("@ana:laptop", "tok-a", person="ana"))
+    mine = await until(jobs, mine.id, DONE)
+    again = jobs.submit(SubmitJob(instructions="again", repo=world["url"], environment="seamenv"),
+                        Caller("@ana:laptop", "tok-a", person="ana"))
+    assert again.state == JobState.AWAITING_APPROVAL and "ana's monthly cap is spent" in again.approval.reason
+    jobs.cancel(again.id, "t")
+
+
+def test_month_start_is_the_first_of_the_month_in_the_zone():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    t = datetime(2026, 11, 9, 0, 30, tzinfo=ny).timestamp()
+    assert jobbudget.month_start(t, "America/New_York") == datetime(2026, 11, 1, tzinfo=ny).timestamp()
+    assert jobbudget.month_start(datetime(2026, 1, 1, 3, tzinfo=ny).timestamp(), "UTC") == datetime(
+        2026, 1, 1, tzinfo=ZoneInfo("UTC")).timestamp()

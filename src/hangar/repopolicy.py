@@ -39,6 +39,7 @@ log = logging.getLogger("hangar.repopolicy")
 KV_PREFIX = "repo-policy:"
 _GITHUB_SHORT = re.compile(r"^[\w.-]+/[\w.-]+$")
 FIELDS = ("verify", "environment", "harness", "model", "budget", "job_budget", "max_usd_per_day",
+          "max_usd_per_month",  # --- KAN-300
           "credentials",  # --- teamcreds
           "egress", "build_secrets",  # --- egress
           "land", "approvers", "merge_method", "risk_paths",  # --- landing: the last four (landing.py)
@@ -145,6 +146,7 @@ class RepoPolicy(BaseModel):
     budget: Budget | None = None  # per agent turn, under the job's own (jobbudget.py)
     job_budget: JobBudget | None = None  # all of a job's turns together
     max_usd_per_day: float | None = Field(None, gt=0)  # the repo's agent turns, per UTC day
+    max_usd_per_month: float | None = Field(None, gt=0)  # --- KAN-300: and per calendar month (the same zone)
     # --- teamcreds: whose login its jobs' agents run with: the person the job runs for (`person`; a job for no one
     # fails), the team's (`team`), or the person's when they have one, else the team's (unset: person_then_team)
     credentials: Literal["person", "team", "person_then_team"] | None = None
@@ -432,6 +434,7 @@ class PolicyUpdate(BaseModel):
     budget: Budget | None = None
     job_budget: JobBudget | None = None
     max_usd_per_day: float | None = Field(None, gt=0)
+    max_usd_per_month: float | None = Field(None, gt=0)  # --- KAN-300
     credentials: Literal["person", "team", "person_then_team"] | None = None  # --- teamcreds
     egress: EgressSpec | None = None  # --- egress
     build_secrets: dict[str, str] | None = None  # --- egress
@@ -565,6 +568,10 @@ def view(svc: JobService, p: RepoPolicy) -> dict[str, Any]:
         from hangar.jobbudget import repo_spent_today
 
         d["spent_today_usd"] = round(repo_spent_today(svc, p.repo), 4)
+    if p.max_usd_per_month:  # --- KAN-300
+        from hangar.jobbudget import repo_spent_this_month
+
+        d["spent_this_month_usd"] = round(repo_spent_this_month(svc, p.repo), 4)
     return d
 
 

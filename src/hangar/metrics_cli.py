@@ -57,6 +57,9 @@ def weekly(week: str = typer.Option(None, "--week", help="An ISO week, e.g. 2026
     typer.echo(f"  revert rate      {_pct(rv['value'])} ({rv['reverted']}/{rv['cohort']} merged 14 days earlier)")
     c = m["cost_per_merged_pr"]
     typer.echo(f"  cost / merged PR {'$' + format(c['usd'], '.2f') if c['usd'] is not None else '-'}")
+    v = m.get("cost_per_verified_pr") or {}  # --- KAN-300
+    typer.echo(f"  cost / verified  {'$' + format(v['usd'], '.2f') if v.get('usd') is not None else '-'}"
+               + (f" ({v['verified']} of {v['merged']} merged PRs passed their check)" if v else ""))
     ra = m["reviewer_attention"]
     typer.echo(f"  review attention {_num(ra['events_per_merged_pr'])} review events per merged PR "
                f"({ra['events']} over {ra['measured']}/{ra['merged']} merged PRs read; p50 {_num(ra['p50'])}, "

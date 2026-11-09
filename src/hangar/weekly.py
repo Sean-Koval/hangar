@@ -208,6 +208,32 @@ def _cost(svc: JobService, job: Job) -> float:
     return total
 
 
+def verified(job: Job) -> bool:
+    """--- KAN-300: a merged PR whose job's check passed (docs/metrics.md#cost-per-verified-pr)."""
+    return bool(job.landing.merged_at) and job.result.verify_exit_code == 0
+
+
+def pr_costs(svc: JobService, merged: list[Job], terminal: list[Job]) -> dict[str, Any]:
+    """--- KAN-300: cost per verified PR. Every dollar spent on the window's work, the PRs that merged and the counted
+    jobs that ended abandoned, failed or without a PR, over the merged PRs that passed their check."""
+    work = {j.id: j for j in [*merged, *terminal]}
+    spent = sum(_cost(svc, j) for j in work.values())
+    ok = sum(1 for j in merged if verified(j))
+    return {"usd": round(spent / ok, 4) if ok else None, "total_usd": round(spent, 4), "verified": ok,
+            "merged": len(merged), "jobs": len(work)}
+
+
+def window(svc: JobService, lo: float, hi: float, repo: str | None = None) -> dict[str, Any]:
+    """--- KAN-300: cost per merged and per verified PR over [lo, hi), for `GET /api/usage` (compute's subset)."""
+    jobs = agent_jobs(svc.store, lo - 86400, repo)
+    denom = [j for j in jobs if _in(terminal_at(j), lo, hi) and counted(j)]
+    merged = [j for j in jobs if j.result.pr_number and _in(j.landing.merged_at, lo, hi)]
+    cost = sum(_cost(svc, j) for j in merged)
+    return {"cost_per_merged_pr": {"usd": round(cost / len(merged), 4) if merged else None,
+                                   "total_usd": round(cost, 4), "merged": len(merged)},
+            "cost_per_verified_pr": pr_costs(svc, merged, denom)}
+
+
 def all_merged(store: Any, repos: list[str], lo: float, hi: float) -> int | None:
     """Every merged PR on these repos in [lo, hi) (humans' too), from the nightly cache; None when a repo has none."""
     n = 0
@@ -297,6 +323,7 @@ def compute(svc: JobService, lo: float, hi: float, repo: str | None = None,
     cohort = [j for j in prs if _in(j.landing.merged_at, cohort_lo, cohort_hi)]
     reverted = [j for j in cohort if _reverted(j)]
     cost = sum(_cost(svc, j) for j in merged)
+    verified = pr_costs(svc, merged, denom)
     per_person = Counter(j.person for j in merged if j.person)
     delegators = sorted(p for p, n in per_person.items() if n >= DELEGATOR_MIN)
     active = {j.person for j in jobs if j.person and any(_in(t.started_at, lo, hi) or _in(t.finished_at, lo, hi)
@@ -318,6 +345,7 @@ def compute(svc: JobService, lo: float, hi: float, repo: str | None = None,
                         "cohort_start": cohort_lo, "cohort_end": cohort_hi},
         "cost_per_merged_pr": {"usd": round(cost / len(merged), 4) if merged else None,
                                "total_usd": round(cost, 4), "merged": len(merged)},
+        "cost_per_verified_pr": verified,  # --- KAN-300
         "reviewer_attention": reviewer_attention(store, merged),
         "active_delegators": {"value": len(delegators), "of": len(active), "min_merged": DELEGATOR_MIN,
                               **({"people": delegators} if person is None else {})},
