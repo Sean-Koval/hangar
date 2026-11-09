@@ -608,6 +608,21 @@ def test_usage_export_month_csv_by_person_and_repo():
         usage.export(ss, js, "2026-10", "model")
 
 
+def test_usage_export_quotes_cells_a_spreadsheet_would_run_as_formulas():
+    import csv
+    import io
+
+    names = ["=HYPERLINK(\"http://x\")", "+1", "-2", "@SUM(A1)", "plain", "a=b"]
+    sessions = {}
+    for i, name in enumerate(names):
+        s = Session(name=f"s{i}", environment="e", repo="https://github.com/acme/widgets.git", person=name)
+        s.turns = [_turn(T0, 1.0 + i, finished_at=T0 + 60)]
+        sessions[s.id] = s
+    ss = SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions)
+    keys = {r["key"] for r in csv.DictReader(io.StringIO(usage.export(ss, None, "2026-10", "person")))}
+    assert keys == {"'=HYPERLINK(\"http://x\")", "'+1", "'-2", "'@SUM(A1)", "plain", "a=b"}
+
+
 def test_usage_export_route_and_cli(app_client, monkeypatch):
     c = app_client
     r = c.get("/api/usage/export", params={"month": "2026-10", "by": "repo"})

@@ -196,9 +196,18 @@ def _export_key(by: str, person: str | None, requester: str | None, repo: str | 
     return person or requester or "(unknown)"
 
 
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_text(v: str) -> str:
+    """A text cell a spreadsheet would run as a formula (a person or repo named `=HYPERLINK(...)`) gets a leading
+    `'`, so it opens as text (OWASP CSV injection)."""
+    return "'" + v if v.startswith(_FORMULA_START) else v
+
+
 def export(sessions: Any, jobs: Any, month: str, by: str = "person") -> str:
     """One CSV row per person (or repo) for a calendar month (UTC): tokens, cost, sandbox hours (the turns' wall
-    time) and the agent PRs merged that month, for whoever pays (docs/metrics.md#chargeback-export)."""
+    time) and the agent PRs merged that month, for whoever pays (docs/cost-reporting.md#chargeback-export)."""
     import csv
     import io
 
@@ -226,9 +235,9 @@ def export(sessions: Any, jobs: Any, month: str, by: str = "person") -> str:
     w = csv.writer(out, lineterminator="\n")
     w.writerow(EXPORT_COLUMNS)
     for r in sorted(rows.values(), key=lambda r: (-r["cost_usd"], r["key"])):
-        w.writerow([month, r["key"], r["turns"], r["input_tokens"], r["output_tokens"], r["cache_read_tokens"],
-                    r["cache_write_tokens"], r["tokens"], f"{r['cost_usd']:.6f}", r["unpriced_turns"],
-                    f"{r['seconds'] / 3600:.4f}", r["merged_prs"]])
+        w.writerow([month, _csv_text(r["key"]), r["turns"], r["input_tokens"], r["output_tokens"],
+                    r["cache_read_tokens"], r["cache_write_tokens"], r["tokens"], f"{r['cost_usd']:.6f}",
+                    r["unpriced_turns"], f"{r['seconds'] / 3600:.4f}", r["merged_prs"]])
     return out.getvalue()
 
 

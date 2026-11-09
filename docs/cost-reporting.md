@@ -24,6 +24,8 @@ Its columns are turns, tokens by kind, `cost_usd`, `unpriced_turns`, `sandbox_ho
 are the turns' wall time, so a kept-alive sandbox's idle time isn't charged. A person is the job's or session's owner,
 else the turn's requester.
 
+A name that starts with `=`, `+`, `-` or `@` gets a leading `'`, so a spreadsheet opens it as text, not a formula.
+
 ## Monthly caps
 
 Daily caps stop a runaway day. Monthly caps hold a team to its budget. Both are checked when work is admitted, and a
