@@ -74,6 +74,7 @@
 # (AI review, test results, grades, trusted senders, review-triggered fix rounds, the MCP front door).
 /src/hangar/approvals.py           @Sean-Koval
 /src/hangar/governance.py          @Sean-Koval
+/src/hangar/governance_cli.py      @Sean-Koval
 /src/hangar/governed.py            @Sean-Koval
 /src/hangar/govhook.py             @Sean-Koval
 /src/hangar/govevents.py           @Sean-Koval

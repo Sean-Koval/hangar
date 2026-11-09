@@ -81,6 +81,12 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
   the `deny-risky` rules or the taint gate flag go to Tower as `tool.call`; the rest run at once. Egress and secret
   requests go as `egress.request` and `secret.request`. Per kind, `shadow` records Tower's dry run beside hangar's
   answer and `enforce` lets Tower decide, failing closed. `HANGAR_UID_SPLIT=required` refuses `governed` like `ask`.
+- **Break-glass: `hangar governance local`** (KAN-33, spec 0015 §7,
+  [docs/runbooks/break-glass-tower.md](docs/runbooks/break-glass-tower.md#break-glass)). One admin starts it
+  (`--until`, at most 24 h, `--reason`), a second admin confirms it, and it ends on its own or with `--end`. While it
+  is active and Tower can't answer, an admin's approval of a job release or landing in `enforce` is decided by
+  hangar's rules; a Tower that answers still decides. Every step and decision is audited and kept for replay, and
+  `hangar doctor` warns while it is on.
 - **Tower passports on the job API** (KAN-33, #174, [docs/tower-passports.md](docs/tower-passports.md)).
   `HANGAR_JOB_PASSPORTS=on` (off by default) accepts a Tower passport as the bearer on `/api/jobs*`, as the person
   its `person:<email>` names (linked by email) or an agent listed in `HANGAR_JOB_PASSPORT_AGENTS`. The signature,
