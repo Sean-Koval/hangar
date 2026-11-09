@@ -708,7 +708,8 @@ class Outbox:
             opened = next((e.ts for e in job.events if r.pr_url in (e.message or "")), None)
             from hangar import traces  # --- KAN-320: title, head ref, tracker line, as the job's trace has them
 
-            facts = {k.removeprefix("hangar.pr."): v for k, v in traces.pr_facts(self.jobs, job).items()}
+            pr = traces.pr_facts(getattr(self, "jobs", None), job)
+            facts = {k.removeprefix("hangar.pr."): v for k, v in pr.items()}
             facts["ticket"] = traces.ticket_key(job)
             out.append(("pr.open", opened, {"draft": land.draft, **facts}, "pr.open"))
         if land.ready_at:  # --- #168: review wait starts here
