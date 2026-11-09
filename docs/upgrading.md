@@ -15,7 +15,7 @@ bucket, site settings in the `hangar-site` config map, and `deploy/gke/up.sh` / 
 2. **Back up** the database and record the running image, as the release page's first step says (`hangar admin
    backup`, and the vault key in Secret Manager: [the vault key ring](security/vault-key.md)).
 3. **Prebuild** every environment image and harness pack tag the new commit needs, so nobody waits on a cold build
-   ([gke.md](gke.md#images-and-packs-built-in-ci)).
+   ([gke.md](gke/images.md#images-and-packs-built-in-ci)).
 4. **Deploy in the right window** ([below](#when-to-deploy)): node-pool and image upgrades by hand with `up.sh` while
    the pools are down; routine deploys with [deploy.yml](#deploying-with-deployyml) while they are up.
 5. **Check** with `hangar doctor` and the release page's own checks, then turn on what the release makes optional.
@@ -85,7 +85,7 @@ window, **01:00–09:50 ET**: no sandbox is running, and the control plane stays
 with `deploy.yml` go while the sandbox pools are on, **10:00–01:00 ET**: its acceptance checks need sandboxes, and it
 refuses while the pools are down ([cicd.md](cicd.md#2-start-the-deploy-then-approve-it)). The power schedule is
 terraform's `power_down_cron` (`0 1 * * *`) and `power_up_cron` (`50 9 * * *`, ready at 10:00), in
-`America/New_York`. With the [overnight lane](gke.md#the-overnight-lane) on, one Spot node stays up through the
+`America/New_York`. With the [overnight lane](gke/power.md#the-overnight-lane) on, one Spot node stays up through the
 night, and nothing suspends its sessions for an upgrade: suspend them first (`hangar session suspend <name>`), or
 leave sandbox node changes for the day.
 
@@ -97,7 +97,7 @@ afterwards ([cicd.md](cicd.md#merges-to-main-deploy-while-the-infra-is-up)). Re-
 read-only `hangar-state@` account that check uses, and `terraform apply` once (in the power-down window) so the
 scheduled power jobs honour holds:
 
-1. **Images.** It calls `images.yml`, which builds every environment image and harness pack tag the commit needs ([gke.md](gke.md#images-and-packs-built-in-ci)), and builds and pushes the control-plane image, `<registry>/control-plane:<sha>`, by digest.
+1. **Images.** It calls `images.yml`, which builds every environment image and harness pack tag the commit needs ([gke.md](gke/images.md#images-and-packs-built-in-ci)), and builds and pushes the control-plane image, `<registry>/control-plane:<sha>`, by digest.
 2. **Approval.** The deploy job uses the `production` environment, so it waits for a required reviewer (the owner) to approve it ([deployments and environments][envs]).
 3. **Preflight.** It reads hangar's power state and **refuses while the sandbox pools are powered down** (the checks need sandboxes) unless the run's `force` input is set; a forced deploy runs only the checks that need no sandbox (`doctor`, `power`, `metrics`). It lists the server's MCP tools and records the running image and the doctor checks already failing.
 4. **Drain**, then `kubectl set image deploy/hangar hangar=<image>`, `kubectl rollout status`, and `/healthz` through the public URL.
@@ -109,7 +109,7 @@ Until the repository secrets below exist (or on a fork) it skips with a notice a
 
 | Secret | Where | Value |
 | --- | --- | --- |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY` | repository | shared with `images.yml` ([gke.md](gke.md#images-and-packs-built-in-ci)); `GCP_SERVICE_ACCOUNT` pushes the control-plane image, and never deploys |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `HANGAR_REGISTRY` | repository | shared with `images.yml` ([gke.md](gke/images.md#images-and-packs-built-in-ci)); `GCP_SERVICE_ACCOUNT` pushes the control-plane image, and never deploys |
 | `GCP_DEPLOY_SERVICE_ACCOUNT` | `production` | `hangar-deploy@<project>.iam.gserviceaccount.com`, impersonable only from the `production` environment, with only what a deploy needs (below). Required: there is no fallback to `GCP_SERVICE_ACCOUNT`, which every branch's workflows can impersonate |
 | `GKE_CLUSTER`, `GKE_LOCATION` | `production` | the cluster's name and zone (`hangar`, `us-central1-a`; `terraform output get_credentials`) |
 | `HANGAR_URL` | `production` | `https://<your hangar>` |

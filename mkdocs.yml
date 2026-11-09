@@ -56,10 +56,13 @@ markdown_extensions:
       base_path: [docs/assets/diagrams, docs/assets/front]   # the theme-aware SVGs diagram.py draws, inlined with --8<--
       check_paths: true
 
-# Not pages: benchmark scripts kept next to a research note, and the repo's notes on the brand and front-page assets.
+# Not pages: benchmark scripts kept next to a research note, the repo's notes on the brand and front-page assets, and
+# the templates (an ADR's front matter, a Jira description in an HTML comment), which are copied from GitHub as files:
+# rendered, they lose what they are for. Code and pages link them on github.com.
 exclude_docs: |
   research/0012/
   assets/README.md
+  templates/
 
 # The site's map, in the order a newcomer reads it: start here (the words, the quickstart, the console), the guides by
 # task, the reference (the APIs first), design notes, operations. Every page under docs/ is in it except what
@@ -134,20 +137,36 @@ nav:
               - Test results: jobs/test-results.md
               - Experiments: jobs/experiments.md
               - "Reference: labels, outcomes, settings": jobs/reference.md
-          - Sessions: sessions.md
-          - Steering: steering.md
+          - Sessions:
+              - sessions.md
+              - Forks and best-of-N: sessions/forks.md
+              - Prompt caching in sessions: sessions/prompt-caching.md
+          - Steering:
+              - steering.md
+              - How steering works: steering/how-it-works.md
+              - The uid split: steering/uid-split.md
+              - hangar-owned harness settings: steering/harness-settings.md
           - Governed approvals: governed-approvals.md
           - The Tower hook: governance-hook.md
           - Job release and landing through Tower: tower-release-landing.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
-          - Landing: landing.md
+          - Landing:
+              - landing.md
+              - How a PR lands: landing/how-a-pr-lands.md
+              - The review packet and the inbox: landing/review.md
           - When the webhook doesn't arrive: pr-reconcile.md
           - AI first-pass review: ai-review.md
           - Change sets: changesets.md
       - Front doors:
-          - Repo policy: repo-policy.md
-          - Intake (Jira, GitHub Projects): intake.md
+          - Repo policy:
+              - repo-policy.md
+              - "Is this repo ready?": repo-policy/readiness.md
+              - Budgets and shadows: repo-policy/budgets.md
+              - Offline multi-repository release observations: repo-policy/release-observations.md
+          - Intake (Jira, GitHub Projects):
+              - intake.md
+              - Jira intake: intake/jira.md
           - Slack: slack.md
           - Triggers and schedules: triggers.md
           - Plugins and events out: plugins.md
@@ -167,14 +186,24 @@ nav:
               - "Agent-led setup: re-runs, budget and safety": environments/agent-led-setup-safety.md
               - Root, plugins and MCP trust: environments/sudo-plugins-mcp.md
               - Plugins from a git marketplace: environments/git-plugins.md
-          - Harnesses: harnesses.md
-          - Harness locks: harness-lock.md
+          - Harnesses:
+              - harnesses.md
+              - The harness canary: harnesses/canary.md
+              - "Models: the latest strong model per provider": harnesses/models.md
+          - Harness locks:
+              - harness-lock.md
+              - Thaw and drift: harness-lock/thaw.md
           - Codex plugin hooks: codex-plugin-hooks.md
-          - Computer use: computer-use.md
+          - Computer use:
+              - computer-use.md
+              - "Computer use under gVisor, and self-diagnosis": computer-use/troubleshooting.md
           - Build caches: caches.md
       - Usage and insight:
           - Activity, usage and budgets: activity.md
-          - Observability: observability.md
+          - Observability:
+              - observability.md
+              - Traces: observability/traces.md
+              - "The operator console, flight records and run capture": observability/operator.md
           - SLOs: slos.md
           - Alerting: alerting.md
           - Weekly adoption metrics: metrics.md
@@ -242,10 +271,21 @@ nav:
       - Research - Test-first acceptance: research/test-first.md
       - Research - Test-first isolation: research/test-first-isolation.md
   - Operations:
-      - Running on GKE: gke.md
-      - Deploying from CI/CD: cicd.md
+      - Running on GKE:
+          - gke.md
+          - Environment images on GKE: gke/images.md
+          - "Kata, the heavy tier and Pod snapshots on GKE": gke/microvms.md
+          - Sandbox nodes off at night: gke/power.md
+          - Infra states on GKE: gke/infra-states.md
+          - Backups and restore on GKE: gke/backups.md
+      - Deploying from CI/CD:
+          - cicd.md
+          - Infra states and deploys: cicd/infra-states.md
       - Deploy on your company's cluster: deploy-company.md
-      - Acceptance on the cluster: acceptance.md
+      - Acceptance on the cluster:
+          - acceptance.md
+          - "The first run: fixtures and the live run": acceptance/first-run.md
+          - When an acceptance check fails: acceptance/failures.md
       - Upgrading: upgrading.md
       - Release notes:
           - releases/README.md
@@ -263,7 +303,15 @@ nav:
           - "Early install: changed defaults": releases/overnight-stack-defaults.md
           - "Early install: upgrade and prove": releases/overnight-stack-procedure.md
       - Troubleshooting: troubleshooting.md
-      - Team scale: team-scale.md
+      - Team scale:
+          - team-scale.md
+          - The team load test: team-scale/load-test.md
+          - GKE capacity for 60 sessions: team-scale/gke-capacity.md
+          - What 60 sessions cost on GKE: team-scale/cost.md
+          - The heavy tier at team scale: team-scale/heavy-tier.md
       - The Cloud Doctor: doctor.md
-      - MicroVM tier (E2B, CubeSandbox; experimental): microvm.md
+      - MicroVM tier (E2B, CubeSandbox; experimental):
+          - microvm.md
+          - The e2b provider and hot resume: microvm/e2b.md
+          - Deploying the microVM tiers: microvm/deployment.md
       - Local microVMs: local-microvms.md

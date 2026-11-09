@@ -250,12 +250,12 @@ def _deployment_pod() -> dict:
 
 
 def test_docs_restore_pod_matches_the_deployment():
-    """The one-off restore pod in docs/gke.md (for a hangar that can't start) must see what the deployment sees:
+    """The one-off restore pod in docs/gke/backups.md (for a hangar that can't start) must see what the deployment sees:
     its settings, vault key, volume and service account (GCS), and no service links (HANGAR_PORT=tcp://...).
     The command was also run with --dry-run=server against a k3s API server (PR notes)."""
     import re
 
-    doc = (ROOT / "docs/gke.md").read_text()
+    doc = (ROOT / "docs/gke/backups.md").read_text()
     overrides = re.search(r"--overrides='(\{.*?\})'", doc, re.S).group(1).replace('\'"$IMAGE"\'', "img:1")
     spec, dep = json.loads(overrides)["spec"], _deployment_pod()
     [c], [d] = spec["containers"], dep["containers"]

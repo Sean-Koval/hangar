@@ -30,7 +30,7 @@ Each is tracked in Jira. What remains open, with its owner and reason, is on
 
 ## Approvals inside a turn on GKE and E2B (High)
 
-On GKE and E2B there is no [uid split](../steering.md#the-uid-split). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent could allow itself or answer its own approval.
+On GKE and E2B there is no [uid split](../steering/uid-split.md). The driver, its run key and the harness settings belong to the same user as the agent. In an `ask` or `deny-risky` turn, the agent could allow itself or answer its own approval.
 
 `HANGAR_UID_SPLIT=required` refuses those turns instead; `auto` turns are unaffected. The Kubernetes manifests set it. On E2B it is the default when the setting is unset (KAN-189), and `hangar doctor` flags an explicit `auto`.
 

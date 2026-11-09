@@ -62,7 +62,7 @@ asks "did the tests run" (flightdeck's behavior predicates, a review) reads `cou
 `trusted` alone ([traces.md](../api/traces.md#test-results)).
 
 On a red base, the failures the change adds are the after-turn run's failing ids minus the base run's, exactly,
-whenever both left complete reports ([repo-policy.md](../repo-policy.md#the-check-on-the-base-commit)). The text of the
+whenever both left complete reports ([repo-policy.md](../repo-policy/readiness.md#the-check-on-the-base-commit)). The text of the
 output is the fallback. Reports cover only the runners that write one: when they show nothing new but the output
 names a failure the base didn't have (a second runner without a JUnit reporter), hangar can't tell, and the PR goes
 out as a draft that says so.

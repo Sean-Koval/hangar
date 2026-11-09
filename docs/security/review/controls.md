@@ -69,6 +69,6 @@ shipped).
 
 | Control | Status | Evidence |
 | --- | --- | --- |
-| Daily encrypted database backups to the bucket, 14 kept; `hangar doctor` fails on a stale one | In place | [Backups and restore](../../gke.md#7-backups-and-restore) |
-| A staged restore that keeps the replaced database beside it | In place | [Backups and restore](../../gke.md#7-backups-and-restore) |
+| Daily encrypted database backups to the bucket, 14 kept; `hangar doctor` fails on a stale one | In place | [Backups and restore](../../gke/backups.md) |
+| A staged restore that keeps the replaced database beside it | In place | [Backups and restore](../../gke/backups.md) |
 | A restore drill and a rollback rehearsal, timed and recorded | Open | KAN-143 |

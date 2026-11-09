@@ -22,7 +22,7 @@ proxy. [Running hangar on GKE](../../gke.md) is the install, and `deploy/terrafo
 | Jobs, sessions, schedules, settings, the audit log | One SQLite file on the `hangar-data` persistent disk | Disk encryption by Google; the pod's service account only |
 | Tokens | The same database | SHA-256 hashes only; the token is shown once ([auth.py](https://github.com/Sean-Koval/hangar/blob/main/src/hangar/auth.py)) |
 | Stored credentials (the vault) | The same database | Fernet with a rotatable key ring ([the vault key](../vault-key.md)) |
-| Checkpoints, artifacts, database backups | The session-store bucket | Fernet-encrypted objects; 14 daily backups ([backups](../../gke.md#7-backups-and-restore)) |
+| Checkpoints, artifacts, database backups | The session-store bucket | Fernet-encrypted objects; 14 daily backups ([backups](../../gke/backups.md)) |
 | Finished runs, for flightdeck | The run-capture bucket, opt-in | Redacted before upload ([run capture](../../api/outbox.md)) |
 | The vault key | Secret Manager, with a copy in the `hangar` Kubernetes Secret | Access-logged; operators who rotate keys only |
 | Logs and SLO events | Cloud Logging, from the pod's stdout | No secrets in logs, by design and by redaction |

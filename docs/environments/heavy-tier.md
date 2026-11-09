@@ -40,7 +40,7 @@ never runs anywhere else: like `isolated`, it is a security choice (a privileged
 
 | Provider | What a heavy sandbox is | Setup |
 | --- | --- | --- |
-| `kubernetes` | a Kata pod (`HANGAR_HEAVY_RUNTIME_CLASS`, `kata-qemu-runtime-rs`) on the `sandboxes-heavy` pool | [Running on GKE](../gke.md#4a-the-heavy-tier-optional): the pool, kata-deploy, and the Agent Sandbox controller caveat |
+| `kubernetes` | a Kata pod (`HANGAR_HEAVY_RUNTIME_CLASS`, `kata-qemu-runtime-rs`) on the `sandboxes-heavy` pool | [Running on GKE](../gke/microvms.md#4a-the-heavy-tier-optional): the pool, kata-deploy, and the Agent Sandbox controller caveat |
 | `e2b` | an E2B or CubeSandbox microVM | [the microVM tier](../microvm.md#the-heavy-tier-on-microvms) |
 | `docker` | a privileged runc container: **root on the host** | `HANGAR_HEAVY_DOCKER_PRIVILEGED=true`, for CI and throwaway machines only |
 
@@ -90,6 +90,6 @@ hangar's own, one per repo and environment at a time, and aren't counted. Docker
 beyond the usual sandbox caps.
 
 **Warm pools** of heavy environments stay at 0 unless `HANGAR_HEAVY_WARM_POOLS=true`: a heavy node held warm costs
-(see [team scale](../team-scale.md#heavy-tier)).
+(see [team scale](../team-scale/heavy-tier.md)).
 
 `heavy`, `tier: heavy` and a `profile` other than standard are admin fields on an environment, like `runtime_class`.

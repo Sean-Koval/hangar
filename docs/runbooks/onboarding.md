@@ -17,7 +17,7 @@ gateway).
 **Three hard stops.** If any of these is true, the repo isn't onboarded, whatever else is green:
 
 - **CI isn't required on the default branch.** With no required status checks GitHub merges as soon as hangar arms
-  auto-merge ([how a PR lands](../landing.md#4-how-a-pr-lands)). `hangar repo check` fails `required checks`.
+  auto-merge ([how a PR lands](../landing/how-a-pr-lands.md)). `hangar repo check` fails `required checks`.
 - **The GitHub App is on a bypass list.** Never add it to "Allow specified actors to bypass required pull requests"
   or to a ruleset's bypass list. Branch protection is what makes a merge wait for a person
   ([creating the App](../landing.md#create-it)).
@@ -34,7 +34,7 @@ Tell each engineer these on day one:
   ([KAN-186](https://seanmkoval.atlassian.net/browse/KAN-186), [the driver sidecar](../security/driver-sidecar.md)).
 - **No jobs run 01:00–10:00 ET.** The sandbox pools power down at 01:00 and are ready at 10:00
   (`deploy/terraform/gke/power.tf`). A job sent in that window queues until 10:00, and a session resumes on its next
-  message after it ([infra states](../cicd.md#infra-states)). The [overnight lane](../gke.md#the-overnight-lane), off by default,
+  message after it ([infra states](../cicd/infra-states.md)). The [overnight lane](../gke/power.md#the-overnight-lane), off by default,
   is the only exception.
 
 ## Engineer-hours
@@ -59,7 +59,7 @@ of the per-repo checklist (#154).
 The safe release (#120–#132) is deployed: secure defaults for intake jobs, API keys for automated work, one approval
 rule ([the safe release](../releases/safe-release.md)). It changes every environment's image, so deploy it by hand in
 the power-down window, **01:00–09:50 ET**. Then the sandbox pools are down and the control plane is up
-([applying it](../team-scale.md#applying-it)).
+([applying it](../team-scale/gke-capacity.md#applying-it)).
 
 Later routine deploys go through `deploy.yml` while the pools are on, 10:00–01:00 ET
 ([when to deploy](../upgrading.md#when-to-deploy)). Then comes the

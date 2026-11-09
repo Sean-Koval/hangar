@@ -73,7 +73,7 @@ The `tokens` total that budgets use leaves out cache reads. Every model call re-
 
 ### Prompt cache
 
-Usage also says how well the provider's prompt cache worked. [Sessions](sessions.md#prompt-caching) explains how hangar chooses each turn's cache TTL.
+Usage also says how well the provider's prompt cache worked. [Sessions](sessions/prompt-caching.md) explains how hangar chooses each turn's cache TTL.
 
 | Field | |
 | --- | --- |
@@ -98,7 +98,7 @@ onboarding-fork-2                     3    41%   180.0k   250.0k   250.0k      $
 
 ## Budgets
 
-A budget caps each agent turn. That means the job's first run and each follow-up separately, and each message to a session. A best-of-N job's budget caps each attempt and the judge separately, so the job as a whole can spend up to N + 1 budgets. To bound a whole job, give it a `job_budget`, and to bound a repo's day, a daily cap: see [repo-policy.md](repo-policy.md#budgets). A turn's structured-result repair run counts toward that turn: it is stopped when the turn as a whole goes over, and its usage is the turn's `repair_usage`, included in every total.
+A budget caps each agent turn. That means the job's first run and each follow-up separately, and each message to a session. A best-of-N job's budget caps each attempt and the judge separately, so the job as a whole can spend up to N + 1 budgets. To bound a whole job, give it a `job_budget`, and to bound a repo's day, a daily cap: see [repo-policy.md](repo-policy/budgets.md#budgets). A turn's structured-result repair run counts toward that turn: it is stopped when the turn as a whole goes over, and its usage is the turn's `repair_usage`, included in every total.
 
 ```json
 "budget": {"max_minutes": 30, "max_tokens": 2000000, "max_cost_usd": 5}
@@ -134,5 +134,5 @@ How far a turn overshoots depends on when the harness reports usage:
 | `HANGAR_MODEL_PRICES` | `{}` | JSON, USD per million tokens; merged over the built-in table |
 | `HANGAR_BUDGET_MAX_MINUTES` / `_MAX_TOKENS` / `_MAX_COST_USD` | unset | Default budget for each turn |
 | `HANGAR_EVENTS_MAX_MB` | 20 | Event log size per session before it rotates |
-| `HANGAR_CACHE` | `auto` | Prompt-cache TTL when neither the session nor its environment sets one ([sessions.md](sessions.md#prompt-caching)) |
+| `HANGAR_CACHE` | `auto` | Prompt-cache TTL when neither the session nor its environment sets one ([sessions.md](sessions/prompt-caching.md)) |
 | `HANGAR_CACHE_STAGGER_SECONDS` | 15 | How long best-of-N attempts and forks hold back for the first one to answer (0 = no wait) |

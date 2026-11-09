@@ -39,11 +39,11 @@ An attempt 1 that asked a question met no bar, so the others start. If none of t
 
 When attempt 1 passes, it is delivered and attempts 2..N never start. Their forked sessions are archived, and no sandbox was booted for them.
 
-The AI first-pass review doesn't count yet. It runs on the job's PR after delivery ([landing](../landing.md#6a-ai-first-pass-review)), not on each attempt. So a blocking review can't start attempts 2..N.
+The AI first-pass review doesn't count yet. It runs on the job's PR after delivery ([landing](../landing/review.md#6a-ai-first-pass-review)), not on each attempt. So a blocking review can't start attempts 2..N.
 
 ## The budget across both phases
 
-The [job budget](../repo-policy.md#budgets) still caps the whole job, attempts and judge together.
+The [job budget](../repo-policy/budgets.md#budgets) still caps the whole job, attempts and judge together.
 
 - Attempt 1 gets `escalate_at` of the job budget. Without it, it gets the equal share a parallel attempt gets.
 - The attempts that start after it split what it left equally. The judge keeps one share, as in a parallel run.
@@ -65,7 +65,7 @@ The tier caps attempts only. Landing still judges a PR's risk by its files.
 
 - The events say that attempt 1 runs alone, then what was decided and why. For example: "Attempt 1 failed verify (exit 1): attempts 2..3 started".
 - The PR body's attempts table opens with how many attempts ran and why. Attempts that never started show as `not started`.
-- The [review packet](../landing.md#6-the-review-packet) has an **Attempts** line with the same count and reason.
+- The [review packet](../landing/review.md#6-the-review-packet) has an **Attempts** line with the same count and reason.
 - `get_job` and `GET /api/jobs/{id}` carry `sequential`: `escalate_at`, `escalated` and `why`. An attempt that never ran has the outcome `skipped`.
 
 A control-plane restart re-attaches to whichever phase was running. The decision is recorded on the job, so it is never made twice.

@@ -7,7 +7,7 @@ A repo with `ai_review` set gets a first-pass review of each non-draft agent PR 
 - **`hangar`**: a review job (`source: review`) on another harness than the author's: codex for claude-code's PRs, else claude-code, unless `ai_review_harness` names one. Its model is `ai_review_model`, by default `frontier` resolved to a concrete id.
 - **`check:<name>`**: an org review bot the team already licenses. hangar waits for a check run or status named `<name>` on the PR's head. `success` is approve; `neutral` and `skipped` are comment; `failure` and `action_required` are blocking; anything else is an error. No job runs; the rest of this page doesn't apply.
 
-With only the author's harness, the review runs on it in a fresh session. It is flagged `independent: false` and doesn't satisfy the [self-approval rule](landing.md#self-approval-who-may-be-the-only-approver).
+With only the author's harness, the review runs on it in a fresh session. It is flagged `independent: false` and doesn't satisfy the [self-approval rule](landing/how-a-pr-lands.md#self-approval-who-may-be-the-only-approver).
 
 ## How the review job is fenced
 
@@ -30,7 +30,7 @@ The verdict fails closed. A `blocking` review becomes `comment` only when the ch
 
 The App posts one PR review with `event: COMMENT`, never `APPROVE`, so it can't satisfy branch protection. It carries at most `ai_review_inline_max` inline comments (default 5, at most 20), the most severe first. The review body lists every confirmed finding, most severe first, with its evidence. Mentions in agent text are neutralized.
 
-The [review packet](landing.md#6-the-review-packet) counts the findings in the body only and those dropped as unconfirmed.
+The [review packet](landing/review.md#6-the-review-packet) counts the findings in the body only and those dropped as unconfirmed.
 
 ## Spend
 

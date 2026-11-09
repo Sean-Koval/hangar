@@ -154,7 +154,7 @@ conveniences of the batch wrapper.
 ## Forks
 
 `POST /api/runs/{session}.{run}/fork {at_seq, continuations, pin_set?, mode: "replay-prefix", on_divergence?, budget?,
-wait_seconds?}` forks a recorded run at a step ([sessions.md](../sessions.md#fork-at-a-step)): an experiment job whose
+wait_seconds?}` forks a recorded run at a step ([sessions.md](../sessions/forks.md#fork-at-a-step)): an experiment job whose
 k trials each replay the run's tape to `at_seq` in a replay sandbox, then go live. It answers (and `GET
 /api/forks/{id}` reads) `{fork, run, at_seq, status, divergence: {seq, kind: model|tool|network|tree} | null, tainted,
 trial_ids, trials}`; each trial is an ordinary trial (`GET /api/trials/{id}`), `source: "experiment"`, with

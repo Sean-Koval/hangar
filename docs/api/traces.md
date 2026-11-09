@@ -200,8 +200,8 @@ tree's git tree id, uncommitted and untracked changes included, `.gitignore` hon
 ended: what `git add -A && git write-tree` through a scratch index gives on that checkpoint),
 `hangar.git.tree.skipped` (`slow`: one hash took over 2 s and hashing stopped for the turn) and
 `hangar.git.tree.trusted` (false when any of the turn's trees was recorded where the agent could have forged it: a
-driver without the [uid split](../steering.md#the-uid-split), or a one-shot turn's exec). Unset for turns recorded
-before #165 and for turns outside a git checkout ([steering.md](../steering.md#trees)).
+driver without the [uid split](../steering/uid-split.md), or a one-shot turn's exec). Unset for turns recorded
+before #165 and for turns outside a git checkout ([steering.md](../steering/how-it-works.md#trees)).
 
 Status: `ERROR` when the outcome is anything but `exited`/`needs_input`/`interrupted` with exit code 0.
 

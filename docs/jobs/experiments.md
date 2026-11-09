@@ -64,7 +64,7 @@ policies resolve to now. An environment's own alias counts too. `model: balanced
 resolved once and every trial gets that id, recorded in `pins.variants.<name>.model` with `model_concrete` and
 `model_concrete_basis` (`list`: in the provider's cached model list; `pattern`: no list was cached, so its versioned
 shape decided, and the experiment's notes say so). Ordinary jobs still accept aliases; their manifests say
-`model.concrete: false` ([harnesses.md](../harnesses.md#concrete-ids-and-floating-aliases)).
+`model.concrete: false` ([harnesses.md](../harnesses/models.md#concrete-ids-and-floating-aliases)).
 
 hangar records what each trial ran with (its [manifest](../api/manifest.schema.json)), what it did (its
 [trace](../api/traces.md)) and its verification. Two trials of one variant should share a configuration; when they
@@ -127,7 +127,7 @@ Each grade records `files_mode`, `network`, `runner` (`hangar-grade` or `command
 patch adds or changes that can hook a test run (`conftest.py`, `sitecustomize.py`, `usercustomize.py`, `*.pth`,
 `pytest.ini`, a pytest section in `tox.ini`, `setup.cfg` or `pyproject.toml`). They are signals, not refusals.
 
-**Who writes the grade.** On Docker, where the sandbox has the [uid split](../steering.md#the-uid-split), a wrapper
+**Who writes the grade.** On Docker, where the sandbox has the [uid split](../steering/uid-split.md), a wrapper
 running as hangar's own user starts the command as the agent's user (no capabilities, `no_new_privs`) and writes the
 grade itself, in a 0700 directory the agent can't reach: the exit code, the output, `$HANGAR_GRADE_OUT` and the junit
 `hangar-grade` writes come to it through pipes it created (`$HANGAR_GRADE_OUT` is `/proc/self/fd/198`: write it, don't
@@ -159,7 +159,7 @@ what it doesn't:
 
 ## Shadows
 
-A repo policy's `shadow` (#183, [repo-policy.md](../repo-policy.md#shadows)) samples real intake jobs and runs a candidate
+A repo policy's `shadow` (#183, [repo-policy.md](../repo-policy/budgets.md#shadows)) samples real intake jobs and runs a candidate
 harness on each at the same base commit: a `source: shadow` trial (`shadow_of` names the real job) that delivers
 nothing, writes back nowhere and runs with egress `none`, for flightdeck to grade against what was merged.
 
@@ -168,7 +168,7 @@ nothing, writes back nowhere and runs with egress `none`, for flightdeck to grad
 Trials count against the team's monthly eval budget and their author's cap (`HANGAR_EVAL_BUDGET_USD_MONTH`, 1500;
 `HANGAR_EVAL_AUTHOR_CAP_USD_MONTH`, 400). An experiment projected over what is left is refused at submit with the
 numbers. Once a budget is spent, running trials finish but no new trial starts. `hangar eval budget` shows the month
-([repo-policy.md](../repo-policy.md#the-eval-budget)).
+([repo-policy.md](../repo-policy/budgets.md#the-eval-budget)).
 
 ## Infrastructure errors are retried and left out
 

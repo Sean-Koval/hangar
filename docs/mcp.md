@@ -90,7 +90,7 @@ What the major clients support today, from their own sources (October 2026):
 ## Running from a harness lock
 
 `submit_job` takes `harness_lock` (`name@rN`, `name@sha256:…`, `name@stable`) to run a job from a
-[harness lock](harness-lock.md#thaw-and-drift). Sessions are thawed with `hangar harness thaw` or `harness_lock` on
+[harness lock](harness-lock/thaw.md). Sessions are thawed with `hangar harness thaw` or `harness_lock` on
 `POST /api/sessions` (the tool listing is at its size cap, #140).
 
 ## Prompts
