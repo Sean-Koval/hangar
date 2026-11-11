@@ -40,6 +40,18 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 `HANGAR_UID_SPLIT=auto` to keep the old warning, which `hangar doctor` flags
 ([why](docs/security/e2b-driver-user.md)).
 
+### Added
+
+- **`hangar trace import TRANSCRIPT --out DIR`** (KAN-338): a Claude Code session hangar didn't run, offline, as
+  `events.jsonl` (hangar's events, through its own parser) and `trace.json` (a `hangar.trace/v1` session export). It
+  reads a local transcript with its subagents' transcripts, a cloud session's events or stream-json
+  ([docs/api/trace-import.md](docs/api/trace-import.md)). A turn's usage sums its `result` lines; a cloud session's
+  messages carry a streamed, short output count.
+- **Per-call usage and subagent links in Claude Code events** (KAN-338). Each `usage` event carries its model call's
+  own tokens (`call_*`, with the 5-minute and 1-hour cache writes) and `message_id`; a subagent's events carry
+  `parent_id`. The trace adds a `model.call` span (`chat {model}`) per response and hangs a subagent's steps under its
+  `subagent` span.
+
 ### Changed
 
 - **Cost reporting for a team** (KAN-300). Weekly metrics and `GET /api/usage` report cost per verified PR next to

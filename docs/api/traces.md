@@ -19,6 +19,7 @@ The boundary and the other two interfaces (the effective harness manifest and ex
 | One run (one turn of a session) | `GET /api/sessions/{name}/trace?turn=N` | `hangar trace export <session> --turn N` | |
 | A whole session | `GET /api/sessions/{name}/trace` | `hangar trace export <session>` | `hangar://sessions/{name}/trace` |
 | A job: its turns, best-of-N attempts, judge, verify, git, PR and CI | `GET /api/jobs/{id}/trace` | `hangar trace export <job id>` | `hangar://jobs/{id}/trace` |
+| A Claude Code session hangar didn't run, from its transcript (offline) | | `hangar trace import <transcript> --out DIR` ([how](trace-import.md)) | |
 | An experiment trial (stored when the trial ended) | `GET /api/experiments/{id}/trials/{key}/trace` | `hangar experiment export <id>` | |
 
 `-o FILE` writes the export to a file. Every export is one OTLP `ExportTraceServiceRequest` in the
@@ -73,6 +74,7 @@ Spans have a duration; events are points in time. Kinds are stable within `hanga
 | `tool.call` | `execute_tool {tool}`, or `execute_tool {tool} {executable}` for a one-process shell command and `execute_tool {tool} {skill}` for a skill (GenAI's command and skill refinements) | `execute_tool` | `turn` | One tool call, from the call to its result. |
 | `subagent` | `invoke_agent {subagent type}` | `invoke_agent` | `turn` | A subagent the agent started (Claude Code's `Task`/`Agent` tool). Its start is the subagent's start. |
 | `approval` | `approval {tool}` | — | `turn` | A tool permission asked during a live turn, from the request to the answer. |
+| `model.call` | `chat {model}` | `chat` | `turn` or `subagent` | One model response and its usage (Claude Code). A point in time ([attributes](trace-import.md#usage-per-model-call-and-per-turn)). |
 
 ### Normalized tool kinds
 

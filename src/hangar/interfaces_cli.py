@@ -1,5 +1,5 @@
-"""CLI for the sister tool's interfaces (--- interfaces; spec 0014): `hangar trace export`, `hangar session|job|env
-manifest`, and `hangar experiment run|get|cancel|export|freeze-variants`."""
+"""CLI for the sister tool's interfaces (--- interfaces; spec 0014): `hangar trace export|import`, `hangar session|job|
+env manifest`, and `hangar experiment run|get|cancel|export|freeze-variants`."""
 
 from __future__ import annotations
 
@@ -40,6 +40,22 @@ def trace_export(
             raise typer.BadParameter("--turn is for sessions; a job's export has all its turns")
         return _out(cli._call("GET", f"/api/jobs/{ref}/trace"), output)
     return _out(cli._call("GET", f"/api/sessions/{ref}/trace", params={"turn": turn} if turn else None), output)
+
+
+def trace_import(
+    transcript: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True,
+                                      help="A Claude Code transcript (~/.claude/projects/**/<session>.jsonl), cloud "
+                                           "session events (a JSON array or JSONL) or stream-json."),
+    out: Path = typer.Option(..., "--out", help="Directory for events.jsonl and trace.json."),
+    session_id: str | None = typer.Option(None, "--session-id", help="Default: the transcript's own."),
+):
+    """Turn a Claude Code session hangar didn't run into hangar events and a hangar.trace/v1 export, offline
+    (docs/api/trace-import.md). Nothing is sent anywhere."""
+    from hangar import trace_import as ti
+
+    summary = ti.write(ti.import_transcript(transcript, session_id), out)
+    typer.echo(json.dumps(summary, indent=1))
+    typer.echo(f"wrote {out}/events.jsonl and {out}/trace.json", err=True)
 
 
 def session_manifest(
@@ -204,6 +220,7 @@ def experiment_freeze_variants(
 
 def register(app: typer.Typer, session_app: typer.Typer, job_app: typer.Typer, env_app: typer.Typer) -> None:
     trace_app.command("export")(trace_export)
+    trace_app.command("import")(trace_import)  # --- KAN-338
     app.add_typer(trace_app, name="trace")
     session_app.command("manifest")(session_manifest)
     job_app.command("manifest")(job_manifest)
