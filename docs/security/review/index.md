@@ -45,4 +45,4 @@ the [runbooks](../../runbooks/README.md).
 
 Three choices changed what a reviewer will accept. Sean took all three, and each fix has merged. They are allowlist
 egress on GKE (#387), removing the warn switches (#388) and checking custom branches against their creator.
-[Open findings and accepted risks](risks.md#decided-in-review) says what is still in review.
+None is still in review; [open findings and accepted risks](risks.md) lists what is not yet fixed.

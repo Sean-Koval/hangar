@@ -13,11 +13,11 @@ shipped).
 | --- | --- | --- |
 | Every token belongs to a person, an admin or a member; members act only on their own work | In place | [People and OAuth connectors](../people.md) |
 | Tokens are random 32-byte secrets, stored as SHA-256 hashes, shown once, revocable one by one | In place | `src/hangar/auth.py`; [Running hangar safely](../operations.md) |
-| Scoped tokens: `mcp`, `jobs`, `metrics` and `sandboxes` each reach one surface | In place | [Scopes](../front-doors.md#scopes) |
+| Scoped tokens: `mcp`, `jobs` and `metrics` each reach one surface | In place | [Scopes](../front-doors.md#scopes) |
 | OAuth 2.1 for MCP clients, with consent, PKCE and a 90-day limit | In place | [OAuth connectors](../people.md#oauth-connectors) |
 | Approvals: an admin or a policy approver, never on their own job | In place | [Who may approve](../../triggers.md#who-may-approve) |
-| The console keeps the admin token in browser storage, with no CSP | Open | KAN-174, L-7 |
-| IAP in front of the GKE ingress | Open | KAN-174, L-8; the API is public with token auth today |
+| The console sends a strict CSP and runs only hangar's own scripts; its HTML sinks are audited | In place | KAN-174, L-7; `tests/test_ui_csp.py`. The admin token in `sessionStorage` is an [accepted risk](risks.md#accepted-for-10) |
+| IAP in front of the GKE ingress | Partial | Off by choice, [with the reason](../control-plane-pod.md#identity-aware-proxy): the API is public with token auth (KAN-174, L-8) |
 
 ## Secrets and encryption
 
@@ -39,9 +39,9 @@ shipped).
 | Sandboxes can't reach RFC1918, link-local or each other; all ingress denied | In place | `deploy/k8s/sandbox-network.yaml` |
 | Egress by hostname allowlist through hangar's proxy, in `allowlist` and `none` environments | In place | [Egress allowlists](../egress.md) |
 | Intake jobs (GitHub, Jira, Slack, webhooks) get at least `allowlist` and the gateway | In place | [Intake posture](../front-doors.md#intake-posture) |
-| GKE's default egress is `allowlist` | In place | [The egress default](../egress-default.md); `deploy/k8s/config.yaml` (KAN-174, L-9) |
+| GKE's default egress is `allowlist` | In place | `deploy/k8s/config.yaml` and `deploy/kustomize/base/config.yaml` set `HANGAR_EGRESS_DEFAULT=allowlist`; without it the code default in `config.py` is `open` ([the egress default](../egress-default.md); KAN-174, L-9) |
 | Approvals inside a turn bind the agent on GKE (no uid split) | Partial | `required` refuses such turns on GKE; the [driver sidecar](../driver-sidecar.md) is built, off until its cluster checks pass (KAN-186) |
-| The control-plane pod: restricted security context and an ingress NetworkPolicy | Open | KAN-174, L-8 |
+| The control-plane pod: restricted security context and an ingress NetworkPolicy | In place | [The control-plane pod](../control-plane-pod.md); `deploy/k8s/control-plane-network.yaml` (KAN-174, L-8) |
 
 ## Supply chain and change
 
