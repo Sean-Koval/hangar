@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -345,11 +346,12 @@ async def test_a_missing_check_job_record_times_out_to_an_error(svc, gh, setting
     cid = job.landing.ai_review["confirm_job"]
     gone(svc, cid)  # its record is gone: nothing will ever answer
     monkeypatch.setattr(aireview, "MISSING_SECONDS", 0.05)
-    aireview.restore(svc)
+    with monkeypatch.context() as m:  # the restore runs as the check starts, however long the test took to get here
+        m.setattr(aireview, "now", lambda: job.landing.ai_review["confirm_at"])
+        aireview.restore(svc)
     assert job.landing.ai_review["verdict"] is None  # not at once: it waits MISSING_SECONDS from the check's start
-    for _ in range(100):
-        if job.landing.ai_review.get("verdict"):
-            break
+    deadline = time.monotonic() + 20
+    while not job.landing.ai_review.get("verdict") and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     for t in list(svc._background):  # the new review it asks for waits out the debounce
         t.cancel()

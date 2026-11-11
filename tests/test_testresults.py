@@ -133,8 +133,12 @@ def test_what_isnt_a_report():
 
 # ====================================================================== collecting around a check
 def _local(cwd: Path):
+    # The check runs as in a fresh sandbox: not with the PYTEST_ADDOPTS of the pytest running these tests (the agent
+    # stop hook sets --junitxml there), which would add a report path of its own to the one hangar injects.
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")}
+
     async def ex(cmd: str, timeout: int) -> ExecResult:
-        p = await asyncio.create_subprocess_exec("bash", "-c", cmd, cwd=str(cwd), stdout=subprocess.PIPE,
+        p = await asyncio.create_subprocess_exec("bash", "-c", cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
                                                  stderr=subprocess.PIPE)
         out, err = await asyncio.wait_for(p.communicate(), timeout)
         return ExecResult(exit_code=p.returncode, stdout=out.decode(), stderr=err.decode())

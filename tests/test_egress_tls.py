@@ -135,7 +135,8 @@ async def test_the_proxy_reassembles_a_split_hello_and_refuses_ssl2(proxied):  #
     p = proxied
     msg = hello(sni_ext("upstream.test"))
     r, w = await _connect(p, records(msg, 50))
-    assert await asyncio.wait_for(r.read(65536), 5) == b"ECHO:" + records(msg, 50)
+    want = b"ECHO:" + records(msg, 50)
+    assert await asyncio.wait_for(r.readexactly(len(want)), 5) == want  # one read may get part of it
     w.close()
     ssl2 = b"\x80\x2e\x01\x00\x02" + b"\x00" * 0x29  # an SSL 2.0-style ClientHello (msg type 1 in byte 2)
     r, w = await _connect(p, ssl2)
