@@ -900,10 +900,17 @@ async def session_patch(svc: SessionService, s: Session, max_bytes: int | None =
     source = as_of = None
     sb = svc.fleet.get(s.sandbox_id) if s.sandbox_id and svc._alive(s.sandbox_id) else None
     if sb is not None and sb.info.get("repo_path"):
-        base = s.base_sha or "HEAD"
         tmp = "/tmp/hangar-patch"
-        script = (f"export GIT_OPTIONAL_LOCKS=0; mkdir -p {tmp} && "
-                  + patch_script(shlex.quote(base), f"{tmp}/full.patch", settings.session_max_untracked_mb * MB)
+        if s.base_sha:
+            base, pre, arg = s.base_sha, "", shlex.quote(s.base_sha)
+        else:  # --- KAN-308: cloned from a repo with no branches: what the remote's other branches don't have, else
+            # all of it (against the empty tree); the session's own pushed branch doesn't count
+            base, arg = None, '"$B"'
+            pre = ("B=$(git rev-list --boundary HEAD --not "
+                   f"--exclude={shlex.quote('refs/remotes/origin/' + s.branch)} --remotes=origin 2>/dev/null "
+                   "| sed -n 's/^-//p' | head -n 1); [ -n \"$B\" ] || B=$(git hash-object -t tree /dev/null); ")
+        script = (f"export GIT_OPTIONAL_LOCKS=0; {pre}mkdir -p {tmp} && "
+                  + patch_script(arg, f"{tmp}/full.patch", settings.session_max_untracked_mb * MB)
                   + f" && head -c {max_bytes + 1} {tmp}/full.patch > {tmp}/out.patch && rm -f {tmp}/full.patch"
                   "; git rev-parse HEAD")
         res = await svc._sh(sb, script, cwd=sb.info["repo_path"], timeout=300)

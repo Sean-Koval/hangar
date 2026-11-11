@@ -1009,12 +1009,15 @@ class JobService:
             return False
         if sb.info.get("repo_path"):
             q = shlex.quote
-            if not job.base_branch and s.base_branch and s.base_branch != "HEAD":
+            if not job.base_branch and delivery.real_branch(s.base_branch):
                 job.base_branch = s.base_branch  # --- KAN-234: read at the clone; a trial's origin is gone by now
             if not job.base_branch:
                 res = await self._sh(job, "git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null "
                                           "|| git rev-parse --abbrev-ref @{-1} 2>/dev/null")
-                job.base_branch = res.stdout.strip().removeprefix("origin/") or "main"
+                # --- KAN-308: an empty repo prints `@{-1}`; never store a symbolic ref, ask the remote instead
+                job.base_branch = delivery.real_branch(res.stdout.strip().removeprefix("origin/"))
+                if not job.base_branch:
+                    await self._resolve_base(job)
             exists = await self._sh(job, f"git ls-remote --exit-code --heads origin {q(job.branch)} >/dev/null")
             if job.base_branch == job.branch or exists.exit_code == 0:
                 await self._discard_sandbox(job)
@@ -1047,6 +1050,28 @@ class JobService:
             return False
         self._event(job, f"sandbox {sb.name} ready on branch {job.branch}")
         return True
+
+    async def _resolve_base(self, job: Job) -> None:
+        """--- KAN-308: a job whose repo had no default branch when it started looks again, at each delivery and
+        follow-up, so it picks up `main` once that exists, and fetches it so `origin/<base>` is there to diff
+        against. A stored symbolic ref (`@{-1}`, from before the fix) counts as none. The job's own branch, which
+        an empty repo makes its default once it's pushed, is never its base. A job with a base commit keeps it."""
+        if job.result.base_sha or not job.sandbox_id:
+            return
+        q = shlex.quote
+        base, found = delivery.real_branch(job.base_branch), False
+        if base is None:
+            res = await self._sh(job, "git ls-remote --symref origin HEAD 2>/dev/null")
+            m = re.search(r"^ref: refs/heads/(\S+)\tHEAD$", res.stdout, re.M) if res.exit_code == 0 else None
+            base = delivery.real_branch(m.group(1)) if m else None
+            base, found = (None, False) if base == job.branch else (base, base is not None)
+        if base is None:
+            job.base_branch = None
+            return
+        res = await self._sh(job, f"git fetch -q origin {q(f'+refs/heads/{base}:refs/remotes/origin/{base}')}")
+        if found and res.exit_code == 0:
+            job.base_branch = base
+            self._event(job, f"base branch: `{base}` (the repo's default branch)")
 
     def _adopt(self, job: Job):
         """Give a job that predates sessions a session around its live sandbox; None if there's nothing to adopt."""
@@ -1151,8 +1176,8 @@ class JobService:
                 lines += [f"- {c.name}: {c.url}" for c in links]
             parts.append("\n".join(lines))
         if repo_path:
-            parts.append(f"# Repository\n\nWorking copy: `{repo_path}`, on {branch} "
-                         f"(from `{job.base_branch}`).")
+            frm = f"from `{job.base_branch}`" if job.base_branch else "the remote has no branches yet"  # KAN-308
+            parts.append(f"# Repository\n\nWorking copy: `{repo_path}`, on {branch} ({frm}).")
         if job.changeset and (section := changesets.prompt_section(self, job)):  # --- change sets
             parts.append(section)
         parts.append(f"# How to finish\n\n{finish_txt}")
@@ -1176,6 +1201,9 @@ class JobService:
             s.turns.append(st)
         # workstream E: attachments, local work (with the first turn that runs) and the output schema
         exchange.job_turn_io(job, turn, st, first=not any(t.run_id for t in job.turns[:-1]))
+        if n > 1 and not job.base_branch and sb.info.get("repo_path") and self._sandbox_alive(job):
+            with contextlib.suppress(Exception):  # --- KAN-308: a follow-up picks up a default branch made since
+                await self._resolve_base(job)
         self._event(job, f"agent turn {n} starting ({s.harness or 'default harness'}"
                          + (", resuming its conversation" if resuming else "") + ")", JobState.RUNNING, reason=None)
         try:
@@ -1397,13 +1425,15 @@ class JobService:
                 self._event(job, f"{len(changed)} uncommitted files; not committing them automatically")
             else:
                 await scratch.commit_leftovers(self, job, len(changed))  # --- frontdoor: minus agent scratch files
-        base = job.result.base_sha or f"origin/{job.base_branch}"
+        with contextlib.suppress(Exception):  # --- KAN-308: a repo with no default branch at submit may have one now;
+            await self._resolve_base(job)  # a failed look (a dead sandbox) keeps the stored base, as before
+        base = delivery.base_rev(job)
         if job.deliver != "none":
             await scratch.drop_committed(self, job, base)  # --- frontdoor: and those it committed itself
         if job.labels.get(clouddoctor.LABEL) == "fix" and job.deliver != "none":  # --- clouddoctor: only what
             if (why := await clouddoctor.check_fix(self, job, base)) is not None:  # its kind of fix may change
                 raise _DeliveryError(why)
-        log_ = await self._sh(job, f"git log --oneline --no-decorate -n 50 {q(base)}..HEAD")
+        log_ = await self._sh(job, f"git log --oneline --no-decorate -n 50 {delivery.log_range(base)}")
         job.result.commits = [ln for ln in log_.stdout.splitlines() if ln.strip()]
         head = await self._sh(job, "git rev-parse HEAD")
         job.result.head_sha = head.stdout.strip() or None
@@ -1466,9 +1496,15 @@ class JobService:
         try:
             pr = await gh.find_pr(repo, job.branch)
             if pr is None:
+                base = job.base_branch or await gh.default_branch(repo)
+                if not base or base == job.branch:  # --- KAN-308: an empty repo's first branch is the job's own
+                    self._event(job, f"pushed {job.branch} as the repository's first branch; no base branch to "
+                                     "open a PR against yet (a follow-up opens one once the repo has a default "
+                                     "branch)")
+                    return
                 draft = aireview.hold(self, job, draft)  # --- KAN-228: held as a draft for the self-review
                 title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
-                pr = await gh.open_pr(repo, job.branch, job.base_branch or await gh.default_branch(repo),
+                pr = await gh.open_pr(repo, job.branch, base,
                                       secretscan.clean(self, job, title, "the PR title"),  # --- egress
                                       secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
                 self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
