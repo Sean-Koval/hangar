@@ -189,6 +189,7 @@ class Cap(NamedTuple):
     name: str  # "acme/app's daily cap"
     limit_usd: float
     spent_usd: float
+    period: str = "today"  # --- KAN-300: or "this month"
 
 
 def zone(settings: Any) -> str:
@@ -210,12 +211,19 @@ def day_start(t: float | None = None, tz: str = "UTC") -> float:
     return datetime(d.year, d.month, d.day, tzinfo=z).timestamp()
 
 
+def month_start(t: float | None = None, tz: str = "UTC") -> float:
+    """--- KAN-300: midnight of the first of the month `t` falls in, in `tz`."""
+    z = ZoneInfo(tz)
+    d = datetime.fromtimestamp(now() if t is None else t, z)
+    return datetime(d.year, d.month, 1, tzinfo=z).timestamp()
+
+
 def _spent_today(svc: JobService, session: Callable[[Session], bool], job_of: Callable[[Job], bool],
-                 **fields: Any) -> float:
+                 since: float | None = None, **fields: Any) -> float:
     """What the matching sessions' agent turns cost since midnight (zone()), plus the sessions deleted since of the
     matching jobs, on the day their job was created. --- durable: today's sessions and jobs (and `fields`, which
     narrow both), from the store's indexes."""
-    since, total = day_start(tz=zone(svc.settings)), 0.0
+    since, total = (day_start(tz=zone(svc.settings)) if since is None else since), 0.0
     sessions = svc.sessions
     for s in sessions.touched_since(since, **fields) if sessions is not None else []:
         if not session(s):
@@ -243,6 +251,18 @@ def person_spent_today(svc: JobService, person: str) -> float:
     return _spent_today(svc, lambda s: s.person == person, lambda j: j.person == person, person=person)
 
 
+def repo_spent_this_month(svc: JobService, key: str) -> float:
+    """--- KAN-300: repo_spent_today's sum since the first of the month."""
+    return _spent_today(svc, lambda s: repo_key(s.repo) == key, lambda j: repo_key(j.repo) == key,
+                        since=month_start(tz=zone(svc.settings)))
+
+
+def person_spent_this_month(svc: JobService, person: str) -> float:
+    """--- KAN-300: person_spent_today's sum since the first of the month."""
+    return _spent_today(svc, lambda s: s.person == person, lambda j: j.person == person,
+                        since=month_start(tz=zone(svc.settings)), person=person)
+
+
 def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[Cap]:
     """Every daily cap a piece of work counts against: its repo's, and the person's it runs for (identity's
     person; --- teamcreds: a GitHub or Slack sender linked to a person counts as them, while webhooks, schedules
@@ -254,6 +274,12 @@ def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[C
         out.append(Cap(f"{policy.repo}'s daily cap", policy.max_usd_per_day, repo_spent_today(svc, policy.repo)))
     if person and (limit := svc.settings.person_max_usd_per_day):  # --- integration
         out.append(Cap(f"{person}'s daily cap", limit, person_spent_today(svc, person)))
+    # --- KAN-300: the monthly caps, beside the daily ones
+    if policy is not None and policy.max_usd_per_month:
+        out.append(Cap(f"{policy.repo}'s monthly cap", policy.max_usd_per_month,
+                       repo_spent_this_month(svc, policy.repo), "this month"))
+    if person and (limit := getattr(svc.settings, "person_max_usd_per_month", None)):
+        out.append(Cap(f"{person}'s monthly cap", limit, person_spent_this_month(svc, person), "this month"))
     return out
 
 
@@ -264,11 +290,12 @@ def _usd(v: float) -> str:
 def over_daily(svc: JobService, repo: str | None, person: str | None = None) -> str | None:
     for c in caps(svc, repo, person):
         if c.spent_usd >= c.limit_usd:
-            return f"{c.name} is spent: {_usd(c.spent_usd)} of {_usd(c.limit_usd)} today ({zone(svc.settings)})"
+            return (f"{c.name} is spent: {_usd(c.spent_usd)} of {_usd(c.limit_usd)} {c.period} "
+                    f"({zone(svc.settings)})")
     return None
 
 
 def held_message(job: Job) -> str:
-    why = job.approval.reason if job.approval else "a daily spend cap is reached"
+    why = job.approval.reason if job.approval else "a spend cap is reached"
     return (f"Hangar job `{job.id}` is waiting for approval: {why}. A trusted person can let it run anyway "
             "(`/hangar approve` on GitHub, `hangar job approve`); otherwise it is dropped when the approval expires.")

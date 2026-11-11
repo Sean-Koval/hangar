@@ -305,6 +305,8 @@ class Settings(BaseSettings):
     # person; jobs nobody in particular asked for, e.g. GitHub- and Slack-triggered, count only against their
     # repo's cap). A new job over it waits for approval; follow-ups are refused. Unset or 0 = no limit.
     person_max_usd_per_day: float | None = None
+    # --- KAN-300: the same per calendar month (HANGAR_BUDGET_DAY_TIMEZONE's months), beside the daily cap
+    person_max_usd_per_month: float | None = None
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
     # --- workstream A: triggers ----------------------------------------------
     # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the

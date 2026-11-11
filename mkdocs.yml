@@ -208,6 +208,7 @@ nav:
           - SLOs: slos.md
           - Alerting: alerting.md
           - Weekly adoption metrics: metrics.md
+          - Cost reporting: cost-reporting.md
           - Reviewer attention baseline: metrics-baseline.md
   - Reference:
       - APIs:
