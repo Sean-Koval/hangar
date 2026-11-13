@@ -58,6 +58,7 @@ LARGE_HEAD = 64 * 1024  # what is kept of it: the issue's key comes before its f
 LARGE_NOTE_SECONDS = 86400  # at most one comment a day per issue about it
 _HEAD_KEY = re.compile(rb'"issue"\s*:\s*\{.*?"key"\s*:\s*"([A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9})"', re.S)
 _HEAD_TIME = re.compile(rb'"timestamp"\s*:\s*(?:"([^"\\]{1,40})"|(-?[0-9][0-9.eE+]{0,30}))')
+HISTORY_PAGE = 100  # JiraAPI.history reads at most this many of an issue's newest changes
 COMMENT_LIMIT = 30_000  # Jira caps a comment at 32,767 characters
 OWN = "[hangar]"  # every comment hangar writes starts with this, so its own comments never count as replies
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9}$")
@@ -100,6 +101,30 @@ class JiraStatuses(BaseModel):
     failed: str | None = None
 
 
+# --- KAN-480: only a person releases a ticket to agents. These labels mark a release; the people who may set them
+# come from HANGAR_JIRA's `agent_release.people`, never from code.
+AGENT_RELEASE_LABELS = ("exec:agent", "lane:agent")
+
+
+class JiraAgentRelease(BaseModel):
+    """--- KAN-480: who may release a ticket to agents. A ticket with one of `labels` starts a job only when the
+    issue's history shows an account in `people` added each such label and made the last move into the trigger
+    status. Agent and bot service accounts are never listed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    people: list[str] = Field(min_length=1)  # Cloud accountIds; Server/DC user keys
+    labels: list[str] = Field(default_factory=lambda: list(AGENT_RELEASE_LABELS), min_length=1)
+
+    @field_validator("people")
+    @classmethod
+    def _people(cls, v: list[str]) -> list[str]:
+        bad = [x for x in v if not _ACCOUNT.match(x)]
+        if bad:
+            raise ValueError(f"not an account id: {', '.join(bad)}")
+        return v
+
+
 class JiraConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -120,6 +145,8 @@ class JiraConfig(BaseModel):
     # --- KAN-292: what jira-KEY.md carries besides the description: the newest comments, and a cap on its size
     context_comments: int = Field(30, ge=0, le=200)
     context_max_bytes: int = Field(200_000, ge=20_000, le=2_000_000)
+    # --- KAN-480: the people who may release a ticket to agents. Unset: a ticket with a release label is refused.
+    agent_release: JiraAgentRelease | None = None
 
     @field_validator("url")
     @classmethod
@@ -374,8 +401,8 @@ class JiraAPI:
         path = f"{self.api}/issue/{key}/changelog"
         first = await self._req("GET", path, params={"startAt": 0, "maxResults": 1}) or {}
         total = first.get("total")
-        start = max(0, total - 100) if isinstance(total, int) and not isinstance(total, bool) else 0
-        res = await self._req("GET", path, params={"startAt": start, "maxResults": 100}) or {}
+        start = max(0, total - HISTORY_PAGE) if isinstance(total, int) and not isinstance(total, bool) else 0
+        res = await self._req("GET", path, params={"startAt": start, "maxResults": HISTORY_PAGE}) or {}
         return list(res.get("values") or [])
 
     async def comment(self, key: str, text: str) -> None:
@@ -738,6 +765,62 @@ def mover(histories: list[dict[str, Any]], fields: dict[str, Any], trigger: Jira
     return None
 
 
+def _last_change(histories: list[dict[str, Any]], match: Any) -> dict[str, Any] | None:
+    """The newest history entry with an item `match` accepts."""
+    for h in sorted((h for h in histories if isinstance(h, dict)), key=lambda h: str(h.get("created") or ""),
+                    reverse=True):
+        if any(isinstance(i, dict) and match(i) for i in h.get("items") or []):
+            return h
+    return None
+
+
+def released(cfg: JiraConfig, fields: dict[str, Any]) -> bool:
+    """--- KAN-480: whether the issue carries a release label."""
+    on = {str(x) for x in fields.get("labels") or []}
+    return any(x in on for x in (cfg.agent_release.labels if cfg.agent_release else AGENT_RELEASE_LABELS))
+
+
+def release_refusal(cfg: JiraConfig, histories: list[dict[str, Any]], fields: dict[str, Any]) -> str | None:
+    """--- KAN-480: why a ticket released to agents may not start a job, or None when it may. It applies to a ticket
+    carrying a release label (`agent_release.labels`). The newest change adding each such label, and the newest move
+    into the trigger status, must be by an account on `agent_release.people`. It fails closed: no allow-list, no
+    such change, or a change with no author refuses. Creation stands in for a change only when the whole history
+    was read, since an older change may sit past the page read."""
+    rel = cfg.agent_release
+    on = [str(x) for x in fields.get("labels") or []]
+    present = [x for x in (rel.labels if rel else AGENT_RELEASE_LABELS) if x in on]
+    if not present:
+        return None
+    if rel is None:
+        return "no allow-list of people who may release tickets to agents is configured (HANGAR_JIRA agent_release)"
+    cloud, allowed = cfg.deployment == "cloud", set(rel.people)
+    whole = len([h for h in histories if isinstance(h, dict)]) < HISTORY_PAGE
+    creator = fields.get("creator")  # not the reporter, which whoever creates an issue may set
+    status = (cfg.trigger.status or "").casefold()
+
+    def added(label: str) -> Any:
+        return lambda i: str(i.get("field") or "").casefold() == "labels" and \
+            label in str(i.get("toString") or "").split() and label not in str(i.get("fromString") or "").split()
+
+    checks = [(f"added the `{x}` label", added(x)) for x in present]
+    if status:
+        checks.append((f"moved it to {cfg.trigger.status}", lambda i: str(i.get("field") or "").casefold() == "status"
+                       and str(i.get("toString") or "").casefold() == status))
+    for what, match in checks:
+        change = _last_change(histories, match)
+        if change is not None:
+            author = change.get("author")
+        elif whole and ("label" in what or str(((fields.get("status") or {}).get("name")) or "").casefold() == status):
+            author = creator  # set when the issue was created
+        else:
+            return f"its history shows nobody who {what}"
+        account = _account(author, cloud)
+        if account is None or account not in allowed:
+            who = _who(author, account) if isinstance(author, dict) else "an unknown account"
+            return f"{who} {what}, and only a person on the release allow-list may release a ticket to agents"
+    return None
+
+
 def _jira_time(value: Any) -> float | None:
     """Epoch seconds from a Jira timestamp (`2026-10-14T09:00:00.000+0000`), or None."""
     if not isinstance(value, str) or not value.strip():
@@ -1095,7 +1178,8 @@ class JiraFrontDoor:
                 # --- review: the token proves the request came through hangar's rule, not who acted: anyone who
                 # can edit the rule writes its body (and can send the hidden header elsewhere by changing the
                 # URL). Who moved the issue is read from Jira's own history; the body's `user` is ignored.
-                change = mover(await api.history(key), (issue.get("fields") or {}), cfg.trigger)
+                histories = await api.history(key)
+                change = mover(histories, (issue.get("fields") or {}), cfg.trigger)
             except (JiraError, httpx.HTTPError) as e:
                 return {"error": f"could not read {key}: {e}"}
             finally:
@@ -1104,7 +1188,8 @@ class JiraFrontDoor:
             if refused is not None:
                 return refused
             res = await self.start(cfg, issue, (change or {}).get("author"), delivery,
-                                   ready_at=_jira_time((change or {}).get("created")))  # --- KAN-320
+                                   ready_at=_jira_time((change or {}).get("created")),  # --- KAN-320
+                                   histories=histories)
             if res.get("ok") and res.get("job"):
                 self._count_start(key)
             return res
@@ -1193,7 +1278,8 @@ class JiraFrontDoor:
         return p.repo, p
 
     async def start(self, cfg: JiraConfig, issue: dict[str, Any], actor: Any, delivery: str = "",
-                    extra: str = "", ready_at: float | None = None) -> dict[str, Any]:
+                    extra: str = "", ready_at: float | None = None,
+                    histories: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         svc = self.jobs
         key = str(issue.get("key") or "")
         if not _KEY.match(key):
@@ -1205,6 +1291,9 @@ class JiraFrontDoor:
             return {"ignored": f"Jira project {project} is not mapped to a repo (HANGAR_JIRA projects)"}
         url = _repo_url(repo)
         ref = ref_of(key)
+        refused = await self._release_check(cfg, key, fields, histories)  # --- KAN-480
+        if refused is not None:
+            return refused
         if not svc.repo_envs(url):
             svc._spawn(notify(svc, None, ref, f"hangar can't start a job for this issue: {repo} isn't in "
                                               "HANGAR_GITHUB_REPOS. An admin can add it (docs/intake.md).", "note"))
@@ -1262,6 +1351,45 @@ class JiraFrontDoor:
                         + intake.queued_notes(svc, job, "jira"))  # --- #156
             svc._spawn(notify(svc, job, ref, note, "note"))
         return res
+
+    async def _release_check(self, cfg: JiraConfig, key: str, fields: dict[str, Any],
+                             histories: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        """--- KAN-480: a ticket released to agents (a release label) starts a job only when a person on the
+        allow-list released it, by Jira's own history. None to go on. Otherwise the refusal, audited and said on the
+        issue. A ticket or history that can't be read refuses too (fail closed). `histories` comes with an issue
+        read from the API just now (the Automation path); otherwise both are read here."""
+        svc, ref = self.jobs, ref_of(key)
+        if "labels" in fields and not released(cfg, fields):
+            return None
+        why: str | None = None
+        if histories is None:
+            try:
+                api = client_for(svc, cfg)
+            except JiraConfigError as e:
+                api, why = None, str(e)
+            if api is None:
+                why = why or "the Jira token credential is not stored"
+            else:
+                try:
+                    fields = (await api.issue(key) or {}).get("fields") or {}  # labels and creator as they are now
+                    if not released(cfg, fields):
+                        return None
+                    histories = await api.history(key)
+                except (JiraError, httpx.HTTPError) as e:
+                    why = f"the issue or its history could not be read ({e})"
+                finally:
+                    await api.close()
+            if why is not None:
+                why = f"hangar could not check who released it: {why}"
+        if why is None:
+            why = release_refusal(cfg, histories or [], fields or {})
+        if why is None:
+            return None
+        svc.admission.refused(f"jira:agent-release:{key}", "jira", "jira.agent_release.refused", ref, issue=key,
+                              why=why)
+        svc._spawn(notify(svc, None, ref, f"hangar didn't start a job for this issue: {why}. A person on the "
+                                          "allow-list can release it again (docs/intake/agent-release.md).", "note"))
+        return {"refused": why}
 
     async def _ticket_sections(self, cfg: JiraConfig, key: str) -> list[tuple[str, str]]:
         """--- KAN-292: the rest of the ticket, or a line saying why it couldn't be read."""
