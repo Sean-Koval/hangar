@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from hangar import egress_sidecar
 from hangar.models import Sandbox, now
 
 if TYPE_CHECKING:
@@ -50,7 +51,7 @@ log = logging.getLogger("hangar.egress")
 Mode = Literal["open", "allowlist", "none"]
 MODES: tuple[str, ...] = ("open", "allowlist", "none")
 _STRICTNESS = {"open": 0, "allowlist": 1, "none": 2}
-DEFAULT_PORTS = (443, 80)  # a rule without a port: HTTPS, and plain HTTP for mirrors that still serve it
+DEFAULT_PORTS = egress_sidecar.DEFAULT_PORTS  # a rule without a port: HTTPS, and plain HTTP for mirrors
 MAX_RULES = 200
 
 # Hosts per registry, from each registry's own documentation (checked 2026-10-14): PyPI's simple index and file host
@@ -146,11 +147,8 @@ class Rule(NamedTuple):
         return ("*." if self.wildcard else "") + host + (f":{self.port}" if self.port else "")
 
     def matches(self, host: str, port: int) -> bool:
-        if (port not in DEFAULT_PORTS) if self.port is None else port != self.port:
-            return False
-        if self.wildcard:
-            return host.endswith("." + self.host)
-        return host == self.host
+        # one implementation, shared with the local runner's sidecar (egress_sidecar.py, KAN-472)
+        return egress_sidecar.rule_matches(self.host, self.wildcard, self.port, host, port, DEFAULT_PORTS)
 
 
 def parse_rule(text: str, source: str) -> Rule:

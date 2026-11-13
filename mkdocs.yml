@@ -182,6 +182,7 @@ nav:
               - The service supervisor: environments/supervisor.md
               - The heavy tier: environments/heavy-tier.md
               - Docker in the sandbox: environments/docker.md
+              - Running one on your computer: environments/local-run.md
               - Heavy-tier isolation: environments/heavy-isolation.md
               - Agent-led setup: environments/agent-led-setup.md
               - "Agent-led setup: re-runs, budget and safety": environments/agent-led-setup-safety.md
