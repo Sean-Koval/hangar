@@ -37,6 +37,7 @@
 # Egress: what a sandbox may reach, and the read-only mirrors and gateways it reaches instead (trialiso: what an
 # experiment trial reaches, KAN-234).
 /src/hangar/egress*.py             @Sean-Koval
+/src/hangar/localenv.py            @Sean-Koval
 /src/hangar/pkgmirror.py           @Sean-Koval
 /src/hangar/regmirror.py           @Sean-Koval
 /src/hangar/ghapi.py               @Sean-Koval

@@ -1438,6 +1438,9 @@ _envbuilds.register_sb(sb_app)
 from hangar import autoinstall_cli as _autoinstall  # noqa: E402  --- autoinstall: hangar env setup
 
 _autoinstall.register(env_app)
+from hangar.localenv import local_app as _local_app  # noqa: E402  --- KAN-472: hangar env local
+
+env_app.add_typer(_local_app, name="local")
 # ---------------------------------------------------------------------------- --- landing: hangar inbox (inbox_cli.py)
 from hangar import inbox_cli as _inbox  # noqa: E402
 

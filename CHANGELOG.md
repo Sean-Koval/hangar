@@ -42,6 +42,10 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Added
 
+- **`hangar env local`** (KAN-472): run an environment spec on your computer with hangar's own image build and egress
+  policy, moved here from team-harness. Its egress sidecar (`egress_sidecar.py`, pinned by digest) shares the rule
+  match and address checks with the egress proxy, and refuses every DNS query
+  ([docs/environments/local-run.md](docs/environments/local-run.md)).
 - **`hangar trace import TRANSCRIPT --out DIR`** (KAN-338): a Claude Code session hangar didn't run, offline, as
   `events.jsonl` (hangar's events, through its own parser) and `trace.json` (a `hangar.trace/v1` session export). It
   reads a local transcript with its subagents' transcripts, a cloud session's events or stream-json
