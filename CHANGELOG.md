@@ -40,6 +40,11 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 `HANGAR_UID_SPLIT=auto` to keep the old warning, which `hangar doctor` flags
 ([why](docs/security/e2b-driver-user.md)).
 
+**A Jira ticket labelled `exec:agent` or `lane:agent` needs an allow-list** (KAN-480). hangar starts its job only
+when a listed person added the label and moved it to the trigger status, by the issue's changelog. Without
+`HANGAR_JIRA` `agent_release.people`, such a ticket is refused with a comment
+([docs/intake/agent-release.md](docs/intake/agent-release.md)).
+
 ### Added
 
 - **`hangar env local`** (KAN-472): run an environment spec on your computer with hangar's own image build and egress

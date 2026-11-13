@@ -168,6 +168,7 @@ nav:
           - Intake (Jira, GitHub Projects):
               - intake.md
               - Jira intake: intake/jira.md
+              - Who releases a ticket to agents: intake/agent-release.md
           - Slack: slack.md
           - Triggers and schedules: triggers.md
           - Plugins and events out: plugins.md

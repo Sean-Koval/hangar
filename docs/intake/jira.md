@@ -63,6 +63,7 @@ Alternatively, a label starts jobs: `"trigger": {"label": "hangar"}`, or `{"stat
 | `statuses` | The status to move the issue to at each stage, by name. Leave out any you don't want. The transition into it must exist from where the issue is; if it doesn't, hangar notes that on the job and leaves the status alone |
 | `max_age_minutes` | How old a delivery's `timestamp` may be (120) |
 | `context_comments`, `context_max_bytes` | What `jira-<key>.md` holds besides the description: the newest comments (30), marked trusted for linked people; the parent or epic, subtasks, links, text attachments (1 MB each) and Confluence links; at most 200,000 bytes, with a note on what was cut |
+| `agent_release` | Who may release a ticket to agents: `people` (account ids, no default) and `labels` (`exec:agent`, `lane:agent`). Without it, a ticket with a release label is refused. See [Who releases a ticket to agents](agent-release.md) |
 | `automation_max_transition_age_minutes`, `automation_max_starts_per_issue_per_day` | The [Automation fallback](#fallback-an-automation-rule) only: how recent the issue's trigger transition must be (10), and how many jobs one issue may start a day (3) |
 
 A stage's status can't be the trigger status: hangar would move the issue back into the trigger and start the job again. `hangar doctor` checks the configuration, that the credentials are stored, that the token works (`GET /myself`) and that every mapped repo is allowlisted, and shows the trigger (`jira trigger`).
