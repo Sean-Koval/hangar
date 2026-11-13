@@ -64,8 +64,8 @@ the internal network, the sidecar and the `--dns` setting all live inside it. No
 firewall or resolver.
 
 That is a design claim until it is measured. `hangar env local check` on a Mac is the qualification: its DNS checks
-are the ones that would catch a resolver leak. It has passed on Linux (Docker 29.9); the macOS run is tracked on
-KAN-472. Colima and OrbStack also run containers in a Linux VM, but are unqualified.
+are the ones that would catch a resolver leak. Its egress and DNS checks have passed on Linux (Docker 29.9); the
+macOS run is tracked on KAN-472. Colima and OrbStack also run containers in a Linux VM, but are unqualified.
 
 ## What it doesn't do
 
