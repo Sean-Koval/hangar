@@ -4,7 +4,9 @@ turn 1 that what the sandbox had matches it.
 * **Resolve.** `name`, `name@rN`, `name@sha256:...` or `name@<channel>` against the harness registry: a checkout of
   the team harness repo (`HANGAR_HARNESS_REPO`, a directory or a git URL hangar keeps a checkout of: harness_repo.py,
   #138; `harnesses/<name>/harness.lock`, channels in `channels.yaml`). A
-  revision or digest that isn't the current one is looked up in the checkout's git history.
+  revision or digest that isn't the current one is looked up in the harness's release copies
+  (`harnesses/<name>/releases/rN/`, KAN-477), never in git history, where a squash merge can lose or change it. A
+  harness with no `releases/` directory is still looked up in the checkout's git history.
 * **Claim.** The lock's CLI version must be the one `harnesses.lock.yaml` pins, or the claim is refused; the model is
   pinned to the lock's concrete id and the approval mode to its binding. The lock's directory is copied out of the
   registry into hangar's data directory (`materialize`: content-addressed, so a later edit to the registry never
@@ -55,6 +57,7 @@ log = logging.getLogger("hangar.harness_thaw")
 
 HARNESSES_DIR = "harnesses"
 CHANNELS_FILE = "channels.yaml"
+RELEASES_DIR = "releases"  # under a harness directory: release copies, rN/ each a whole lock directory (KAN-477)
 DRIFT_EVENT = "harness.drift"
 DRIFT_REASON = "harness_drift"
 HANGAR_SKILLS = {"hangar-environment", "verify-ui"}  # hangar writes these itself (svc_control.py, computer.py)
@@ -123,6 +126,11 @@ def _channel(root: Path, name: str, channel: str) -> str:
     return digest
 
 
+def _release_order(p: Path) -> tuple[int, str]:
+    m = re.fullmatch(r"r(\d+)", p.name)
+    return (int(m[1]) if m else -1, p.name)
+
+
 def resolve(settings: Any, ref: str) -> Resolved:
     """A lock by `name`, `name@rN`, `name@sha256:...` or `name@<channel>`."""
     m = _REF.match(ref.strip())
@@ -153,6 +161,18 @@ def resolve(settings: Any, ref: str) -> Resolved:
 
     if ok(current):
         return Resolved(ref, name, current, harness_lock.harness_digest(current), rel)
+    releases = d / RELEASES_DIR
+    if releases.is_dir():  # --- KAN-477: release copies, never git history
+        for rd in sorted((p for p in releases.iterdir() if p.is_dir() and not p.is_symlink()), key=_release_order):
+            with contextlib.suppress(ValueError, OSError):
+                old = harness_lock.load(rd)
+                if old.get("name") == name and ok(old):
+                    return Resolved(ref, name, old, harness_lock.harness_digest(old),
+                                    (rd / harness_lock.LOCK_FILE).relative_to(root).as_posix())
+        have = ", ".join(p.name for p in sorted(releases.iterdir(), key=_release_order) if p.is_dir()) or "none"
+        raise ThawError(f"{ref}: not in the registry; {name} is at r{current['revision']} "
+                        f"({harness_lock.harness_digest(current)}), and its release copies ({have}) don't match. "
+                        f"A harness with {RELEASES_DIR}/ resolves only from them, never from git history")
     for commit in (_git(root, "log", "--format=%H", "--", rel) or "").split():  # the registry's history
         text = _git(root, "show", _blob(commit, rel))
         with contextlib.suppress(yaml.YAMLError, ValueError, TypeError):
@@ -230,7 +250,7 @@ def _needed(lock: dict[str, Any]) -> list[str]:
 
 def _registry_files(root: Path, r: Resolved) -> dict[str, bytes]:
     """{path relative to the harness directory: content} of the files a claim needs, from the checkout's working tree
-    (the current lock) or the registry commit the lock was found in."""
+    (the current lock, or a release copy: the directory of `r.path`) or the registry commit the lock was found in."""
     base = Path(r.path).parent.as_posix()
     want = _needed(r.lock)
 
