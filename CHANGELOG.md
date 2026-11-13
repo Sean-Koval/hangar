@@ -58,6 +58,9 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 
 ### Changed
 
+- **Thaw resolves older revisions from release copies** (KAN-477). For a harness with `releases/`, `name@rN`,
+  a digest or a channel that isn't the current lock comes from `harnesses/<name>/releases/rN/`, never git history.
+  A squash merge can't lose or change what `stable` runs. A harness without `releases/` still falls back to history.
 - **Cost reporting for a team** (KAN-300). Weekly metrics and `GET /api/usage` report cost per verified PR next to
   cost per merged PR. Repo policy `max_usd_per_month` and `HANGAR_PERSON_MAX_USD_PER_MONTH` hold new jobs like the
   daily caps. `hangar usage export --month YYYY-MM --by person|repo` (`GET /api/usage/export`, admin) writes a

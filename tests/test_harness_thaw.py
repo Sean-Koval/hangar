@@ -264,6 +264,55 @@ def test_history_resolves_when_the_registry_is_a_subdirectory_of_a_repo(settings
     assert stale == [] and (d / "skills/review/SKILL.md").read_text() == "Review it.\n"  # r1's files, from history
 
 
+def test_release_copies_resolve_and_git_history_does_not(settings, tmp_path):
+    """KAN-477: a harness with `releases/` resolves an older revision, digest or channel from its release copies
+    (`harnesses/<name>/releases/rN/`, team-harness's scripts/promote.py), and its files are the copy's: a hook edited
+    on main after a promotion never reaches a `stable` session. Git history is not read for it, so a digest only there
+    is refused rather than resolved from files a squash merge could have changed."""
+    reg = tmp_path / "registry"
+    h = reg / "harnesses" / "team"
+
+    def lock_of(rev: int, text: str) -> tuple[dict, dict]:
+        files = {"skills/review/SKILL.md": text.encode(), "native/claude-code/hooks/guard.py": f"# r{rev}\n".encode()}
+        lock = hl._lock(name="team", revision=rev, components=[
+            {"id": "skill:review", "path": "skills/review",
+             "digest": harness_lock.files_digest({"SKILL.md": text.encode()})},
+            {"id": "native:claude-code/hooks/guard.py", "path": "native/claude-code/hooks/guard.py",
+             "digest": harness_lock._sha(files["native/claude-code/hooks/guard.py"])}])
+        return lock, files
+
+    r1, f1 = lock_of(1, "Review it.\n")
+    harness_lock.write(h, r1, f1)
+    _commit(reg, "team r1")  # r1 in history, under the harness itself
+    harness_lock.write(h / "releases" / "r1", r1, f1)  # and promoted: its release copy
+    r2, f2 = lock_of(2, "Review it twice.\n")
+    harness_lock.write(h, r2, f2)
+    d1 = harness_lock.harness_digest(r1)
+    (reg / "channels.yaml").write_text(yaml.safe_dump({"team": {"stable": d1}}))
+    _commit(reg, "team r2, stable at releases/r1")
+    settings.harness_repo = str(reg)
+
+    assert harness_thaw.resolve(settings, "team").lock["revision"] == 2
+    for ref in ("team@stable", "team@r1", f"team@{d1}"):
+        r = harness_thaw.resolve(settings, ref)
+        assert (r.lock["revision"], r.digest, r.path, r.commit) == (1, d1, "harnesses/team/releases/r1/harness.lock",
+                                                                    None), ref
+    d, stale = harness_thaw.materialize(settings, harness_thaw.resolve(settings, "team@stable"))
+    assert stale == []
+    assert (d / "native/claude-code/hooks/guard.py").read_text() == "# r1\n"  # the release copy's hook, not main's
+    assert (d / "skills/review/SKILL.md").read_text() == "Review it.\n"
+
+    # a revision only in git history: refused, never read from there
+    shutil.rmtree(h / "releases" / "r1")
+    _commit(reg, "drop the release copy")
+    with pytest.raises(harness_thaw.ThawError, match=r"release copies \(none\) don't match.*never from git history"):
+        harness_thaw.resolve(settings, "team@stable")
+    # without releases/ at all, history is still the fallback (a registry that doesn't keep release copies)
+    (h / "releases").rmdir()
+    r = harness_thaw.resolve(settings, "team@r1")
+    assert r.lock["revision"] == 1 and r.commit
+
+
 async def test_a_thawed_session_keeps_its_harness_and_the_cli_thaws_and_reports(jobs, world, settings, monkeypatch):
     reg, digest = await _frozen_registry(jobs, world)
     s = jobs.sessions.new(NewSession(name="thawed", environment="lockenv", harness_lock="team@r1"),
