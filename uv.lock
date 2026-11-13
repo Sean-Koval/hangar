@@ -616,7 +616,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.162.0"
+version = "0.162.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -626,9 +626,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/eb/2cf8c80abf09b2800aef0a83b41066fbfda8ee5495b7a08b9d1af40f7046/fastapi-0.162.0.tar.gz", hash = "sha256:6a22c1e2e6e32e0633ee7e170f00009a29b8228b16feb219ee42f32fd8d88a8f", size = 527867, upload-time = "2026-10-23T18:47:33.264Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/53/f6fed628a0c3d6a284125a93f9145b02ecc2c394735a878b5ad9938c8e17/fastapi-0.162.2.tar.gz", hash = "sha256:9ebd2a69b579141315b2447d8e3f518e6fd909abd6c01cac5cc6b06d5c8841f4", size = 530366, upload-time = "2026-11-07T15:41:39.838Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/4f/3f2c25c9b43970b5e9a08beb5e04776247edea684ddc0930f4f02f0bb6cb/fastapi-0.162.0-py3-none-any.whl", hash = "sha256:3785963de305dd09912426cb81f2d230fce98ab3521cdfe97265c8d14983128c", size = 148912, upload-time = "2026-10-23T18:47:31.734Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/fb/0dc0f819163bc6b7f9e6802d7d0b1ac180fbbe4e75dbd10655c6a4d77796/fastapi-0.162.2-py3-none-any.whl", hash = "sha256:d0584f9662317e01140df94c64f4bed1d8b059fe35496e30c9c92f70e6e5ff15", size = 151671, upload-time = "2026-11-07T15:41:38.509Z" },
 ]
 
 [[package]]
@@ -809,7 +809,7 @@ requires-dist = [
     { name = "docker", specifier = ">=7.1" },
     { name = "e2b", marker = "extra == 'all'", specifier = ">=2.63.0" },
     { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.63.0" },
-    { name = "fastapi", specifier = ">=0.162.0" },
+    { name = "fastapi", specifier = ">=0.162.2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.18" },
     { name = "kubernetes", marker = "extra == 'all'", specifier = ">=37.0.2" },
@@ -823,7 +823,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "pydantic-settings", specifier = ">=2.16.2" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.29.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
     { name = "websockets", specifier = ">=17.4" },
 ]
@@ -2211,17 +2211,18 @@ wheels = [
 
 [[package]]
 name = "typer"
-version = "0.27.3"
+version = "0.29.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
     { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "pydantic" },
     { name = "rich" },
     { name = "shellingham" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/03/51/d33db42cc72ffd8c30777547b42d01f0cbf9d95a770457698d0174b3ed71/typer-0.27.3.tar.gz", hash = "sha256:d0396f770a560ab1b0a8504e13b5f254b728cedb05c61cf0359e944e50ce8901", size = 205303, upload-time = "2026-10-06T17:24:16.61Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/db/401793a0d5345409a28de2c571d4ef8bea9a08700c20ea7f7b6af3b050d2/typer-0.29.0.tar.gz", hash = "sha256:6871960a1603fba66af2ff751be48a6735af6480a67660afaf2fab2f7e008ed4", size = 206371, upload-time = "2026-11-09T18:48:12.751Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/ea/2e31b67051e91a133189e9c000c222502ddc6969856416de0d095de4c0b0/typer-0.27.3-py3-none-any.whl", hash = "sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff", size = 123312, upload-time = "2026-10-06T17:24:15.054Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/3d/cc08d3cb257764101c71c47f18e2f547782d013928edc877f155cb99229d/typer-0.29.0-py3-none-any.whl", hash = "sha256:b3c3de6e06a848274dc7bd56a433499e9cf25fa1d40aa3ba4eccfec4e1624c7b", size = 121058, upload-time = "2026-11-09T18:48:11.665Z" },
 ]
 
 [[package]]
