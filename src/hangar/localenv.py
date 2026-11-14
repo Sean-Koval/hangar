@@ -160,11 +160,13 @@ def harness_env(h: Any, base_path: str) -> dict[str, str]:
     return {"PATH": f"{h.prefix}/bin:{base_path}{extra}", **h.env, "HANGAR_HARNESS": h.name}
 
 
-def harness_config(spec: Any, h: Any, env: dict[str, str]) -> tuple[dict[str, Any], list[str], list[str]]:
+def harness_config(spec: Any, h: Any, env: dict[str, str],
+                   clones: list[tuple[str, str]] | None = None) -> tuple[dict[str, Any], list[str], list[str]]:
     """(files, servers, skipped): the config a hangar claim writes for the harness, as {path under $HOME: content},
     with the spec's MCP servers resolved against `env`, the variables passed into the container (and the spec's own
-    env). A server whose `${VAR}` isn't set is skipped, as at a claim. JSON content is merged into the file there; a
-    string (Codex's TOML) replaces hangar's managed block."""
+    env). A cloned input (`--clone DIR=VAR`) resolves to its clone, /workspace/DIR, not its URL: an MCP server such as
+    ai-dlc's reads the checkout. A server whose `${VAR}` isn't set is skipped, as at a claim. JSON content is merged
+    into the file there; a string (Codex's TOML) replaces hangar's managed block."""
     from hangar.harnesses import deep_merge, mcp_config, resolve_refs
 
     if h is None:
@@ -175,7 +177,7 @@ def harness_config(spec: Any, h: Any, env: dict[str, str]) -> tuple[dict[str, An
     for n, srv in sorted(servers.items()):
         missing: set[str] = set()
         fields = resolve_refs(srv.model_dump(include={"url", "headers", "command", "args", "env"}),
-                              {**spec.env, **env}, missing)
+                              {**spec.env, **env, **{var: f"/workspace/{d}" for d, var in clones or []}}, missing)
         if missing:
             skipped.append(f"MCP server '{n}' skipped: needs {', '.join(sorted(missing))}")
             continue
@@ -207,9 +209,10 @@ def write_config(container: str, files: dict[str, Any]) -> None:
                "sh", path, input=new.encode())
 
 
-def setup_harness(container: str, spec: Any, h: Any, env: dict[str, str]) -> list[str]:
+def setup_harness(container: str, spec: Any, h: Any, env: dict[str, str],
+                  clones: list[tuple[str, str]] | None = None) -> list[str]:
     """Write the harness's config and MCP servers into the container; lines for the run's log (names only)."""
-    files, servers, skipped = harness_config(spec, h, env)
+    files, servers, skipped = harness_config(spec, h, env, clones)
     if files:
         write_config(container, files)
     return ([f"{h.name}: MCP servers configured: {', '.join(servers) or 'none'}"] if h else []) + skipped
@@ -466,7 +469,7 @@ def _up(env: str, env_dir: list[Path], harnesses: Path | None, contract: Path | 
     environ = dict(os.environ)
     n = start(spec, image, instance, passed, environ, harness_env(h, image_path(image)) if h else None)
     n.harness = h
-    for line in setup_harness(n.agent, spec, h, {k: environ[k] for k in n.passed}):
+    for line in setup_harness(n.agent, spec, h, {k: environ[k] for k in n.passed}, clones):
         print(line, file=sys.stderr)
     for line in clone_inputs(n.agent, clones):
         print(line, file=sys.stderr)
