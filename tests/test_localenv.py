@@ -327,7 +327,7 @@ def _jira_cfg(**kw):
     return JiraConfig.model_validate({"url": "https://example.atlassian.net", "token_credential": "jira",
                                       "email": "hangar@example.com", "webhook_secret_credential": "jira-webhook",
                                       "projects": {"KAN": {"repo": "o/r"}}, "trigger": {"status": "Ready for agent"},
-                                      "agent_release": {"people": [SEAN]}, **kw})
+                                      "agent_release": {"people": [SEAN], "github_people": ["Sean-Koval"]}, **kw})
 
 
 def _jira(account: str, seen: list | None = None, status: int = 200):
@@ -387,6 +387,7 @@ def test_up_refuses_before_building_when_the_agent_is_a_person(monkeypatch, tmp_
     f = tmp_path / "jira.json"
     f.write_text(json.dumps(_jira_cfg().model_dump(mode="json")))
     monkeypatch.setattr(localenv, "myself", lambda cfg, auth, transport=None: {"accountId": SEAN})
+    monkeypatch.setattr(localenv, "github_user", lambda token, transport=None: {"login": "agent-bot", "id": 9})
     monkeypatch.setattr(localenv, "build", lambda *a: pytest.fail("built"))
     monkeypatch.setattr(localenv, "down", lambda *a: pytest.fail("touched docker"))
     monkeypatch.setenv("ATLASSIAN_MCP_AUTHORIZATION", "Basic x")
@@ -394,3 +395,58 @@ def test_up_refuses_before_building_when_the_agent_is_a_person(monkeypatch, tmp_
         r = CliRunner().invoke(cli.app, ["env", "local", cmd, "agent", "--env-dir", str(tmp_path),
                                          "--release-config", str(f)])
         assert r.exit_code != 0 and "refused" in str(r.exception) + r.output, (cmd, r.output, r.exception)
+
+
+def _github(login: str | None, uid: int = 1, status: int = 200, seen: list | None = None):
+    """A fake GitHub: `GET /user` answers with `login`; an App installation token gets 403."""
+    import httpx
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        (seen if seen is not None else []).append((req.method, str(req.url), req.headers.get("authorization")))
+        if req.url.path != "/user":
+            return httpx.Response(404)
+        if req.headers["authorization"].startswith("Bearer ghs_"):
+            return httpx.Response(403, json={"message": "Resource not accessible by integration"})
+        return httpx.Response(status, json={"login": login, "id": uid, "type": "User"})
+
+    return httpx.MockTransport(handle)
+
+
+def test_a_releasers_github_token_is_refused():
+    seen: list = []
+    why = localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "github_pat_x"},
+                                           transport=_github("sean-koval", 4807, seen=seen))
+    assert why and "sean-koval" in why and "agent_release.github_people" in why and "App or bot" in why
+    assert seen == [("GET", "https://api.github.com/user", "Bearer github_pat_x")]  # read-only
+    cfg = _jira_cfg(agent_release={"people": [SEAN], "github_people": ["4807"]})  # by numeric id too
+    assert localenv.github_identity_refusal(cfg, {"GH_TOKEN": "t"}, transport=_github("renamed", 4807))
+
+
+def test_a_bot_or_app_token_passes():
+    assert localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "github_pat_bot"},
+                                            transport=_github("agent-bot", 99)) is None
+    assert localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "ghs_app"}, transport=_github(None)) is None
+
+
+@pytest.mark.parametrize("release,environ,status,expect", [
+    ({"people": [SEAN]}, {"GH_TOKEN": "t"}, 200, "no agent_release.github_people"),
+    ({"people": [SEAN], "github_people": ["Sean-Koval"]}, {}, 200, "GH_TOKEN is not set"),
+    ({"people": [SEAN], "github_people": ["Sean-Koval"]}, {"GH_TOKEN": "t"}, 401, "refused GH_TOKEN (401)"),
+])
+def test_the_github_check_fails_closed(release, environ, status, expect):
+    why = localenv.github_identity_refusal(_jira_cfg(agent_release=release), environ,
+                                           transport=_github("agent-bot", status=status))
+    assert why and expect in why, why
+
+
+def test_up_refuses_a_releasers_github_token_before_building(monkeypatch, tmp_path):
+    f = tmp_path / "jira.json"
+    f.write_text(json.dumps(_jira_cfg().model_dump(mode="json")))
+    monkeypatch.setattr(localenv, "myself", lambda cfg, auth, transport=None: {"accountId": AGENT})
+    monkeypatch.setattr(localenv, "github_user", lambda token, transport=None: {"login": "Sean-Koval", "id": 1})
+    monkeypatch.setattr(localenv, "build", lambda *a: pytest.fail("built"))
+    monkeypatch.setenv("ATLASSIAN_MCP_AUTHORIZATION", "Basic x")
+    monkeypatch.setenv("GH_TOKEN", "t")
+    r = CliRunner().invoke(cli.app, ["env", "local", "up", "agent", "--env-dir", str(tmp_path), "--release-config",
+                                     str(f)])
+    assert r.exit_code != 0 and "github_people" in str(r.exception), (r.output, r.exception)

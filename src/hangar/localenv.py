@@ -18,7 +18,8 @@ and the spec's MCP servers, resolved from the passed variables and written into 
 `check` then asks the agent CLI for one answer (`claude -p`), so a missing or wrong model credential fails there.
 
 With `--release-config` (HANGAR_JIRA), `up` and `check` refuse to start unless the agent's Atlassian credential belongs
-to an account of its own (KAN-497): one not on `agent_release.people`, read with Jira's read-only `myself`.
+to an account of its own (KAN-497): one not on `agent_release.people`, read with Jira's read-only `myself`. Its
+GitHub token (GH_TOKEN, read with GitHub's `GET /user`) must not be a login on `agent_release.github_people`.
 
     hangar env local up agent --env-dir environments --harnesses harnesses --clone code=CODE_REPO
     hangar env local check agent ...   # two fresh instances report the same; nothing mounted; egress and DNS refused
@@ -408,12 +409,65 @@ def identity_refusal(cfg: Any, environ: dict[str, str], var: str = AGENT_AUTH_VA
     return None
 
 
+GITHUB_TOKEN_VAR = "GH_TOKEN"
+GITHUB_API = "https://api.github.com"
+
+
+def github_user(token: str, transport: Any = None) -> dict[str, Any] | None:
+    """GitHub's `GET /user` for the token (read-only); None for a GitHub App installation token, which has no user
+    (GitHub answers 403 "Resource not accessible by integration")."""
+    import httpx
+
+    with httpx.Client(transport=transport, timeout=20, follow_redirects=False) as c:
+        r = c.get(f"{GITHUB_API}/user", headers={"Authorization": f"Bearer {token}",
+                                                 "Accept": "application/vnd.github+json",
+                                                 "X-GitHub-Api-Version": "2022-11-28"})
+    if r.status_code == 403 and token.startswith("ghs_"):
+        return None
+    r.raise_for_status()
+    out = r.json()
+    if not isinstance(out, dict) or not out.get("login"):
+        raise ValueError("GET /user returned no login")
+    return out
+
+
+def github_identity_refusal(cfg: Any, environ: dict[str, str], var: str = GITHUB_TOKEN_VAR,
+                            transport: Any = None) -> str | None:
+    """Why the agent may not start with this GitHub token, or None. It fails closed like identity_refusal: no
+    `agent_release.github_people`, no token, or a `GET /user` that fails refuses. A login or user id on the list is a
+    person who releases tickets, so the agent would act as them. An App installation token is never a person's."""
+    import httpx
+
+    people = {p.casefold() for p in (cfg.agent_release.github_people if cfg.agent_release else [])}
+    if not people:
+        return ("the release config has no agent_release.github_people (the releasers' GitHub logins), so the agent's "
+                "GitHub token can't be told from a person's")
+    token = environ.get(var, "").strip()
+    if not token:
+        return f"{var} is not set: the agent needs a GitHub App or bot token of its own"
+    try:
+        user = github_user(token, transport)
+    except (httpx.HTTPError, ValueError) as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        return f"GitHub's GET /user refused {var} ({status or type(e).__name__}): the agent's identity can't be checked"
+    if user is None:
+        return None
+    login, uid = str(user.get("login")), str(user.get("id") or "")
+    if login.casefold() in people or (uid and uid in people):
+        return (f"{var} is {login}'s (id {uid}), who is on agent_release.github_people: an agent must use a GitHub "
+                "App or bot account of its own, never a person's who releases tickets "
+                "(docs/environments/agent-identity.md)")
+    return None
+
+
 def refuse_unless_agent_identity(release_config: Path | None, environ: dict[str, str]) -> None:
     if release_config is None:
         return
-    if why := identity_refusal(load_release_config(release_config), environ):
+    cfg = load_release_config(release_config)
+    if why := identity_refusal(cfg, environ) or github_identity_refusal(cfg, environ):
         raise SystemExit(f"refused: {why}")
-    print(f"agent identity: {AGENT_AUTH_VAR} is an account of its own, not on agent_release.people", file=sys.stderr)
+    print(f"agent identity: {AGENT_AUTH_VAR} and {GITHUB_TOKEN_VAR} are the agent's own, not a releaser's",
+          file=sys.stderr)
 
 
 # ------------------------------------------------------------------------------------------------ the checks

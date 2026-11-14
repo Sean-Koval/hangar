@@ -115,6 +115,9 @@ class JiraAgentRelease(BaseModel):
 
     people: list[str] = Field(min_length=1)  # Cloud accountIds; Server/DC user keys
     labels: list[str] = Field(default_factory=lambda: list(AGENT_RELEASE_LABELS), min_length=1)
+    # --- KAN-497: the same people's GitHub logins (or numeric user ids). `hangar env local --release-config` refuses
+    # an agent whose GH_TOKEN belongs to one of them: an agent never holds a releaser's GitHub token either.
+    github_people: list[str] = Field(default_factory=list)
 
     @field_validator("people")
     @classmethod

@@ -39,8 +39,7 @@ filled from the passed variables, over stdin; a `--clone` input's is its checkou
 Claude Code takes `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, a subscription login) or
 `ANTHROPIC_API_KEY`. Name the one you use in the contract.
 
-`--release-config` refuses to start when the agent's Atlassian account is a person's
-([agent identity](agent-identity.md)).
+`--release-config` refuses an agent holding a releaser's token ([agent identity](agent-identity.md)).
 
 ## The container and its network
 

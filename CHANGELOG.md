@@ -49,7 +49,8 @@ when a listed person added the label and moved it to the trigger status, by the 
 
 - **Agents act under their own identity** (KAN-497). `hangar env local up` and `check --release-config FILE` refuse
   to start when the agent's Atlassian credential (`ATLASSIAN_MCP_AUTHORIZATION`) belongs to an account on
-  `agent_release.people`, read with Jira's `myself`. How to create the accounts:
+  `agent_release.people`, read with Jira's `myself`, or when `GH_TOKEN`'s login (GitHub `GET /user`) is on the new
+  `agent_release.github_people`. How to create the accounts:
   [docs/environments/agent-identity.md](docs/environments/agent-identity.md).
 
 - **`hangar env local` runs the agent CLI** (KAN-496). The baked harness's pinned CLI is first on `PATH`, and the
