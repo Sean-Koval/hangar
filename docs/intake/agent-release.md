@@ -40,4 +40,5 @@ The list lives in `HANGAR_JIRA`, beside the trigger. hangar ships no default lis
 | `people` | The accounts that may release a ticket: Cloud account ids, or Data Center user keys. Required, at least one |
 | `labels` | The labels that mark a release. Leave it out for `exec:agent` and `lane:agent` |
 
-List people only. Never list hangar's own Jira account, an agent's account or a bot's service account.
+List people only. Never list hangar's own Jira account, an agent's account or a bot's service account. An agent
+works under accounts of its own ([agent identity](../environments/agent-identity.md)).

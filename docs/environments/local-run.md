@@ -39,6 +39,9 @@ filled from the passed variables, over stdin. A server whose variable isn't set 
 Claude Code takes `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, a subscription login) or
 `ANTHROPIC_API_KEY`. Name the one you use in the contract.
 
+`--release-config` refuses to start when the agent's Atlassian account is a person's
+([agent identity](agent-identity.md)).
+
 ## The container and its network
 
 The agent container mounts nothing from the host: no home directory, checkout or Docker socket. It sits on an

@@ -47,6 +47,11 @@ when a listed person added the label and moved it to the trigger status, by the 
 
 ### Added
 
+- **Agents act under their own identity** (KAN-497). `hangar env local up` and `check --release-config FILE` refuse
+  to start when the agent's Atlassian credential (`ATLASSIAN_MCP_AUTHORIZATION`) belongs to an account on
+  `agent_release.people`, read with Jira's `myself`. How to create the accounts:
+  [docs/environments/agent-identity.md](docs/environments/agent-identity.md).
+
 - **`hangar env local` runs the agent CLI** (KAN-496). The baked harness's pinned CLI is first on `PATH`, and the
   spec's MCP servers are written into its config in the container at start. `check` adds an agent probe:
   `claude -p` must answer with `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`

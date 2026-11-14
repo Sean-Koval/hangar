@@ -303,3 +303,83 @@ def test_dns_server_refuses_over_udp_and_tcp():
         for s in (udp, tcp):
             s.shutdown()
             s.server_close()
+
+
+# ============================================================================ the agent's identity (KAN-497)
+SEAN = "712020:73fc02a4-9871-42c9-9b8c-0e1b5bfd84e4"
+AGENT = "712020:00000000-0000-0000-0000-00000000a6e7"
+
+
+def _jira_cfg(**kw):
+    from hangar.jira import JiraConfig
+
+    return JiraConfig.model_validate({"url": "https://example.atlassian.net", "token_credential": "jira",
+                                      "email": "hangar@example.com", "webhook_secret_credential": "jira-webhook",
+                                      "projects": {"KAN": {"repo": "o/r"}}, "trigger": {"status": "Ready for agent"},
+                                      "agent_release": {"people": [SEAN]}, **kw})
+
+
+def _jira(account: str, seen: list | None = None, status: int = 200):
+    """A fake Jira: `myself` answers with `account`, only for the Authorization it was asked with."""
+    import httpx
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        (seen if seen is not None else []).append((str(req.url), req.headers.get("authorization")))
+        if req.url.path == "/_edge/tenant_info":
+            return httpx.Response(200, json={"cloudId": "c10ud"})
+        if req.url.path.endswith("/myself"):
+            return httpx.Response(status, json={"accountId": account, "displayName": "Some One"})
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handle)
+
+
+def test_a_person_on_the_release_list_is_refused_as_the_agent():
+    seen: list = []
+    why = localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Basic c2VhbjpzM2NyZXQ="},
+                                    transport=_jira(SEAN, seen))
+    assert why and "Some One" in why and SEAN in why and "agent_release.people" in why and "own Atlassian" in why
+    assert seen == [("https://example.atlassian.net/rest/api/3/myself", "Basic c2VhbjpzM2NyZXQ=")]  # a GET only
+
+
+def test_an_account_of_its_own_passes_and_a_service_account_is_read_through_the_gateway():
+    assert localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Basic YWdlbnQ6dA=="},
+                                     transport=_jira(AGENT)) is None
+    seen: list = []
+    assert localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Bearer key"},
+                                     transport=_jira(AGENT, seen)) is None
+    assert seen[-1] == ("https://api.atlassian.com/ex/jira/c10ud/rest/api/3/myself", "Bearer key")
+
+
+@pytest.mark.parametrize("cfg,environ,status,expect", [
+    ({"agent_release": None}, {"ATLASSIAN_MCP_AUTHORIZATION": "Basic x"}, 200, "no agent_release.people"),
+    ({}, {}, 200, "is not set"),
+    ({}, {"ATLASSIAN_MCP_AUTHORIZATION": "Basic x"}, 401, "refused ATLASSIAN_MCP_AUTHORIZATION (401)"),
+])
+def test_it_fails_closed(cfg, environ, status, expect):
+    why = localenv.identity_refusal(_jira_cfg(**cfg), environ, transport=_jira(AGENT, status=status))
+    assert why and expect in why, why
+
+
+def test_the_release_config_reads_hangar_config_list_json(tmp_path):
+    raw = _jira_cfg().model_dump(mode="json")
+    for content in (raw, json.dumps(raw), [{"key": "HANGAR_X", "value": "1"}, {"key": "HANGAR_JIRA", "value": raw}]):
+        f = tmp_path / "jira.json"
+        f.write_text(json.dumps(content))
+        assert localenv.load_release_config(f).agent_release.people == [SEAN]
+    f.write_text("[]")
+    with pytest.raises(SystemExit, match="not a HANGAR_JIRA config"):
+        localenv.load_release_config(f)
+
+
+def test_up_refuses_before_building_when_the_agent_is_a_person(monkeypatch, tmp_path):
+    f = tmp_path / "jira.json"
+    f.write_text(json.dumps(_jira_cfg().model_dump(mode="json")))
+    monkeypatch.setattr(localenv, "myself", lambda cfg, auth, transport=None: {"accountId": SEAN})
+    monkeypatch.setattr(localenv, "build", lambda *a: pytest.fail("built"))
+    monkeypatch.setattr(localenv, "down", lambda *a: pytest.fail("touched docker"))
+    monkeypatch.setenv("ATLASSIAN_MCP_AUTHORIZATION", "Basic x")
+    for cmd in ("up", "check"):
+        r = CliRunner().invoke(cli.app, ["env", "local", cmd, "agent", "--env-dir", str(tmp_path),
+                                         "--release-config", str(f)])
+        assert r.exit_code != 0 and "refused" in str(r.exception) + r.output, (cmd, r.output, r.exception)
