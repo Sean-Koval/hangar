@@ -132,6 +132,17 @@ def test_mcp_servers_are_resolved_from_the_passed_variables_and_skipped_without_
     assert "codex-only" not in cfg["mcpServers"]
 
 
+def test_a_cloned_input_reaches_mcp_servers_as_its_checkout():
+    """ai-dlc's MCP server reads the knowledge checkout: KNOWLEDGE_REPO is /workspace/knowledge, not the clone URL."""
+    h = localenv.baked_harness(_agent_spec(), "bake")
+    env = {"ATLASSIAN_MCP_AUTHORIZATION": "Basic abc", "KNOWLEDGE_REPO": "https://github.com/o/knowledge"}
+    files, servers, _ = localenv.harness_config(_agent_spec(), h, env, [("code", "CODE_REPO"),
+                                                                        ("knowledge", "KNOWLEDGE_REPO")])
+    assert files[".claude.json"]["mcpServers"]["ai-dlc"]["env"] == {"KNOWLEDGE_REPO": "/workspace/knowledge"}
+    files, servers, _ = localenv.harness_config(_agent_spec(), h, {}, [("knowledge", "KNOWLEDGE_REPO")])
+    assert "ai-dlc" in servers  # a clone needs no URL in the env to name its path
+
+
 class FakeDocker:
     """`docker` and `sh` for the container: a dict of files, and canned command results."""
 

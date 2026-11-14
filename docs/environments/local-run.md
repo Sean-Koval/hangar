@@ -34,7 +34,7 @@ The baked harness is set up as a hangar claim sets it up. Its pinned CLI goes fi
 `hangar env local exec -- claude` works.
 
 The spec's `mcp` servers go into the harness's config in the container (`~/.claude.json`, mode 600). Each `${VAR}` is
-filled from the passed variables, over stdin. A server whose variable isn't set is skipped, and the log says so.
+filled from the passed variables, over stdin; a `--clone` input's is its checkout, `/workspace/DIR`. A server whose variable isn't set is skipped, and the log says so.
 
 Claude Code takes `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, a subscription login) or
 `ANTHROPIC_API_KEY`. Name the one you use in the contract.
