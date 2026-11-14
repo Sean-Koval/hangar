@@ -1490,6 +1490,9 @@ class JobService:
         repo = parse_repo(job.repo)
         gh = await self.landing.client(repo, job) if repo else None  # --- landing: as the GitHub App, when set
         if gh is None:
+            if not job.result.pr_url:  # --- KAN-339
+                job.result.pr_error = "PR not opened: not a GitHub repo, or HANGAR_GITHUB_TOKEN_CREDENTIAL is not set"
+                self._save(job)
             self._event(job, "branch pushed; PR not opened (not a GitHub repo, or HANGAR_GITHUB_TOKEN_CREDENTIAL "
                              "is not set)")
             return
@@ -1504,11 +1507,19 @@ class JobService:
                     return
                 draft = aireview.hold(self, job, draft)  # --- KAN-228: held as a draft for the self-review
                 title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
-                pr = await gh.open_pr(repo, job.branch, base,
-                                      secretscan.clean(self, job, title, "the PR title"),  # --- egress
-                                      secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
-                self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
+                try:
+                    pr = await gh.open_pr(repo, job.branch, base,
+                                          secretscan.clean(self, job, title, "the PR title"),  # --- egress
+                                          secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
+                    self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
+                except GitHubError as e:  # --- KAN-339: one opened meanwhile (a retry, a person) is adopted
+                    if e.status != 422 or not any("already exists" in x.lower() for x in e.errors):
+                        raise
+                    if (pr := await gh.find_pr(repo, job.branch)) is None:
+                        raise
+                    self._event(job, f"adopted PR #{pr.get('number')}, already open for {job.branch}")
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
+            job.result.pr_error = None
             self.landing.opened(job, pr)  # --- landing
             self._save(job)
             if taint.tainted(job) and pr.get("number"):  # --- taint (#130): reviewers see it in the PR list
@@ -1519,6 +1530,9 @@ class JobService:
             if adr.is_adr(job) and pr.get("number"):  # --- #170: agent-drafted, adr
                 await adr.label_pr(self, gh, repo, int(pr["number"]), job)
         except (GitHubError, httpx.HTTPError) as e:
+            if not job.result.pr_url:  # --- KAN-339: on the job, not only in its events
+                job.result.pr_error = f"opening the PR failed: {e}"[:600]
+                self._save(job)
             self._event(job, f"branch pushed; opening the PR failed: {e}")
         finally:
             await gh.close()
@@ -1568,7 +1582,7 @@ class JobService:
             lines.append(f"Jira: {key}")
         from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
 
-        return "\n".join(lines) + trailers.block(self, job)
+        return _cap_body(job, "\n".join(lines), trailers.block(self, job))
 
     async def _keep(self, job: Job, s) -> None:
         """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the
@@ -1690,6 +1704,21 @@ class JobService:
                     err = type(e).__name__
                 await asyncio.sleep(0 if self.transport else 2 ** attempt)
         self._event(job, f"callback {event} failed after 3 attempts: {err}")
+
+
+# --- KAN-339: GitHub refuses a PR body over 65,536 characters (422); room is left for secretscan's masks
+MAX_PR_BODY = 60_000
+
+
+def _cap_body(job: Job, body: str, trailers: str, cap: int = MAX_PR_BODY) -> str:
+    """The PR body within `cap` characters: an over-long one is cut, with a note pointing at the job's RESULT.md
+    and artifacts, and the trailers kept last."""
+    if len(body) + len(trailers) <= cap:
+        return body + trailers
+    note = (f"\n\n_This description was cut at {cap:,} characters to fit GitHub's limit. The full summary is the "
+            f"job's RESULT.md: see hangar job {job.id} (`hangar job get {job.id}`) and its artifacts._")
+    room = max(0, cap - len(trailers) - len(note))
+    return body[:room].rstrip() + note + trailers
 
 
 class _DeliveryError(RuntimeError):

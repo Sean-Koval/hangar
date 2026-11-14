@@ -386,6 +386,7 @@ class JobResult(BaseModel):
     pushed: bool = False
     pr_url: str | None = None
     pr_number: int | None = None
+    pr_error: str | None = None  # --- KAN-339: why the pushed branch has no PR (GitHub's errors[] included)
     verify_exit_code: int | None = None
     verify_tail: str | None = None
     summary: str | None = None
