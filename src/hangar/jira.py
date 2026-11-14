@@ -115,6 +115,9 @@ class JiraAgentRelease(BaseModel):
 
     people: list[str] = Field(min_length=1)  # Cloud accountIds; Server/DC user keys
     labels: list[str] = Field(default_factory=lambda: list(AGENT_RELEASE_LABELS), min_length=1)
+    # --- KAN-497: the same people's GitHub logins (or numeric user ids). `hangar env local --release-config` refuses
+    # an agent whose GH_TOKEN belongs to one of them: an agent never holds a releaser's GitHub token either.
+    github_people: list[str] = Field(default_factory=list)
 
     @field_validator("people")
     @classmethod
@@ -736,9 +739,9 @@ def _account(user: Any, cloud: bool) -> str | None:
     """The account id to link a Jira user by: Cloud's accountId; Server/DC's user key (stable across renames)."""
     if not isinstance(user, dict):
         return None
-    v = str((user.get("accountId") or user.get("accoundId")) if cloud else (user.get("key") or user.get("name"))
-            or "")
-    return v if _ACCOUNT.match(v) else None
+    # --- KAN-497: an empty, missing or non-string id is unreadable (None), never the string "None": callers refuse it
+    v = (user.get("accountId") or user.get("accoundId")) if cloud else (user.get("key") or user.get("name"))
+    return v if isinstance(v, str) and v.strip() and _ACCOUNT.match(v) else None
 
 
 def mover(histories: list[dict[str, Any]], fields: dict[str, Any], trigger: JiraTrigger) -> dict[str, Any] | None:

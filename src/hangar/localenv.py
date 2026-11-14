@@ -17,6 +17,10 @@ The baked harness is set up as a hangar claim sets it up (KAN-496): its pinned C
 and the spec's MCP servers, resolved from the passed variables and written into its config file inside the container.
 `check` then asks the agent CLI for one answer (`claude -p`), so a missing or wrong model credential fails there.
 
+With `--release-config` (HANGAR_JIRA), `up` and `check` refuse to start unless the agent's Atlassian credential belongs
+to an account of its own (KAN-497): one not on `agent_release.people`, read with Jira's read-only `myself`. Its
+GitHub token (GH_TOKEN, read with GitHub's `GET /user`) must not be a login on `agent_release.github_people`.
+
     hangar env local up agent --env-dir environments --harnesses harnesses --clone code=CODE_REPO
     hangar env local check agent ...   # two fresh instances report the same; nothing mounted; egress and DNS refused
     hangar env local exec -- claude
@@ -332,6 +336,163 @@ def down(instance: str | None = None) -> None:
         docker("network", "rm", *nets)
 
 
+# ------------------------------------------------------------------------------------------------ the agent's identity
+AGENT_AUTH_VAR = "ATLASSIAN_MCP_AUTHORIZATION"  # the agent's Atlassian Authorization header value (the contract's)
+
+
+def load_release_config(path: Path) -> Any:
+    """HANGAR_JIRA from a file: its JSON, a JSON string of it, or `hangar config list --json`'s output."""
+    from hangar.jira import JiraConfig
+
+    try:
+        raw: Any = json.loads(path.read_text())
+        if isinstance(raw, list):
+            raw = next((d.get("value") for d in raw if isinstance(d, dict) and d.get("key") == "HANGAR_JIRA"), None)
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if not isinstance(raw, dict):
+            raise ValueError("no HANGAR_JIRA in it")
+        return JiraConfig.model_validate(raw)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"--release-config {path}: not a HANGAR_JIRA config ({str(e).splitlines()[0]})") from e
+
+
+def myself(cfg: Any, authorization: str, transport: Any = None) -> dict[str, Any]:
+    """Jira's `myself` for the credential (read-only). A Cloud service account's API key (Bearer) is read through
+    api.atlassian.com, which needs the site's cloud id; a person's or bot user's API token (Basic) on the site."""
+    import httpx
+
+    headers = {"Authorization": authorization, "Accept": "application/json"}
+    with httpx.Client(transport=transport, timeout=20, follow_redirects=False) as c:
+        if cfg.deployment == "server":
+            url = f"{cfg.url}/rest/api/2/myself"
+        elif authorization.split(" ", 1)[0].casefold() == "bearer":
+            cloud_id = c.get(f"{cfg.url}/_edge/tenant_info").raise_for_status().json().get("cloudId")
+            if not cloud_id:
+                raise ValueError(f"{cfg.url} gave no cloud id")
+            url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/myself"
+        else:
+            url = f"{cfg.url}/rest/api/3/myself"
+        r = c.get(url, headers=headers)
+        r.raise_for_status()
+        out = r.json()
+    if not isinstance(out, dict):
+        raise ValueError("myself returned no user")
+    return out
+
+
+def identity_refusal(cfg: Any, environ: dict[str, str], var: str = AGENT_AUTH_VAR,
+                     transport: Any = None) -> str | None:
+    """Why the agent may not start with this Atlassian credential, or None. It fails closed: no allow-list, no
+    credential, or a `myself` that can't be read refuses. A person on `agent_release.people` (the people who release
+    tickets to agents) is never the agent: an agent acting as one would look exactly like that person releasing."""
+    import httpx
+
+    from hangar.jira import _account, _who
+
+    if cfg.agent_release is None:
+        return "the release config has no agent_release.people, so the agent's account can't be told from a person's"
+    auth = environ.get(var, "").strip()
+    if not auth:
+        return f"{var} is not set: the agent needs an Atlassian account and token of its own"
+    try:
+        user = myself(cfg, auth, transport)
+    except (httpx.HTTPError, ValueError) as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        return f"Jira's myself refused {var} ({status or type(e).__name__}): the agent's identity can't be checked"
+    account = _account(user, cfg.deployment == "cloud")
+    if account is None:
+        return f"Jira's myself for {var} names no account id"
+    if account in cfg.agent_release.people:
+        return (f"{var} is {_who(user, account)}'s ({account}), who is on agent_release.people: an agent must use its "
+                "own Atlassian account, never a person's who releases tickets (docs/environments/agent-identity.md)")
+    return None
+
+
+GITHUB_TOKEN_VAR = "GH_TOKEN"
+GITHUB_API = "https://api.github.com"
+
+
+def github_user(token: str, transport: Any = None) -> dict[str, Any] | None:
+    """GitHub's `GET /user` for the token (read-only); None for a GitHub App installation token, which has no user
+    (GitHub answers 403 "Resource not accessible by integration")."""
+    import httpx
+
+    with httpx.Client(transport=transport, timeout=20, follow_redirects=False) as c:
+        r = c.get(f"{GITHUB_API}/user", headers={"Authorization": f"Bearer {token}",
+                                                 "Accept": "application/vnd.github+json",
+                                                 "X-GitHub-Api-Version": "2022-11-28"})
+    if r.status_code == 403 and token.startswith("ghs_"):
+        return None
+    r.raise_for_status()
+    out = r.json()
+    if not isinstance(out, dict) or not isinstance(out.get("login"), str) or not out["login"].strip():
+        raise ValueError("GET /user returned no login")
+    return out
+
+
+GITHUB_MCP_VAR = "GITHUB_MCP_AUTHORIZATION"  # the GitHub MCP server's header value, "Bearer <token>"
+
+
+def _github_token(var: str, value: str) -> str:
+    """The token in a variable: GH_TOKEN as it is; an Authorization header value without its scheme."""
+    value = value.strip()
+    if var == GITHUB_MCP_VAR:
+        scheme, _, rest = value.partition(" ")
+        return rest.strip() if scheme.casefold() in ("bearer", "token") and rest.strip() else ""
+    return value
+
+
+def github_identity_refusal(cfg: Any, environ: dict[str, str], transport: Any = None) -> str | None:
+    """Why the agent may not start with its GitHub credentials, or None. GH_TOKEN is required; the GitHub MCP
+    server's GITHUB_MCP_AUTHORIZATION is checked too when set, and both must pass. It fails closed like
+    identity_refusal: no `agent_release.github_people`, no token, or a `GET /user` that fails refuses. A login or user
+    id on the list is a person who releases tickets, so the agent would act as them. An App installation token has no
+    user and passes."""
+    people = {p.casefold() for p in (cfg.agent_release.github_people if cfg.agent_release else [])}
+    if not people:
+        return ("the release config has no agent_release.github_people (the releasers' GitHub logins), so the agent's "
+                "GitHub token can't be told from a person's")
+    if not environ.get(GITHUB_TOKEN_VAR, "").strip():
+        return f"{GITHUB_TOKEN_VAR} is not set: the agent needs a GitHub App or bot token of its own"
+    for var in (GITHUB_TOKEN_VAR, GITHUB_MCP_VAR):
+        if var not in environ or not environ[var].strip():
+            continue
+        if why := _github_refusal(var, _github_token(var, environ[var]), people, transport):
+            return why
+    return None
+
+
+def _github_refusal(var: str, token: str, people: set[str], transport: Any) -> str | None:
+    import httpx
+
+    if not token:
+        return f"{var} holds no token (expected \"Bearer <token>\"): the agent's GitHub identity can't be checked"
+    try:
+        user = github_user(token, transport)
+    except (httpx.HTTPError, ValueError) as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        return f"GitHub's GET /user refused {var} ({status or type(e).__name__}): the agent's identity can't be checked"
+    if user is None:
+        return None
+    login, uid = str(user.get("login")), str(user.get("id") or "")
+    if login.casefold() in people or (uid and uid in people):
+        return (f"{var} is {login}'s (id {uid}), who is on agent_release.github_people: an agent must use a GitHub "
+                "App or bot account of its own, never a person's who releases tickets "
+                "(docs/environments/agent-identity.md)")
+    return None
+
+
+def refuse_unless_agent_identity(release_config: Path | None, environ: dict[str, str]) -> None:
+    if release_config is None:
+        return
+    cfg = load_release_config(release_config)
+    if why := identity_refusal(cfg, environ) or github_identity_refusal(cfg, environ):
+        raise SystemExit(f"refused: {why}")
+    print(f"agent identity: {AGENT_AUTH_VAR}, {GITHUB_TOKEN_VAR} and (when set) {GITHUB_MCP_VAR} are the agent's own, "
+          "not a releaser's", file=sys.stderr)
+
+
 # ------------------------------------------------------------------------------------------------ the checks
 def egress_failures(container: str, allowed_url: str) -> list[str]:
     """An allowed host is reached; an off-list host, plain HTTP, a request that skips the proxy and every DNS lookup
@@ -368,6 +529,9 @@ Harness = Annotated[str, typer.Option(help="bake the agent CLI into the image (b
 ExtraCa = Annotated[Path | None, typer.Option(help="a CA certificate to trust in the image (TLS-intercepting "
                                                     "networks)")]
 Instance = Annotated[str, typer.Option(help="name of the local instance")]
+ReleaseConfig = Annotated[Path | None, typer.Option(help="HANGAR_JIRA as JSON (or `hangar config list --json`): "
+                                                         "refuse to start when the agent's Atlassian account is on "
+                                                         "agent_release.people")]
 
 
 def _up(env: str, env_dir: list[Path], harnesses: Path | None, contract: Path | None, clone: list[str],
@@ -392,8 +556,9 @@ def _up(env: str, env_dir: list[Path], harnesses: Path | None, contract: Path | 
 @local_app.command("up")
 def up_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contract: Contract = None,
            clone: Clones = [], report_cmd: ReportCmd = None, harness: Harness = "bake",  # noqa: B006
-           extra_ca: ExtraCa = None, instance: Instance = "local") -> None:
+           extra_ca: ExtraCa = None, instance: Instance = "local", release_config: ReleaseConfig = None) -> None:
     """Build and start it, clone the inputs, and print the report."""
+    refuse_unless_agent_identity(release_config, dict(os.environ))
     down(instance)
     n, spec, clones = _up(env, env_dir, harnesses, contract, clone, harness, extra_ca, instance)
     code, text = report(n.agent, spec, clones, report_cmd)
@@ -406,13 +571,14 @@ def up_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contract
 @local_app.command("check")
 def check_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contract: Contract = None,
               clone: Clones = [], report_cmd: ReportCmd = None, harness: Harness = "bake",  # noqa: B006
-              extra_ca: ExtraCa = None,
+              extra_ca: ExtraCa = None, release_config: ReleaseConfig = None,
               allowed_url: Annotated[str, typer.Option(help="a URL on the allowlist")] = "https://github.com/",
               keep: Annotated[bool, typer.Option(help="leave the instances running")] = False,
               agent_probe: Annotated[bool, typer.Option(help="ask the baked agent CLI for one answer (`claude -p`) "
                                                              "in the first instance")] = True) -> None:
     """Two fresh instances report the same; nothing is mounted; off-list hosts and every DNS lookup are refused;
-    the agent CLI answers with the passed credential."""
+    the agent CLI answers with the passed credential; the agent's Atlassian account is its own (--release-config)."""
+    refuse_unless_agent_identity(release_config, dict(os.environ))
     failures: list[str] = []
     texts: list[str] = []
     try:

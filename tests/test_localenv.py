@@ -10,6 +10,7 @@ import socket
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -314,3 +315,192 @@ def test_dns_server_refuses_over_udp_and_tcp():
         for s in (udp, tcp):
             s.shutdown()
             s.server_close()
+
+
+# ============================================================================ the agent's identity (KAN-497)
+SEAN = "712020:73fc02a4-9871-42c9-9b8c-0e1b5bfd84e4"
+AGENT = "712020:00000000-0000-0000-0000-00000000a6e7"
+
+
+def _jira_cfg(**kw):
+    from hangar.jira import JiraConfig
+
+    return JiraConfig.model_validate({"url": "https://example.atlassian.net", "token_credential": "jira",
+                                      "email": "hangar@example.com", "webhook_secret_credential": "jira-webhook",
+                                      "projects": {"KAN": {"repo": "o/r"}}, "trigger": {"status": "Ready for agent"},
+                                      "agent_release": {"people": [SEAN], "github_people": ["Sean-Koval"]}, **kw})
+
+
+def _jira(account: Any, seen: list | None = None, status: int = 200, body: Any = None):
+    """A fake Jira: `myself` answers with `account`, only for the Authorization it was asked with."""
+    import httpx
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        (seen if seen is not None else []).append((str(req.url), req.headers.get("authorization")))
+        if req.url.path == "/_edge/tenant_info":
+            return httpx.Response(200, json={"cloudId": "c10ud"})
+        if req.url.path.endswith("/myself"):
+            return httpx.Response(status, json=body if body is not None else {"accountId": account,
+                                                                              "displayName": "Some One"})
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handle)
+
+
+def test_a_person_on_the_release_list_is_refused_as_the_agent():
+    seen: list = []
+    why = localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Basic c2VhbjpzM2NyZXQ="},
+                                    transport=_jira(SEAN, seen))
+    assert why and "Some One" in why and SEAN in why and "agent_release.people" in why and "own Atlassian" in why
+    assert seen == [("https://example.atlassian.net/rest/api/3/myself", "Basic c2VhbjpzM2NyZXQ=")]  # a GET only
+
+
+def test_an_account_of_its_own_passes_and_a_service_account_is_read_through_the_gateway():
+    assert localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Basic YWdlbnQ6dA=="},
+                                     transport=_jira(AGENT)) is None
+    seen: list = []
+    assert localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Bearer key"},
+                                     transport=_jira(AGENT, seen)) is None
+    assert seen[-1] == ("https://api.atlassian.com/ex/jira/c10ud/rest/api/3/myself", "Bearer key")
+
+
+@pytest.mark.parametrize("cfg,environ,status,expect", [
+    ({"agent_release": None}, {"ATLASSIAN_MCP_AUTHORIZATION": "Basic x"}, 200, "no agent_release.people"),
+    ({}, {}, 200, "is not set"),
+    ({}, {"ATLASSIAN_MCP_AUTHORIZATION": "Basic x"}, 401, "refused ATLASSIAN_MCP_AUTHORIZATION (401)"),
+])
+def test_it_fails_closed(cfg, environ, status, expect):
+    why = localenv.identity_refusal(_jira_cfg(**cfg), environ, transport=_jira(AGENT, status=status))
+    assert why and expect in why, why
+
+
+@pytest.mark.parametrize("body", [{}, {"accountId": None}, {"accountId": ""}, {"accountId": 42},
+                                  {"accountId": "  "}, {"displayName": "None"}])
+def test_a_myself_without_an_account_id_is_refused(body):
+    """KAN-497 review: an empty, missing or non-string account id is unreadable, never the string "None"."""
+    why = localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Basic x"},
+                                    transport=_jira(None, body=body))
+    assert why and "names no account id" in why, why
+    from hangar.jira import _account
+
+    assert _account(body, True) is None and _account(body, False) is None
+
+
+def test_the_release_config_reads_hangar_config_list_json(tmp_path):
+    raw = _jira_cfg().model_dump(mode="json")
+    for content in (raw, json.dumps(raw), [{"key": "HANGAR_X", "value": "1"}, {"key": "HANGAR_JIRA", "value": raw}]):
+        f = tmp_path / "jira.json"
+        f.write_text(json.dumps(content))
+        assert localenv.load_release_config(f).agent_release.people == [SEAN]
+    f.write_text("[]")
+    with pytest.raises(SystemExit, match="not a HANGAR_JIRA config"):
+        localenv.load_release_config(f)
+
+
+def test_up_refuses_before_building_when_the_agent_is_a_person(monkeypatch, tmp_path):
+    f = tmp_path / "jira.json"
+    f.write_text(json.dumps(_jira_cfg().model_dump(mode="json")))
+    monkeypatch.setattr(localenv, "myself", lambda cfg, auth, transport=None: {"accountId": SEAN})
+    monkeypatch.setattr(localenv, "github_user", lambda token, transport=None: {"login": "agent-bot", "id": 9})
+    monkeypatch.setattr(localenv, "build", lambda *a: pytest.fail("built"))
+    monkeypatch.setattr(localenv, "down", lambda *a: pytest.fail("touched docker"))
+    monkeypatch.setenv("ATLASSIAN_MCP_AUTHORIZATION", "Basic x")
+    for cmd in ("up", "check"):
+        r = CliRunner().invoke(cli.app, ["env", "local", cmd, "agent", "--env-dir", str(tmp_path),
+                                         "--release-config", str(f)])
+        assert r.exit_code != 0 and "refused" in str(r.exception) + r.output, (cmd, r.output, r.exception)
+
+
+def _github(login: str | None, uid: int = 1, status: int = 200, seen: list | None = None):
+    """A fake GitHub: `GET /user` answers with `login`; an App installation token gets 403."""
+    import httpx
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        (seen if seen is not None else []).append((req.method, str(req.url), req.headers.get("authorization")))
+        if req.url.path != "/user":
+            return httpx.Response(404)
+        if req.headers["authorization"].startswith("Bearer ghs_"):
+            return httpx.Response(403, json={"message": "Resource not accessible by integration"})
+        return httpx.Response(status, json={"login": login, "id": uid, "type": "User"})
+
+    return httpx.MockTransport(handle)
+
+
+def test_a_releasers_github_token_is_refused():
+    seen: list = []
+    why = localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "github_pat_x"},
+                                           transport=_github("sean-koval", 4807, seen=seen))
+    assert why and "sean-koval" in why and "agent_release.github_people" in why and "App or bot" in why
+    assert seen == [("GET", "https://api.github.com/user", "Bearer github_pat_x")]  # read-only
+    cfg = _jira_cfg(agent_release={"people": [SEAN], "github_people": ["4807"]})  # by numeric id too
+    assert localenv.github_identity_refusal(cfg, {"GH_TOKEN": "t"}, transport=_github("renamed", 4807))
+
+
+def test_a_bot_or_app_token_passes():
+    assert localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "github_pat_bot"},
+                                            transport=_github("agent-bot", 99)) is None
+    assert localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "ghs_app"}, transport=_github(None)) is None
+
+
+@pytest.mark.parametrize("release,environ,status,expect", [
+    ({"people": [SEAN]}, {"GH_TOKEN": "t"}, 200, "no agent_release.github_people"),
+    ({"people": [SEAN], "github_people": ["Sean-Koval"]}, {}, 200, "GH_TOKEN is not set"),
+    ({"people": [SEAN], "github_people": ["Sean-Koval"]}, {"GH_TOKEN": "t"}, 401, "refused GH_TOKEN (401)"),
+])
+def test_the_github_check_fails_closed(release, environ, status, expect):
+    why = localenv.github_identity_refusal(_jira_cfg(agent_release=release), environ,
+                                           transport=_github("agent-bot", status=status))
+    assert why and expect in why, why
+
+
+def test_up_refuses_a_releasers_github_token_before_building(monkeypatch, tmp_path):
+    f = tmp_path / "jira.json"
+    f.write_text(json.dumps(_jira_cfg().model_dump(mode="json")))
+    monkeypatch.setattr(localenv, "myself", lambda cfg, auth, transport=None: {"accountId": AGENT})
+    monkeypatch.setattr(localenv, "github_user", lambda token, transport=None: {"login": "Sean-Koval", "id": 1})
+    monkeypatch.setattr(localenv, "build", lambda *a: pytest.fail("built"))
+    monkeypatch.setenv("ATLASSIAN_MCP_AUTHORIZATION", "Basic x")
+    monkeypatch.setenv("GH_TOKEN", "t")
+    r = CliRunner().invoke(cli.app, ["env", "local", "up", "agent", "--env-dir", str(tmp_path), "--release-config",
+                                     str(f)])
+    assert r.exit_code != 0 and "github_people" in str(r.exception), (r.output, r.exception)
+
+
+def _github_by_token(users: dict[str, Any], seen: list | None = None):
+    """A fake GitHub whose `GET /user` answers per token: a dict (the user), an int (a status) or 403 for ghs_."""
+    import httpx
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        token = req.headers["authorization"].removeprefix("Bearer ")
+        (seen if seen is not None else []).append(token)
+        u = users.get(token, 401)
+        return httpx.Response(u, json={"message": "no"}) if isinstance(u, int) else httpx.Response(200, json=u)
+
+    return httpx.MockTransport(handle)
+
+
+BOT, SEANS = {"login": "agent-bot", "id": 99}, {"login": "Sean-Koval", "id": 4807}
+
+
+@pytest.mark.parametrize("mcp,users,expect", [
+    (None, {"gh": BOT}, None),                                          # only GH_TOKEN: checked alone
+    ("Bearer mcp", {"gh": BOT, "mcp": BOT}, None),                      # both an agent's: pass
+    ("Bearer mcp", {"gh": BOT, "mcp": SEANS}, "GITHUB_MCP_AUTHORIZATION is Sean-Koval's"),
+    ("Bearer mcp", {"gh": SEANS, "mcp": BOT}, "GH_TOKEN is Sean-Koval's"),
+    ("Bearer mcp", {"gh": BOT, "mcp": 401}, "refused GITHUB_MCP_AUTHORIZATION (401)"),
+    ("mcp", {"gh": BOT, "mcp": BOT}, "GITHUB_MCP_AUTHORIZATION holds no token"),
+    ("Bearer ghs_app", {"gh": BOT, "ghs_app": 403}, None),              # an App installation token has no user
+])
+def test_the_github_mcp_credential_is_checked_too(mcp, users, expect):
+    seen: list = []
+    environ = {"GH_TOKEN": "gh", **({"GITHUB_MCP_AUTHORIZATION": mcp} if mcp else {})}
+    why = localenv.github_identity_refusal(_jira_cfg(), environ, transport=_github_by_token(users, seen))
+    assert (why is None) if expect is None else (why and expect in why), why
+    if expect is None:
+        assert seen == ["gh", *([mcp.removeprefix("Bearer ")] if mcp else [])]  # both read when both are set
+
+
+def test_a_github_user_without_a_login_is_refused():
+    why = localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "gh"},
+                                           transport=_github_by_token({"gh": {"id": 1}}))
+    assert why and "refused GH_TOKEN (ValueError)" in why
