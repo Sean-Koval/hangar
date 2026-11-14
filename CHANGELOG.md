@@ -47,6 +47,11 @@ when a listed person added the label and moved it to the trigger status, by the 
 
 ### Added
 
+- **`hangar env local` runs the agent CLI** (KAN-496). The baked harness's pinned CLI is first on `PATH`, and the
+  spec's MCP servers are written into its config in the container at start. `check` adds an agent probe:
+  `claude -p` must answer with `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
+  ([docs/environments/local-run.md](docs/environments/local-run.md)).
+
 - **`hangar env local`** (KAN-472): run an environment spec on your computer with hangar's own image build and egress
   policy, moved here from team-harness. Its egress sidecar (`egress_sidecar.py`, pinned by digest) shares the rule
   match and address checks with the egress proxy, and refuses every DNS query
