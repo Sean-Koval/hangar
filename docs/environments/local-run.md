@@ -28,6 +28,17 @@ hangar env local down
 through an env file, never on the command line. `--clone DIR=VAR` clones `$VAR` to `/workspace/DIR` through the
 proxy. `--extra-ca FILE` trusts a CA in the image, for a network that intercepts TLS.
 
+## The agent CLI and its MCP servers
+
+The baked harness is set up as a hangar claim sets it up. Its pinned CLI goes first on `PATH`, so
+`hangar env local exec -- claude` works.
+
+The spec's `mcp` servers go into the harness's config in the container (`~/.claude.json`, mode 600). Each `${VAR}` is
+filled from the passed variables, over stdin; a `--clone` input's is its checkout, `/workspace/DIR`. A server whose variable isn't set is skipped, and the log says so.
+
+Claude Code takes `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, a subscription login) or
+`ANTHROPIC_API_KEY`. Name the one you use in the contract.
+
 ## The container and its network
 
 The agent container mounts nothing from the host: no home directory, checkout or Docker socket. It sits on an
@@ -55,7 +66,9 @@ Docker already stops forwarding for internal networks; the sidecar makes that ho
 - an allowed URL (`--allowed-url`, default GitHub) is reached through the proxy;
 - an off-list host, plain HTTP and a request that skips the proxy are refused;
 - `getent hosts` fails for an off-list host and for an allowed one;
-- a DNS query sent straight to `1.1.1.1:53`, over UDP or TCP, gets nothing back.
+- a DNS query sent straight to `1.1.1.1:53`, over UDP or TCP, gets nothing back;
+- the agent probe: `claude --version` is hangar's pin, and `claude -p "say ok" --output-format json` succeeds in the
+  first instance. Without a Claude credential it fails and says which variables to set. `--no-agent-probe` skips it.
 
 ## On macOS
 

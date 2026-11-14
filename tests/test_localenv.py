@@ -9,6 +9,7 @@ import re
 import socket
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -92,6 +93,170 @@ def test_policy_command_reads_the_catalog(tmp_path):
     r = CliRunner().invoke(cli.app, ["env", "local", "policy", "agent", "--env-dir", str(tmp_path)])
     assert r.exit_code == 0, r.output
     assert "*.atlassian.com:8443" in r.output.splitlines()
+
+
+# ============================================================================ the harness (KAN-496)
+def _agent_spec(**kw) -> EnvSpec:
+    return EnvSpec(name="agent", harnesses=["claude-code"], model="claude-opus-5-5", env={"AGENT_ENV": "agent"}, mcp={
+        "atlassian": {"url": "https://mcp.atlassian.com/v1/mcp",
+                      "headers": {"Authorization": "${ATLASSIAN_MCP_AUTHORIZATION}"}},
+        "ai-dlc": {"command": "ai-dlc", "args": ["mcp", "serve"], "env": {"KNOWLEDGE_REPO": "${KNOWLEDGE_REPO}"}},
+        "github": {"url": "https://api.githubcopilot.com/mcp/", "headers": {"Authorization": "${GITHUB_MCP_TOKEN}"}},
+        "codex-only": {"command": "x", "harnesses": ["codex"]}}, **kw)
+
+
+def test_the_baked_harness_goes_first_on_path_with_its_pinned_cli():
+    from hangar.harnesses import get_harness
+
+    h = localenv.baked_harness(_agent_spec(), "bake")
+    assert h is get_harness("claude-code") and h.version  # hangar's pinned, checksum-verified CLI
+    env = localenv.harness_env(h, "/home/agent/.local/bin:/usr/bin")
+    assert env["PATH"] == "/opt/hangar/harness/claude-code/bin:/home/agent/.local/bin:/usr/bin"
+    assert env["DISABLE_AUTOUPDATER"] == "1" and env["HANGAR_HARNESS"] == "claude-code"
+    assert localenv.baked_harness(_agent_spec(), "none") is None
+    args = localenv.agent_args("172.30.0.2", "/tmp/x.env", env)
+    assert f"PATH={env['PATH']}" in args
+
+
+def test_mcp_servers_are_resolved_from_the_passed_variables_and_skipped_without_them():
+    h = localenv.baked_harness(_agent_spec(), "bake")
+    files, servers, skipped = localenv.harness_config(_agent_spec(), h, {
+        "ATLASSIAN_MCP_AUTHORIZATION": "Basic abc", "KNOWLEDGE_REPO": "https://github.com/o/knowledge"})
+    assert servers == ["ai-dlc", "atlassian"]
+    assert skipped == ["MCP server 'github' skipped: needs GITHUB_MCP_TOKEN"]
+    cfg = files[".claude.json"]
+    assert cfg["hasCompletedOnboarding"] is True  # the harness's own config, as at a claim
+    assert cfg["mcpServers"]["atlassian"] == {"type": "http", "url": "https://mcp.atlassian.com/v1/mcp",
+                                              "headers": {"Authorization": "Basic abc"}}
+    assert cfg["mcpServers"]["ai-dlc"]["env"] == {"KNOWLEDGE_REPO": "https://github.com/o/knowledge"}
+    assert "codex-only" not in cfg["mcpServers"]
+
+
+def test_a_cloned_input_reaches_mcp_servers_as_its_checkout():
+    """ai-dlc's MCP server reads the knowledge checkout: KNOWLEDGE_REPO is /workspace/knowledge, not the clone URL."""
+    h = localenv.baked_harness(_agent_spec(), "bake")
+    env = {"ATLASSIAN_MCP_AUTHORIZATION": "Basic abc", "KNOWLEDGE_REPO": "https://github.com/o/knowledge"}
+    files, servers, _ = localenv.harness_config(_agent_spec(), h, env, [("code", "CODE_REPO"),
+                                                                        ("knowledge", "KNOWLEDGE_REPO")])
+    assert files[".claude.json"]["mcpServers"]["ai-dlc"]["env"] == {"KNOWLEDGE_REPO": "/workspace/knowledge"}
+    files, servers, _ = localenv.harness_config(_agent_spec(), h, {}, [("knowledge", "KNOWLEDGE_REPO")])
+    assert "ai-dlc" in servers  # a clone needs no URL in the env to name its path
+
+
+class FakeDocker:
+    """`docker` and `sh` for the container: a dict of files, and canned command results."""
+
+    def __init__(self, results=None):
+        self.files: dict[str, str] = {"/home/agent/.claude.json": json.dumps({"userID": "u", "mcpServers": {"x": {}}})}
+        self.calls: list[tuple] = []
+        self.results = results or {}
+
+    def docker(self, *args, input=None, check=True):
+        import subprocess
+
+        self.calls.append(args)
+        if args[0] == "exec" and args[2] == "cat":
+            ok = args[3] in self.files
+            return subprocess.CompletedProcess(args, 0 if ok else 1, (self.files.get(args[3]) or "").encode(), b"")
+        if args[:2] == ("exec", "-i"):
+            self.files[args[-1]] = input.decode()
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+        raise AssertionError(args)
+
+    def sh(self, container, script):
+        import subprocess
+
+        self.calls.append(("sh", script))
+        for key, (code, out, err) in self.results.items():
+            if key in script:
+                return subprocess.CompletedProcess(script, code, out.encode(), err.encode())
+        raise AssertionError(script)
+
+
+def test_the_config_is_merged_into_the_container_and_no_value_reaches_argv(monkeypatch):
+    fake = FakeDocker()
+    monkeypatch.setattr(localenv, "docker", fake.docker)
+    spec = _agent_spec()
+    lines = localenv.setup_harness("c", spec, localenv.baked_harness(spec, "bake"),
+                                   {"ATLASSIAN_MCP_AUTHORIZATION": "Basic s3cret", "KNOWLEDGE_REPO": "k"})
+    assert lines[0] == "claude-code: MCP servers configured: ai-dlc, atlassian"
+    cfg = json.loads(fake.files["/home/agent/.claude.json"])
+    assert cfg["userID"] == "u" and set(cfg["mcpServers"]) == {"x", "ai-dlc", "atlassian"}  # merged, not replaced
+    assert cfg["mcpServers"]["atlassian"]["headers"]["Authorization"] == "Basic s3cret"
+    assert not any("s3cret" in a for call in fake.calls for a in call)
+    write = next(c for c in fake.calls if c[:2] == ("exec", "-i"))
+    assert "umask 077" in write[5] and "chmod 600" in write[5]
+
+
+OK = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"})
+
+
+def _probe(monkeypatch, results, passed=("CLAUDE_CODE_OAUTH_TOKEN",)):
+    fake = FakeDocker(results)
+    monkeypatch.setattr(localenv, "sh", fake.sh)
+    spec = _agent_spec()
+    return localenv.claude_probe("c", spec, localenv.baked_harness(spec, "bake"), list(passed)), fake
+
+
+def test_the_probe_asks_claude_for_one_answer(monkeypatch):
+    from hangar.harnesses import get_harness
+
+    v = get_harness("claude-code").version
+    bad, fake = _probe(monkeypatch, {"--version": (0, f"{v} (Claude Code)\n", ""), "claude -p": (0, OK, "")})
+    assert bad == []
+    run = fake.calls[-1][1]
+    assert "claude -p 'say ok' --output-format json --model claude-opus-5-5" in run
+    assert _probe(monkeypatch, {"--version": (0, f"{v}\n", ""), "claude -p": (0, OK, "")},
+                  passed=["ANTHROPIC_API_KEY"])[0] == []
+
+
+def test_the_probe_fails_clearly_without_a_credential(monkeypatch):
+    bad, fake = _probe(monkeypatch, {}, passed=["GH_TOKEN"])
+    assert len(bad) == 1 and all(w in bad[0] for w in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "setup-token"))
+    assert fake.calls == []  # nothing ran
+
+
+@pytest.mark.parametrize("results,expect", [
+    ({"--version": (127, "", "bash: claude: command not found")}, "not on PATH"),
+    ({"--version": (0, "0.0.1 (Claude Code)", "")}, "but hangar pins"),
+    ({"--version": (0, "{v}", ""), "claude -p": (1, json.dumps({"type": "result", "is_error": True,
+                                                               "result": "Invalid API key · Please run /login"}), "")},
+     "Invalid API key"),
+    ({"--version": (0, "{v}", ""), "claude -p": (124, "", "")}, "exit 124"),
+])
+def test_the_probe_names_what_failed(monkeypatch, results, expect):
+    from hangar.harnesses import get_harness
+
+    v = get_harness("claude-code").version
+    results = {k: (c, o.replace("{v}", v), e) for k, (c, o, e) in results.items()}
+    bad, _ = _probe(monkeypatch, results)
+    assert len(bad) == 1 and expect in bad[0], bad
+
+
+def test_check_runs_the_probe_in_the_first_instance(monkeypatch, tmp_path):
+    """`check` with docker faked: the probe's failure fails the check, and --no-agent-probe skips it."""
+    (tmp_path / "agent.yaml").write_text(yaml.safe_dump({"name": "agent", "harnesses": ["claude-code"],
+                                                         "egress": {"mode": "allowlist", "presets": ["github"]}}))
+    monkeypatch.setattr(localenv, "build", lambda *a: "img")
+    monkeypatch.setattr(localenv, "image_path", lambda image: "/usr/bin")
+    started = []
+
+    def start(spec, image, instance, passed, environ, env=None):
+        started.append(env)
+        return SimpleNamespace(**vars(localenv.names(instance)), passed=[])
+
+    monkeypatch.setattr(localenv, "start", start)
+    monkeypatch.setattr(localenv, "setup_harness", lambda *a: [])
+    monkeypatch.setattr(localenv, "report", lambda *a: (0, "same\n"))
+    monkeypatch.setattr(localenv, "egress_failures", lambda *a: [])
+    monkeypatch.setattr(localenv, "down", lambda *a: None)
+    monkeypatch.setattr(localenv, "docker", lambda *a, **k: SimpleNamespace(stdout=b"[]", returncode=0))
+    args = ["env", "local", "check", "agent", "--env-dir", str(tmp_path)]
+    r = CliRunner().invoke(cli.app, args)
+    assert r.exit_code == 1 and "no Claude credential was passed" in r.output, r.output
+    assert started[0]["PATH"].startswith("/opt/hangar/harness/claude-code/bin:")
+    r = CliRunner().invoke(cli.app, [*args, "--no-agent-probe"])
+    assert r.exit_code == 0, r.output
 
 
 # ============================================================================ the sidecar on loopback

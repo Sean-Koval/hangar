@@ -13,6 +13,10 @@ secrets), from this process's environment, through an env file, never argv. It s
 whose only other member is the sidecar: an HTTP CONNECT proxy and a DNS server that refuses every query. So a tool
 that skips the proxy fails, and no name resolves inside the container (docs/environments/local-run.md).
 
+The baked harness is set up as a hangar claim sets it up (KAN-496): its pinned CLI first on PATH, its env, its config
+and the spec's MCP servers, resolved from the passed variables and written into its config file inside the container.
+`check` then asks the agent CLI for one answer (`claude -p`), so a missing or wrong model credential fails there.
+
     hangar env local up agent --env-dir environments --harnesses harnesses --clone code=CODE_REPO
     hangar env local check agent ...   # two fresh instances report the same; nothing mounted; egress and DNS refused
     hangar env local exec -- claude
@@ -110,17 +114,148 @@ def sidecar_args(rules: list[list]) -> list[str]:
             SIDECAR_IMAGE, "python", "-c", SIDECAR.read_text()]
 
 
-def agent_args(dns: str, env_file: str) -> list[str]:
+def agent_args(dns: str, env_file: str, env: dict[str, str] | None = None) -> list[str]:
     """`docker run` arguments for the agent, after the name, labels and network. Docker's resolver forwards every
-    name it doesn't own to `dns`, the sidecar, which refuses it: no lookup leaves, whatever the host's resolver is."""
+    name it doesn't own to `dns`, the sidecar, which refuses it: no lookup leaves, whatever the host's resolver is.
+    `env` is non-secret (the harness's PATH and env); secrets go through `env_file` only."""
     proxy = f"http://egress:{PROXY_PORT}"
     return ["--dns", dns, "--env-file", env_file,
             *(x for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") for x in ("-e", f"{k}={proxy}")),
-            "-e", "NO_PROXY=localhost,127.0.0.1", "-e", "no_proxy=localhost,127.0.0.1"]
+            "-e", "NO_PROXY=localhost,127.0.0.1", "-e", "no_proxy=localhost,127.0.0.1",
+            *(x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}"))]
 
 
-def start(spec: Any, image: str, instance: str, passed_names: list[str], environ: dict[str, str]) -> SimpleNamespace:
-    """The sidecar on the default bridge and an internal network, then the agent on the internal network only."""
+# ------------------------------------------------------------------------------------------------ the harness
+HOME = "/home/agent"  # envspec.render's default sandbox user
+CREDENTIAL_HINT = {"claude-code": "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, a subscription login) or "
+                                  "ANTHROPIC_API_KEY (billed to the API) in your shell, and name it in the contract"}
+
+
+def baked_harness(spec: Any, harness: str) -> Any:
+    """The harness `build` bakes into the image (the spec's first, with an install), or None."""
+    from hangar.harnesses import get_harness
+
+    if harness != "bake" or not spec.harnesses:
+        return None
+    h = get_harness(spec.harnesses[0])
+    return h if h.install else None
+
+
+def image_path(image: str) -> str:
+    """The image's own PATH (its ENV), which the harness's bin goes in front of."""
+    env = json.loads(docker("image", "inspect", "-f", "{{json .Config.Env}}", image).stdout or b"[]") or []
+    return next((e.split("=", 1)[1] for e in env if e.startswith("PATH=")),
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+
+
+def harness_env(h: Any, base_path: str) -> dict[str, str]:
+    """What a hangar claim exports for the harness (fleet._apply_session): its bin first on PATH, `path_extra` last,
+    its env and HANGAR_HARNESS. None of it is secret."""
+    if h is None:
+        return {}
+    extra = "".join(f":{h.prefix}/{d}" for d in h.path_extra)
+    return {"PATH": f"{h.prefix}/bin:{base_path}{extra}", **h.env, "HANGAR_HARNESS": h.name}
+
+
+def harness_config(spec: Any, h: Any, env: dict[str, str],
+                   clones: list[tuple[str, str]] | None = None) -> tuple[dict[str, Any], list[str], list[str]]:
+    """(files, servers, skipped): the config a hangar claim writes for the harness, as {path under $HOME: content},
+    with the spec's MCP servers resolved against `env`, the variables passed into the container (and the spec's own
+    env). A cloned input (`--clone DIR=VAR`) resolves to its clone, /workspace/DIR, not its URL: an MCP server such as
+    ai-dlc's reads the checkout. A server whose `${VAR}` isn't set is skipped, as at a claim. JSON content is merged
+    into the file there; a string (Codex's TOML) replaces hangar's managed block."""
+    from hangar.harnesses import deep_merge, mcp_config, resolve_refs
+
+    if h is None:
+        return {}, [], []
+    files: dict[str, Any] = {rel: dict(patch) for rel, patch in h.config.items()}
+    servers = {n: s for n, s in spec.mcp.items() if s.harnesses is None or h.name in s.harnesses}
+    resolved, skipped = {}, []
+    for n, srv in sorted(servers.items()):
+        missing: set[str] = set()
+        fields = resolve_refs(srv.model_dump(include={"url", "headers", "command", "args", "env"}),
+                              {**spec.env, **env, **{var: f"/workspace/{d}" for d, var in clones or []}}, missing)
+        if missing:
+            skipped.append(f"MCP server '{n}' skipped: needs {', '.join(sorted(missing))}")
+            continue
+        resolved[n] = srv.model_copy(update=fields)
+    if resolved and h.mcp_format:
+        rel, content = mcp_config(h.mcp_format, resolved)
+        files[rel] = deep_merge(files[rel], content) if isinstance(content, dict) and isinstance(
+            files.get(rel), dict) else content
+    return files, sorted(resolved), skipped
+
+
+def write_config(container: str, files: dict[str, Any]) -> None:
+    """Merge each file into the container's (mode 600). Contents go through stdin, so no value reaches argv."""
+    from hangar.harnesses import deep_merge, merge_codex_toml
+
+    for rel, content in files.items():
+        path = f"{HOME}/{rel}"
+        cur = docker("exec", container, "cat", path, check=False)
+        old = cur.stdout.decode(errors="replace") if cur.returncode == 0 else ""
+        if isinstance(content, str):
+            new = merge_codex_toml(old, content)
+        else:
+            try:
+                base = json.loads(old) if old.strip() else {}
+            except ValueError:
+                base = {}
+            new = json.dumps(deep_merge(base if isinstance(base, dict) else {}, content), indent=2)
+        docker("exec", "-i", container, "sh", "-c", 'umask 077; mkdir -p "$(dirname "$1")"; cat > "$1"; chmod 600 "$1"',
+               "sh", path, input=new.encode())
+
+
+def setup_harness(container: str, spec: Any, h: Any, env: dict[str, str],
+                  clones: list[tuple[str, str]] | None = None) -> list[str]:
+    """Write the harness's config and MCP servers into the container; lines for the run's log (names only)."""
+    files, servers, skipped = harness_config(spec, h, env, clones)
+    if files:
+        write_config(container, files)
+    return ([f"{h.name}: MCP servers configured: {', '.join(servers) or 'none'}"] if h else []) + skipped
+
+
+def claude_probe(container: str, spec: Any, h: Any, passed: list[str]) -> list[str]:
+    """Failures of the agent probe: the pinned CLI is on PATH and answers one prompt with the passed credential."""
+    if h is None or h.name != "claude-code":
+        return []
+    creds = [c.env_var for c in h.credentials]
+    if not set(creds) & set(passed):
+        return [f"no Claude credential was passed: {CREDENTIAL_HINT[h.name]}"]
+    v = sh(container, "claude --version")
+    got = v.stdout.decode(errors="replace").strip()
+    if v.returncode != 0:
+        return [f"claude is not on PATH in the container: {(got or v.stderr.decode(errors='replace'))[-300:]}"]
+    if h.version and not got.startswith(h.version):
+        return [f"claude --version is {got!r}, but hangar pins {h.version}"]
+    model = f" --model {spec.model}" if spec.model and re.fullmatch(r"[A-Za-z0-9._-]+", spec.model) else ""
+    r = sh(container, f"cd /tmp && timeout 300 claude -p 'say ok' --output-format json{model} < /dev/null")
+    return probe_failures(r.returncode, r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace"))
+
+
+def probe_failures(code: int, out: str, err: str) -> list[str]:
+    """`claude -p --output-format json` succeeded: exit 0 and a result event that is no error."""
+    result = None
+    for line in reversed(out.strip().splitlines()):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            result = obj
+            break
+    if code == 0 and result is not None and not result.get("is_error"):
+        return []
+    why = (str(result.get("result") or result.get("subtype")) if result else (err or out).strip()[-500:]) or "no output"
+    hint = " (is the Claude credential valid? `claude setup-token` makes a new one)" if re.search(
+        r"auth|login|401|403|token|api key", why, re.I) else ""
+    return [f"claude -p failed (exit {code}): {why}{hint}"]
+
+
+def start(spec: Any, image: str, instance: str, passed_names: list[str], environ: dict[str, str],
+          env: dict[str, str] | None = None) -> SimpleNamespace:
+    """The sidecar on the default bridge and an internal network, then the agent on the internal network only.
+    `env` is the non-secret environment (harness_env); the passed names' values go through an env file."""
     n = names(instance)
     labels = ["--label", f"{LABEL}={instance}"]
     docker("network", "create", "--internal", *labels, n.net)
@@ -136,10 +271,11 @@ def start(spec: Any, image: str, instance: str, passed_names: list[str], environ
             fh.write(f"{k}={environ[k]}\n")
         env_file = fh.name
     try:
-        docker("run", "-d", "--name", n.agent, *labels, "--network", n.net, *agent_args(dns, env_file), image)
+        docker("run", "-d", "--name", n.agent, *labels, "--network", n.net, *agent_args(dns, env_file, env), image)
     finally:
         os.unlink(env_file)
     print(f"started {n.agent}: {image}; variables passed by name: {', '.join(passed) or 'none'}", file=sys.stderr)
+    n.passed = passed
     return n
 
 
@@ -242,7 +378,12 @@ def _up(env: str, env_dir: list[Path], harnesses: Path | None, contract: Path | 
     spec = catalog(env_dir, harnesses).get(env)
     image = build(spec, harness, extra_ca)
     passed = list(dict.fromkeys([*contract_names(contract), *spec.secrets]))
-    n = start(spec, image, instance, passed, dict(os.environ))
+    h = baked_harness(spec, harness)
+    environ = dict(os.environ)
+    n = start(spec, image, instance, passed, environ, harness_env(h, image_path(image)) if h else None)
+    n.harness = h
+    for line in setup_harness(n.agent, spec, h, {k: environ[k] for k in n.passed}, clones):
+        print(line, file=sys.stderr)
     for line in clone_inputs(n.agent, clones):
         print(line, file=sys.stderr)
     return n, spec, clones
@@ -267,8 +408,11 @@ def check_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contr
               clone: Clones = [], report_cmd: ReportCmd = None, harness: Harness = "bake",  # noqa: B006
               extra_ca: ExtraCa = None,
               allowed_url: Annotated[str, typer.Option(help="a URL on the allowlist")] = "https://github.com/",
-              keep: Annotated[bool, typer.Option(help="leave the instances running")] = False) -> None:
-    """Two fresh instances report the same; nothing is mounted; off-list hosts and every DNS lookup are refused."""
+              keep: Annotated[bool, typer.Option(help="leave the instances running")] = False,
+              agent_probe: Annotated[bool, typer.Option(help="ask the baked agent CLI for one answer (`claude -p`) "
+                                                             "in the first instance")] = True) -> None:
+    """Two fresh instances report the same; nothing is mounted; off-list hosts and every DNS lookup are refused;
+    the agent CLI answers with the passed credential."""
     failures: list[str] = []
     texts: list[str] = []
     try:
@@ -287,6 +431,10 @@ def check_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contr
                 failures += bad
                 typer.echo("egress: FAILED" if bad else "egress: allowed host reached; off-list hosts, proxy-skipping "
                            "requests and DNS lookups refused", err=True)
+                if agent_probe and n.harness is not None:
+                    bad = claude_probe(n.agent, spec, n.harness, n.passed)
+                    failures += bad
+                    typer.echo("agent probe: FAILED" if bad else f"agent probe: {n.harness.name} answered", err=True)
         if texts[0] != texts[1]:
             import difflib
 
