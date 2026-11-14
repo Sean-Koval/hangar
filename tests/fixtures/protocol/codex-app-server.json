@@ -10,6 +10,7 @@
    "account/rateLimitResetCredit/consume",
    "account/rateLimits/read",
    "account/read",
+   "account/securitySetup/read",
    "account/sendAddCreditsNudgeEmail",
    "account/usage/read",
    "account/workspaceMessages/read",
@@ -31,6 +32,7 @@
    "externalAgentConfig/import",
    "externalAgentConfig/import/readHistories",
    "externalAgentConfig/import/recordHistory",
+   "feedback/save",
    "feedback/upload",
    "fs/copy",
    "fs/createDirectory",
@@ -53,6 +55,8 @@
    "mcpServerStatus/list",
    "model/list",
    "modelProvider/capabilities/read",
+   "modelProvider/config/write",
+   "modelProvider/list",
    "permissionProfile/list",
    "plugin/install",
    "plugin/installed",
@@ -501,6 +505,7 @@
    "thread/prediction/updated",
    "thread/project/updated",
    "thread/queue/changed",
+   "thread/readState/changed",
    "thread/realtime/closed",
    "thread/realtime/error",
    "thread/realtime/item/completed",
@@ -513,6 +518,7 @@
    "thread/realtime/transcript/delta",
    "thread/realtime/transcript/done",
    "thread/reverted",
+   "thread/section/changed",
    "thread/settings/updated",
    "thread/started",
    "thread/status/changed",
@@ -622,6 +628,56 @@
     "async"
    ],
    "type": "string"
+  },
+  "AgentMessageDisplay": {
+   "properties": {
+    "action": {
+     "type": "string"
+    },
+    "blockType": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "checkTrustedContacts": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    },
+    "cyberTrustedAccess": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "type": "object"
+  },
+  "AgentMessageModeration": {
+   "properties": {
+    "display": {
+     "anyOf": [
+      {
+       "$ref": "AgentMessageDisplay"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "moderated": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "moderated"
+   ],
+   "type": "object"
   },
   "AgentPath": {
    "type": "string"
@@ -744,6 +800,8 @@
       "rateLimitExceeded",
       "flexUnavailable",
       "serverOverloaded",
+      "modelNotFound",
+      "policyCapacityUnavailable",
       "cyberPolicy",
       "misalignmentPolicyViolation",
       "tooManyDenials",
@@ -753,6 +811,12 @@
       "threadRollbackFailed",
       "sandboxError",
       "other"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "inferenceHookDenied"
      ],
      "type": "string"
     },
@@ -1113,11 +1177,21 @@
    ]
   },
   "CommandExecutionApprovalKind": {
-   "enum": [
-    "command",
-    "writeStdin"
-   ],
-   "type": "string"
+   "oneOf": [
+    {
+     "enum": [
+      "command",
+      "writeStdin"
+     ],
+     "type": "string"
+    },
+    {
+     "enum": [
+      "humanCommand"
+     ],
+     "type": "string"
+    }
+   ]
   },
   "CommandExecutionRequestApprovalParams": {
    "properties": {
@@ -1495,10 +1569,31 @@
      "type": "object"
     },
     {
-     "properties": {
-      "audio_url": {
-       "type": "string"
+     "anyOf": [
+      {
+       "properties": {
+        "audio_url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "audio_url"
+       ],
+       "type": "object"
       },
+      {
+       "properties": {
+        "file_id": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "file_id"
+       ],
+       "type": "object"
+      }
+     ],
+     "properties": {
       "type": {
        "enum": [
         "input_audio"
@@ -1507,7 +1602,6 @@
       }
      },
      "required": [
-      "audio_url",
       "type"
      ],
      "type": "object"
@@ -1608,6 +1702,21 @@
     }
    ]
   },
+  "ImageGenerationInputImage": {
+   "properties": {
+    "path": {
+     "$ref": "AbsolutePathBuf"
+    },
+    "sha256": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "path",
+    "sha256"
+   ],
+   "type": "object"
+  },
   "InitializeCapabilities": {
    "properties": {
     "experimentalApi": {
@@ -1639,6 +1748,9 @@
     "requestAttestation": {
      "default": false,
      "type": "boolean"
+    },
+    "requiredHumanApproval": {
+     "type": "boolean"
     }
    },
    "type": "object"
@@ -1669,6 +1781,15 @@
     "completedAtMs": {
      "format": "int64",
      "type": "integer"
+    },
+    "contentTokenCount": {
+     "default": null,
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
     },
     "item": {
      "$ref": "ThreadItem"
@@ -2770,6 +2891,17 @@
        ],
        "default": null
       },
+      "moderation": {
+       "anyOf": [
+        {
+         "$ref": "AgentMessageModeration"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
       "phase": {
        "anyOf": [
         {
@@ -3372,6 +3504,30 @@
      "type": "object"
     },
     {
+     "anyOf": [
+      {
+       "properties": {
+        "fileId": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "fileId"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "result": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "result"
+       ],
+       "type": "object"
+      }
+     ],
      "properties": {
       "failure": {
        "anyOf": [
@@ -3384,11 +3540,21 @@
        ],
        "default": null
       },
+      "generationId": {
+       "default": null,
+       "type": [
+        "string",
+        "null"
+       ]
+      },
       "id": {
        "type": "string"
       },
-      "result": {
-       "type": "string"
+      "inputImages": {
+       "items": {
+        "$ref": "ImageGenerationInputImage"
+       },
+       "type": "array"
       },
       "revisedPrompt": {
        "type": [
@@ -3425,7 +3591,6 @@
      },
      "required": [
       "id",
-      "result",
       "status",
       "type"
      ],
@@ -3493,7 +3658,26 @@
      ],
      "type": "object"
     }
-   ]
+   ],
+   "properties": {
+    "completedAtMs": {
+     "default": null,
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "startedAtMs": {
+     "default": null,
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    }
+   },
+   "type": "object"
   },
   "ThreadResumeParams": {
    "properties": {
@@ -4279,6 +4463,9 @@
     },
     "output": {
      "$ref": "FunctionCallOutputBody"
+    },
+    "retain": {
+     "type": "boolean"
     }
    },
    "required": [
@@ -4393,20 +4580,40 @@
      "type": "object"
     },
     {
+     "anyOf": [
+      {
+       "properties": {
+        "url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "fileId": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "fileId"
+       ],
+       "type": "object"
+      }
+     ],
      "properties": {
       "type": {
        "enum": [
         "audio"
        ],
        "type": "string"
-      },
-      "url": {
-       "type": "string"
       }
      },
      "required": [
-      "type",
-      "url"
+      "type"
      ],
      "type": "object"
     },
