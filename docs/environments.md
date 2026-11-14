@@ -57,6 +57,7 @@ repo:
   url: https://github.com/me/my-service.git
   branch: main
   setup: uv sync                   # after clone
+  bin: [.venv/bin]                 # put first on PATH for the job's check: `python` is the venv
   bake: false                      # true = clone + setup at build time, for instant claims
 credentials: [claude-api, codex-api, gh]  # each sandbox gets its harness's ones, plus non-agent ones (git)
 secrets: { SENTRY_TOKEN: sentry }  # env var <- credential, injected at claim

@@ -874,8 +874,14 @@ def _k(n: int) -> str:
     return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.1f}k" if n >= 1e3 else str(n)
 
 
-@app.command("usage")
+usage_app = typer.Typer(help="Tokens and cost of agent turns (admin token); `hangar usage export` for chargeback.",
+                        invoke_without_command=True, no_args_is_help=False)
+app.add_typer(usage_app, name="usage")
+
+
+@usage_app.callback(invoke_without_command=True)
 def usage_report(
+    ctx: typer.Context,
     by: str = typer.Option("day", "--by", help="day | model | environment | requester | repo | harness | session | "
                                                  "job | cache_ttl | source"),
     since: str = typer.Option("30d", help="7d, 12h, an ISO date, or epoch seconds."),
@@ -886,6 +892,8 @@ def usage_report(
 ):
     """Tokens and cost of agent turns, grouped (admin token). `hangar usage --by session --cache` shows which
     sessions get the most out of the prompt cache, and which pay for writes they never read back."""
+    if ctx.invoked_subcommand is not None:
+        return
     r = _call("GET", "/api/usage", params={"group_by": by, "since": since, "limit": limit})
     if as_json:
         return _print(r)
@@ -909,6 +917,29 @@ def usage_report(
                        f"{cost:>10}")
     if any(row["unpriced_turns"] for row in r["rows"]):
         typer.echo("+ some turns used a model with no known price (HANGAR_MODEL_PRICES); their cost is not counted")
+
+
+@usage_app.command("export")
+def usage_export(
+    month: str = typer.Option(..., "--month", help="The calendar month, YYYY-MM (UTC)."),
+    by: str = typer.Option("person", "--by", help="person | repo"),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Write the CSV here instead of stdout."),
+):
+    """A month's chargeback CSV, one row per person or repo: tokens, cost, sandbox hours, merged PRs."""
+    with _client() as c:
+        r = c.get("/api/usage/export", params={"month": month, "by": by})
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("detail") or r.text
+        except Exception:  # noqa: BLE001
+            msg = r.text
+        typer.secho(f"error {r.status_code}: {msg}", fg="red", err=True)
+        raise typer.Exit(1)
+    if out is None:
+        typer.echo(r.text, nl=False)
+    else:
+        out.write_text(r.text)
+        typer.echo(f"wrote {out}")
 
 
 def _event_line(e: dict) -> str:
@@ -1408,6 +1439,9 @@ _envbuilds.register_sb(sb_app)
 from hangar import autoinstall_cli as _autoinstall  # noqa: E402  --- autoinstall: hangar env setup
 
 _autoinstall.register(env_app)
+from hangar.localenv import local_app as _local_app  # noqa: E402  --- KAN-472: hangar env local
+
+env_app.add_typer(_local_app, name="local")
 # ---------------------------------------------------------------------------- --- landing: hangar inbox (inbox_cli.py)
 from hangar import inbox_cli as _inbox  # noqa: E402
 

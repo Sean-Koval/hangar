@@ -366,6 +366,8 @@ def turn_children(x: Export, parent: str | None, key: str, turn: SessionTurn, ha
             _tool_span(x, parent, key, harness, conv, start, ev, end, root, trees.get(tid))
         elif ev.kind == "approval_request" and ev.data.get("status") == "pending" and ev.seq:
             asked.setdefault(str(ev.data.get("id")), ev.seq)
+        elif ev.kind == "usage" and ev.data.get("message_id"):  # --- KAN-338: one model call (Claude Code)
+            _model_span(x, parent, key, harness, conv, ev)
         elif turn_span is not None:
             _point(x, turn_span, ev, root)
     for start in open_.values():  # the turn ended (or the log was cut) before these answered
@@ -417,12 +419,44 @@ def _shell_ops_of(start: RunEvent | None, inp: str | None) -> list[str]:
     return [o for o in ops.split(",") if o] if isinstance(ops, str) else shell_ops(inp)
 
 
+def _sub_parent(x: Export, parent: str | None, key: str, ev: RunEvent) -> tuple[str | None, str | None]:
+    """--- KAN-338: (the span to hang a subagent's step under: its `subagent` span, the Task/Agent call that started
+    it; that call's id). The turn and None for the agent's own steps."""
+    pid = ev.data.get("parent_id")
+    if not isinstance(pid, str) or not pid:
+        return parent, None
+    return _hex(x.trace, f"{key}/tool/{pid}", n=8), pid
+
+
+def _model_span(x: Export, parent: str | None, key: str, harness: str | None, conv: str | None,
+                ev: RunEvent) -> None:
+    """--- KAN-338: a `model.call` span, GenAI's inference span (`chat {model}`): one model response and what it
+    used. A point in time: hangar sees the call when its response is logged."""
+    d = ev.data
+    parent, sub = _sub_parent(x, parent, key, ev)
+    model = d.get("model")
+    inp, read, write = (d.get(k) or 0 for k in ("call_input_tokens", "call_cache_read_tokens",
+                                                "call_cache_write_tokens"))
+    x.span(f"{key}/model/{d['message_id']}", f"chat {model}" if model else "chat", ev.ts, ev.ts, {
+        "hangar.kind": "model.call", "gen_ai.operation.name": "chat", "gen_ai.agent.name": harness,
+        "gen_ai.provider.name": PROVIDERS.get(harness or ""), "gen_ai.request.model": model,
+        "gen_ai.response.model": model, "gen_ai.response.id": d["message_id"], "gen_ai.conversation.id": conv,
+        "gen_ai.usage.input_tokens": inp + read + write, "gen_ai.usage.output_tokens": d.get("call_output_tokens"),
+        "gen_ai.usage.cache_read.input_tokens": read, "gen_ai.usage.cache_write.input_tokens": write,
+        "hangar.usage.cache_write_5m.input_tokens": d.get("call_cache_write_5m_tokens"),
+        "hangar.usage.cache_write_1h.input_tokens": d.get("call_cache_write_1h_tokens"),
+        "hangar.cost_usd": d.get("call_cost_usd"), "hangar.cost_source": "prices" if "call_cost_usd" in d else None,
+        "hangar.usage.partial": True if d.get("call_partial") else None,
+        "hangar.subagent.call.id": sub, "hangar.seq": ev.seq or None}, parent=parent)
+
+
 def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, conv: str | None,
                start: RunEvent | None, result: RunEvent | None, turn_end: float, root: str | None = None,
                tree: RunEvent | None = None) -> None:
     first = start or result
     if first is None:
         return
+    parent, sub = _sub_parent(x, parent, key, first)
     name = str((start.data.get("tool") if start else None) or (result.data.get("tool") if result else None)
                or ("shell" if start is not None and start.kind == "command" else "?"))
     tid = str(first.data.get("id") or f"seq{first.seq}")
@@ -435,7 +469,9 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
               "hangar.tool.input_clipped": True if start is not None and start.data.get("clipped") else None,
               "hangar.tool.output": result.text if result else None, "hangar.tool.ok": ok,
               "gen_ai.conversation.id": conv,  # --- review(#114): the event log's order (times can tie)
-              "hangar.seq": first.seq or None, "hangar.seq.end": (result.seq or None) if result else None}
+              "hangar.seq": first.seq or None, "hangar.seq.end": (result.seq or None) if result else None,
+              # --- KAN-338: the model response that asked for the call, and the subagent that made it
+              "hangar.response.id": first.data.get("message_id"), "hangar.subagent.call.id": sub}
     if name in SUBAGENT_TOOLS:
         agent = (start.data.get("subagent") if start else None) or name
         x.span(f"{key}/tool/{tid}", f"invoke_agent {agent}", t0, t1, {
@@ -476,8 +512,10 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
 def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None) -> None:
     d = ev.data
     seq = ev.seq or None  # --- review(#114): the event log's order (times can tie)
+    sub = d.get("parent_id") if isinstance(d.get("parent_id"), str) else None  # --- KAN-338: a subagent's
     if ev.kind == "message":
-        x.event(sp, "message", ev.ts, {"hangar.kind": "message", "hangar.text": ev.text[:TEXT], "hangar.seq": seq})
+        x.event(sp, "message", ev.ts, {"hangar.kind": "message", "hangar.text": ev.text[:TEXT], "hangar.seq": seq,
+                                       "hangar.message.role": d.get("role"), "hangar.subagent.call.id": sub})
     elif ev.kind == "file_change":
         path = str(d.get("path") or ev.text)
         rel = repo_path(path, root)
@@ -486,7 +524,7 @@ def _point(x: Export, sp: dict[str, Any], ev: RunEvent, root: str | None = None)
                                            "hangar.file.repo_path": rel,
                                            "hangar.file.in_repo": (rel is not None) if known else None,
                                            "hangar.file.op": d.get("op"), "gen_ai.tool.name": d.get("tool"),
-                                           "hangar.seq": seq})
+                                           "hangar.seq": seq, "hangar.subagent.call.id": sub})
     elif ev.kind == "error":
         x.event(sp, "error", ev.ts, {"hangar.kind": "error", "hangar.text": ev.text[:TEXT],
                                      "hangar.fatal": d.get("fatal") if isinstance(d.get("fatal"), bool) else None,
@@ -595,21 +633,26 @@ def session_export(svc: SessionService, s: Session, turn: int | None = None,
         _turn_span(x, None, s, turn, t, evs, extra, root=checkout(svc, s), store=_store(svc))
         return x.request(resource)
     grouped = _by_turn(read_events(svc.activity, s.id))
-    started = [t for t in s.turns if t.started_at]
-    root = x.span(f"{s.id}/session", "invoke_workflow hangar.session",
-                  started[0].started_at if started else s.created_at,
-                  max((t.finished_at or now() for t in started), default=s.last_active_at), {
-                      "hangar.kind": "session", "gen_ai.operation.name": "invoke_workflow",
-                      "gen_ai.workflow.name": "hangar.session", "hangar.environment": s.environment,
-                      "hangar.harness": s.harness, "gen_ai.request.model": s.model,
-                      "hangar.taint": bool(s.taint and s.taint.get("tainted")),  # --- taint (#129)
-                      **_usage_attrs(total_usage(s.turns))})
+    root = session_span(x, s)
     where = checkout(svc, s)
     store = _store(svc)
     for n, t in enumerate(s.turns, 1):
         if t.started_at:
             _turn_span(x, root["id"] if root else None, s, n, t, _events_of(grouped, n, t), root=where, store=store)
     return x.request(resource)
+
+
+def session_span(x: Export, s: Session, extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """A session export's root: its first turn's start to its last turn's end, with the session's totals."""
+    started = [t for t in s.turns if t.started_at]
+    return x.span(f"{s.id}/session", "invoke_workflow hangar.session",
+                  started[0].started_at if started else s.created_at,
+                  max((t.finished_at or now() for t in started), default=s.last_active_at), {
+                      "hangar.kind": "session", "gen_ai.operation.name": "invoke_workflow",
+                      "gen_ai.workflow.name": "hangar.session", "hangar.environment": s.environment,
+                      "hangar.harness": s.harness, "gen_ai.request.model": s.model,
+                      "hangar.taint": bool(s.taint and s.taint.get("tainted")),  # --- taint (#129)
+                      **_usage_attrs(total_usage(s.turns)), **(extra or {})})
 
 
 def _store(svc: Any) -> Any:
@@ -635,6 +678,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
         "gen_ai.request.model": job.model, "hangar.repo": job.repo, "hangar.diff.stat": job.result.diffstat,
         "hangar.diff.files": list(job.result.files) or None, "hangar.diff.deleted": list(job.result.deleted) or None,
         "hangar.pr.url": job.result.pr_url, "hangar.taint": bool(job.taint and job.taint.get("tainted")),  # #129
+        "hangar.ticket.key": ticket_key(job), "hangar.jira.ready_at": job.labels.get(JIRA_READY_AT),  # KAN-320
         **harness_review.trace_attrs(job), **_usage_attrs(usage)},  # --- #169: hangar.failure.*
         error=(job.reason or "") if job.state.value == "failed" else None)
     pid = root["id"] if root else None
@@ -650,7 +694,7 @@ def job_export(jobs: JobService, job: Job, sessions: list[Session] | None = None
             if t.started_at:
                 _turn_span(x, pid, s, n, t, _events_of(grouped, n, t),
                            {**extra, **turn_attrs(job_turns.get(t.run_id) if t.run_id else None)}, root=where)
-    _job_events(x, root, job)
+    _job_events(x, root, job, pr_facts(jobs, job))
     if root is not None:  # each check's test.run / test.case events on the job (testresults.py)
         testresults.add_to_export(x, root, jobs.store, job)
     main = next((z for z in sessions if z.id == job.session_id), None)
@@ -669,7 +713,32 @@ async def export_job(jobs: JobService, job: Job) -> dict[str, Any]:
     return await asyncio.to_thread(job_export, jobs, job.model_copy(deep=True), sessions, jobs.usage(job))
 
 
-def _job_events(x: Export, root: dict[str, Any] | None, job: Job) -> None:
+# --- KAN-320: the ticket and PR facts the work-system specs judge (flightdeck), without reading GitHub or Jira
+JIRA_READY_AT = "jira.ready_at"  # the job label: when the Jira door saw the issue move into its trigger status
+
+
+def ticket_key(job: Job) -> str | None:
+    """The tracker key the job works on (`KAN-320`), as its PR body's `Jira:` line names it; None without one."""
+    from hangar import intake
+
+    return intake.ticket_key(job.labels, job.source_ref, job.ticket)
+
+
+def pr_facts(jobs: Any, job: Job) -> dict[str, Any]:
+    """The `pr.open` facts hangar wrote, without asking GitHub: the title it gives the PR (the repo policy's
+    `title_template`, else the job's title), the head ref, and whether the body carries the tracker line."""
+    from hangar import changesets
+
+    policies = getattr(jobs, "policies", None)
+    try:
+        title = changesets.title_for(policies.get(job.repo) if policies is not None else None, job)
+    except Exception:  # noqa: BLE001 - a broken template never breaks an export
+        title = job.title
+    return {"hangar.pr.title": (title or "")[:TEXT] or None, "hangar.pr.head_ref": job.branch,
+            "hangar.pr.tracker_line": ticket_key(job) is not None}
+
+
+def _job_events(x: Export, root: dict[str, Any] | None, job: Job, pr: dict[str, Any] | None = None) -> None:
     r = job.result
     delivered = next((e.ts for e in reversed(job.events) if e.state == "delivering"), None) or job.updated_at
     verified = next((e.ts for e in reversed(job.events) if e.state == "verifying"), None)
@@ -691,7 +760,8 @@ def _job_events(x: Export, root: dict[str, Any] | None, job: Job) -> None:
                                               "vcs.ref.head.revision": r.head_sha, "hangar.git.pushed": r.pushed})
     if r.pr_url:
         x.event(root, "pr.open", delivered, {"hangar.kind": "pr.open", "hangar.pr.number": r.pr_number,
-                                             "hangar.pr.url": r.pr_url, "hangar.pr.draft": job.landing.draft})
+                                             "hangar.pr.url": r.pr_url, "hangar.pr.draft": job.landing.draft,
+                                             **(pr or {})})
     land = job.landing
     for name, conclusion in sorted(land.checks.items()):
         x.event(root, "ci.check", land.ci_green_at or job.updated_at, {

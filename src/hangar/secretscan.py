@@ -24,6 +24,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING, NamedTuple
 
+from hangar import delivery
 from hangar.models import Turn
 
 if TYPE_CHECKING:
@@ -169,7 +170,7 @@ def scan_script(repo: str, base: str, out: str, cap: int = MAX_SCAN_BYTES) -> st
     that aren't ignored, as added lines. Commits the remote already has don't count. Zero-context diffs; binary
     files are skipped (git prints "Binary files differ"). At most `cap` bytes."""
     q = shlex.quote
-    new = f"{q(base)}..HEAD --not --remotes"
+    new = f"{delivery.log_range(base)} --not --remotes"  # --- KAN-308: the empty tree, for a repo with no branches
     diff = "--no-color --no-ext-diff --no-textconv --no-renames -U0"
     return (
         f"set -o pipefail; cd {q(repo)} || exit 3; {{ "
@@ -261,7 +262,7 @@ async def before_push(jobs: JobService, job: Job, sandbox_id: str | None = None)
     mode = jobs.settings.secret_scan
     if mode == "off":
         return
-    base = job.result.base_sha or f"origin/{job.base_branch}"
+    base = delivery.base_rev(job)  # --- KAN-308
     try:
         hits = await scan_sandbox(jobs, sandbox_id or job.sandbox_id or "", base, f"job:{job.id}")
     except Blocked:

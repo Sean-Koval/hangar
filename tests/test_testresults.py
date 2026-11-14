@@ -133,8 +133,12 @@ def test_what_isnt_a_report():
 
 # ====================================================================== collecting around a check
 def _local(cwd: Path):
+    # The check runs as in a fresh sandbox: not with the PYTEST_ADDOPTS of the pytest running these tests (the agent
+    # stop hook sets --junitxml there), which would add a report path of its own to the one hangar injects.
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")}
+
     async def ex(cmd: str, timeout: int) -> ExecResult:
-        p = await asyncio.create_subprocess_exec("bash", "-c", cmd, cwd=str(cwd), stdout=subprocess.PIPE,
+        p = await asyncio.create_subprocess_exec("bash", "-c", cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
                                                  stderr=subprocess.PIPE)
         out, err = await asyncio.wait_for(p.communicate(), timeout)
         return ExecResult(exit_code=p.returncode, stdout=out.decode(), stderr=err.decode())
@@ -781,3 +785,30 @@ def test_canary_reads_reports_through_the_one_parser(tmp_path):
     assert (res["passed"], res["failed"], res["skipped"]) == (2, 3, 1)
     assert {"test": "xxe.xml", "message": "no readable test report"} in res["failures"]
     assert baseline.stops_early("pytest -x", "") is True  # the guard both kinds of subtraction share
+
+
+def test_the_check_alone_gets_the_repo_bin_dirs_first_on_path(tmp_path):
+    """KAN-313: HANGAR_REPO_BIN (envspec `repo.bin`) goes first on PATH in the check's shell, through prefix() and
+    with_repo_bin(), and only there: a plain shell in the sandbox still finds the image's tools."""
+    import os
+    import subprocess
+
+    from hangar import testresults
+
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    tool = venv / "pytest"
+    tool.write_text("#!/bin/sh\necho repo-pytest\n")
+    tool.chmod(0o755)
+    env = {**os.environ, "HANGAR_REPO_BIN": str(venv)}
+
+    def sh(script: str) -> str:
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True,
+                              cwd=tmp_path).stdout.strip()
+
+    d = tmp_path / "reports"
+    assert sh(testresults.prefix(str(d), inject=False) + "pytest") == "repo-pytest"
+    assert sh(testresults.with_repo_bin("pytest")) == "repo-pytest"
+    assert sh("command -v pytest || echo none") != str(tool)  # not on PATH outside the check
+    env.pop("HANGAR_REPO_BIN")
+    assert sh(testresults.with_repo_bin("echo $PATH")) == os.environ["PATH"]  # no repo.bin: PATH as it was

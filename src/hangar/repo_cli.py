@@ -54,6 +54,8 @@ def _line(p: dict) -> str:
         bits.append(f"credentials: {p['credentials']}")
     if p.get("max_usd_per_day"):
         bits.append(f"daily cap: ${p['max_usd_per_day']:g} (${p.get('spent_today_usd') or 0:.2f} today)")
+    if p.get("max_usd_per_month"):  # --- KAN-300
+        bits.append(f"monthly cap: ${p['max_usd_per_month']:g} (${p.get('spent_this_month_usd') or 0:.2f} this month)")
     if eg := p.get("egress"):  # --- egress
         bits.append("egress: " + (eg.get("mode") or "env") + (f" +{','.join(eg['allow'])}" if eg.get("allow") else ""))
     if p.get("land") == "auto_after_approval":  # --- landing
@@ -103,6 +105,8 @@ def repo_set(
     job_max_turns: int | None = typer.Option(None, "--job-max-turns", help="Job budget: agent turns in all."),
     max_usd_per_day: float | None = typer.Option(None, "--max-usd-per-day", help="Daily cap on the repo's spend "
                                                  "(UTC days); new jobs over it wait for approval."),
+    max_usd_per_month: float | None = typer.Option(None, "--max-usd-per-month", help="Monthly cap on "
+                                                   "the repo's spend; new jobs over it wait for approval."),
     credentials: str | None = typer.Option(None, "--credentials", help="Whose login jobs use: person (the person "
                                            "the job runs for), team, or person_then_team (the default)."),
     egress_mode: str | None = typer.Option(None, "--egress-mode", help="--- egress: allowlist or none; tightens "
@@ -178,6 +182,7 @@ def repo_set(
     body: dict = {"repo": repo}
     for k, v in (("verify", verify), ("environment", env), ("harness", harness), ("model", _models(model)),
                  ("max_usd_per_day", max_usd_per_day), ("credentials", credentials),  # --- teamcreds
+                 ("max_usd_per_month", max_usd_per_month),  # --- KAN-300
                  ("budget", _fields(max_cost_usd=max_cost, max_tokens=max_tokens, max_minutes=max_minutes)),
                  ("job_budget", _fields(max_cost_usd=job_max_cost, max_tokens=job_max_tokens,
                                         max_turns=job_max_turns)),
@@ -214,6 +219,7 @@ def repo_set(
 def repo_unset(repo: str = typer.Argument(...),
                fields: list[str] = typer.Argument(None, help="Fields to clear (verify, environment, harness, "
                                                              "model, budget, job_budget, max_usd_per_day, "
+                                                             "max_usd_per_month, "
                                                              "credentials, egress, build_secrets, land, approvers, "
                                                              "merge_method, risk_paths, diff_budget_lines, "
                                                              "require_stale_dismissal, verify_reports, "

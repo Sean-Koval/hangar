@@ -9,9 +9,9 @@ runs from one too: `{harness_lock: "team-default@sha256:…"}`, by digest ([jobs
 **The registry.** `HANGAR_HARNESS_REPO` is the [team harness repo](../harness-lock.md#the-team-harness-repo): locks at
 `harnesses/<name>/harness.lock` (or `<name>/harness.lock`), channels in `channels.yaml`
 (`{team-default: {stable: "sha256:..."}}`). A reference is `name` (the current lock), `name@rN`, `name@sha256:...` or
-`name@<channel>`; a revision or digest that isn't the checkout's current one is found in its git history. The
-registry can also be a subdirectory of a larger repo: its paths, and the history lookups, are relative to that
-directory.
+`name@<channel>`; another revision or digest comes from the harness's release copies (`releases/rN/`), never git
+history. A harness without them falls back to history. The registry may sit inside a repo: paths and
+history lookups are relative to it.
 `GET /api/harness-locks/{ref}` shows what a reference resolves to.
 
 **The claim** is refused, with what to do, when:

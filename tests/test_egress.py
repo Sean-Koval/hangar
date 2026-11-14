@@ -211,7 +211,8 @@ async def _echo(reader, writer):
 async def proxied(settings, store, broker, tmp_path, monkeypatch):
     """A fleet with an `allowlist` environment allowing upstream.test on the echo server's port, a running sandbox
     of it, and the proxy listening on loopback. upstream.test resolves to 127.0.0.1, which counts as public here."""
-    up_port, px_port = free_port(), free_port()
+    server = await asyncio.start_server(_echo, "127.0.0.1", 0)  # bound at once: no other worker takes its port
+    up_port, px_port = server.sockets[0].getsockname()[1], free_port()
     envs = tmp_path / "envs"
     envs.mkdir()
     (envs / "locked.yaml").write_text(yaml.safe_dump({"name": "locked", "harnesses": ["claude-code"], "egress": {
@@ -233,7 +234,6 @@ async def proxied(settings, store, broker, tmp_path, monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_dns)
     monkeypatch.setattr(egress_proxy, "public", lambda ip: str(ip) == "127.0.0.1")
-    server = await asyncio.start_server(_echo, "127.0.0.1", up_port)
     f.egress.activity = Activity()
     await f.egress.listen("127.0.0.1", relay=False)
     yield SimpleNamespace(fleet=f, sb=sb, up=up_port, px=px_port, store=store)
@@ -258,6 +258,15 @@ def audits(store, action: str) -> list[AuditEvent]:
     return [e for e in store.audit_tail(500) if e.action == action]
 
 
+async def until(cond, timeout: float = 20.0) -> None:
+    """Wait for what a test needs to have happened, not for a fixed time a loaded machine may not keep to."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not cond():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("timed out")
+        await asyncio.sleep(0.01)
+
+
 async def test_an_allowed_host_with_matching_sni_is_tunnelled(proxied):
     p = proxied
     first, r, w = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, p.sb)}")
@@ -265,10 +274,10 @@ async def test_an_allowed_host_with_matching_sni_is_tunnelled(proxied):
     hello = client_hello("upstream.test")
     w.write(hello)
     await w.drain()
-    got = await asyncio.wait_for(r.read(65536), 5)
+    got = await asyncio.wait_for(r.readexactly(len(b"ECHO:" + hello)), 5)  # one read may get part of it
     assert got == b"ECHO:" + hello  # the ClientHello went through untouched: no TLS termination
     w.close()
-    await asyncio.sleep(0.05)
+    await until(lambda: not p.fleet.egress._conns)  # the tunnel ended: its bytes are counted
     p.fleet.egress.flush()
     [a] = audits(p.store, "egress.allow")
     assert a.target == p.sb.id and a.detail["host"] == "upstream.test" and a.detail["connections"] == 1
@@ -436,22 +445,22 @@ async def test_a_persons_sandboxes_share_a_cap_and_others_are_unaffected(proxied
 async def test_a_shutdown_takes_no_new_tunnel_and_lets_open_ones_finish(proxied):
     """--- egress2 (#97 review): a restart used to cut every tunnel, model streams mid-answer included."""
     p = proxied
-    p.fleet.settings.egress_drain_seconds = 5
+    p.fleet.settings.egress_drain_seconds = 60  # far past any wait below, however slow the machine
     first, r, w = await ask(p.px, f"CONNECT upstream.test:{p.up} HTTP/1.1\r\n{auth(p.fleet, p.sb)}")
     assert first.startswith(b"HTTP/1.1 200")
     p.fleet.closing.set()  # the shutdown signal
-    await asyncio.sleep(0.05)
+    await until(lambda: all(not s.is_serving() for s in p.fleet.egress._servers.values()))  # the watcher saw it
     with pytest.raises(OSError):  # no new connection
         await asyncio.open_connection("127.0.0.1", p.px)
     stopping = asyncio.create_task(p.fleet.egress.stop())
-    await asyncio.sleep(0.3)
-    assert not stopping.done()  # waiting for the open tunnel
+    done, _ = await asyncio.wait({stopping}, timeout=0.3)
+    assert not done  # waiting for the open tunnel
     hello = client_hello("upstream.test")
     w.write(hello)
     await w.drain()
-    assert await asyncio.wait_for(r.read(65536), 5) == b"ECHO:" + hello  # it still works
+    assert await asyncio.wait_for(r.readexactly(len(b"ECHO:" + hello)), 5) == b"ECHO:" + hello  # it still works
     w.close()  # and once it ends, the stop goes on without waiting out the drain
-    await asyncio.wait_for(stopping, 3)
+    await asyncio.wait_for(stopping, 20)
     p.fleet.closing.clear()
 
 

@@ -26,8 +26,3 @@ next release. A row leaves this page when its fix lands, and its finding moves t
 | A person's own login file can be swapped for another account's refresh token after a refresh | Medium | Team logins are never written back; only that person's later sandboxes are affected | Same-account check, rotation check, and a new login ends old leases (KAN-168, KAN-178) |
 | Tower decides only when governance is on: `HANGAR_GOVERNANCE` is `off` by default, and release and landing don't ask it yet | Low (L-1) | hangar's own approvals, gateway and landing are the controls until a team turns it on | Tool calls, egress and secret requests are wired (KAN-77 to KAN-79); release and landing are KAN-33 |
 | The console's admin token is in `sessionStorage`, readable by a script on the page | Low (L-7) | A strict CSP runs only hangar's own scripts, and the 50 remaining HTML sinks are audited | `tests/test_ui_csp.py` fails on a new sink; an `HttpOnly` cookie needs CSRF checks first |
-
-## Decided, in review
-
-None. Both decisions Sean made on 2026-10-27 have merged: GKE ships with `allowlist` egress (L-9, #387), and the warn
-switches are removed (KAN-74, #388).

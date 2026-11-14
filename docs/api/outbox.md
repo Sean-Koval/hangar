@@ -152,7 +152,7 @@ Schema: `$defs.job_event`. Every event has `kind`, `ts`, `job_id`, `job_source`,
 
 | `kind` | When | `data` |
 | --- | --- | --- |
-| `pr.open` | the job's PR exists | `{draft}` |
+| `pr.open` | the job's PR exists | `{draft, title, head_ref, tracker_line, ticket}` |
 | `review.first` | the first approval that counts (landing) | `{by, sha, first_review_at, first_review_by}`: the last two are the first human review in any state (#168, added within v1) |
 | `pr.merge` | merged, once its [outcome labels](outcome-labels.md) are read (up to 6 hours) | `{by, green_to_merge_seconds}`, and the outcome labels (added within v1) |
 | `pr.close` | closed without merging (each close) | `{}` |

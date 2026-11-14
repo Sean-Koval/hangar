@@ -19,6 +19,7 @@ The boundary and the other two interfaces (the effective harness manifest and ex
 | One run (one turn of a session) | `GET /api/sessions/{name}/trace?turn=N` | `hangar trace export <session> --turn N` | |
 | A whole session | `GET /api/sessions/{name}/trace` | `hangar trace export <session>` | `hangar://sessions/{name}/trace` |
 | A job: its turns, best-of-N attempts, judge, verify, git, PR and CI | `GET /api/jobs/{id}/trace` | `hangar trace export <job id>` | `hangar://jobs/{id}/trace` |
+| A Claude Code session hangar didn't run, from its transcript (offline) | | `hangar trace import <transcript> --out DIR` ([how](trace-import.md)) | |
 | An experiment trial (stored when the trial ended) | `GET /api/experiments/{id}/trials/{key}/trace` | `hangar experiment export <id>` | |
 
 `-o FILE` writes the export to a file. Every export is one OTLP `ExportTraceServiceRequest` in the
@@ -73,6 +74,7 @@ Spans have a duration; events are points in time. Kinds are stable within `hanga
 | `tool.call` | `execute_tool {tool}`, or `execute_tool {tool} {executable}` for a one-process shell command and `execute_tool {tool} {skill}` for a skill (GenAI's command and skill refinements) | `execute_tool` | `turn` | One tool call, from the call to its result. |
 | `subagent` | `invoke_agent {subagent type}` | `invoke_agent` | `turn` | A subagent the agent started (Claude Code's `Task`/`Agent` tool). Its start is the subagent's start. |
 | `approval` | `approval {tool}` | — | `turn` | A tool permission asked during a live turn, from the request to the answer. |
+| `model.call` | `chat {model}` | `chat` | `turn` or `subagent` | One model response and its usage (Claude Code). A point in time ([attributes](trace-import.md#usage-per-model-call-and-per-turn)). |
 
 ### Normalized tool kinds
 
@@ -126,7 +128,7 @@ exported in that order. Order across sessions (best-of-N attempts) is by time on
 | `taint` | `turn` | `hangar.taint.ref`, `hangar.seq`: the session first read untrusted content here ([security/taint.md](../security/taint.md)) |
 | `git.commit` | `job` | `vcs.ref.head.revision` (the commit), `hangar.git.subject`. Each commit of the delivered branch, stamped when hangar delivered it (after its check): when the *agent* committed is its shell call with `hangar.shell.ops` `git.commit` |
 | `git.push` | `job` | `vcs.ref.head.name` (the branch), `vcs.ref.head.revision`, `hangar.git.pushed` |
-| `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft` |
+| `pr.open` | `job` | `hangar.pr.number`, `hangar.pr.url`, `hangar.pr.draft`, `hangar.pr.title`, `hangar.pr.head_ref`, `hangar.pr.tracker_line` |
 | `ci.check` | `job` | `hangar.ci.name`, `hangar.ci.conclusion`, `vcs.ref.head.revision` |
 | `pr.merge` | `job` | `hangar.pr.number`, `hangar.pr.merged_by` |
 | `job.state` | `job` | `hangar.job.state`, `hangar.text`: each entry of the job's timeline |
@@ -240,10 +242,10 @@ answered: a person, `policy`, `timeout` or `harness`), `hangar.approval.message`
 `gen_ai.operation.name=invoke_workflow`, `gen_ai.workflow.name` (`hangar.session` or `hangar.job`),
 `hangar.environment`, `hangar.harness`, `gen_ai.request.model`, totals over all turns (`gen_ai.usage.*`,
 `hangar.cost_usd`), and for jobs `hangar.job.state`, `hangar.job.reason`, `hangar.job.strategy`, `hangar.repo`,
-`hangar.diff.stat` (the delivered diff's stat), `hangar.diff.files` and `hangar.diff.deleted` (its files,
+`hangar.diff.stat` (its stat), `hangar.diff.files` and `hangar.diff.deleted` (its files,
 repo-relative, at most 1,000: what the change touched however it was made, shell commands included),
-`hangar.pr.url`. Both carry `hangar.taint`: whether any of its turns read untrusted content (a job whose own input is
-untrusted is tainted from the start).
+`hangar.pr.url`, `hangar.ticket.key`, `hangar.jira.ready_at`. Both carry `hangar.taint`: whether any of its turns
+read untrusted content (a job whose own input is untrusted is tainted from the start).
 
 A job labelled in the Friday harness review ([runbook](../runbooks/harness-review.md), #169, added within
 `hangar.trace/v1`) also carries `hangar.failure.category` (`env`, `tooling`, `instructions`, `skill`, `model`,

@@ -54,6 +54,8 @@ PATHS: list[tuple[str, list[str] | str]] = [
     # the editorial rule (every page, the nav); subscription logins only in interactive sections (KAN-219)
     ("docs/*", ["tests/test_editorial.py", "tests/test_onboarding_docs.py"]),
     ("AGENTS.md", ["tests/test_codeowners.py", "tests/test_editorial.py"]),  # the merge rule, the editorial rule
+    ("mkdocs.yml", ["tests/test_editorial.py", "tests/test_front_page.py", "tests/test_alerting.py",  # the nav
+                    "tests/test_up_gke.py"]),
     ("*.md", []),
     ("LICENSE", []),
     (".github/CODEOWNERS", ["tests/test_codeowners.py"]),  # KAN-220: the security modules' owners

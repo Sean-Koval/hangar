@@ -336,3 +336,33 @@ def test_a_childs_own_skill_stays_relative_to_the_child(tmp_path):
     child = EnvCatalog([shipped, saved]).get("child")
     assert [s.path for s in child.skills] == ["skills/mine"]  # component lists replace (#132)
     assert skill_dir(child, "skills/mine") == (saved / "skills" / "mine").resolve()
+
+
+def test_repo_bin_dirs_are_named_for_the_check_and_kept_off_the_image_path(tmp_path):
+    """KAN-313: `repo.bin` names the checkout's own bin dirs (a uv venv) in HANGAR_REPO_BIN, which the job's check
+    puts first on its PATH (testresults.REPO_BIN). The image PATH keeps mise's Python for hangar's own helpers."""
+    (tmp_path / "v.yaml").write_text(
+        "name: v\nrepo: {url: 'https://github.com/o/proj.git', setup: uv sync, bin: [.venv/bin, node_modules/.bin]}\n")
+    (tmp_path / "p.yaml").write_text(
+        "name: p\nrepo: {url: 'https://github.com/o/proj.git', path: /srv/p, bin: [.venv/bin]}\n")
+    for name, d in (("bad", "../escape"), ("abs", "/usr/bin"), ("dot", "."), ("dotslash", "./")):
+        (tmp_path / f"{name}.yaml").write_text(f"name: {name}\nrepo: {{url: 'https://github.com/o/proj.git', "
+                                               f"bin: ['{d}']}}\n")
+    cat = EnvCatalog([tmp_path])
+    line = next(ln for ln in render(cat.get("v"), workspace="/workspace").dockerfile.splitlines()
+                if ln.startswith("ENV PATH="))
+    assert line.startswith("ENV PATH=/home/agent/.local/bin:") and "/workspace/proj" not in line.split(" ")[1]
+    assert line.endswith(" HANGAR_REPO_BIN=/workspace/proj/.venv/bin:/workspace/proj/node_modules/.bin")
+    assert "HANGAR_REPO_BIN=/srv/p/.venv/bin" in render(cat.get("p")).dockerfile
+    for name in ("bad", "abs", "dot", "dotslash"):
+        with pytest.raises(ValueError, match="relative to the checkout"):
+            cat.get(name)
+
+
+def test_hangar_envs_name_the_repo_venv_for_the_check():
+    """KAN-313: a hangar-jobs job's `python -m pytest` verify runs the repo's .venv, where pytest is installed."""
+    cat = EnvCatalog([Path(__file__).parent.parent / "envs"])
+    for name in ("hangar", "hangar-jobs"):
+        spec = cat.get(name)
+        assert spec.repo and spec.repo.bin == [".venv/bin"]
+        assert "HANGAR_REPO_BIN=/workspace/hangar/.venv/bin" in render(spec).dockerfile

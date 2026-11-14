@@ -250,6 +250,19 @@ class RepoSpec(BaseModel):
     path: str | None = None  # checkout dir, default /workspace/<repo-name>
     setup: str | None = None  # run after clone (e.g. "uv sync", "npm ci")
     bake: bool = False  # clone + setup at image build time
+    # --- KAN-313: dirs in the checkout put first on PATH for the job's check (verify, the in-turn gate), e.g.
+    # [.venv/bin] after `uv sync`, so a bare `python -m pytest` runs the repo's own environment. The image PATH is
+    # left alone, so hangar's own helpers keep mise's Python (testresults.REPO_BIN reads HANGAR_REPO_BIN)
+    bin: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("bin")
+    @classmethod
+    def _relative_bin(cls, v: list[str]) -> list[str]:
+        for d in v:
+            if (not d or d.startswith("/") or ".." in Path(d).parts or Path(d).parts in ((), (".",))
+                    or not re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", d)):
+                raise ValueError(f"repo.bin entries are dirs relative to the checkout, without '..': {d[:60]!r}")
+        return v
 
 
 class GovernanceSpec(BaseModel):
@@ -760,7 +773,11 @@ def render(spec: EnvSpec, user: str = "agent", workspace: str = "/workspace",
 
     # 2. language runtimes via mise
     path_env = f"{home}/.local/bin:{home}/.local/share/mise/shims"
-    df.append(f"ENV PATH={path_env}:$PATH HANGAR_USER={user} HANGAR_WORKSPACE={workspace}")
+    repo_bin = ""
+    if spec.repo and spec.repo.bin:  # --- KAN-313: the repo's own bin dirs, put first on PATH for its check only
+        dest = spec.repo.path or f"{workspace}/{repo_dirname(spec.repo.url)}"
+        repo_bin = " HANGAR_REPO_BIN=" + ":".join(f"{dest.rstrip('/')}/{d.strip('/')}" for d in spec.repo.bin)
+    df.append(f"ENV PATH={path_env}:$PATH HANGAR_USER={user} HANGAR_WORKSPACE={workspace}{repo_bin}")
     if mise:
         uses = " ".join(f"{shlex.quote(k)}@{shlex.quote(v)}" for k, v in sorted(mise.items()))
         df.append(

@@ -489,3 +489,24 @@ def test_ready_and_the_first_human_review_are_outbox_job_events():
     assert facts["pr.ready"][0] == at(13) and "pr.ready" in outbox.EVENT_KINDS
     assert facts["review.first"][1]["first_review_by"] == "carol"
     assert facts["review.first"][1]["first_review_at"] == at(13, 11)
+
+
+def test_cost_per_verified_pr_charges_all_the_work_to_the_prs_that_passed(fixture):
+    """KAN-300: abandoned and failed work counts against the merged PRs whose check passed."""
+    store = fixture.store
+    by_pr = {j.result.pr_number: j for j in store.list(Job) if j.result.pr_number}
+    for n, code in ((1, 0), (2, 0), (3, 1)):
+        by_pr[n].result.verify_exit_code = code
+        store.put(by_pr[n])
+    base = fixture.usage
+    fixture.usage = lambda j: Usage(cost_usd=1.5) if j.id == by_pr[4].id else base(j)  # an abandoned PR's spend
+    v = _metrics(fixture)["cost_per_verified_pr"]
+    assert (v["verified"], v["merged"], v["total_usd"], v["usd"]) == (2, 3, 7.5, 3.75)
+    assert _metrics(fixture)["cost_per_merged_pr"]["total_usd"] == 6.0  # merged-only spend is unchanged
+    w = weekly.window(fixture, *weekly.week_bounds(WEEK, weekly.tz(fixture.settings))[:2])
+    assert w["cost_per_verified_pr"] == v and w["cost_per_merged_pr"]["usd"] == 2.0
+
+
+def test_cost_per_verified_pr_is_none_without_a_passing_check(fixture):
+    v = _metrics(fixture)["cost_per_verified_pr"]
+    assert v["verified"] == 0 and v["usd"] is None and v["total_usd"] == 6.0

@@ -158,13 +158,23 @@ def _find_pattern(glob: str) -> str:
     return g if g.startswith("*/") else "./" + g
 
 
+# --- KAN-313: the environment's `repo.bin` dirs (envspec: HANGAR_REPO_BIN, e.g. the repo's .venv/bin) go first on
+# PATH in the check's own shell, and nowhere else, so hangar's helpers in the sandbox keep the image's Python.
+REPO_BIN = '[ -z "${HANGAR_REPO_BIN:-}" ] || export PATH="$HANGAR_REPO_BIN:$PATH"'
+
+
+def with_repo_bin(command: str) -> str:
+    """`command` run with the repo's bin dirs first on PATH (REPO_BIN), for the paths that run it without prefix()."""
+    return f"{REPO_BIN}\n{command}"
+
+
 def prefix(dir_expr: str, repo: str | None = None, inject: bool = True, alone: bool = False) -> str:
     """Shell that goes before the check, in the same shell: a fresh report directory (`dir_expr`, a shell word),
     its start mark, the tree id (with `repo`: `git write-tree` of the working tree through a scratch index, so the
     real index is untouched) and, with `inject`, the reporter variables. With `alone`, the earlier runs' directories
     next to it go (hangar runs one check at a time in a sandbox). Nothing it does reaches the output."""
     q = shlex.quote
-    parts = [f'_ht={dir_expr}']
+    parts = [REPO_BIN, f'_ht={dir_expr}']
     if alone:
         parts.append('for _hx in "${_ht%/*}"/tr-*; do [ "$_hx" = "$_ht" ] || rm -rf "$_hx"; done 2>/dev/null')
     parts.append('mkdir -p "$_ht" && : > "$_ht/.start"')
@@ -522,7 +532,7 @@ async def run_check(svc: JobService, job: Job, kind: str, *, sandbox_id: str | N
     actor = f"job:{job.id}"
     m = mode(svc.settings)
     if m == "off":
-        return await svc.fleet.exec(sbid, job.verify or "", timeout=timeout, actor=actor), None
+        return await svc.fleet.exec(sbid, with_repo_bin(job.verify or ""), timeout=timeout, actor=actor), None
     repo = svc.fleet.get(sbid).info.get("repo_path")
     rid = run_id()
 

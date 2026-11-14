@@ -325,6 +325,7 @@ async def test_jira_status_change_queues_a_job_for_the_linked_person(door):
     # and the summary isn't part of the instructions
     assert ctx.name == "jira-ABC-12.md" and ctx.untrusted and "never retried" in ctx.content
     assert "Retry uploads" not in job.instructions and "`jira-ABC-12.md`" in job.instructions
+    assert "comments, parent or epic" in job.instructions  # --- KAN-292
     assert "https://acme.atlassian.net/browse/ABC-12" in ctx.content
     await until(lambda: fake.jira_comments(), what="queued comment")
     assert fake.jira_comments()[0].startswith(f"[hangar] Queued as hangar job {job.id}")

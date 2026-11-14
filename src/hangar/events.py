@@ -487,7 +487,8 @@ class Parser:
                 out.append(self._ev("progress", e["detail"], source="harness"))
         elif t == "assistant":
             m = e.get("message") or {}
-            model = m.get("model") if m.get("model") != "<synthetic>" else None
+            # --- KAN-338: a cloud session's messages name no model: the one `init` named
+            model = None if m.get("model") == "<synthetic>" else m.get("model") or self.model
             for c in m.get("content") or []:
                 if not isinstance(c, dict):
                     continue
@@ -499,11 +500,26 @@ class Parser:
             mid, u = m.get("id"), m.get("usage")
             if model and mid and isinstance(u, dict) and mid not in self.seen:
                 self.seen.append(mid)
-                out.append(self._count(Usage(
+                call = Usage(
                     input_tokens=u.get("input_tokens") or 0, output_tokens=u.get("output_tokens") or 0,
                     cache_read_tokens=u.get("cache_read_input_tokens") or 0,
                     cache_write_tokens=u.get("cache_creation_input_tokens") or 0,
-                    cache_write_1h_tokens=_claude_1h(u)), model=model))
+                    cache_write_1h_tokens=_claude_1h(u))
+                ev = self._count(call, model=model)
+                # --- KAN-338: this model call's own usage beside the running totals, so spend can be put on a step
+                price = price_for(model, self.prices)
+                ev.data.update(_small({
+                    "call_input_tokens": call.input_tokens, "call_output_tokens": call.output_tokens,
+                    "call_cache_read_tokens": call.cache_read_tokens,
+                    "call_cache_write_tokens": call.cache_write_tokens, "call_cache_write_5m_tokens": _claude_5m(u),
+                    "call_cache_write_1h_tokens": call.cache_write_1h_tokens,
+                    "call_cost_usd": cost_of(call, price) if price else None,
+                    # usage written while the message was still streaming (no stop reason yet): its output is short
+                    "call_partial": True if "stop_reason" in m and m["stop_reason"] is None else None}))
+                out.append(ev)
+            if isinstance(mid, str) and mid:  # --- KAN-338: which model call a tool call or message came from
+                for ev in out:
+                    ev.data["message_id"] = mid[:200]
         elif t == "user":
             m = e.get("message") or {}
             res = e.get("tool_use_result") if isinstance(e.get("tool_use_result"), dict) else {}
@@ -529,6 +545,11 @@ class Parser:
             if info.get("status") not in (None, "allowed"):
                 out.append(self._ev("progress", f"rate limit: {info.get('status')}", source="harness",
                                     status=info.get("status")))
+        # --- KAN-338: a subagent's lines name the Task/Agent call that started it
+        parent = e.get("parent_tool_use_id")
+        if isinstance(parent, str) and parent:
+            for ev in out:
+                ev.data["parent_id"] = parent[:200]
         return out
 
     # ------------------------------------------------------------------ Codex (exec --json)
@@ -754,6 +775,13 @@ def _claude_1h(u: dict[str, Any]) -> int:
     cc = u.get("cache_creation")
     n = cc.get("ephemeral_1h_input_tokens") if isinstance(cc, dict) else 0
     return n if isinstance(n, int) and n > 0 else 0
+
+
+def _claude_5m(u: dict[str, Any]) -> int | None:
+    """--- KAN-338: the 5-minute part of a Claude usage's cache writes; None when the usage doesn't split them."""
+    cc = u.get("cache_creation")
+    n = cc.get("ephemeral_5m_input_tokens") if isinstance(cc, dict) else None
+    return n if isinstance(n, int) and n >= 0 else None
 
 
 def _detect(e: dict[str, Any]) -> str | None:

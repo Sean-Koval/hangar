@@ -15,6 +15,7 @@ The team's weekly numbers are defined once, in flightdeck: **[flightdeck docs/me
 | Cost per merged PR | [#cost-per-merged-pr](https://sean-koval.github.io/flightdeck/metrics/#cost-per-merged-pr) | `cost_per_merged_pr` |
 | Active delegators | [#active-delegators](https://sean-koval.github.io/flightdeck/metrics/#active-delegators) | `active_delegators` (`value` of `of`) |
 | Reviewer attention per merged agent PR | hangar's own (KAN-70): [reviewer attention](#reviewer-attention) | `reviewer_attention` |
+| Cost per verified PR | hangar's own (KAN-300): [cost per verified PR](cost-reporting.md#cost-per-verified-pr) | `cost_per_verified_pr` |
 
 hangar follows flightdeck's conventions:
 

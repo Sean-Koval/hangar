@@ -26,7 +26,7 @@ from cryptography.fernet import InvalidToken
 from pydantic import BaseModel, Field
 
 from hangar import cache as caching  # --- overnight/cache: prompt-cache TTL, one model per session, siblings
-from hangar import ckpt, exchange, isolation, observe  # --- observe, isolation
+from hangar import ckpt, delivery, exchange, isolation, observe  # --- observe, isolation; KAN-308: delivery
 from hangar import computer as computer  # --- computer
 from hangar import fairness as fairness  # --- scale
 from hangar import flightrec as flightrec  # --- clouddoctor: failed and slow turns leave a record
@@ -713,7 +713,8 @@ class SessionService:
             s.base_sha = res.stdout.strip() if res.exit_code == 0 and res.stdout.strip() else None
             if not s.base_branch:
                 res = await self._sh(sb, "git rev-parse --abbrev-ref HEAD", cwd=repo)
-                s.base_branch = res.stdout.strip() or None
+                # --- KAN-308: an empty clone prints `HEAD`; a symbolic ref is never a base branch
+                s.base_branch = delivery.real_branch(res.stdout) if res.exit_code == 0 else None
         if not s.checkpoints:
             await self._sh(sb, "git config user.email >/dev/null || git config user.email hangar@localhost; "
                                "git config user.name >/dev/null || git config user.name hangar", cwd=repo)

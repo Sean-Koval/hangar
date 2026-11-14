@@ -36,7 +36,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from hangar import egress, egress_tls, metrics
+from hangar import egress, egress_sidecar, egress_tls, metrics
 from hangar import keys as keys  # --- durable
 from hangar.models import Sandbox, SandboxState
 
@@ -115,33 +115,11 @@ def split_hostport(target: str, default: int | None) -> tuple[str, int]:
 sni = egress_tls.sni  # --- egress2: the ClientHello checks live in egress_tls.py
 
 
-# IPv6 ranges that carry an IPv4 address in their last 32 bits and reach it wherever a translator exists: NAT64's
-# well-known prefix (RFC 6052), IPv4-compatible (RFC 4291, deprecated) and SIIT's IPv4-translated (RFC 2765). Python
-# calls them global.
-_EMBEDS_V4 = tuple(ipaddress.ip_network(n) for n in ("64:ff9b::/96", "::/96", "::ffff:0:0:0/96"))
+# The address checks are shared with the local runner's sidecar (egress_sidecar.py, KAN-472): one implementation.
+_EMBEDS_V4 = egress_sidecar._EMBEDS_V4
+_addresses = egress_sidecar.addresses
+public = egress_sidecar.public
 _THIS_NET = ipaddress.ip_network("0.0.0.0/8")
-
-
-def _addresses(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list[ipaddress.IPv4Address |
-                                                                          ipaddress.IPv6Address]:
-    """The address and any IPv4 address inside it (mapped, 6to4, NAT64, compatible, translated): a connection may
-    end up at either, so both must pass."""
-    out: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [ip]
-    if isinstance(ip, ipaddress.IPv6Address):
-        if ip.ipv4_mapped:
-            out.append(ip.ipv4_mapped)
-        elif ip.sixtofour:
-            out.append(ip.sixtofour)
-        elif any(ip in n for n in _EMBEDS_V4):
-            out.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
-    return out
-
-
-def public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    addrs = _addresses(ip)
-    if len(addrs) > 1:  # judged by the IPv4 address it reaches; 6to4 needs a relay hangar doesn't trust
-        return not ip.sixtofour and addrs[1].is_global and not addrs[1].is_multicast and not ip.is_loopback
-    return ip.is_global and not ip.is_multicast
 
 
 def reachable_private(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

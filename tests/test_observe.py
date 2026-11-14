@@ -373,9 +373,21 @@ def test_usage_route(app_client):
     assert r.status_code == 200
     d = r.json()
     assert d["rows"][0]["key"] == "alice" and d["total"]["cost_usd"] == 0.25 and d["total"]["tokens"] == 15
+    assert d["prs"]["cost_per_merged_pr"]["merged"] == 0 and d["prs"]["cost_per_verified_pr"]["usd"] is None  # KAN-300
     assert c.get("/api/usage", params={"group_by": "job_id"}).status_code == 400
     assert c.get("/api/usage", params={"since": "last tuesday"}).status_code == 400
     assert c.get("/api/usage", headers={"Authorization": ""}).status_code == 401
+
+
+def test_usage_route_survives_a_failed_pr_cost_lookup(app_client, monkeypatch):
+    from hangar import weekly
+
+    def boom(*a, **k):
+        raise RuntimeError("store read failed")
+
+    monkeypatch.setattr(weekly, "window", boom)
+    r = app_client.get("/api/usage", params={"since": "1d"})
+    assert r.status_code == 200 and r.json()["prs"] is None and "total" in r.json()
 
 
 # ---------------------------------------------------------------------------- usage aggregation
@@ -571,3 +583,111 @@ async def test_exec_spans_and_metrics_say_how_the_command_ran(fleet, otel, monke
     assert [s.attributes["hangar.exec.transport"] for s in by_name(otel)["sandbox.exec"]] == ["exec", "envd"]
     assert sample("hangar_sandbox_exec_seconds_count", transport="envd") == 1
     assert sample("hangar_sandbox_exec_seconds_count", transport="exec") >= 1
+
+
+# ---------------------------------------------------------------------------- KAN-300: the chargeback export
+def test_usage_export_month_csv_by_person_and_repo():
+    import csv
+    import io
+
+    a = Session(name="a", environment="e", repo="https://github.com/acme/widgets.git", person="ana")
+    a.turns = [_turn(T0, 1.0, finished_at=T0 + 1800), _turn(T0 + DAY, 0.5, finished_at=T0 + DAY + 1800),
+               _turn(T0 - 10 * DAY, 9.0, finished_at=T0 - 10 * DAY + 60)]  # September: another month
+    j = Job(title="j", instructions="x", environment="e", repo="https://github.com/acme/api.git", person="bo")
+    b = Session(name="job-j", environment="e", job_id=j.id, repo=j.repo, person="bo")
+    b.turns = [_turn(T0, 2.0, finished_at=T0 + 3600)]
+    j.result.pr_number = 7
+    j.landing.merged_at = T0 + 2 * DAY
+    sessions, jobs = {x.id: x for x in (a, b)}, {j.id: j}
+    ss = SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions)
+    js = SimpleNamespace(touched_since=lambda t: list(jobs.values()))
+
+    rows = list(csv.DictReader(io.StringIO(usage.export(ss, js, "2026-10", "person"))))
+    assert list(rows[0]) == list(usage.EXPORT_COLUMNS)
+    got = {r["key"]: r for r in rows}
+    assert set(got) == {"ana", "bo"} and rows[0]["key"] == "bo"  # the most expensive first
+    assert (got["ana"]["turns"], float(got["ana"]["cost_usd"]), float(got["ana"]["sandbox_hours"])) == ("2", 1.5, 1.0)
+    assert (float(got["bo"]["cost_usd"]), got["bo"]["merged_prs"], got["ana"]["merged_prs"]) == (2.0, "1", "0")
+    by_repo = {r["key"]: r for r in csv.DictReader(io.StringIO(usage.export(ss, js, "2026-10", "repo")))}
+    assert set(by_repo) == {"acme/widgets", "acme/api"} and by_repo["acme/api"]["merged_prs"] == "1"
+    sept = {r["key"]: r for r in csv.DictReader(io.StringIO(usage.export(ss, js, "2026-09", "person")))}
+    assert float(sept["ana"]["cost_usd"]) == 9.0 and "bo" not in sept
+    for bad in ("2026-13", "Oct", ""):
+        with pytest.raises(ValueError, match="YYYY-MM"):
+            usage.export(ss, js, bad)
+    with pytest.raises(ValueError, match="by must be"):
+        usage.export(ss, js, "2026-10", "model")
+
+
+def test_usage_export_quotes_cells_a_spreadsheet_would_run_as_formulas():
+    import csv
+    import io
+
+    names = ["=HYPERLINK(\"http://x\")", "+1", "-2", "@SUM(A1)", "plain", "a=b"]
+    sessions = {}
+    for i, name in enumerate(names):
+        s = Session(name=f"s{i}", environment="e", repo="https://github.com/acme/widgets.git", person=name)
+        s.turns = [_turn(T0, 1.0 + i, finished_at=T0 + 60)]
+        sessions[s.id] = s
+    ss = SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions)
+    keys = {r["key"] for r in csv.DictReader(io.StringIO(usage.export(ss, None, "2026-10", "person")))}
+    assert keys == {"'=HYPERLINK(\"http://x\")", "'+1", "'-2", "'@SUM(A1)", "plain", "a=b"}
+
+
+def test_usage_export_charges_one_row_per_person_however_the_work_was_asked_for():
+    import csv
+    import io
+
+    from hangar.models import ApiToken
+
+    linked = Session(name="l", environment="e", repo="https://github.com/acme/widgets.git", person="ana")
+    linked.turns = [_turn(T0, 1.0, finished_at=T0 + 60)]
+    unlinked = Session(name="u", environment="e", repo=linked.repo)  # from before people: no person on the record
+    unlinked.turns = [_turn(T0, 2.0, requester="@ana:laptop", finished_at=T0 + 60),
+                      _turn(T0, 4.0, requester="mcp:ana-ci", finished_at=T0 + 60),  # ana's token, by its name
+                      _turn(T0, 8.0, requester="shared", finished_at=T0 + 60)]  # a name two people use
+    sessions = {x.id: x for x in (linked, unlinked)}
+    ss = SimpleNamespace(touched_since=lambda t: list(sessions.values()), exists=lambda sid: sid in sessions)
+    tokens = [ApiToken(name="ana-ci", token_hash="x", person="ana"), ApiToken(name="shared", token_hash="y"),
+              ApiToken(name="shared", token_hash="z", person="bo")]
+    names = usage.token_people(tokens)
+    assert names == {"ana-ci": "ana"}
+    got = {r["key"]: r for r in csv.DictReader(io.StringIO(usage.export(ss, None, "2026-10", "person", names)))}
+    assert set(got) == {"ana", "shared"} and float(got["ana"]["cost_usd"]) == 7.0 and got["ana"]["turns"] == "3"
+
+
+def test_usage_export_counts_merged_prs_as_the_weekly_metrics_do():
+    import csv
+    import io
+
+    from hangar import experiments
+
+    jobs = {}
+    for i, (source, labels) in enumerate([("api", {}), ("shadow", {}), ("api", {experiments.EXP_LABEL: "job-x"})]):
+        j = Job(title=f"j{i}", instructions="x", environment="e", repo="https://github.com/acme/api.git",
+                person="bo", source=source, labels=labels)
+        j.result.pr_number, j.landing.merged_at = i + 1, T0
+        jobs[j.id] = j
+    ss = SimpleNamespace(touched_since=lambda t: [], exists=lambda sid: False)
+    js = SimpleNamespace(touched_since=lambda t: list(jobs.values()))
+    rows = list(csv.DictReader(io.StringIO(usage.export(ss, js, "2026-10", "person"))))
+    assert [(r["key"], r["merged_prs"]) for r in rows] == [("bo", "1")]
+
+
+def test_usage_export_route_and_cli(app_client, monkeypatch):
+    c = app_client
+    r = c.get("/api/usage/export", params={"month": "2026-10", "by": "repo"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert r.text.splitlines()[0].startswith("month,key,turns")
+    assert c.get("/api/usage/export", params={"month": "nope"}).status_code == 400
+    assert c.get("/api/usage/export", params={"month": "2026-10"}, headers={"Authorization": ""}).status_code == 401
+
+    import contextlib
+
+    from typer.testing import CliRunner
+
+    from hangar import cli
+
+    monkeypatch.setattr(cli, "_client", lambda: contextlib.nullcontext(c))
+    out = CliRunner().invoke(cli.app, ["usage", "export", "--month", "2026-10", "--by", "person"])
+    assert out.exit_code == 0 and out.output.startswith("month,key,turns"), out.output

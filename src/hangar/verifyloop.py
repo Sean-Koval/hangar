@@ -106,7 +106,9 @@ def stop_hook(verify: str, cwd: str, rounds: int, until: int, reports: str = "")
     --- testresults: `reports` (testresults.prefix) goes before the check in its shell: each check's reports land in
     ~/.hangar/runs/<run>.tests/<n>/, n counting the checks so far (the lines of the rounds file)."""
     q = shlex.quote
-    check = f"{reports}{verify}" if reports else verify
+    from hangar import testresults
+
+    check = f"{reports}{verify}" if reports else testresults.with_repo_bin(verify)  # KAN-313: prefix() sets PATH
     intro = ("hangar: the job's check `%s` failed (exit %s), round %s of %s. Fix the cause and run the check "
              "again before you finish. Don't change the check or the tests it runs to make it pass; if the failure "
              "is outside this task, say so in RESULT.md. The check's output ends with:\n")
@@ -152,7 +154,8 @@ def turn_env(settings: Settings, job: Job, harness: str | None, repo_path: str |
         hook = testresults.prefix('"$HANGAR_TESTS_DIR"', inject=inject) if m != "off" else ""
         return {CLAUDE_ENV: claude_settings(job.verify, repo_path, rounds, until, timeout, hook)}
     if h.live:  # the driver runs it when the turn completes (when the turn falls back to one-shot, nobody does)
-        spec = {"command": job.verify, "cwd": repo_path, "rounds": rounds, "deadline": until, "timeout": timeout}
+        cmd = job.verify if m != "off" else testresults.with_repo_bin(job.verify)  # prefix() sets PATH when on
+        spec = {"command": cmd, "cwd": repo_path, "rounds": rounds, "deadline": until, "timeout": timeout}
         if m != "off":  # the driver puts the check's report directory in for @D@
             spec["prefix"] = testresults.prefix("@D@", inject=inject)
         return {GATE_ENV: json.dumps(spec)}

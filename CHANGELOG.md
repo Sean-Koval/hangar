@@ -40,8 +40,47 @@ People's own interactive sessions and sandboxes keep using their own subscriptio
 `HANGAR_UID_SPLIT=auto` to keep the old warning, which `hangar doctor` flags
 ([why](docs/security/e2b-driver-user.md)).
 
+**A Jira ticket labelled `exec:agent` or `lane:agent` needs an allow-list** (KAN-480). hangar starts its job only
+when a listed person added the label and moved it to the trigger status, by the issue's changelog. Without
+`HANGAR_JIRA` `agent_release.people`, such a ticket is refused with a comment
+([docs/intake/agent-release.md](docs/intake/agent-release.md)).
+
+### Added
+
+- **Agents act under their own identity** (KAN-497). `hangar env local up` and `check --release-config FILE` refuse
+  to start when the agent's Atlassian credential (`ATLASSIAN_MCP_AUTHORIZATION`) belongs to an account on
+  `agent_release.people`, read with Jira's `myself`, or when `GH_TOKEN`'s login (GitHub `GET /user`) is on the new
+  `agent_release.github_people`. How to create the accounts:
+  [docs/environments/agent-identity.md](docs/environments/agent-identity.md).
+
+- **`hangar env local` runs the agent CLI** (KAN-496). The baked harness's pinned CLI is first on `PATH`, and the
+  spec's MCP servers are written into its config in the container at start. `check` adds an agent probe:
+  `claude -p` must answer with `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
+  ([docs/environments/local-run.md](docs/environments/local-run.md)).
+
+- **`hangar env local`** (KAN-472): run an environment spec on your computer with hangar's own image build and egress
+  policy, moved here from team-harness. Its egress sidecar (`egress_sidecar.py`, pinned by digest) shares the rule
+  match and address checks with the egress proxy, and refuses every DNS query
+  ([docs/environments/local-run.md](docs/environments/local-run.md)).
+- **`hangar trace import TRANSCRIPT --out DIR`** (KAN-338): a Claude Code session hangar didn't run, offline, as
+  `events.jsonl` (hangar's events, through its own parser) and `trace.json` (a `hangar.trace/v1` session export). It
+  reads a local transcript with its subagents' transcripts, a cloud session's events or stream-json
+  ([docs/api/trace-import.md](docs/api/trace-import.md)). A turn's usage sums its `result` lines; a cloud session's
+  messages carry a streamed, short output count.
+- **Per-call usage and subagent links in Claude Code events** (KAN-338). Each `usage` event carries its model call's
+  own tokens (`call_*`, with the 5-minute and 1-hour cache writes) and `message_id`; a subagent's events carry
+  `parent_id`. The trace adds a `model.call` span (`chat {model}`) per response and hangs a subagent's steps under its
+  `subagent` span.
+
 ### Changed
 
+- **Thaw resolves older revisions from release copies** (KAN-477). For a harness with `releases/`, `name@rN`,
+  a digest or a channel that isn't the current lock comes from `harnesses/<name>/releases/rN/`, never git history.
+  A squash merge can't lose or change what `stable` runs. A harness without `releases/` still falls back to history.
+- **Cost reporting for a team** (KAN-300). Weekly metrics and `GET /api/usage` report cost per verified PR next to
+  cost per merged PR. Repo policy `max_usd_per_month` and `HANGAR_PERSON_MAX_USD_PER_MONTH` hold new jobs like the
+  daily caps. `hangar usage export --month YYYY-MM --by person|repo` (`GET /api/usage/export`, admin) writes a
+  chargeback CSV. See [Cost reporting](docs/cost-reporting.md).
 - **`deploy/gke/up.sh` refuses a `-dirty` image** (KAN-172), as Tower's deploy does. Uncommitted changes to
   `src`, `envs`, `envd`, `pyproject.toml` or the `Dockerfile` stop it before any cloud call, listing the files. Pass
   `--allow-dirty` or set `ALLOW_DIRTY=1` (which `hangar up --gke` passes through) to deploy them; a `-dirty` image
