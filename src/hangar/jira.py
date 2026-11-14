@@ -739,9 +739,9 @@ def _account(user: Any, cloud: bool) -> str | None:
     """The account id to link a Jira user by: Cloud's accountId; Server/DC's user key (stable across renames)."""
     if not isinstance(user, dict):
         return None
-    v = str((user.get("accountId") or user.get("accoundId")) if cloud else (user.get("key") or user.get("name"))
-            or "")
-    return v if _ACCOUNT.match(v) else None
+    # --- KAN-497: an empty, missing or non-string id is unreadable (None), never the string "None": callers refuse it
+    v = (user.get("accountId") or user.get("accoundId")) if cloud else (user.get("key") or user.get("name"))
+    return v if isinstance(v, str) and v.strip() and _ACCOUNT.match(v) else None
 
 
 def mover(histories: list[dict[str, Any]], fields: dict[str, Any], trigger: JiraTrigger) -> dict[str, Any] | None:

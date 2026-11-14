@@ -43,11 +43,11 @@ Never use a person's own token. A pull request it opens is that person's, and th
 
 `hangar env local up` and `check` take `--release-config`, a file holding `HANGAR_JIRA`. With it, hangar asks Jira
 who `ATLASSIAN_MCP_AUTHORIZATION` belongs to, with the read-only `myself` call. It asks GitHub who `GH_TOKEN` belongs
-to, with the read-only `GET /user`. It refuses to start when:
+to, with the read-only `GET /user`, and `GITHUB_MCP_AUTHORIZATION`'s too when set. It refuses to start when:
 
 - the Atlassian account is on `agent_release.people`;
 - the GitHub login or user id is on `agent_release.github_people`, the releasers' GitHub accounts;
-- a variable is not set, or its call fails;
+- `GH_TOKEN` is not set, or a call fails or names no account;
 - the config lacks either list.
 
 An App installation token has no user, so it passes.

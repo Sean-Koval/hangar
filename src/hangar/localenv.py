@@ -426,25 +426,48 @@ def github_user(token: str, transport: Any = None) -> dict[str, Any] | None:
         return None
     r.raise_for_status()
     out = r.json()
-    if not isinstance(out, dict) or not out.get("login"):
+    if not isinstance(out, dict) or not isinstance(out.get("login"), str) or not out["login"].strip():
         raise ValueError("GET /user returned no login")
     return out
 
 
-def github_identity_refusal(cfg: Any, environ: dict[str, str], var: str = GITHUB_TOKEN_VAR,
-                            transport: Any = None) -> str | None:
-    """Why the agent may not start with this GitHub token, or None. It fails closed like identity_refusal: no
-    `agent_release.github_people`, no token, or a `GET /user` that fails refuses. A login or user id on the list is a
-    person who releases tickets, so the agent would act as them. An App installation token is never a person's."""
-    import httpx
+GITHUB_MCP_VAR = "GITHUB_MCP_AUTHORIZATION"  # the GitHub MCP server's header value, "Bearer <token>"
 
+
+def _github_token(var: str, value: str) -> str:
+    """The token in a variable: GH_TOKEN as it is; an Authorization header value without its scheme."""
+    value = value.strip()
+    if var == GITHUB_MCP_VAR:
+        scheme, _, rest = value.partition(" ")
+        return rest.strip() if scheme.casefold() in ("bearer", "token") and rest.strip() else ""
+    return value
+
+
+def github_identity_refusal(cfg: Any, environ: dict[str, str], transport: Any = None) -> str | None:
+    """Why the agent may not start with its GitHub credentials, or None. GH_TOKEN is required; the GitHub MCP
+    server's GITHUB_MCP_AUTHORIZATION is checked too when set, and both must pass. It fails closed like
+    identity_refusal: no `agent_release.github_people`, no token, or a `GET /user` that fails refuses. A login or user
+    id on the list is a person who releases tickets, so the agent would act as them. An App installation token has no
+    user and passes."""
     people = {p.casefold() for p in (cfg.agent_release.github_people if cfg.agent_release else [])}
     if not people:
         return ("the release config has no agent_release.github_people (the releasers' GitHub logins), so the agent's "
                 "GitHub token can't be told from a person's")
-    token = environ.get(var, "").strip()
+    if not environ.get(GITHUB_TOKEN_VAR, "").strip():
+        return f"{GITHUB_TOKEN_VAR} is not set: the agent needs a GitHub App or bot token of its own"
+    for var in (GITHUB_TOKEN_VAR, GITHUB_MCP_VAR):
+        if var not in environ or not environ[var].strip():
+            continue
+        if why := _github_refusal(var, _github_token(var, environ[var]), people, transport):
+            return why
+    return None
+
+
+def _github_refusal(var: str, token: str, people: set[str], transport: Any) -> str | None:
+    import httpx
+
     if not token:
-        return f"{var} is not set: the agent needs a GitHub App or bot token of its own"
+        return f"{var} holds no token (expected \"Bearer <token>\"): the agent's GitHub identity can't be checked"
     try:
         user = github_user(token, transport)
     except (httpx.HTTPError, ValueError) as e:
@@ -466,8 +489,8 @@ def refuse_unless_agent_identity(release_config: Path | None, environ: dict[str,
     cfg = load_release_config(release_config)
     if why := identity_refusal(cfg, environ) or github_identity_refusal(cfg, environ):
         raise SystemExit(f"refused: {why}")
-    print(f"agent identity: {AGENT_AUTH_VAR} and {GITHUB_TOKEN_VAR} are the agent's own, not a releaser's",
-          file=sys.stderr)
+    print(f"agent identity: {AGENT_AUTH_VAR}, {GITHUB_TOKEN_VAR} and (when set) {GITHUB_MCP_VAR} are the agent's own, "
+          "not a releaser's", file=sys.stderr)
 
 
 # ------------------------------------------------------------------------------------------------ the checks

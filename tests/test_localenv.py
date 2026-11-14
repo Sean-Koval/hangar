@@ -10,6 +10,7 @@ import socket
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -330,7 +331,7 @@ def _jira_cfg(**kw):
                                       "agent_release": {"people": [SEAN], "github_people": ["Sean-Koval"]}, **kw})
 
 
-def _jira(account: str, seen: list | None = None, status: int = 200):
+def _jira(account: Any, seen: list | None = None, status: int = 200, body: Any = None):
     """A fake Jira: `myself` answers with `account`, only for the Authorization it was asked with."""
     import httpx
 
@@ -339,7 +340,8 @@ def _jira(account: str, seen: list | None = None, status: int = 200):
         if req.url.path == "/_edge/tenant_info":
             return httpx.Response(200, json={"cloudId": "c10ud"})
         if req.url.path.endswith("/myself"):
-            return httpx.Response(status, json={"accountId": account, "displayName": "Some One"})
+            return httpx.Response(status, json=body if body is not None else {"accountId": account,
+                                                                              "displayName": "Some One"})
         return httpx.Response(404)
 
     return httpx.MockTransport(handle)
@@ -370,6 +372,18 @@ def test_an_account_of_its_own_passes_and_a_service_account_is_read_through_the_
 def test_it_fails_closed(cfg, environ, status, expect):
     why = localenv.identity_refusal(_jira_cfg(**cfg), environ, transport=_jira(AGENT, status=status))
     assert why and expect in why, why
+
+
+@pytest.mark.parametrize("body", [{}, {"accountId": None}, {"accountId": ""}, {"accountId": 42},
+                                  {"accountId": "  "}, {"displayName": "None"}])
+def test_a_myself_without_an_account_id_is_refused(body):
+    """KAN-497 review: an empty, missing or non-string account id is unreadable, never the string "None"."""
+    why = localenv.identity_refusal(_jira_cfg(), {"ATLASSIAN_MCP_AUTHORIZATION": "Basic x"},
+                                    transport=_jira(None, body=body))
+    assert why and "names no account id" in why, why
+    from hangar.jira import _account
+
+    assert _account(body, True) is None and _account(body, False) is None
 
 
 def test_the_release_config_reads_hangar_config_list_json(tmp_path):
@@ -450,3 +464,43 @@ def test_up_refuses_a_releasers_github_token_before_building(monkeypatch, tmp_pa
     r = CliRunner().invoke(cli.app, ["env", "local", "up", "agent", "--env-dir", str(tmp_path), "--release-config",
                                      str(f)])
     assert r.exit_code != 0 and "github_people" in str(r.exception), (r.output, r.exception)
+
+
+def _github_by_token(users: dict[str, Any], seen: list | None = None):
+    """A fake GitHub whose `GET /user` answers per token: a dict (the user), an int (a status) or 403 for ghs_."""
+    import httpx
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        token = req.headers["authorization"].removeprefix("Bearer ")
+        (seen if seen is not None else []).append(token)
+        u = users.get(token, 401)
+        return httpx.Response(u, json={"message": "no"}) if isinstance(u, int) else httpx.Response(200, json=u)
+
+    return httpx.MockTransport(handle)
+
+
+BOT, SEANS = {"login": "agent-bot", "id": 99}, {"login": "Sean-Koval", "id": 4807}
+
+
+@pytest.mark.parametrize("mcp,users,expect", [
+    (None, {"gh": BOT}, None),                                          # only GH_TOKEN: checked alone
+    ("Bearer mcp", {"gh": BOT, "mcp": BOT}, None),                      # both an agent's: pass
+    ("Bearer mcp", {"gh": BOT, "mcp": SEANS}, "GITHUB_MCP_AUTHORIZATION is Sean-Koval's"),
+    ("Bearer mcp", {"gh": SEANS, "mcp": BOT}, "GH_TOKEN is Sean-Koval's"),
+    ("Bearer mcp", {"gh": BOT, "mcp": 401}, "refused GITHUB_MCP_AUTHORIZATION (401)"),
+    ("mcp", {"gh": BOT, "mcp": BOT}, "GITHUB_MCP_AUTHORIZATION holds no token"),
+    ("Bearer ghs_app", {"gh": BOT, "ghs_app": 403}, None),              # an App installation token has no user
+])
+def test_the_github_mcp_credential_is_checked_too(mcp, users, expect):
+    seen: list = []
+    environ = {"GH_TOKEN": "gh", **({"GITHUB_MCP_AUTHORIZATION": mcp} if mcp else {})}
+    why = localenv.github_identity_refusal(_jira_cfg(), environ, transport=_github_by_token(users, seen))
+    assert (why is None) if expect is None else (why and expect in why), why
+    if expect is None:
+        assert seen == ["gh", *([mcp.removeprefix("Bearer ")] if mcp else [])]  # both read when both are set
+
+
+def test_a_github_user_without_a_login_is_refused():
+    why = localenv.github_identity_refusal(_jira_cfg(), {"GH_TOKEN": "gh"},
+                                           transport=_github_by_token({"gh": {"id": 1}}))
+    assert why and "refused GH_TOKEN (ValueError)" in why
