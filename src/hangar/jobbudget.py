@@ -11,11 +11,12 @@ could spend $16 before anyone followed up. So:
   parallel, so each gets an equal share, the judge included, and together they can't cross it. A sequential
   best-of-N (KAN-231) gives attempt 1 its `escalate_at` of the budget (or the same equal share); the attempts that
   start after it split what it left, the judge again included.
-* **A daily cap per repo** (`max_usd_per_day` in the repo's policy) is checked when work is admitted: a new job
-  over it waits in `awaiting_approval` (a trusted person can let it run anyway), and a follow-up or auto-fix round
-  is refused. Turns already running, and a job's own verify-fix turns, finish under the job budget. A day starts
-  at midnight in HANGAR_BUDGET_DAY_TIMEZONE (UTC unless set; UTC midnight is mid-afternoon or evening in the
-  Americas, so a team there sets its own zone and a cap can't be spent twice in one working day).
+* **A daily cap per repo** (`max_usd_per_day` in the repo's policy, else --- KAN-290: HANGAR_REPO_MAX_USD_PER_DAY)
+  is checked when work is admitted: a new job over it waits in `awaiting_approval` (a trusted person can let it run
+  anyway), and a follow-up or auto-fix round is refused. Turns already running, and a job's own verify-fix turns,
+  finish under the job budget. A day starts at midnight in HANGAR_BUDGET_DAY_TIMEZONE (UTC unless set; UTC midnight
+  is mid-afternoon or evening in the Americas, so a team there sets its own zone and a cap can't be spent twice in
+  one working day).
 * **A daily cap per person** (HANGAR_PERSON_MAX_USD_PER_DAY) works the same way for the jobs a person submits,
   counting everything their sessions and jobs spent that day (identity's person on each record).
 
@@ -50,10 +51,11 @@ def merge(*layers: Any, cls: type = JobBudget) -> Any:
     return cls(**vals) if any(v is not None for v in vals.values()) else None
 
 
-def resolve(req: JobBudget | None, policy: RepoPolicy | None, settings: Any) -> JobBudget | None:
-    defaults = JobBudget(max_cost_usd=settings.job_budget_max_cost_usd, max_tokens=settings.job_budget_max_tokens,
-                         max_turns=settings.job_budget_max_turns)
-    return merge(req, policy.job_budget if policy else None, defaults)
+def resolve(req: JobBudget | None, policy: RepoPolicy | None, settings: Any, defaults: bool = True) -> JobBudget | None:
+    """The job's, else the repo policy's, else (`defaults`) HANGAR_JOB_BUDGET_*, field by field."""
+    base = JobBudget(max_cost_usd=settings.job_budget_max_cost_usd, max_tokens=settings.job_budget_max_tokens,
+                     max_turns=settings.job_budget_max_turns) if defaults else None
+    return merge(req, policy.job_budget if policy else None, base)
 
 
 # ====================================================================== what a job has used
@@ -263,6 +265,13 @@ def person_spent_this_month(svc: JobService, person: str) -> float:
                         since=month_start(tz=zone(svc.settings)), person=person)
 
 
+def repo_daily_cap(settings: Any, policy: RepoPolicy | None) -> float | None:
+    """--- KAN-290: a repo's daily cap: its policy's `max_usd_per_day`, else HANGAR_REPO_MAX_USD_PER_DAY."""
+    if policy is not None and policy.max_usd_per_day:
+        return policy.max_usd_per_day
+    return getattr(settings, "repo_max_usd_per_day", None) or None
+
+
 def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[Cap]:
     """Every daily cap a piece of work counts against: its repo's, and the person's it runs for (identity's
     person; --- teamcreds: a GitHub or Slack sender linked to a person counts as them, while webhooks, schedules
@@ -270,8 +279,9 @@ def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[C
     Submissions, follow-ups and auto-fix rounds check every cap this returns."""
     out: list[Cap] = []
     policy = svc.policies.get(repo)
-    if policy is not None and policy.max_usd_per_day:
-        out.append(Cap(f"{policy.repo}'s daily cap", policy.max_usd_per_day, repo_spent_today(svc, policy.repo)))
+    key = policy.repo if policy is not None else repo_key(repo)
+    if key and (limit := repo_daily_cap(svc.settings, policy)):  # --- KAN-290: the policy's, else the default
+        out.append(Cap(f"{key}'s daily cap", limit, repo_spent_today(svc, key)))
     if person and (limit := svc.settings.person_max_usd_per_day):  # --- integration
         out.append(Cap(f"{person}'s daily cap", limit, person_spent_today(svc, person)))
     # --- KAN-300: the monthly caps, beside the daily ones

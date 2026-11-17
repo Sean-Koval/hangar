@@ -1314,6 +1314,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import deploylag  # --- KAN-216: how far production is behind main, and its alert
 
     deploylag.register()
+    from hangar import spendalert  # --- KAN-290: daily caps at 80% and 100%
+
+    spendalert.register()
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)

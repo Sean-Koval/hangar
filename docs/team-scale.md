@@ -113,14 +113,27 @@ trials rather than checkpointing them, marks them `infra_error` / `power_down` (
 and the experiment queues a fresh attempt; like every queued eval job it waits for the next window, not for the 10:00
 power-up. When people work late, evals wait: that starvation is accepted.
 
+## Spend guardrails
+
+The deploys cap spend by default (KAN-290), from a cap of $400 per engineer a month (KAN-214). A company sets its
+own amounts in its overlay's `hangar-site`.
+
+| Setting | Default | What it bounds |
+| --- | --- | --- |
+| `HANGAR_JOB_BUDGET_MAX_COST_USD` | 5 | All of one job's turns together; an env-setup job keeps its own $30 |
+| `HANGAR_PERSON_MAX_USD_PER_DAY` | 20 | One person's jobs and sessions in a day, env-setup's agents included |
+| `HANGAR_PERSON_MAX_USD_PER_MONTH` | 400 | The same per calendar month |
+| `HANGAR_REPO_MAX_USD_PER_DAY` | 40 | A repo whose policy sets no `max_usd_per_day`; a policy can raise it but not remove it |
+| `HANGAR_BUDGET_DAY_TIMEZONE` | UTC; `America/New_York` in the owner deploy and the example overlay | When a day starts for the daily caps: set your team's zone |
+| `HANGAR_SPEND_ALERT_AT` | `[0.8, 1.0]` | When a daily cap alerts: a Slack DM to the person and the admins, and `spend-cap-80` or `spend-cap-100` ([alerting.md](alerting.md)) |
+
+A spent cap holds new jobs for approval ([budgets](repo-policy/budgets.md#budgets)). **To raise a cap, ask one of
+your deploy's hangar admins** (`hangar person ls` shows them).
+
 ## Limits and follow-ups
 
-- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. Job budgets
-  and daily spend caps per repo and per person ([repo-policy.md](repo-policy/budgets.md#budgets)) are opt-in, so on defaults
-  nothing bounds what a job spends across its follow-ups, verify-fix and auto-fix turns, and the per-person cap
-  bounds one person, not a GitHub label storm across many. A slot is also a job, not a sandbox: 24 best-of-4 jobs
-  could hold all 120 sandboxes, and every new session would be refused at `max_sandboxes`. Once
-  `HANGAR_JOB_BUDGET_MAX_COST_USD` and the repos' `max_usd_per_day` (or `HANGAR_PERSON_MAX_USD_PER_DAY`) are set,
+- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. A slot is a job,
+  not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes. With the [spend guardrails](#spend-guardrails) set,
   `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
 - **The reconciler** reads only live and unfinished sandboxes, from the state index (`reconciler.sandboxes_in`), once
   per pass on its own task. `hangar gc` still lists every record; it is an admin's occasional command.

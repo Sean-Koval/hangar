@@ -85,6 +85,7 @@ locals {
     closed  = "logging_googleapis_com:user_hangar_fail_closed"
     stuck   = "logging_googleapis_com:user_hangar_jobs_stuck"
     lag     = "logging_googleapis_com:user_hangar_deploy_lag"
+    spend   = "logging_googleapis_com:user_hangar_spend_cap"
   }
 }
 
@@ -233,6 +234,31 @@ resource "google_logging_metric" "deploy_lag" {
   depends_on = [google_project_service.alerting]
 }
 
+# KAN-290: a person's or a repo's daily spend cap reached 80% or 100% (once a cap a share a day; src/hangar/spendalert.py)
+resource "google_logging_metric" "spend_cap" {
+  count       = local.alerting ? 1 : 0
+  name        = "hangar_spend_cap"
+  description = "Daily spend caps reaching an alert share, by scope (person, repo) and level (percent)"
+  filter      = "${local.slo_source} AND textPayload:\"hangar.slo: event=spend_cap \""
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    labels {
+      key        = "scope"
+      value_type = "STRING"
+    }
+    labels {
+      key        = "level"
+      value_type = "STRING"
+    }
+  }
+  label_extractors = {
+    scope = "REGEXP_EXTRACT(textPayload, \"scope=([a-z]+)\")"
+    level = "REGEXP_EXTRACT(textPayload, \"level=([0-9]+)\")"
+  }
+  depends_on = [google_project_service.alerting]
+}
+
 # --------------------------------------------------------------------------- the control plane answers at all
 resource "google_monitoring_uptime_check_config" "hangar" {
   count        = local.alerting && var.domain != "" ? 1 : 0
@@ -307,6 +333,20 @@ locals {
       duration = "0s"
       runbook  = "runbooks/tower-down/"
     }
+    spend-cap-80 = {
+      severity = "WARNING"
+      title    = "hangar: a person's or a repo's daily spend cap is 80% spent"
+      query    = "sum(increase(${local.m.spend}{level=\"80\"}[10m])) > 0"
+      duration = "0s"
+      runbook  = "team-scale/#spend-guardrails"
+    }
+    spend-cap-100 = {
+      severity = "WARNING"
+      title    = "hangar: a person's or a repo's daily spend cap is spent (new jobs wait for approval)"
+      query    = "sum(increase(${local.m.spend}{level=\"100\"}[10m])) > 0"
+      duration = "0s"
+      runbook  = "team-scale/#spend-guardrails"
+    }
     restarts = {
       severity = "CRITICAL"
       title    = "hangar: the control plane keeps restarting (a bad deploy?)"
@@ -365,7 +405,7 @@ resource "google_monitoring_alert_policy" "slo" {
   }
   depends_on = [google_logging_metric.job_starts, google_logging_metric.job_queue_seconds,
     google_logging_metric.sandbox_creates, google_logging_metric.fail_closed, google_logging_metric.jobs_stuck,
-  google_logging_metric.deploy_lag]
+  google_logging_metric.deploy_lag, google_logging_metric.spend_cap]
 }
 
 resource "google_monitoring_alert_policy" "escalated" {

@@ -517,7 +517,10 @@ class JobService:
         except teamcreds.SubscriptionRefused as e:
             raise JobError(str(e)) from e
         attempts = strategies.check_submit(req, self.settings.best_of_n_max, policy)
-        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
+        # --- frontdoor; KAN-290: an env-setup job's own default (HANGAR_ENV_SETUP_MAX_COST_USD, autoinstall._begin)
+        # wins over HANGAR_JOB_BUDGET_*, which the deploys now set lower than a setup needs
+        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings,
+                                       defaults=req.labels.get("hangar.kind") != "env-setup")
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
             raise JobError(why)
         repo = req.repo or (spec.repo.url if spec.repo else None)

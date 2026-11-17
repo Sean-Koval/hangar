@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.."
 
 DRY=${DRY_RUN:-0}
 LOG=hangar-slo-test
-ALL="job-starts sandbox-creates queue-slow fail-closed stuck deploy-lag"
+ALL="job-starts sandbox-creates queue-slow fail-closed stuck deploy-lag spend-cap"
 WHICH=${*:-$ALL}
 
 if [ -z "${PROJECT:-}" ]; then
@@ -60,6 +60,10 @@ for a in $WHICH; do
     deploy-lag)
       echo "== hangar deploy-lag: production one minute too far behind main"
       write 1 "event=deploy_lag commits=383 working_days=8 days=12" ;;
+    spend-cap)
+      echo "== hangar spend-cap-80, spend-cap-100: a test cap at 80% and 100% of its day (KAN-290)"
+      write 1 "event=spend_cap scope=test level=80"
+      write 1 "event=spend_cap scope=test level=100" ;;
     *) echo "unknown alert: $a (one of: $ALL)" >&2; exit 2 ;;
   esac
 done
