@@ -608,6 +608,9 @@ class Settings(BaseSettings):
     resident_minutes: float = Field(60, ge=1)
     job_retention_days: float = Field(30, ge=0)
     session_retention_days: float = Field(30, ge=0)
+    # --- KAN-296: audit entries older than this are deleted from the database, oldest first, keeping the audit chain
+    # whole (datahandling.py, docs/security/data-handling.md). Separate from job and session retention. 0 = kept.
+    audit_retention_days: float = Field(400, ge=0)
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import

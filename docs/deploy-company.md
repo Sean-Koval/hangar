@@ -67,6 +67,7 @@ module "hangar" {
 | `enable_session_bucket`, `enable_run_bucket` | `true` | Session checkpoints (objectAdmin) and run capture (objectCreator only) |
 | `create_static_ip` | `false` | A global address for GKE Ingress |
 | `enable_apis` | `true` | Turn it off where the platform team manages project services |
+| `enable_audit_export` | `false` | The locked audit sink, as on the owner's cluster: a log bucket of its own (`audit_bucket_id`) kept `audit_retention_days` (400), locked with `audit_bucket_locked`. See [the audit log](security/audit.md) |
 | `power_schedule` | `null` | Opt-in, below |
 
 Its outputs are the values the overlay needs: `gcp_service_account`, `static_ip_name`, `static_ip`,

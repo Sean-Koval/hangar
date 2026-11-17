@@ -70,6 +70,9 @@
 /src/hangar/people.py              @Sean-Koval
 /src/hangar/frontdoor.py           @Sean-Koval
 /src/hangar/app.py                 @Sean-Koval
+# Data handling (KAN-296): the audit hash chain, and purging a person or exporting a job.
+/src/hangar/datahandling.py        @Sean-Koval
+/src/hangar/auditchain.py          @Sean-Koval
 
 # Approvals and governance: who may release, approve, steer or land an agent's work, and the verdicts they rely on
 # (AI review, test results, grades, trusted senders, review-triggered fix rounds, the MCP front door).

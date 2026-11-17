@@ -70,6 +70,12 @@ admin.get_eval_queue:
   rest: GET /api/admin/eval-queue
   scope: admin
   owner: admin
+admin.get_export_jobs:
+  server: hangar
+  mcp: null
+  rest: GET /api/admin/export/jobs/{job_id}
+  scope: admin
+  owner: admin
 admin.get_outbox:
   server: hangar
   mcp: null
@@ -182,6 +188,12 @@ admin.post_power_up:
   server: hangar
   mcp: null
   rest: POST /api/admin/power/up
+  scope: admin
+  owner: admin
+admin.post_purge:
+  server: hangar
+  mcp: null
+  rest: POST /api/admin/purge
   scope: admin
   owner: admin
 admin.post_restore:

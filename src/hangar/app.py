@@ -73,6 +73,9 @@ class Hangar:
         from hangar import keys  # --- durable: a key ring (newest first), and its rotation
 
         self.vault = Vault(self.store, keys.load(self.settings, self.store))
+        from hangar import datahandling  # --- KAN-296: the audit chain's key is in the vault
+
+        self.store.set_audit_key(datahandling.audit_key(self.vault))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
@@ -1335,6 +1338,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     opstatus.mount(app, h, A)
     flightrec.mount(app, h, A, U)
     outbox.mount(app, h, A)  # --- outbox (#163): GET /api/admin/outbox, retry, backfill
+    from hangar import datahandling  # --- KAN-296: POST /api/admin/purge, GET /api/admin/export/jobs/{id}
+
+    datahandling.mount(app, h, A)
     weekly.mount(app, h, U)  # --- #168: GET /api/metrics/weekly, /api/metrics/standup
     harness_review.mount(app, h, U)  # --- #169: the Friday harness review's queue and labels
     credhealth.mount(app, h, A)

@@ -20,6 +20,7 @@ from typing import Any, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
+from hangar.auditchain import audit_digest, audit_link, audit_redaction  # --- KAN-296: the audit chain's HMACs
 from hangar.clouddoctor import DoctorFinding  # --- clouddoctor: what the Cloud Doctor found
 from hangar.envrequests import EnvRequest  # --- computer: requests agents file with their owners
 from hangar.flightrec import FlightRecord  # --- clouddoctor: failed and slow runs
@@ -50,6 +51,17 @@ log = logging.getLogger("hangar.store")
 # KAN-182: every audit entry also leaves the pod as one `hangar.audit: {json}` line on stdout. Cloud Logging keeps it,
 # and deploy/terraform/gke/audit.tf routes it to a log bucket the pod can't rewrite (docs/security/audit.md).
 audit_log = logging.getLogger("hangar.audit")
+# --- KAN-296: the audit table is hash-chained. Each row keeps an HMAC of its JSON (`digest`) and a link,
+# HMAC(previous link, its id, its digest) (`hash`), so an edited, removed or reordered row breaks every link after
+# it. The key is in the vault (datahandling.audit_key), so whoever holds only the database can neither rebuild the
+# chain after an edit nor confirm a guessed name in a redacted row against its digest.
+# Retention deletes only the oldest rows and keeps the last deleted row's link here as the chain's new start.
+# A purge rewrites a row's JSON without its person and marks it `redacted`: its digest and link stay, so the chain
+# still holds, and the new JSON is checked against its own HMAC (`rdigest`) instead (datahandling.verify_chain).
+AUDIT_ANCHOR = "audit.chain.anchor"
+AUDIT_STARTED = "audit.chain.started"  # set once, when the chain first starts: rows are linked by hangar only then
+CHAIN_STARTED = "audit.chain_started"
+
 
 _TABLES: dict[type[BaseModel], tuple[str, str]] = {
     Sandbox: ("sandboxes", "id"),
@@ -151,6 +163,13 @@ class Store:
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, data TEXT)"
         )
+        # --- KAN-296: the chain's columns, added to a table made before them, and an index retention reads by
+        have = {r[1] for r in self._db.execute("PRAGMA table_info(audit)").fetchall()}
+        for col, decl in (("digest", "TEXT"), ("hash", "TEXT"), ("redacted", "INTEGER NOT NULL DEFAULT 0"),
+                          ("rdigest", "TEXT")):
+            if col not in have:
+                self._db.execute(f"ALTER TABLE audit ADD COLUMN {col} {decl}")
+        self._db.execute("CREATE INDEX IF NOT EXISTS audit_by_ts ON audit(ts)")
         self._db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
         for cls, fields in _INDEXED.items():  # --- scale
             table = _TABLES[cls][0]
@@ -175,6 +194,9 @@ class Store:
                                      f"ON {t}({_field(f)}, {_field(order)})")
         # --- workstream mcp-modern: called after every put (MCP resource-updated notifications); must not raise
         self.on_put: list[Callable[[BaseModel], None]] = []
+        # --- KAN-296: the chain's key comes from the vault (set_audit_key). Rows written before it are linked then.
+        self._audit_key: bytes | None = None
+        self._audit_pending: list[int] = []
 
     @contextlib.contextmanager
     def _synced(self, durable: bool) -> Iterator[None]:
@@ -189,12 +211,13 @@ class Store:
             self._db.execute("PRAGMA synchronous=NORMAL")
 
     @contextlib.contextmanager
-    def _atomic(self, on: bool) -> Iterator[None]:
-        """--- durable: what runs inside commits as one transaction. Caller holds the lock."""
+    def _atomic(self, on: bool, immediate: bool = False) -> Iterator[None]:
+        """--- durable: what runs inside commits as one transaction. Caller holds the lock. `immediate` takes the
+        write lock up front, so a read then a write can't fail on another process's commit in between (KAN-296)."""
         if not on:
             yield
             return
-        self._db.execute("BEGIN")
+        self._db.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         try:
             yield
         except BaseException:
@@ -396,9 +419,139 @@ class Store:
     # --- audit --------------------------------------------------------------
     def audit(self, event: AuditEvent) -> None:
         data = event.model_dump_json()
+        with self._lock, self._atomic(True, immediate=True):  # --- KAN-296: the row and its link in the chain, together
+            key = self._audit_key
+            prev = self._audit_prev() if key else ""
+            rid = self._db.execute("INSERT INTO audit(ts, data) VALUES(?, ?)", (event.ts, data)).lastrowid
+            link = None
+            if key is None:
+                self._audit_pending.append(rid)
+            else:
+                digest = audit_digest(key, data)
+                link = audit_link(key, prev, rid, digest)
+                self._db.execute("UPDATE audit SET digest=?, hash=? WHERE id=?", (digest, link, rid))
+        # the same JSON the table holds, then its place in the chain: one line (JSON escapes newlines). The copy
+        # off the pod (docs/security/audit.md) carries every link, so a gap in the table shows against it.
+        audit_log.info('%s,"seq":%d,"hash":%s}', data[:-1], rid, json.dumps(link))
+
+    # --- KAN-296: the audit chain (datahandling.py reads, prunes and redacts it)
+    @property
+    def audit_key(self) -> bytes | None:
+        return self._audit_key
+
+    def set_audit_key(self, key: bytes) -> None:
+        """Start chaining with `key`, and link the rows this process wrote before it. The first time ever, link every
+        row written before the chain existed instead (an upgrade). Never again: a row whose link was cleared later
+        stays a break for `hangar doctor`, so clearing links and restarting can't hide an edit."""
         with self._lock:
-            self._db.execute("INSERT INTO audit(ts, data) VALUES(?, ?)", (event.ts, data))
-        audit_log.info(data)  # the same JSON the table holds, nothing more: one line (JSON escapes newlines)
+            self._audit_key = key
+            started = self.kv_get(AUDIT_STARTED)
+            if started:
+                ids = list(self._audit_pending)
+            else:
+                ids = [r[0] for r in self._db.execute(
+                    "SELECT id FROM audit WHERE hash IS NULL AND id > "
+                    "coalesce((SELECT max(id) FROM audit WHERE hash IS NOT NULL), 0) ORDER BY id").fetchall()]
+            self._audit_pending = []
+            linked_before = self._db.execute("SELECT count(*) FROM audit WHERE hash IS NOT NULL").fetchone()[0]
+            with self._atomic(True):
+                for rid in ids:
+                    row = self._db.execute("SELECT data FROM audit WHERE id=? AND hash IS NULL", (rid,)).fetchone()
+                    if row is None:
+                        continue
+                    before = self._db.execute("SELECT hash FROM audit WHERE id < ? ORDER BY id DESC LIMIT 1",
+                                              (rid,)).fetchone()
+                    prev = (before[0] or "") if before else self._audit_prev_anchor()
+                    digest = audit_digest(key, row[0] or "")
+                    self._db.execute("UPDATE audit SET digest=?, hash=? WHERE id=?",
+                                     (digest, audit_link(key, prev, rid, digest), rid))
+                if not started:
+                    self._db.execute("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET "
+                                     "value=excluded.value", (AUDIT_STARTED, json.dumps({"ts": time.time()})))
+            if not started:  # audited, so the copy off the pod shows when and how many; doctor allows only one
+                self.audit(AuditEvent(actor="system", action=CHAIN_STARTED, target=str(ids[0] if ids else 0),
+                                      detail={"rows": len(ids), "linked_before": linked_before,
+                                              "anchor": self.kv_get(AUDIT_ANCHOR) is not None}))
+
+    def _audit_prev(self) -> str:
+        """The link a new row follows: the newest row's, else the anchor retention left, else the start. Caller
+        holds the lock."""
+        row = self._db.execute("SELECT hash FROM audit ORDER BY id DESC LIMIT 1").fetchone()
+        if row is not None:
+            return row[0] or ""
+        return self._audit_prev_anchor()
+
+    def _audit_prev_anchor(self) -> str:
+        anchor = self.kv_get(AUDIT_ANCHOR)
+        return json.loads(anchor)["hash"] if anchor else ""
+
+    def audit_rows(self, after_id: int = 0, limit: int = 5000) -> list[tuple[int, float, str, str | None, str | None,
+                                                                             int, str | None]]:
+        """(id, ts, data, digest, hash, redacted, rdigest) of up to `limit` rows after `after_id`, oldest first."""
+        with self._lock:
+            return self._db.execute("SELECT id, ts, data, digest, hash, redacted, rdigest FROM audit WHERE id > ? "
+                                    "ORDER BY id LIMIT ?", (after_id, limit)).fetchall()
+
+    def audit_max_id(self) -> int:
+        with self._lock:
+            return self._db.execute("SELECT coalesce(max(id), 0) FROM audit").fetchone()[0]
+
+    def audit_prune(self, before: float, batch: int = 1000) -> int:
+        """Delete up to `batch` of the oldest rows written before `before`, only from the start of the table so the
+        rest stays one chain, and keep the last deleted row's link as the chain's anchor. Returns how many went."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, ts, hash FROM audit WHERE id < coalesce((SELECT min(id) FROM audit WHERE ts >= ?), "
+                "(SELECT max(id) + 1 FROM audit)) ORDER BY id LIMIT ?", (before, batch)).fetchall()
+            if not rows:
+                return 0
+            last_id, last_ts, last_hash = rows[-1]
+            prior = json.loads(self.kv_get(AUDIT_ANCHOR) or "{}")
+            anchor = {"id": last_id, "ts": last_ts, "hash": last_hash or "",
+                      "pruned": int(prior.get("pruned", 0)) + len(rows)}
+            with self._synced(True), self._atomic(True):
+                self._db.execute("DELETE FROM audit WHERE id <= ?", (last_id,))
+                self._db.execute("INSERT INTO kv(key, value) VALUES(?, ?) "
+                                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                 (AUDIT_ANCHOR, json.dumps(anchor)))
+        return len(rows)
+
+    def audit_redact(self, rewrite: Callable[[str], str], batch: int = 2000, after_id: int = 0) -> list[int]:
+        """Run every row's JSON after `after_id` through `rewrite`; store and mark `redacted` the rows it changes
+        (their digest and link stay as they were, and `rdigest` vouches for the new JSON). Returns the ids it
+        changed. Needs the chain's key."""
+        key = self._audit_key
+        if key is None:
+            raise RuntimeError("the audit chain's key isn't loaded")
+        changed: list[int] = []
+        after = after_id
+        while True:
+            with self._lock:
+                rows = self._db.execute("SELECT id, data FROM audit WHERE id > ? ORDER BY id LIMIT ?",
+                                        (after, batch)).fetchall()
+                if not rows:
+                    return changed
+                with self._atomic(True):
+                    for rid, data in rows:
+                        new = rewrite(data or "")
+                        if new != data:
+                            self._db.execute("UPDATE audit SET data=?, redacted=1, rdigest=? WHERE id=?",
+                                             (new, audit_redaction(key, new), rid))
+                            changed.append(rid)
+            after = rows[-1][0]
+
+    def audit_matching(self, needles: Collection[str], limit: int = 100_000) -> list[AuditEvent]:
+        """Entries naming any of `needles` (ids) as a JSON string, oldest first: an export's audit trail."""
+        ns = [n for n in needles if n]
+        if not ns:
+            return []
+        # a whole JSON string, or one that ends ":<id>" (a prefixed name), never a substring of a longer id
+        pats = [p for n in ns for p in (json.dumps(n), ':' + json.dumps(n)[1:])]
+        where = " OR ".join("instr(data, ?) > 0" for _ in pats)
+        with self._lock:
+            rows = self._db.execute(f"SELECT data FROM audit WHERE {where} ORDER BY id LIMIT ?",
+                                    [*pats, limit]).fetchall()
+        return [AuditEvent.model_validate_json(r[0]) for r in rows]
 
     def audit_since(self, since: float, actions: Collection[str], target: str | None = None,
                     limit: int = 500) -> list[AuditEvent]:

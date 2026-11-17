@@ -77,6 +77,7 @@ command output and idle connections.
 | [The vault key ring](vault-key.md) | Where the keys live, rotation, backups |
 | [How the control-plane pod is locked down](control-plane-pod.md) | The pod's securityContext, who may connect, why IAP is off |
 | [Where the audit log is kept](audit.md) | The database copy, the export to a retained Cloud Logging bucket, reading it |
+| [Data handling](data-handling.md) | What hangar keeps and for how long, the audit chain, deleting a person, exporting a job |
 
 The design record is [spec 0003, sandbox security](../specs/0003-sandbox-security.md).
 

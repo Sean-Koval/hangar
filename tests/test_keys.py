@@ -328,7 +328,8 @@ def test_rotate_key_over_rest(settings):
         assert c.get("/api/admin/rotate-key", headers=auth).json()["rotation"] is None
         assert c.post("/api/admin/rotate-key/retire", headers=auth).status_code == 409  # nothing to retire
         r = c.post("/api/admin/rotate-key", headers=auth)
-        assert r.status_code == 200 and r.json()["rotation"]["sealed_rows"] == 1
+        # cred:x, and the audit chain's key (KAN-296), which rotates with the rest
+        assert r.status_code == 200 and r.json()["rotation"]["sealed_rows"] == 2
         for _ in range(250):
             st = c.get("/api/admin/rotate-key", headers=auth).json()
             if st["rotation"]["phase"] == "retired":

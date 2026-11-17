@@ -1,0 +1,546 @@
+"""Data handling for a company install (KAN-296; docs/security/data-handling.md).
+
+* **The audit chain.** store.py links each audit row to the one before it (`hash`), keyed with a secret in the vault.
+  `verify_chain` walks the table and finds the first row that was edited, removed or reordered; `hangar doctor`
+  runs it. The anchor that retention
+  keeps starts the chain where the deleted rows ended.
+* **Audit retention.** HANGAR_AUDIT_RETENTION_DAYS (400 by default, 0 keeps everything) deletes the oldest rows,
+  separately from job and session retention (retention.py runs `prune_audit`).
+* **Purge.** `hangar admin purge --person ID` deletes what hangar holds about one person: their sessions (with their
+  checkpoints, artifacts, manifests and event logs), jobs, schedules, outbox records, personal credentials, tokens,
+  sandbox records, snapshots and flight records, and the person. Their audit entries stay, with every name hangar
+  knows them by replaced by one stable pseudonym, in the fields that name people only. It refuses while any of their
+  work is live.
+* **Export.** `hangar admin export --job ID`: one tar.gz with the job's record, instructions, context, events,
+  result, its sessions' event logs and artifacts, and every audit entry naming the job, its sessions or sandboxes.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import io
+import json
+import logging
+import re
+import secrets
+import shutil
+import tarfile
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from hangar import people
+from hangar.auditchain import audit_digest, audit_link, audit_redaction
+from hangar.envrequests import EnvRequest
+from hangar.flightrec import FlightRecord
+from hangar.models import (
+    JOB_TERMINAL,
+    SESSION_LIVE,
+    ApiToken,
+    Credential,
+    Job,
+    ModelGrant,
+    Person,
+    Sandbox,
+    SandboxGrant,
+    SandboxState,
+    ScheduledJob,
+    Session,
+    Snapshot,
+    now,
+)
+from hangar.outbox import OutboxItem
+from hangar.store import AUDIT_ANCHOR, CHAIN_STARTED, Store
+from hangar.testresults import TestRun
+
+log = logging.getLogger("hangar.datahandling")
+
+PURGE_ACTION = "admin.purge"
+SALT_NAME = "audit-pseudonym-salt"  # in the vault: the database alone can't confirm a guessed name
+CHAIN_KEY_NAME = "audit-chain-key"  # in the vault: the database alone can't rebuild the chain after an edit
+_BOUND = r"A-Za-z0-9._@/#-"  # a name is replaced only where it stands alone, never inside a longer word or a path
+# Detail keys whose values name people: a name is replaced inside them, as in `actor` and `target`. Anywhere else in
+# `detail`, only a value that is the name (or `<kind>:<name>`) as a whole is.
+IDENTITY_KEYS = frozenset({"person", "people", "by", "requester", "requested_by", "owner", "user", "users", "actor",
+                           "who", "member", "members", "login", "email", "author", "approver", "approved_by",
+                           "decided_by", "sender", "linked", "link", "links", "account", "created_by", "leased_to"})
+# Names too common to replace inside a longer string: they'd hit other people's entries ("admin", a branch "main").
+COMMON = frozenset({"admin", "system", "owner", "hangar", "api", "main", "master", "root", "bot", "ci", "test", "user",
+                    "team", "ui", "cli", "token", "person", "github", "slack", "jira", "web", "default"})
+_LIVE_SANDBOX = {SandboxState.PENDING, SandboxState.STARTING, SandboxState.RUNNING, SandboxState.PAUSED,
+                 SandboxState.STOPPING, SandboxState.ERROR}  # these still hold provider resources: destroy first
+
+
+class PurgeBlocked(RuntimeError):
+    """The person still has live work: stop it first."""
+
+
+# ---------------------------------------------------------------------------- the audit chain
+def audit_key(vault: Any) -> bytes:
+    """The audit chain's HMAC key, made on first use and kept in the vault."""
+    raw = vault.get_text(CHAIN_KEY_NAME)
+    if not raw:
+        raw = secrets.token_hex(32)
+        vault.put(CHAIN_KEY_NAME, raw)
+    return bytes.fromhex(raw)
+
+
+def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
+    """Walk the audit table oldest first. `ok` is False at the first row whose link doesn't follow from the row
+    before it (a row removed, reordered or inserted), whose JSON doesn't match its digest (edited), that has no
+    link, or that is marked redacted but doesn't match what the purge wrote. `restarts` counts chain starts after
+    the first: each one relinked rows hangar didn't write just then. Removing the newest rows can't be seen here:
+    compare the newest `seq` with the copy off the pod (docs/security/audit.md)."""
+    key = store.audit_key
+    anchor = json.loads(store.kv_get(AUDIT_ANCHOR) or "null")
+    prev = anchor["hash"] if anchor else ""
+    out: dict[str, Any] = {"ok": key is not None, "rows": 0, "redacted": 0, "first_id": None, "last_id": None,
+                           "broken_at": None, "reason": None if key else "the chain's key isn't loaded",
+                           "anchor": anchor, "starts": 0, "restarts": []}
+    if key is None:
+        return out
+    after = 0
+    while True:
+        rows = store.audit_rows(after, batch)
+        if not rows:
+            break
+        for rid, _ts, data, digest, link, redacted, rdigest in rows:
+            out["rows"] += 1
+            out["first_id"] = out["first_id"] or rid
+            out["last_id"] = rid
+            data = data or ""
+            if redacted:
+                out["redacted"] += 1
+            if out["ok"]:
+                reason = None
+                if not link or not digest:
+                    reason = "a row without a link (written outside hangar, or its link was cleared)"
+                elif redacted and (not rdigest or audit_redaction(key, data) != rdigest):
+                    reason = "a row marked redacted doesn't match what the purge wrote (edited since)"
+                elif not redacted and audit_digest(key, data) != digest:
+                    reason = "the row was edited after it was written"
+                elif audit_link(key, prev, rid, digest) != link:
+                    reason = "the row doesn't follow the one before it (a row was removed, inserted or reordered)"
+                if reason:
+                    out.update(ok=False, broken_at=rid, reason=reason)
+            prev = link or ""
+            if f'"action":"{CHAIN_STARTED}"' in data:
+                out["starts"] += 1
+                try:
+                    d = json.loads(data)["detail"]
+                except (ValueError, KeyError, TypeError):
+                    d = {}
+                # the first start links a table hangar never chained; any other start relinked rows after a chain
+                if out["starts"] > 1 or d.get("linked_before") or d.get("anchor"):
+                    out["restarts"].append(rid)
+        after = rows[-1][0]
+    return out
+
+
+def prune_audit(store: Store, days: float, batch: int = 1000) -> int:
+    """Delete the audit rows older than `days`, a batch at a time. Returns how many went."""
+    if days <= 0:
+        return 0
+    before, gone = now() - days * 86400, 0
+    while True:
+        n = store.audit_prune(before, batch)
+        gone += n
+        if n < batch:
+            return gone
+
+
+async def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    from hangar.doctor import _check
+
+    v = await asyncio.to_thread(verify_chain, h.store)
+    days = h.settings.audit_retention_days
+    out = []
+    if v["ok"]:
+        out.append(_check("audit chain", True, f"{v['rows']} entries, every link holds"
+                          + (f"; {v['redacted']} redacted by a purge" if v["redacted"] else "")))
+    else:
+        out.append(_check("audit chain", False, f"entry {v['broken_at']}: {v['reason']}",
+                          "compare the table with the copy off the pod (docs/security/audit.md#reading-it), then "
+                          "find out who had the database: docs/security/data-handling.md#if-the-chain-breaks"))
+    if v["restarts"]:
+        out.append(_check("audit chain restarts", False,
+                          f"the chain was started again at entry {', '.join(map(str, v['restarts'][:5]))}: rows "
+                          "whose links were cleared were linked anew",
+                          "compare the entries before it with the copy off the pod "
+                          "(docs/security/data-handling.md#if-the-chain-breaks)"))
+    anchor = v["anchor"]
+    if days <= 0:
+        out.append(_check("audit retention", None, "kept forever (HANGAR_AUDIT_RETENTION_DAYS=0)",
+                          "set HANGAR_AUDIT_RETENTION_DAYS to what your policy asks for "
+                          "(docs/security/data-handling.md)"))
+    elif anchor and anchor.get("ts", 0) > now() - days * 86400:
+        out.append(_check("audit retention", None,
+                          f"entries up to {time.strftime('%Y-%m-%d', time.gmtime(anchor['ts']))} were deleted, sooner "
+                          f"than the {days:g} days kept now",
+                          "expected if the retention was raised since; otherwise rows were deleted early"))
+    else:
+        out.append(_check("audit retention", True, f"{days:g} days, then deleted oldest first"
+                          + (f" ({anchor['pruned']} so far)" if anchor else "")))
+    return out
+
+
+# ---------------------------------------------------------------------------- purge
+def pseudonym(h: Any, person_id: str) -> str:
+    """The stable stand-in for a person in the audit table: the same for every entry and every purge, and unguessable
+    from the database alone (its salt is in the vault)."""
+    salt = h.vault.get_text(SALT_NAME)
+    if not salt:
+        salt = secrets.token_hex(32)
+        h.vault.put(SALT_NAME, salt)
+    return "person:" + hashlib.sha256(f"{salt}\n{person_id}".encode()).hexdigest()[:16]
+
+
+def aliases(store: Store, person_id: str) -> tuple[list[str], list[str]]:
+    """The names the audit table may know the person by: their id, their tokens' ids, their linked accounts (and an
+    email address bare), and `ui:<token name>` for a token name no other person's token has. Second, their display
+    name, replaced only in an entry that names them otherwise, and only where a value is that name as a whole."""
+    names = {person_id}
+    p = store.get(Person, person_id)
+    display: list[str] = []
+    if p is not None:
+        names.update(p.links)
+        names.update(link.split(":", 1)[1] for link in p.links if link.startswith("email:"))
+        others = {o.name for o in store.list(Person) if o.id != person_id}
+        if p.name and p.name != person_id and p.name not in others:
+            display.append(p.name)
+    tokens = store.list(ApiToken)
+    theirs = [t for t in tokens if t.person == person_id]
+    names.update(t.id for t in theirs)
+    others = {t.name for t in tokens if t.person != person_id}
+    names.update(f"ui:{t.name}" for t in theirs if t.name not in others)
+    return sorted((n for n in names if n), key=len, reverse=True), display
+
+
+def redactor(names: list[str], stand_in: str, display: list[str] | None = None):
+    """A rewrite of one audit row's JSON (store.audit_redact). `actor`, `target` and the detail values under
+    IDENTITY_KEYS lose every name where it stands alone; any other detail value only when it is a name as a whole
+    (or `<kind>:<name>`). A short or common name (COMMON) is replaced only as a whole value, never inside one."""
+    names = sorted({n for n in names if n}, key=len, reverse=True)  # the longest name first: "github:x" over "x"
+    if not names:
+        return lambda data: data
+    inner = [n for n in names if len(n) >= 4 and n.lower() not in COMMON]
+    alt = "|".join(re.escape(n) for n in names)
+    plain = "|".join(re.escape(n) for n in names if n.lower() not in COMMON) or "(?!)"
+    common = "|".join(re.escape(n) for n in names if n.lower() in COMMON) or "(?!)"
+    # a common name ("admin") counts only with a kind in front ("person:admin"): bare, it may be anyone's
+    whole = re.compile(rf"(?:[a-z][a-z0-9_-]*:)*(?:{plain})|(?:[a-z][a-z0-9_-]*:)+(?:{common})")
+    within = re.compile(rf"(?<![{_BOUND}])(?:{'|'.join(re.escape(n) for n in inner)})(?![{_BOUND}])") \
+        if inner else None
+    shown = set(display or [])
+    hit = [False]
+
+    def one(v: str, identity: bool) -> str:
+        if (m := whole.fullmatch(v)) is not None:
+            hit[0] = True
+            prefix = v[:m.end() - len(next(n for n in names if v.endswith(n)))]
+            return prefix + stand_in
+        if identity and within is not None and within.search(v):
+            hit[0] = True
+            return within.sub(stand_in, v)
+        return v
+
+    def walk(v: Any, identity: bool) -> Any:
+        if isinstance(v, str):
+            return one(v, identity)
+        if isinstance(v, list):
+            return [walk(x, identity) for x in v]
+        if isinstance(v, dict):
+            return {k: walk(x, identity or k in IDENTITY_KEYS) for k, x in v.items()}
+        return v
+
+    def drop_display(v: Any) -> Any:
+        if isinstance(v, str):
+            return stand_in if v in shown else v
+        if isinstance(v, list):
+            return [drop_display(x) for x in v]
+        if isinstance(v, dict):
+            return {k: drop_display(x) for k, x in v.items()}
+        return v
+
+    quick = re.compile(alt)
+
+    def rewrite(data: str) -> str:
+        if not quick.search(data):
+            return data
+        try:
+            row = json.loads(data)
+        except ValueError:
+            return data  # not an entry hangar wrote; left for verify_chain to report
+        if not isinstance(row, dict):
+            return data
+        hit[0] = False
+        for f in ("actor", "target"):
+            if isinstance(row.get(f), str):
+                row[f] = one(row[f], True)
+        row["detail"] = walk(row.get("detail") or {}, False)
+        if not hit[0]:
+            return data
+        if shown:
+            row["detail"] = drop_display(row["detail"])
+        return json.dumps(row, separators=(",", ":"), ensure_ascii=False)
+
+    return rewrite
+
+
+def _found(h: Any, person_id: str, names: list[str]) -> dict[str, list[Any]]:
+    """What hangar holds about the person: by `person`, and by an `owner` or requester that is one of their names
+    (a token id, a linked account), as GitHub, Slack and older jobs and sessions record it."""
+    st = h.store
+    mine = set(names)
+
+    def theirs(rec: Any, *fields: str) -> bool:
+        return any(getattr(rec, f, None) in mine for f in fields)
+
+    sessions = {s.id: s for s in st.list_where(Session, archived=True, person=person_id)}
+    sessions.update({s.id: s for s in st.list_where(Session, archived=True, owner=list(mine))})
+    jobs = {j.id: j for j in st.list_where(Job, archived=True, person=person_id)}
+    jobs.update({j.id: j for j in st.list_where(Job, archived=True, owner=list(mine))})
+    jobs.update({j.id: j for j in st.list_where(Job, archived=True, requester=list(mine))})
+    schedules = {sc.id: sc for sc in st.list(ScheduledJob) if sc.person == person_id or theirs(sc, "owner")}
+    sids = set(sessions) | {a.session_id for j in jobs.values() for a in j.attempts if a.session_id} \
+        | {j.session_id for j in jobs.values() if j.session_id}
+    jids = set(jobs)
+    sandboxes = {sb.id: sb for sb in st.list_where(Sandbox, archived=True, person=person_id)}
+    sandboxes.update({sb.id: sb for sb in st.list_where(Sandbox, archived=True, created_by=list(mine))})
+    sbids = set(sandboxes)
+    outbox = [i for i in st.list(OutboxItem) if i.session_id in sids or i.job_id in jids]
+    return {
+        "sessions": list(sessions.values()), "jobs": list(jobs.values()), "schedules": list(schedules.values()),
+        "credentials": st.list_where(Credential, person=person_id),
+        "tokens": st.list_where(ApiToken, person=person_id), "sandboxes": list(sandboxes.values()),
+        "snapshots": st.list_where(Snapshot, person=person_id),
+        "sandbox_grants": [g for g in st.list(SandboxGrant) if g.sandbox_id in sbids],
+        "model_grants": [g for g in st.list(ModelGrant) if g.sandbox_id in sbids],
+        "flight_records": [r for r in st.list(FlightRecord)
+                           if r.person == person_id or r.job_id in jids or r.session_id in sids],
+        "test_runs": [r for r in st.list(TestRun) if r.person == person_id or r.job_id in jids
+                      or r.session_id in sids],
+        "env_requests": [r for r in st.list(EnvRequest) if r.session_id in sids or theirs(r, "owner", "requester")],
+        "outbox": outbox,
+        "environment_claims": [k for k in st.kv_keys("identity:env-owner:") if st.kv_get(k) == person_id],
+        "pending_deletes": _pending_deletes(h, sids, mine),
+    }
+
+
+def _pending_deletes(h: Any, sids: set[str], names: set[str]) -> list[Path]:
+    """Sessions deleted earlier whose event logs and manifests wait for the outbox (outbox.retire_session)."""
+    root = h.settings.data_dir / "pending-delete"
+    if not root.is_dir():
+        return []
+    out = []
+    for d in sorted(root.iterdir()):
+        try:
+            m = json.loads((d / "marker.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if m.get("session_id") in sids or m.get("person") in names or m.get("requester") in names:
+            out.append(d)
+    return out
+
+
+def _live(found: dict[str, list[Any]]) -> list[str]:
+    live = [f"session {s.name or s.id}" for s in found["sessions"] if s.state in SESSION_LIVE or s.sandbox_id]
+    live += [f"job {j.id}" for j in found["jobs"] if j.state not in JOB_TERMINAL]
+    live += [f"sandbox {s.id}" for s in found["sandboxes"] if s.state in _LIVE_SANDBOX]
+    live += [f"credential {c.name} (held by {c.leased_to})" for c in found["credentials"] if c.leased_to]
+    return live
+
+
+async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -> dict[str, Any]:
+    """Delete everything hangar holds about `person_id` and pseudonymise their audit entries (module docstring).
+
+    The audit rows are rewritten first and the person's record goes last, so a purge that fails partway leaves no
+    name behind and can be run again: the rerun finds the person and whatever is left."""
+    people.check_id(person_id)
+    if person_id == people.OWNER:
+        raise people.PeopleError("the owner holds the server's admin token; it can't be purged")
+    st = h.store
+    names, display = aliases(st, person_id)
+    found = await asyncio.to_thread(_found, h, person_id, names)
+    person = st.get(Person, person_id)
+    counts = {k: len(v) for k, v in found.items()}
+    named = await asyncio.to_thread(st.audit_matching, names, 1)
+    if person is None and not any(counts.values()) and not named:
+        raise KeyError(f"hangar holds nothing about '{person_id}'")
+    if live := _live(found):
+        raise PurgeBlocked(f"{person_id} still has live work; stop it first: {', '.join(live[:20])}")
+    exported = sorted(i.key for i in found["outbox"] if i.state == "done")
+    report: dict[str, Any] = {"person": person_id, "dry_run": dry_run, "deleted": counts,
+                              "person_record": person is not None, "exported_objects": exported, "errors": []}
+    if dry_run:
+        report["audit_names"] = len(names)
+        return report
+
+    stand_in = await asyncio.to_thread(pseudonym, h, person_id)
+    rewrite = redactor(names, stand_in, display)
+    start = await asyncio.to_thread(st.audit_max_id)
+    changed = await asyncio.to_thread(st.audit_redact, rewrite)  # first: a failure below leaves no name behind
+    errors = report["errors"]
+
+    async def step(what: str, fn: Any, *a: Any, **kw: Any) -> None:
+        try:
+            r = fn(*a, **kw)
+            if asyncio.iscoroutine(r):
+                await r
+        except Exception as e:  # noqa: BLE001 - report it, go on with the rest, keep the person for a rerun
+            errors.append(f"{what}: {e}")
+
+    for t in found["tokens"]:  # first: nothing of theirs can act while the rest goes
+        await step(f"token {t.id}", st.delete, ApiToken, t.id)
+    for sc in found["schedules"]:
+        await step(f"schedule {sc.id}", st.delete, ScheduledJob, sc.id)
+    for j in found["jobs"]:
+        h.jobs._jobs.pop(j.id, None)
+        await step(f"job {j.id}", st.delete, Job, j.id)
+    for s in found["sessions"]:
+        try:
+            h.sessions.delete(s.id, requester, force_now=True)
+            await h.sessions._drop(f"{s.id}/")  # checkpoints and artifacts: gone before this returns
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"session {s.id}: {e}")
+            await step(f"session {s.id}", st.delete, Session, s.id)
+    for d in found["pending_deletes"]:
+        await step(f"deleted session files {d.name}", shutil.rmtree, d)
+    ob = _outbox(h)
+    for i in found["outbox"]:
+        if ob is not None:
+            await step(f"outbox file {i.key}", ob._blob(i.key).unlink, missing_ok=True)
+        await step(f"outbox record {i.key}", st.delete, OutboxItem, i.key)
+    for c in found["credentials"]:
+        await step(f"credential {c.name}", h.broker.delete, c.name)
+    for snap in found["snapshots"]:
+        try:
+            await h.fleet.delete_snapshot(snap.id, actor=requester)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"snapshot {snap.id}: {e}")
+            await step(f"snapshot {snap.id}", st.delete, Snapshot, snap.id)
+    for kind, cls in (("sandbox_grants", SandboxGrant), ("model_grants", ModelGrant), ("sandboxes", Sandbox),
+                      ("flight_records", FlightRecord), ("test_runs", TestRun), ("env_requests", EnvRequest)):
+        for rec in found[kind]:
+            await step(f"{kind} {rec.id}", st.delete, cls, rec.id)
+    for k in found["environment_claims"]:
+        await step(k, st.kv_delete, k)
+    if person is not None and not errors:
+        st.delete(Person, person_id)
+    # the steps above may have audited the person again: those rows too
+    changed += await asyncio.to_thread(st.audit_redact, rewrite, 2000, start)
+    report["person_record_deleted"] = person is not None and not errors
+    report["audit_rows_redacted"] = len(set(changed))
+    report["pseudonym"] = stand_in
+    # the purge's own entry names the pseudonym, never the person
+    h.fleet.audit(requester, PURGE_ACTION, stand_in, audit_rows_redacted=len(set(changed)),
+                  deleted={k: v for k, v in counts.items() if v}, person_record=person is not None,
+                  exported_objects=len(exported), errors=len(errors))
+    log.info("purged %s: %s", stand_in, counts)
+    return report
+
+
+def _outbox(h: Any) -> Any:
+    try:
+        from hangar import outbox
+
+        return outbox.of(h.fleet)
+    except Exception:  # noqa: BLE001 - no outbox: nothing staged to delete
+        return None
+
+
+# ---------------------------------------------------------------------------- export
+_SAFE = re.compile(r"[^A-Za-z0-9._/-]")
+
+
+def _arc(path: str) -> str:
+    parts = [p for p in _SAFE.sub("_", path).split("/") if p not in ("", ".", "..")]
+    return "/".join(parts) or "_"
+
+
+async def export_job(h: Any, job_id: str, requester: str) -> Path:
+    """Write the job's export to a temporary file and return its path (the caller deletes it)."""
+    from hangar import exchange
+
+    job = h.store.get(Job, job_id)
+    if job is None:
+        raise KeyError(f"no job '{job_id}'")
+    files: dict[str, bytes] = {}
+    missing: list[str] = []
+
+    def put(name: str, value: Any) -> None:
+        files[name] = value if isinstance(value, bytes) else (
+            json.dumps(value, indent=2, default=str) + "\n").encode()
+
+    record = job.model_dump(mode="json")
+    for f in ("callback_url", "callback_secret"):  # a webhook URL or its secret is a credential, not evidence
+        if record.get(f):
+            record[f] = "(withheld)"
+    put("job.json", record)
+    files["instructions.md"] = (job.instructions or "").encode()
+    put("context.json", [c.model_dump(mode="json") for c in job.context])
+    put("events.json", [e.model_dump(mode="json") for e in job.events])
+    put("result.json", job.result.model_dump(mode="json"))
+    sids = [x for x in dict.fromkeys([job.session_id, *(a.session_id for a in job.attempts)]) if x]
+    sandboxes = [x for x in dict.fromkeys([job.sandbox_id, *(getattr(a, "sandbox_id", None) for a in job.attempts)])
+                 if x]
+    for sid in sids:
+        s = h.store.get(Session, sid)
+        if s is None:
+            missing.append(f"session {sid}: deleted")
+            continue
+        sandboxes += [t.sandbox_id for t in s.turns if getattr(t, "sandbox_id", None)]
+        put(f"sessions/{_arc(sid)}/session.json", s.model_dump(mode="json"))
+        for p in h.sessions.activity.log._paths(sid):
+            if p.exists():
+                files[f"sessions/{_arc(sid)}/events/{p.name}"] = await asyncio.to_thread(p.read_bytes)
+        for a in (a for t in s.turns for a in t.artifacts):
+            try:
+                _, data = await exchange.read_artifact(h.sessions, s, a.turn, a.path)
+                name = f"sessions/{_arc(sid)}/artifacts/{a.turn}/{_arc(a.path)}"
+                while name in files:  # two paths that read the same once made safe ("a b", "a_b") both stay
+                    name += "~"
+                files[name] = data
+            except Exception as e:  # noqa: BLE001 - say what's missing, export the rest
+                missing.append(f"artifact {sid} turn {a.turn} {a.path}: {e}")
+    entries = await asyncio.to_thread(h.store.audit_matching, [job.id, *sids, *dict.fromkeys(sandboxes)])
+    files["audit.jsonl"] = "".join(e.model_dump_json() + "\n" for e in entries).encode()
+    manifest = {"job": job.id, "exported_at": now(), "exported_by": requester, "missing": missing,
+                "files": {n: {"bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()} for n, b in files.items()}}
+    put("manifest.json", manifest)
+
+    def write() -> Path:
+        tmp = tempfile.NamedTemporaryFile(prefix=f"hangar-export-{_arc(job.id)}-", suffix=".tar.gz", delete=False)
+        with tmp, tarfile.open(fileobj=tmp, mode="w:gz") as tar:
+            for name, data in sorted(files.items()):
+                info = tarfile.TarInfo(f"{_arc(job.id)}/{name}")
+                info.size, info.mtime, info.mode = len(data), int(time.time()), 0o600
+                tar.addfile(info, io.BytesIO(data))
+        return Path(tmp.name)
+
+    path = await asyncio.to_thread(write)
+    h.fleet.audit(requester, "admin.export", job.id, files=len(files), bytes=path.stat().st_size,
+                  missing=len(missing))
+    return path
+
+
+# ---------------------------------------------------------------------------- REST
+def mount(app: Any, h: Any, admin: Any) -> None:
+    from fastapi import Body
+    from fastapi.responses import FileResponse, JSONResponse
+    from starlette.background import BackgroundTask
+
+    @app.post("/api/admin/purge")
+    async def admin_purge(body: dict[str, Any] = Body(...), who: str = admin):
+        try:
+            return await purge(h, str(body.get("person") or ""), who, dry_run=bool(body.get("dry_run")))
+        except PurgeBlocked as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+
+    @app.get("/api/admin/export/jobs/{job_id}")
+    async def admin_export_job(job_id: str, who: str = admin):
+        path = await export_job(h, job_id, who)
+        return FileResponse(path, media_type="application/gzip", filename=f"{_arc(job_id)}-export.tar.gz",
+                            background=BackgroundTask(path.unlink, missing_ok=True))

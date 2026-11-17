@@ -10,12 +10,14 @@ console's audit view read that copy. Whoever controls the pod or the disk could 
 last resort.
 
 Each entry is also written to the container log as one line: `hangar.audit: ` followed by the entry's JSON. The line
-holds the same fields as the table and nothing more. On GKE, Cloud Logging keeps a copy of every line, outside the
+holds the table's fields, plus the row's `seq` and its `hash` in the [audit chain](data-handling.md#the-audit-chain).
+On GKE, Cloud Logging keeps a copy of every line, outside the
 pod and its disk.
 
 ## The audit bucket
 
-Set `enable_audit_export = true` in `deploy/terraform/gke/` and apply. A log sink then routes the audit lines to a
+Set `enable_audit_export = true` in `deploy/terraform/gke/`, or in the `hangar-workload` module on a company
+cluster, and apply. A log sink then routes the audit lines to a
 Cloud Logging bucket of their own, `hangar-audit`, kept for `audit_retention_days` (400 by default).
 
 Nobody can delete an entry from a log bucket before its retention ends. hangar's service account only writes logs, so
@@ -34,7 +36,7 @@ The Terraform output `audit_log` prints this query for your project. The Logs Ex
 
 ## What it doesn't cover
 
-- The table in the database has no retention of its own: it grows until a restore or a manual clean-up.
-- Entries are not chained, so the local copy can't prove on its own that none was removed. Compare it with the
-  bucket.
+- The table in the database keeps entries for `HANGAR_AUDIT_RETENTION_DAYS` ([data handling](data-handling.md)).
+- The chain shows a row edited or removed in the middle of the table. A row cut from the end shows only against the
+  bucket's newest `seq`.
 - A Docker or single-VM install has no Cloud Logging. Ship the container log to your own store to get a second copy.
