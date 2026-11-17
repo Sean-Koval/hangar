@@ -15,7 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from hangar import cli, trace_import
-from hangar.events import RunEvent, parse_log
+from hangar.events import RunEvent, _brief, parse_log
 
 SID = "0b6c2f6e-5d1a-4c55-9e43-0d5c3c1f7a10"
 MODEL = "claude-opus-5-5"
@@ -334,3 +334,133 @@ def test_the_cli_writes_events_and_a_trace_flightdeck_reads(transcript: Path, tm
     assert [r["turn"] for r in rows["runs"]] == [1, 2] and rows["runs"][0]["harness"] == "claude-code"
     shell = next(r for r in rows["spans"] if r.get("tool_kind") == "shell")
     assert shell["shell_ops"] == ["test", "git.commit"] and shell["run_id"] == f"{SID}/turn/1"
+
+
+# --- KAN-353: the team harness the session ran with names the turns' harness, so its flightdeck specs apply
+
+
+@pytest.fixture(autouse=True)
+def _no_user_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test reads the real ~/.claude/team-harness.json."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+
+
+def _manifest(where: Path, name: str = "work-default", **extra: Any) -> Path:
+    p = where / ".claude" / "team-harness.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"schema": "team-harness.install/v1", "harness": name, "channel": "stable",
+                             "revision": 7, "harness_digest": "sha256:" + "a" * 64, **extra}))
+    return p
+
+
+def _turn_attrs(trace: dict) -> list[dict[str, Any]]:
+    return [_attrs(s) for s in _spans(trace) if _attrs(s)["hangar.kind"] == "turn"]
+
+
+def test_a_manifest_names_the_turns_harness(transcript: Path, tmp_path: Path) -> None:
+    m = _manifest(tmp_path / "proj")
+    imp = trace_import.import_transcript(transcript, manifest=m)
+    turns = _turn_attrs(imp.trace)
+    assert len(turns) == 2
+    for a in turns:
+        assert (a["hangar.harness"], a["hangar.harness.revision"], a["hangar.harness.channel"]) == ("work-default", 7,
+                                                                                                    "stable")
+        assert a["hangar.harness.digest"] == "sha256:" + "a" * 64 and a["gen_ai.agent.name"] == "claude-code"
+    session = next(_attrs(s) for s in _spans(imp.trace) if _attrs(s)["hangar.kind"] == "session")
+    assert session["hangar.harness"] == "work-default"
+
+
+def test_without_a_manifest_the_harness_stays_claude_code(transcript: Path) -> None:
+    for manifest in (True, False, None):
+        turns = _turn_attrs(trace_import.import_transcript(transcript, manifest=manifest).trace)
+        assert {a["hangar.harness"] for a in turns} == {"claude-code"} and "hangar.harness.channel" not in turns[0]
+
+
+def test_the_projects_manifest_comes_before_the_users(tmp_path: Path) -> None:
+    project, home = tmp_path / "repo", tmp_path / "home"
+    (project / "src").mkdir(parents=True)
+    _manifest(home, "personal")
+    assert trace_import.find_manifest(str(project), home) == home / ".claude" / "team-harness.json"
+    _manifest(project, "work-default")
+    assert trace_import.find_manifest(str(project), home) == project / ".claude" / "team-harness.json"
+    # a session started in a subdirectory of the checkout
+    assert trace_import.find_manifest(str(project / "src"), home) == project / ".claude" / "team-harness.json"
+    assert trace_import.find_manifest(None, home) is None
+    # a session whose directory isn't on this computer is never given the importer's own harness
+    assert trace_import.find_manifest(str(tmp_path / "elsewhere"), home) is None
+
+
+def test_the_sessions_own_project_is_searched(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    _manifest(project)
+    p = _jsonl(tmp_path / f"{SID}.jsonl", [
+        _prompt("Edit it.", "2026-11-01T10:00:00Z"),
+        {**_assistant("msg_x", _tool("toolu_x", "Edit", {"file_path": str(project / "a.py"), "old_string": "a",
+                                                          "new_string": "b"}), _usage(1, 1, 0, 0, 0),
+                      "2026-11-01T10:00:01Z"), "cwd": str(project)}])
+    assert {a["hangar.harness"] for a in _turn_attrs(trace_import.import_transcript(p).trace)} == {"work-default"}
+
+
+@pytest.mark.parametrize("body", ["not json", "[]", '{"harness": ""}', '{"channel": "stable"}'])
+def test_a_bad_manifest_is_refused(tmp_path: Path, transcript: Path, body: str) -> None:
+    m = tmp_path / "team-harness.json"
+    m.write_text(body)
+    with pytest.raises(ValueError, match="team-harness manifest"):
+        trace_import.import_transcript(transcript, manifest=m)
+    r = CliRunner().invoke(cli.app, ["trace", "import", str(transcript), "--out", str(tmp_path / "o"),
+                                     "--manifest", str(m)])
+    assert r.exit_code != 0 and "team-harness manifest" in r.output
+
+
+def test_the_cli_takes_a_manifest_or_none(transcript: Path, tmp_path: Path) -> None:
+    m = _manifest(tmp_path / "proj")
+    _manifest(Path.home(), "personal")
+    # the fixture's cwd (/repo) isn't on this computer, so the user's own manifest isn't used for it
+    for args, want in ((["--manifest", str(m)], "work-default"), (["--no-manifest"], "claude-code"),
+                       ([], "claude-code")):
+        out = tmp_path / f"out{len(args)}{want}"
+        r = CliRunner().invoke(cli.app, ["trace", "import", str(transcript), "--out", str(out), *args])
+        assert r.exit_code == 0, r.output
+        assert {a["hangar.harness"] for a in _turn_attrs(json.loads((out / "trace.json").read_text()))} == {want}
+    r = CliRunner().invoke(cli.app, ["trace", "import", str(transcript), "--out", str(tmp_path / "x"),
+                                     "--manifest", str(m), "--no-manifest"])
+    assert r.exit_code != 0 and "contradict" in r.output
+
+
+def test_an_mcp_calls_naming_fields_survive_the_preview(tmp_path: Path) -> None:
+    args = {"cloudId": "c" * 36, "projectKey": "SRE", "issueTypeName": "Task",
+            "description": "a long body that says what the change is and why " * 10,
+            "summary": "SRE approval: KAN-1 ship the parser"}
+    p = _jsonl(tmp_path / f"{SID}.jsonl", [
+        _prompt("Ask SRE.", "2026-11-01T10:00:00Z"),
+        _assistant("msg_x", _tool("toolu_x", "mcp__atlassian__createJiraIssue", args), _usage(1, 1, 0, 0, 0),
+                   "2026-11-01T10:00:01Z")])
+    imp = trace_import.import_transcript(p)
+    ev = next(e for e in imp.events if e.kind == "tool_call")
+    assert ev.text.startswith('mcp__atlassian__createJiraIssue {"summary": "SRE approval: KAN-1 ship the parser", '
+                              '"projectKey": "SRE", "issueTypeName": "Task", "cloudId": ')
+    assert ev.data.get("clipped") is True
+    span = next(_attrs(s) for s in _spans(imp.trace) if _attrs(s)["hangar.kind"] == "tool.call")
+    assert span["hangar.tool.kind"] == "mcp" and span["hangar.tool.input_clipped"] is True
+    assert json.loads(span["hangar.tool.input"].split(', "cloudId"')[0] + "}") == {
+        "summary": "SRE approval: KAN-1 ship the parser", "projectKey": "SRE", "issueTypeName": "Task"}
+    # A built-in tool's preview is unchanged
+    grep = {"pattern": "parse\\(", "path": "/repo", "output_mode": "content"}
+    built_in = trace_import.import_transcript(_jsonl(tmp_path / "b.jsonl", [
+        _prompt("Find it.", "2026-11-01T10:00:00Z"),
+        _assistant("msg_b", _tool("toolu_b", "Grep", grep), _usage(1, 1, 0, 0, 0), "2026-11-01T10:00:01Z")]))
+    assert next(e for e in built_in.events if e.kind == "tool_call").text == f"Grep {_brief(grep)}"
+
+
+def test_flightdeck_reads_the_team_harness(transcript: Path, tmp_path: Path) -> None:
+    if not FLATTEN.exists():
+        pytest.skip("flightdeck isn't checked out next to hangar")
+    spec = importlib.util.spec_from_file_location("fd_flatten", FLATTEN)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    trace = trace_import.import_transcript(transcript, manifest=_manifest(tmp_path / "proj")).trace
+    runs = mod.flatten_trace(trace)["runs"]
+    assert {(r["harness"], r["harness_digest"]) for r in runs} == {("work-default", "sha256:" + "a" * 64)}

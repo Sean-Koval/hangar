@@ -67,6 +67,12 @@ when a listed person added the label and moved it to the trigger status, by the 
   reads a local transcript with its subagents' transcripts, a cloud session's events or stream-json
   ([docs/api/trace-import.md](docs/api/trace-import.md)). A turn's usage sums its `result` lines; a cloud session's
   messages carry a streamed, short output count.
+- **`hangar trace import` names the team harness** (KAN-353). A session's `.claude/team-harness.json`, in its project
+  or `~/.claude`, sets each turn's `hangar.harness` and its revision, channel and digest, so flightdeck's specs for
+  that harness apply. It is read only when the session's directory is on this computer; `--manifest PATH` and
+  `--no-manifest` override it ([docs/api/trace-import.md](docs/api/trace-import.md#the-team-harness)).
+- **An MCP call's preview keeps the fields that name its target** (KAN-353), like a Jira issue's `summary`, ahead of a
+  long description, as a JSON object. This holds for hangar's own Claude Code runs and for imports.
 - **Per-call usage and subagent links in Claude Code events** (KAN-338). Each `usage` event carries its model call's
   own tokens (`call_*`, with the 5-minute and 1-hour cache writes) and `message_id`; a subagent's events carry
   `parent_id`. The trace adds a `model.call` span (`chat {model}`) per response and hangs a subagent's steps under its

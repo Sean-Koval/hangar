@@ -272,6 +272,22 @@ def _brief(args: Any) -> str:
     return _clip(_brief_source(args), BRIEF_MAX)
 
 
+# An MCP call's arguments that name what it acts on, in this order (KAN-353): a Jira create's summary, not its long
+# description, is what a spec's `input` regex matches
+_MCP_FIRST = ("summary", "title", "name", "issueIdOrKey", "issue_key", "key", "projectKey", "project_key",
+              "issueTypeName", "issue_type", "status", "query", "jql", "path", "url")
+
+
+def _mcp_source(args: Any) -> str:
+    """An MCP call's arguments as one JSON object: the naming fields first, then the rest shortest first, so a preview
+    keeps every short field instead of the first long one."""
+    if not isinstance(args, dict):
+        return _brief_source(args)
+    rest = sorted((k for k in args if k not in _MCP_FIRST), key=lambda k: len(json.dumps(args[k], default=str)))
+    keys = [k for k in _MCP_FIRST if k in args] + rest
+    return json.dumps({k: args[k] for k in keys}, ensure_ascii=False, default=str)
+
+
 def _text_of(content: Any) -> str:
     """Text of a tool result / message content, whichever shape the harness uses."""
     if isinstance(content, str):
@@ -452,7 +468,8 @@ class Parser:
             path = next((args[k] for k in ("file_path", "path", "TargetFile", "notebook_path", "AbsolutePath")
                          if isinstance(args.get(k), str)), None)
         self.tools[tid] = [name, path]
-        full = _brief_source(args)
+        mcp = name.startswith("mcp__")
+        full = _mcp_source(args) if mcp else _brief_source(args)
         clipped = True if len(full) > BRIEF_MAX else None  # the event text (and the trace's input) is a preview
         if name in _SHELL_TOOLS:
             # The trace's `hangar.shell.ops` come from the whole command: a test run or commit after the preview's
@@ -463,7 +480,7 @@ class Parser:
                             clipped=clipped)
         # --- interfaces: which subagent a Claude Code Task/Agent call starts (the trace's `subagent` span)
         sub = args.get("subagent_type") if name in ("Task", "Agent") and isinstance(args, dict) else None
-        return self._ev("tool_call", f"{name} {_brief(args)}".strip(), id=tid, tool=name, subagent=sub,
+        return self._ev("tool_call", f"{name} {_clip(full, BRIEF_MAX)}".strip(), id=tid, tool=name, subagent=sub,
                         clipped=clipped)
 
     def _tool_end(self, tid: str, ok: bool | None, output: Any, path: str | None = None, **data: Any) -> list[RunEvent]:

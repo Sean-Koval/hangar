@@ -14,8 +14,9 @@ Inputs, detected line by line:
 * stream-json itself.
 
 A turn starts at each prompt a person (or the platform) sent: a top-level `user` line that answers no tool call.
-Nothing is run and nothing is sent anywhere. Strings pass through secretscan's patterns, as hangar's outgoing text
-does; there are no stored credentials offline to mask.
+A team harness installed for the session (`.claude/team-harness.json`, KAN-353) names the turns' harness, so
+flightdeck's specs for that harness apply. Nothing is run and nothing is sent anywhere. Strings pass through
+secretscan's patterns, as hangar's outgoing text does; there are no stored credentials offline to mask.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from hangar.models import Session, SessionTurn, Usage
 
 KINDS = ("assistant", "user", "system", "result")
 HARNESS = "claude-code"
+MANIFEST = Path(".claude") / "team-harness.json"  # team-harness's install_local.py writes it (project or user scope)
 
 
 @dataclass
@@ -208,7 +210,41 @@ class Imported:
     trace: dict[str, Any]
 
 
-def import_transcript(path: Path, session_id: str | None = None) -> Imported:
+def find_manifest(cwd: str | None, home: Path | None = None) -> Path | None:
+    """The team harness installed for a session on this computer: the nearest `.claude/team-harness.json` in its
+    working directory or a parent (a project install), else the user's (`~/.claude/team-harness.json`). None when the
+    session's directory isn't on this computer (a cloud session, someone else's transcript): the importer's own
+    install says nothing about it."""
+    if not cwd or not Path(cwd).is_dir():
+        return None
+    start = Path(cwd).resolve()
+    for base in [start, *start.parents, home or Path.home()]:
+        f = base / MANIFEST
+        if f.is_file():
+            return f
+    return None
+
+
+def harness_attrs(manifest: Path) -> dict[str, Any]:
+    """A turn's harness attributes from team-harness's manifest: its name (what flightdeck's specs key on), revision,
+    channel and `harness_digest`. The agent CLI stays `gen_ai.agent.name`."""
+    try:
+        m = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{manifest}: not a readable team-harness manifest ({e})") from e
+    name = m.get("harness") if isinstance(m, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{manifest}: not a team-harness manifest (no harness name)")
+    rev, channel, digest = m.get("revision"), m.get("channel"), m.get("harness_digest")
+    return {"hangar.harness": name.strip(),
+            "hangar.harness.revision": rev if isinstance(rev, int) and not isinstance(rev, bool) else None,
+            "hangar.harness.channel": channel if isinstance(channel, str) else None,
+            "hangar.harness.digest": digest if isinstance(digest, str) else None}
+
+
+def import_transcript(path: Path, session_id: str | None = None, manifest: Path | None | bool = True) -> Imported:
+    """`manifest`: the team-harness manifest to stamp the turns with; True finds the installed one (find_manifest),
+    False or None stamps none (the turns' harness is then Claude Code's)."""
     objs = read_json(path)
     lines, fmts = _lines(objs, 0)
     for i, (f, tid, agent) in enumerate(subagents(path), 1):
@@ -270,7 +306,9 @@ def import_transcript(path: Path, session_id: str | None = None) -> Imported:
     for t in turns:
         t.events = [ev for ev in events if ev.turn == t.n]
         t.end = max([ev.ts for ev in t.events] + [t.start or 0.0]) or None
-    return Imported(sid, fmt, events, turns, _export(sid, fmt, turns, model, version, cwd, path))
+    found = find_manifest(cwd) if manifest is True else manifest or None
+    harness = harness_attrs(found) if found else {}
+    return Imported(sid, fmt, events, turns, _export(sid, fmt, turns, model, version, cwd, path, harness))
 
 
 def _stamp(ev: RunEvent, ln: Line, turn: Turn, sid: str) -> RunEvent:
@@ -302,7 +340,7 @@ def _turn_usage(t: Turn) -> tuple[Usage | None, str | None]:
 
 
 def _export(sid: str, fmt: str, turns: list[Turn], model: str | None, version: str | None, cwd: str | None,
-            path: Path) -> dict[str, Any]:
+            path: Path, harness: dict[str, Any] | None = None) -> dict[str, Any]:
     s = Session(id=sid, name=f"import-{sid}"[:100], environment="import", harness=HARNESS, model=model)
     extras: list[dict[str, Any]] = []
     for t in turns:
@@ -311,12 +349,13 @@ def _export(sid: str, fmt: str, turns: list[Turn], model: str | None, version: s
                                    harness_version=version, conversation=sid, started_at=t.start or t.end,
                                    finished_at=t.end, usage=u))
         extras.append({"hangar.usage.source": source,
-                       "hangar.usage.calls.output_tokens": t.calls.output_tokens if t.calls else None})
+                       "hangar.usage.calls.output_tokens": t.calls.output_tokens if t.calls else None,
+                       **(harness or {})})
     if s.turns:
         s.created_at = s.turns[0].started_at or s.created_at
         s.last_active_at = s.turns[-1].finished_at or s.last_active_at
     x = traces.Export(traces.trace_id(sid), redact)
-    root = traces.session_span(x, s, {"hangar.import.format": fmt})
+    root = traces.session_span(x, s, {"hangar.import.format": fmt, **(harness or {})})
     for n, (t, turn) in enumerate(zip(s.turns, turns, strict=True), 1):
         traces._turn_span(x, root["id"] if root else None, s, n, t, turn.events, extras[n - 1], root=cwd)
     return x.request({"hangar.export.scope": "session", "hangar.session.id": sid, "hangar.session.name": s.name,
