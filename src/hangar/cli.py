@@ -72,12 +72,22 @@ def login(
     url: str = typer.Argument(..., help="Your hangar, e.g. https://34.8.98.95.sslip.io"),
     token_file: Path | None = typer.Option(None, "--token-file", help="Read the token from a file "
                                            "(e.g. ~/.hangar/gke-admin-token) instead of a prompt."),
+    sso: bool = typer.Option(False, "--sso", help="Sign in through the team's identity provider in a browser "
+                             "(KAN-294); hangar mints this machine's token."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="With --sso: print the sign-in link and ask for "
+                                    "the code the page shows, for a machine without a browser."),
+    name: str = typer.Option("cli-sso", "--name", help="With --sso: the new token's name."),
 ):
     """Remember which hangar to use, so other commands work without HANGAR_URL/HANGAR_TOKEN.
 
-    The token is checked against the server, then saved to ~/.hangar/cli.json (mode 600)."""
+    The token is checked against the server, then saved to ~/.hangar/cli.json (mode 600). With --sso the token comes
+    from a sign-in at the identity provider instead of a paste."""
     url = url.rstrip("/")
-    token = (token_file.expanduser().read_text() if token_file else typer.prompt("API token", hide_input=True)).strip()
+    if sso:
+        token = _sso_token(url, no_browser, name)
+    else:
+        token = (token_file.expanduser().read_text() if token_file
+                 else typer.prompt("API token", hide_input=True)).strip()
     try:
         r = httpx.get(f"{url}/api/me", headers={"Authorization": f"Bearer {token}"}, timeout=20)
     except httpx.HTTPError as e:
@@ -94,6 +104,74 @@ def login(
     os.chmod(cfg, 0o600)
     who = r.json().get("actor") or "ok"
     typer.secho(f"logged in to {url} as {who}; saved to {cfg}", fg="green")
+
+
+def _sso_token(url: str, no_browser: bool, name: str) -> str:
+    """--- KAN-294: a token from `hangar login --sso`. The browser signs in at the provider through hangar, which hands
+    a one-use code to a listener on 127.0.0.1 (or shows it, with --no-browser); the code is worth a token only with
+    the PKCE verifier this process holds."""
+    import base64
+    import hashlib
+    import secrets
+    import threading
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlencode, urlsplit
+
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    got: dict[str, str] = {}
+    done = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server's name
+            u = urlsplit(self.path)
+            code = parse_qs(u.query).get("code", [""])[0]
+            ok = u.path == "/sso" and code.startswith("hgc_")
+            if ok:
+                got["code"] = code
+                done.set()
+            body = b"Signed in to hangar. You can close this tab." if ok else b"Not a hangar sign-in."
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):  # quiet
+            pass
+
+    server = None
+    port = 0
+    if not no_browser:
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    link = f"{url}/auth/sso/login?{urlencode({'cli_port': port, 'cli_challenge': challenge})}"
+    try:
+        if no_browser:
+            typer.echo(f"Open this link in a browser and sign in:\n\n    {link}\n")
+            got["code"] = typer.prompt("Code from the page").strip()
+        else:
+            typer.echo(f"Opening your browser to sign in. If it doesn't open, go to:\n\n    {link}\n")
+            webbrowser.open(link)
+            if not done.wait(300):
+                typer.secho("no sign-in within 5 minutes; run hangar login --sso again", fg="red", err=True)
+                raise typer.Exit(1)
+    finally:
+        if server is not None:
+            server.shutdown()
+    try:
+        r = httpx.post(f"{url}/auth/sso/cli/token", json={"code": got["code"], "verifier": verifier, "name": name},
+                       timeout=20)
+    except httpx.HTTPError as e:
+        typer.secho(f"can't reach {url}: {e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+    if r.status_code != 200:
+        msg = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else r.text
+        typer.secho(f"{url} refused the sign-in: {msg}", fg="red", err=True)
+        raise typer.Exit(1)
+    return r.json()["token"]
 
 
 @app.command("logout")

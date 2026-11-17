@@ -192,6 +192,7 @@ class ApiToken(BaseModel):
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
     person: str | None = None  # --- identity: who it belongs to; None: people.OWNER (tokens minted before people)
+    expires_at: float | None = None  # --- KAN-294: an SSO console session's token stops working at this time
 
 
 # ---------------------------------------------------------------------------- --- identity: people (people.py)

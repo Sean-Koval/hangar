@@ -271,6 +271,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
 
     out += codex_plugins.doctor_checks(h)
     out += mcp_checks(h)  # --- #140: both MCP servers
+    from hangar import sso  # --- KAN-294: the provider, and the break-glass token in use
+
+    out += await sso.doctor_checks(h)
     await asyncio.sleep(0)
     return out
 

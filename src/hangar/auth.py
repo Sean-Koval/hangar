@@ -101,6 +101,9 @@ class TokenAuth:
         self.store = store
         self._admin_hash = hash_token(admin_token) if admin_token else None
         self._tickets: dict[str, tuple[str, float]] = {}
+        # --- KAN-294: with SSO on (sso.Gate), whether a person's tokens still work: refused once the identity
+        # provider dropped them, or while hangar hasn't heard from it for too long. None: SSO is off.
+        self.gate: Callable[[str, ApiToken | None], bool] | None = None
 
     # Browsers can't set headers on WebSocket/EventSource, so the dashboard trades its token
     # for a single-use ticket that lives 60s. Tickets (unlike tokens) are safe to put in URLs/logs.
@@ -164,6 +167,10 @@ class TokenAuth:
 
         person = people.get(self.store, people.token_person(tok.person if tok else None))
         if person is None:
+            return None
+        if tok is not None and tok.expires_at is not None and tok.expires_at <= now():  # --- KAN-294
+            return None
+        if self.gate is not None and not self.gate(person.id, tok):  # --- KAN-294
             return None
         if tok is None:
             return Principal("admin", "admin", ["admin"], person=person.id, role=person.role)
