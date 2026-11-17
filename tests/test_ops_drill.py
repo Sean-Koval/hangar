@@ -64,6 +64,7 @@ def test_restore_drill_passes_on_a_seeded_database(tmp_path: Path):
     rep = json.loads(out.read_text())
     assert rep["ok"] and rep["restore_seconds"] > 0
     assert rep["rows"]["jobs"] == 3 and rep["rows"]["sessions"] == 2 and rep["rows"]["secrets"] == 1
+    assert rep["loaded"]["pin_sets_checked"] == 1  # a seeded pin set still matches its id
     assert {c["check"] for c in rep["checks"]} >= {"SQLite integrity check", "the restore was applied at start"}
 
 
@@ -73,7 +74,8 @@ def test_restore_drill_copies_an_install_and_never_writes_to_it(tmp_path: Path, 
     out = tmp_path / "report.json"
     assert drill.main(["restore", "--data-dir", str(data), "--out", str(out)]) == 0
     assert json.loads(out.read_text())["rows"]["jobs"] == 1
-    assert {p.name: _sha(p) for p in data.iterdir() if p.is_file() and p.name in before} == before
+    # Nothing changed and nothing was added (no -wal or -shm beside the database either).
+    assert {p.name: _sha(p) for p in data.iterdir()} == before
 
 
 def test_restore_drill_fails_on_a_record_hangar_cant_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -84,8 +86,11 @@ def test_restore_drill_fails_on_a_record_hangar_cant_read(tmp_path: Path, monkey
     con.close()
     out = tmp_path / "report.json"
     assert drill.main(["restore", "--data-dir", str(data), "--out", str(out)]) == 1
-    bad = [c for c in json.loads(out.read_text())["checks"] if not c["ok"]]
-    assert len(bad) == 1 and any("jobs/broken" in e for e in bad[0]["detail"])
+    bad = {c["check"]: c.get("detail") for c in json.loads(out.read_text())["checks"] if not c["ok"]}
+    load = bad.pop("every record loads, every secret decrypts, pin sets match their ids")
+    assert any("jobs/broken" in e for e in load)
+    assert bad == {"hangar read as many records of each kind as were backed up":
+                   {"jobs": {"backed_up": 2, "loaded": 1}}}
 
 
 def test_restore_drill_refuses_an_install_without_its_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

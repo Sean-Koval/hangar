@@ -20,7 +20,7 @@ directory, as `hangar admin restore` and the next start do. Then it checks four 
 1. Every table holds exactly the rows it held at the backup.
 2. SQLite's integrity check passes.
 3. Every record loads, every vault secret decrypts, and every pin set still matches its id.
-4. hangar applied the restore when it started.
+4. hangar applied the restore when it started, and nothing went missing in the start.
 
 The report records how long the restore took. The vault key comes from `HANGAR_SECRET_KEY`, else the data
 directory's `secret.key`, as Secret Manager would hold it.
@@ -37,7 +37,8 @@ It follows [upgrading.md](../upgrading.md) on the previous tag's database:
 1. The previous tag seeds the database and takes the pre-upgrade backup.
 2. The candidate starts on it, which runs the migrations, and must read every record with nothing lost.
 3. The candidate writes records of its own.
-4. **Rollback in place:** the previous tag starts on the migrated database and reads every record.
+4. **Rollback in place:** the previous tag starts on the migrated database and reads every record. Its rows
+   may be rewritten, so this compares keys: no record may go missing.
 5. **Rollback by restore:** the previous tag restores the pre-upgrade backup, which must match the database
    before the upgrade.
 

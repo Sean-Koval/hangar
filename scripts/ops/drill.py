@@ -47,9 +47,17 @@ WORKTREE = "WORKTREE"
 
 
 # --------------------------------------------------------------------------- pure SQLite: any version, no hangar
+def _ro(db: Path) -> sqlite3.Connection:
+    """Open read-only. With no WAL beside it, `immutable=1`, so SQLite creates no -wal or -shm in that directory either;
+    a live install's WAL holds commits the main file lacks, so then `mode=ro`, which reads them."""
+    if Path(f"{db}-wal").exists():
+        return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    return sqlite3.connect(f"file:{db}?immutable=1", uri=True)
+
+
 def fingerprint(db: Path) -> dict[str, dict[str, Any]]:
     """Each table's row count, keys and a digest of every row, read without hangar's code."""
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = _ro(db)
     try:
         tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' "
                                             "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
@@ -78,7 +86,7 @@ def _plain(v: Any) -> Any:
 
 
 def integrity(db: Path) -> str:
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = _ro(db)
     try:
         return con.execute("PRAGMA integrity_check").fetchone()[0]
     finally:
@@ -110,7 +118,7 @@ def same(before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]) ->
 def copy_db(src: Path, dest: Path) -> None:
     """A consistent copy of a live database, opened read-only, so the drill never writes to it."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    s = _ro(src)
     d = sqlite3.connect(str(dest))
     try:
         s.backup(d)
@@ -153,22 +161,36 @@ def step_seed(data_dir: Path, tag: str) -> dict[str, Any]:
     ]
     for r in recs:
         h.store.put(r)
+    pins = _seed_pin(h, tag)
     h.vault.put(f"drill-{tag}", f"not a real secret ({tag})")
     h.store.audit(AuditEvent(actor="drill", action="drill.seed", target=tag))
-    return {"records": len(recs), "secrets": 1, "audit": 1}
+    return {"records": len(recs) + pins, "pin_sets": pins, "secrets": 1, "audit": 1}
 
 
-def step_load(data_dir: Path, apply: bool = True) -> dict[str, Any]:
-    """Start hangar on the database (a staged restore applied first, as create_app does), then read everything."""
+def _seed_pin(h: Any, tag: str) -> int:
+    """A pin set, stored as pinsets.put stores one (its id is the hash of its body), where the version has them."""
+    try:
+        from hangar.pinsets import PinSet, PinSetBody, pin_id
+    except ImportError:
+        return 0
+    body = PinSetBody(harness="claude", environment="python", environment_spec_digest=f"sha256:drill-{tag}",
+                      egress_digest=f"sha256:drill-{tag}")
+    h.store.put(PinSet(id=pin_id(body), created_by="drill", **body.model_dump()))
+    return 1
+
+
+def step_load(data_dir: Path) -> dict[str, Any]:
+    """Start hangar on the database as the server does (`create_app`, which applies a staged restore first and runs
+    the migrations), then read everything."""
     from hangar import store as store_mod
+    from hangar.app import create_app
+    from hangar.config import Settings
 
-    applied = None
-    if apply:
-        from hangar.backup import apply_pending
-        from hangar.config import Settings
-
-        applied = apply_pending(Settings(data_dir=data_dir))
-    h = _hangar(data_dir)
+    pending = data_dir / "restore-pending.db"
+    staged = pending.is_file()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    h = create_app(Settings(data_dir=data_dir)).state.hangar
+    applied = staged and not pending.exists() and (data_dir / "hangar.db").is_file()
     con = sqlite3.connect(f"file:{data_dir / 'hangar.db'}?mode=ro", uri=True)
     errors: list[str] = []
     kinds: dict[str, int] = {}
@@ -177,13 +199,16 @@ def step_load(data_dir: Path, apply: bool = True) -> dict[str, Any]:
         for cls, (table, _) in store_mod._TABLES.items():
             keys = [r[0] for t in (table, f"{table}_archive") if t in tables
                     for r in con.execute(f'SELECT key FROM "{t}"')]
+            ok = 0
             for k in keys:
                 try:
                     if h.store.get(cls, k) is None:
                         errors.append(f"{table}/{k}: missing")
+                    else:
+                        ok += 1
                 except Exception as e:  # noqa: BLE001 - reported, not raised: the drill lists every failure
                     errors.append(f"{table}/{k}: {type(e).__name__}: {str(e)[:200]}")
-            kinds[table] = len(keys)
+            kinds[table] = ok  # live and archived records that loaded
         names = [r[0] for r in con.execute("SELECT name FROM secrets")]
     finally:
         con.close()
@@ -341,6 +366,7 @@ def restore_drill(data_dir: Path | None, work: Path) -> dict[str, Any]:
     staged = fingerprint(from_backup)
     loaded = d.run("load", src, clean, label="start hangar on it and read everything")
     rto = round(time.monotonic() - t, 3)
+    after = fingerprint(clean / "hangar.db")
 
     _check(report, "the restored database holds exactly the rows backed up", not same(before, staged),
            same(before, staged))
@@ -348,6 +374,11 @@ def restore_drill(data_dir: Path | None, work: Path) -> dict[str, Any]:
     _check(report, "every record loads, every secret decrypts, pin sets match their ids", not loaded["errors"],
            loaded["errors"][:20])
     _check(report, "the restore was applied at start", bool(loaded["applied_restore"]))
+    _check(report, "after the start, nothing backed up is missing", not lost(before, after), lost(before, after))
+    backed = {t: before.get(t, {}).get("rows", 0) + before.get(f"{t}_archive", {}).get("rows", 0)
+              for t in loaded["kinds"]}
+    short = {t: {"backed_up": n, "loaded": loaded["kinds"][t]} for t, n in backed.items() if loaded["kinds"][t] < n}
+    _check(report, "hangar read as many records of each kind as were backed up", not short, short)
     rows = {t: v["rows"] for t, v in before.items() if v["rows"]}
     report.update(backup={k: b[k] for k in ("name", "db_bytes", "stored_bytes", "seconds")}, rows=rows,
                   loaded={k: loaded[k] for k in ("secrets", "pin_sets_checked", "audit")},
@@ -397,7 +428,8 @@ def upgrade_drill(from_ref: str, to_ref: str, work: Path, data_dir: Path | None 
     back = d.run("load", old, data, label=f"{from_ref}: roll back in place and read everything")
     _check(report, f"rollback in place: {from_ref} reads every record, {to_ref}'s included", not back["errors"],
            back["errors"][:20])
-    _check(report, "rollback in place: nothing was lost", not lost(fp2, fingerprint(data / "hangar.db")),
+    # Keys only: the older version may rewrite a record it reads, so its rows can differ; none may go missing.
+    _check(report, "rollback in place: no record went missing", not lost(fp2, fingerprint(data / "hangar.db")),
            lost(fp2, fingerprint(data / "hangar.db")))
 
     shutil.move(str(data), str(work / "after-upgrade"))
@@ -449,7 +481,9 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: {e}", file=sys.stderr)
         return 1
     finally:
-        if not a.keep:
+        if a.keep:
+            print(f"kept {work}", file=sys.stderr)
+        else:
             shutil.rmtree(work, ignore_errors=True)
     rep["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     print(render(rep))
