@@ -58,6 +58,20 @@ def resolve(req: JobBudget | None, policy: RepoPolicy | None, settings: Any, def
     return merge(req, policy.job_budget if policy else None, base)
 
 
+def ceiling(job_budget: JobBudget | None, cap: JobBudget | None) -> JobBudget | None:
+    """KAN-290: per field, the lower of the job's and the cap's, so a caller can lower the repo policy's or the
+    deploy's job budget but not raise it. A field the cap leaves unset stays the job's."""
+    if cap is None:
+        return job_budget
+    if job_budget is None:
+        return cap
+    vals: dict[str, Any] = {}
+    for f in JobBudget.model_fields:
+        j, c = getattr(job_budget, f), getattr(cap, f)
+        vals[f] = c if j is None else j if c is None else min(j, c)
+    return JobBudget(**vals)
+
+
 # ====================================================================== what a job has used
 class Spent(NamedTuple):
     cost_usd: float
@@ -295,6 +309,24 @@ def caps(svc: JobService, repo: str | None, person: str | None = None) -> list[C
 
 def _usd(v: float) -> str:
     return f"${v:,.2f}" if v >= 0.1 else f"${v:.4f}"
+
+
+def headroom(svc: JobService, repo: str | None, person: str | None = None) -> float | None:
+    """KAN-290: the least left across the work's caps (caps()), or None when nothing caps it."""
+    left = [c.limit_usd - c.spent_usd for c in caps(svc, repo, person)]
+    return min(left) if left else None
+
+
+def within(job_budget: JobBudget | None, room: float | None) -> JobBudget | None:
+    """KAN-290: the job budget with its cost lowered to `room`, what is left of its caps when it is admitted, so one
+    job can't spend past a daily cap it started under. Spent caps (room <= 0) are left to the approval hold."""
+    if room is None or room <= 0:
+        return job_budget
+    if job_budget is None:
+        return JobBudget(max_cost_usd=room)
+    if job_budget.max_cost_usd is not None and job_budget.max_cost_usd <= room:
+        return job_budget
+    return job_budget.model_copy(update={"max_cost_usd": room})
 
 
 def over_daily(svc: JobService, repo: str | None, person: str | None = None) -> str | None:

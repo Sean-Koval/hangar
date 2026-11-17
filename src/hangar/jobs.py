@@ -434,10 +434,27 @@ class JobService:
         # --- front-door-auth: every front door's submissions are rate limited, capped and audited when refused
         with self.admission.refusals(caller, source):
             self.admission.admit(req, caller, source, untrusted=approval is not None)
-            return self._submit(req, caller, source, source_ref, approval, untrusted_source)
+            return self._submit(req, caller, source, source_ref, approval, untrusted_source,
+                                raise_budget=self._may_raise_job_budget(caller))
+
+    def _may_raise_job_budget(self, caller: Caller) -> bool:
+        """KAN-290: only an admin's own submission may ask for more than the repo policy's or the deploy's job
+        budget. A jobs-scoped token, a front door acting for a sender, and a member are held to it. A caller with no
+        person and no restriction is the server's admin token or hangar itself."""
+        if caller.restricted:
+            return False
+        if caller.person is None:
+            return True
+        from hangar import people
+
+        p = people.get(self.store, caller.person)
+        return p is not None and p.role == "admin"
 
     def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
-                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
+                approval: JobApproval | None = None, untrusted_source: str | None = None,
+                raise_budget: bool = True) -> Job:
+        """`raise_budget`: False holds the job's own budget to the policy's or the deploy's (submit() decides; hangar's
+        own child jobs, submitted here directly, carry budgets hangar chose)."""
         req = normalize_repo(req)  # --- KAN-136: owner/name is a GitHub clone URL; refused here if unresolvable
         requester = caller.requester
         if req.idempotency_key:  # --- durable: the store's index, so a retry months later still finds its job
@@ -519,8 +536,16 @@ class JobService:
         attempts = strategies.check_submit(req, self.settings.best_of_n_max, policy)
         # --- frontdoor; KAN-290: an env-setup job's own default (HANGAR_ENV_SETUP_MAX_COST_USD, autoinstall._begin)
         # wins over HANGAR_JOB_BUDGET_*, which the deploys now set lower than a setup needs
-        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings,
-                                       defaults=req.labels.get("hangar.kind") != "env-setup")
+        setup = req.labels.get("hangar.kind") == "env-setup"
+        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings, defaults=not setup)
+        experiment = req.labels.get(experiments.KIND_LABEL) == experiments.KIND
+        if not raise_budget and req.job_budget is not None and not experiment:
+            # KAN-290: a ceiling, not a default. An env setup's is HANGAR_ENV_SETUP_* (autoinstall._begin)
+            cap = jobbudget.resolve(None, policy, self.settings, defaults=not setup)
+            if setup:
+                cap = jobbudget.merge(cap, JobBudget(max_cost_usd=self.settings.env_setup_max_cost_usd,
+                                                     max_turns=self.settings.env_setup_max_turns))
+            job_budget = jobbudget.ceiling(job_budget, cap)
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
             raise JobError(why)
         repo = req.repo or (spec.repo.url if spec.repo else None)
@@ -587,6 +612,10 @@ class JobService:
             from hangar.triggers import new_approval
 
             approval = job.approval = new_approval(self, requester, f"budget: {over}")
+        if not setup and not experiment:
+            # --- KAN-290: no more than what is left of its daily and monthly caps (an env setup's and an
+            # experiment's own children are each held to it as they are submitted)
+            job.job_budget = jobbudget.within(job.job_budget, jobbudget.headroom(self, repo, caller.person))
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
         job.sequential = strategies.sequential_for(req, policy)  # --- KAN-231
         taint.seed_job(job)  # --- taint (#129): untrusted task text or context: tainted from turn 1

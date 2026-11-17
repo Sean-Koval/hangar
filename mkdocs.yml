@@ -315,6 +315,7 @@ nav:
           - GKE capacity for 60 sessions: team-scale/gke-capacity.md
           - What 60 sessions cost on GKE: team-scale/cost.md
           - The heavy tier at team scale: team-scale/heavy-tier.md
+          - Spend guardrails: team-scale/spend-guardrails.md
       - The Cloud Doctor: doctor.md
       - MicroVM tier (E2B, CubeSandbox; experimental):
           - microvm.md

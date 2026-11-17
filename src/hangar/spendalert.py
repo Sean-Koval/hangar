@@ -80,6 +80,8 @@ def spent_today_by(svc: JobService, since: float | None = None) -> tuple[dict[st
 def levels(settings: Any) -> list[int]:
     """HANGAR_SPEND_ALERT_AT as whole percents, ascending; shares outside (0, 1] are ignored."""
     raw = getattr(settings, "spend_alert_at", None) or []
+    if bad := [x for x in raw if not 0 < float(x) <= 1]:  # `80` for 0.8 would turn that alert off: say so
+        log.warning("HANGAR_SPEND_ALERT_AT %s: shares are between 0 and 1 (0.8 for 80%%); ignoring them", bad)
     return sorted({round(float(x) * 100) for x in raw if 0 < float(x) <= 1})
 
 

@@ -62,11 +62,12 @@ def test_the_default_repo_cap_counts_against_a_repo_with_no_policy(jobs, clean):
 
 
 async def test_a_repo_over_the_default_cap_holds_new_work(jobs, world, clean):  # noqa: F811
-    jobs.settings.repo_max_usd_per_day = 0.002
     submit = lambda: jobs.submit(SubmitJob(instructions="make fix.txt say good", repo=world["url"],  # noqa: E731
                                            environment="seamenv"), Caller("svc", "svc"))
-    first = await until(jobs, submit().id, DONE)
-    assert first.state == JobState.SUCCEEDED  # admitted under the cap; it spent $0.003
+    first = submit()  # admitted before the cap, so its budget isn't lowered to what is left of it
+    jobs.settings.repo_max_usd_per_day = 0.002
+    first = await until(jobs, first.id, DONE)
+    assert first.state == JobState.SUCCEEDED  # it spent $0.003
     held = submit()
     assert held.state == JobState.AWAITING_APPROVAL and "daily cap is spent" in held.approval.reason
     jobs.cancel(held.id, "t")
@@ -100,6 +101,88 @@ async def test_an_env_setup_submission_skips_the_deploys_job_budget(jobs, world,
             jobs.cancel(j.id, "t")
 
 
+# ====================================================================== a job budget is a ceiling, and fits the caps
+def test_a_job_budget_can_lower_the_ceiling_but_not_raise_it():
+    cap = JobBudget(max_cost_usd=5, max_turns=10)
+    assert jobbudget.ceiling(JobBudget(max_cost_usd=5000), cap) == JobBudget(max_cost_usd=5, max_turns=10)
+    assert jobbudget.ceiling(JobBudget(max_cost_usd=2, max_tokens=900), cap) == JobBudget(
+        max_cost_usd=2, max_tokens=900, max_turns=10)
+    assert jobbudget.ceiling(JobBudget(max_cost_usd=9), None) == JobBudget(max_cost_usd=9)
+    assert jobbudget.ceiling(None, cap) == cap
+
+
+def test_a_job_budget_fits_what_is_left_of_its_caps():
+    assert jobbudget.within(None, 3.0) == JobBudget(max_cost_usd=3.0)
+    assert jobbudget.within(JobBudget(max_cost_usd=5, max_turns=4), 2.0) == JobBudget(max_cost_usd=2.0, max_turns=4)
+    assert jobbudget.within(JobBudget(max_cost_usd=1), 2.0) == JobBudget(max_cost_usd=1)
+    assert jobbudget.within(JobBudget(max_cost_usd=5), None) == JobBudget(max_cost_usd=5)  # nothing caps it
+    assert jobbudget.within(JobBudget(max_cost_usd=5), 0.0) == JobBudget(max_cost_usd=5)  # spent: the hold's job
+
+
+def test_headroom_is_the_least_left_across_the_caps(jobs, clean):  # noqa: F811
+    assert jobbudget.headroom(jobs, REPO, "alice") is None
+    jobs.settings.person_max_usd_per_day, jobs.settings.repo_max_usd_per_day = 20.0, 40.0
+    _session(jobs, 15.0, person="alice")
+    assert jobbudget.headroom(jobs, REPO, "alice") == pytest.approx(5.0)  # the person's $5, not the repo's $25
+    assert jobbudget.headroom(jobs, REPO, "bob") == pytest.approx(20.0)  # bob's own $20, not the repo's $25 left
+
+
+@pytest.fixture
+def members(jobs):  # noqa: F811
+    people.add(jobs.store, "mem", role="member")
+    people.add(jobs.store, "boss", role="admin")
+    yield
+    for pid in ("mem", "boss"):
+        people.remove(jobs.store, pid)
+
+
+async def test_only_an_admin_may_ask_for_more_than_the_deploys_job_budget(jobs, world, clean, members):  # noqa: F811
+    jobs.settings.job_budget_max_cost_usd = 5
+    made = []
+    try:
+        def submit(caller: Caller, usd: float):
+            made.append(j := jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                                   deliver="none", job_budget=JobBudget(max_cost_usd=usd)), caller))
+            return j.job_budget.max_cost_usd
+
+        assert submit(Caller("mem", "tok-mem", person="mem"), 5000) == 5  # held to the deploy's $5
+        assert submit(Caller("mem", "tok-mem", person="mem"), 2) == 2  # lowering it is fine
+        assert submit(Caller("boss", "tok-boss", person="boss"), 50) == 50  # an admin's own ask
+        assert submit(Caller("admin", "admin"), 50) == 50  # the server's admin token
+        assert not jobs._may_raise_job_budget(Caller("boss", "tok", restricted=True, person="boss"))  # a jobs token
+        assert not jobs._may_raise_job_budget(Caller("x", "tok", person="nobody"))  # a person hangar doesn't know
+        update(jobs, PolicyUpdate(repo=world["url"], job_budget=JobBudget(max_cost_usd=12)), "admin")
+        assert submit(Caller("mem", "tok-mem", person="mem"), 5000) == 12  # the repo policy's is the ceiling
+    finally:
+        jobs.settings.job_budget_max_cost_usd = None
+        update(jobs, PolicyUpdate(repo=world["url"], job_budget=None), "admin")
+        for j in made:
+            jobs.cancel(j.id, "t")
+
+
+async def test_a_new_job_can_spend_only_what_is_left_of_its_daily_caps(jobs, world, clean, members):  # noqa: F811
+    jobs.settings.job_budget_max_cost_usd = 5
+    jobs.settings.person_max_usd_per_day = 20.0
+    _session(jobs, 18.0, person="mem")
+    made = []
+    try:
+        made.append(j := jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                               deliver="none"), Caller("mem", "tok-mem", person="mem")))
+        assert j.job_budget.max_cost_usd == pytest.approx(2.0)  # $18 of $20 spent: $2 left, under the $5 budget
+        made.append(j := jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                               deliver="none", job_budget=JobBudget(max_cost_usd=500)),
+                                     Caller("boss", "tok-boss", person="boss")))
+        assert j.job_budget.max_cost_usd == 20  # an admin may raise the job budget, but not past their own $20 cap
+        _session(jobs, 3.0, person="mem")  # $21: spent
+        made.append(j := jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                               deliver="none"), Caller("mem", "tok-mem", person="mem")))
+        assert j.state == JobState.AWAITING_APPROVAL and j.job_budget.max_cost_usd == 5  # held; an approver decides
+    finally:
+        jobs.settings.job_budget_max_cost_usd = None
+        for j in made:
+            jobs.cancel(j.id, "t")
+
+
 # ====================================================================== the alerts
 def test_spend_today_is_counted_by_repo_and_by_person(jobs, clean):  # noqa: F811
     _session(jobs, 1.0, person="alice")
@@ -112,9 +195,10 @@ def test_spend_today_is_counted_by_repo_and_by_person(jobs, clean):  # noqa: F81
     assert by_person["alice"] == pytest.approx(jobbudget.person_spent_today(jobs, "alice"))
 
 
-def test_levels_ignore_shares_outside_zero_to_one():
+def test_levels_ignore_shares_outside_zero_to_one(caplog):
     assert spendalert.levels(Settings()) == [80, 100]
     assert spendalert.levels(Settings(spend_alert_at=[1.0, 0.5, 0, 2])) == [50, 100]
+    assert "shares are between 0 and 1" in caplog.text  # a typo like 80 is said, not silently dropped
     assert spendalert.levels(Settings(spend_alert_at=[])) == []
 
 

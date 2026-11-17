@@ -144,7 +144,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "steering/uid-split.md": (1386, 11, MOVED.format("steering.md") + "split it by question"),
     "steering/harness-settings.md": (1157, 13, MOVED.format("steering.md") + "split it by question"),
     "streaming.md": (1095, 23, LATER + "the stream, the replay"),
-    "team-scale.md": (1271, 13, LATER + "sizing, caps, the reconciler"),
+    "team-scale.md": (1242, 13, LATER + "sizing, caps, the reconciler"),
     "team-scale/load-test.md": (1012, 24, MOVED.format("team-scale.md") + "split it by question"),
     "team-scale/gke-capacity.md": (1373, 26, MOVED.format("team-scale.md") + "split it by question"),
     "team-scale/cost.md": (515, 12, MOVED.format("team-scale.md") + "split it by question"),
