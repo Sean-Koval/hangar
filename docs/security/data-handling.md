@@ -15,7 +15,7 @@ This page is for the reviewer who asks what hangar keeps, for how long, and how 
 
 ## Audit retention
 
-The audit table has its own setting, `HANGAR_AUDIT_RETENTION_DAYS`, separate from jobs and sessions. Each retention
+`HANGAR_AUDIT_RETENTION_DAYS` is separate from jobs and sessions. Each retention
 sweep deletes the oldest rows past it. `0` keeps every entry.
 
 Keep it at or below the audit bucket's `audit_retention_days`, so the bucket is the longer record.
@@ -23,16 +23,17 @@ Keep it at or below the audit bucket's `audit_retention_days`, so the bucket is 
 ## The audit chain
 
 Each audit row carries an HMAC of its own content and of the row before it. The key is in the vault, not the
-database. A row a purge rewrote carries an HMAC of its new content. The log line of every entry carries its `seq`
-and `hash`.
+database. A row a purge rewrote carries an HMAC of its new content. Every entry's log line carries its `seq` and
+`hash`.
 
 Retention keeps the last deleted row's link as an anchor. The same step writes an `audit.pruned` entry carrying that
 anchor, so the chain vouches for where it starts.
 
+The chain assumes a single hangar process writes the database.
+
 ### What doctor proves
 
-`hangar doctor` walks the chain and names the first broken row. It is a quick check; the audit bucket is the
-record. It catches someone holding only the database who:
+`hangar doctor` walks the chain and names the first broken row. The audit bucket remains the record. It catches someone holding only the database who:
 
 - edits, inserts, reorders or removes a row anywhere but at the end;
 - deletes the oldest rows and writes a new anchor;
@@ -68,7 +69,7 @@ their sessions with checkpoints, artifacts and event logs, and their jobs, sched
 Their sandbox records, snapshots, flight records, SSO binding and spend alerts' marks go too, then the person.
 
 Their audit entries stay. Their id, tokens and linked accounts are replaced with one stand-in, `person:` and a hash.
-The stand-in is the same in every entry, so a reviewer can still follow what they did. Its salt is in the vault, so
+It is the same in every entry, so a reviewer can still follow them. Its salt is in the vault, so
 the database alone can't confirm a guessed name.
 
 Names are replaced in `actor`, `target` and detail fields such as `person`. Elsewhere, only a value that is the name
@@ -79,8 +80,8 @@ A purge refuses while the person has live work: a running session or job, a sand
 
 Jobs and sessions their tokens or linked accounts own go too, as do session files still waiting for the outbox.
 
-The audit entries are rewritten before anything is deleted. If a step fails, or a record of theirs appears meanwhile,
-the person stays; run it again.
+After their tokens and links, it rewrites their audit entries before deleting any other record. If a step fails, or a record of theirs
+appears meanwhile, the person stays; run it again.
 
 The purge itself is audited (`admin.purge`) under the stand-in.
 
