@@ -53,7 +53,10 @@ def main(argv: list[str]) -> int:
         print(f"release check: {p}", file=sys.stderr)
     if problems:
         return 1
-    print(notes)
+    try:
+        print(notes)
+    except BrokenPipeError:  # `| head`: the reader left; nothing is wrong with the tag
+        sys.stderr.close()
     return 0
 
 

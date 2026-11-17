@@ -14,6 +14,8 @@
 # CI and deployment: the checks a merge waits on, and what runs in the cluster.
 /.github/                          @Sean-Koval
 /scripts/ci/                       @Sean-Koval
+/scripts/ops/                      @Sean-Koval
+/scripts/release_check.py          @Sean-Koval
 /deploy/                           @Sean-Koval
 
 # Sandboxing and isolation: the boundary between the agent and the control plane.

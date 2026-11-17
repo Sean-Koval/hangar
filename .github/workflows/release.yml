@@ -44,7 +44,17 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
     steps:
+      # A manual run uses release.yml from the ref it was started on; only main's carries this gate as reviewed. A
+      # changed branch could drop this step too: the binding control is the v* tag ruleset (docs/releases/README.md).
+      - name: The workflow is main's
+        if: github.event_name != 'push' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::run release.yml from main, not ${GITHUB_REF}"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: refs/tags/${{ env.TAG }}
@@ -54,8 +64,12 @@ jobs:
       - name: The tag matches the version and the changelog
         id: changelog
         run: |
-          # A tag made before the checklist has no release_check.py: publishing it again (workflow_dispatch) skips it.
-          if [ ! -f scripts/release_check.py ]; then echo "::warning::$TAG predates the release checklist"; exit 0; fi
+          # A tag from before the checklist has no release_check.py. Only one already released may skip it, to be
+          # published again; a new tag on an old commit fails here.
+          if [ ! -f scripts/release_check.py ]; then
+            gh release view "$TAG" >/dev/null 2>&1 || { echo "::error::$TAG predates the checklist and was never released"; exit 1; }
+            echo "::warning::publishing $TAG again; it predates the checklist"; exit 0
+          fi
           python3 scripts/release_check.py "$TAG" > changelog.md
           echo "notes=true" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -64,9 +78,6 @@ jobs:
           name: changelog
           path: changelog.md
       - name: CI passed on the tagged commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
         run: |
           sha=$(git rev-parse HEAD)
           n=$(gh run list --workflow ci.yml --commit "$sha" --status success --json databaseId --jq length)
@@ -77,7 +88,10 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: The restore drill, the upgrade from the previous tag and both rollbacks
         run: |
-          if [ ! -f scripts/ops/drill.py ]; then echo "::warning::$TAG predates the drills"; exit 0; fi
+          if [ ! -f scripts/ops/drill.py ]; then
+            gh release view "$TAG" >/dev/null 2>&1 || { echo "::error::$TAG predates the drills and was never released"; exit 1; }
+            echo "::warning::publishing $TAG again; it predates the drills"; exit 0
+          fi
           uv sync --locked
           uv run python scripts/ops/drill.py restore --out restore.json
           # The newest earlier release tag; a pre-release (vX.Y.Z-rc.1) is not one to upgrade from.
