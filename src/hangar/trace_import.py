@@ -214,11 +214,17 @@ def find_manifest(cwd: str | None, home: Path | None = None) -> Path | None:
     """The team harness installed for a session on this computer: the nearest `.claude/team-harness.json` in its
     working directory or a parent (a project install), else the user's (`~/.claude/team-harness.json`). None when the
     session's directory isn't on this computer (a cloud session, someone else's transcript): the importer's own
-    install says nothing about it."""
+    install says nothing about it. The user's install counts only for a directory inside the importer's home: a
+    path such as `/home/user/repo` or `/` exists on many machines, so a transcript from one of them is not the
+    importer's own session."""
     if not cwd or not Path(cwd).is_dir():
         return None
     start = Path(cwd).resolve()
-    for base in [start, *start.parents, home or Path.home()]:
+    user = (home or Path.home()).resolve()
+    bases = [start, *start.parents]
+    if start.is_relative_to(user):
+        bases.append(user)
+    for base in bases:
         f = base / MANIFEST
         if f.is_file():
             return f

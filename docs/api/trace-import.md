@@ -32,9 +32,9 @@ whole command, and clipped calls carry `data.clipped`.
 ## The team harness
 
 A session run with a team harness installed has `.claude/team-harness.json`, which team-harness writes. The import
-looks in the session's directory and its parents first, then in `~/.claude`. When it finds one, each turn carries
-the harness's name as `hangar.harness`, with `hangar.harness.revision`, `hangar.harness.channel` and
-`hangar.harness.digest`. flightdeck's specs for that harness then apply. `gen_ai.agent.name` stays `claude-code`.
+looks in the session's directory and its parents, then, for a directory inside your home, in `~/.claude`. If
+found, each turn carries the harness's name as `hangar.harness`, with `hangar.harness.revision`,
+`hangar.harness.channel` and `hangar.harness.digest`. flightdeck's specs for that harness then apply. `gen_ai.agent.name` stays `claude-code`.
 
 It looks only when the session's directory is on this computer. A cloud session or someone else's transcript gets
 no harness unless you name one. The manifest is read at import, so import before you upgrade the harness.

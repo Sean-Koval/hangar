@@ -379,7 +379,8 @@ def test_without_a_manifest_the_harness_stays_claude_code(transcript: Path) -> N
 
 
 def test_the_projects_manifest_comes_before_the_users(tmp_path: Path) -> None:
-    project, home = tmp_path / "repo", tmp_path / "home"
+    home = tmp_path / "home"
+    project = home / "repo"
     (project / "src").mkdir(parents=True)
     _manifest(home, "personal")
     assert trace_import.find_manifest(str(project), home) == home / ".claude" / "team-harness.json"
@@ -390,6 +391,31 @@ def test_the_projects_manifest_comes_before_the_users(tmp_path: Path) -> None:
     assert trace_import.find_manifest(None, home) is None
     # a session whose directory isn't on this computer is never given the importer's own harness
     assert trace_import.find_manifest(str(tmp_path / "elsewhere"), home) is None
+
+
+@pytest.mark.parametrize("where", ["srv/repo", "."])
+def test_a_directory_outside_the_importers_home_never_gets_the_users_manifest(tmp_path: Path, where: str) -> None:
+    # `/home/user/repo` or `/` exists on many machines: a teammate's transcript from one isn't the importer's session
+    home = tmp_path / "home"
+    _manifest(home, "personal")
+    elsewhere = tmp_path / "box" / where
+    elsewhere.mkdir(parents=True, exist_ok=True)
+    assert trace_import.find_manifest(str(elsewhere), home) is None
+    # its own project install still counts
+    _manifest(elsewhere, "work-default")
+    assert trace_import.find_manifest(str(elsewhere), home) == elsewhere / ".claude" / "team-harness.json"
+
+
+def test_an_imported_transcript_from_outside_home_keeps_claude_code(tmp_path: Path) -> None:
+    _manifest(Path.home(), "personal")
+    project = tmp_path / "box" / "repo"
+    project.mkdir(parents=True)
+    p = _jsonl(tmp_path / f"{SID}.jsonl", [
+        _prompt("Edit it.", "2026-11-01T10:00:00Z"),
+        {**_assistant("msg_x", _tool("toolu_x", "Edit", {"file_path": str(project / "a.py"), "old_string": "a",
+                                                          "new_string": "b"}), _usage(1, 1, 0, 0, 0),
+                      "2026-11-01T10:00:01Z"), "cwd": str(project)}])
+    assert {a["hangar.harness"] for a in _turn_attrs(trace_import.import_transcript(p).trace)} == {"claude-code"}
 
 
 def test_the_sessions_own_project_is_searched(tmp_path: Path) -> None:
