@@ -1,8 +1,7 @@
 # Data handling
 
-This page is for the reviewer who asks what hangar keeps, for how long, and how to delete it.
-It is part of the [security model](README.md). Where the audit log's second copy lives is on
-[where the audit log is kept](audit.md).
+This page is for the reviewer who asks what hangar keeps, for how long, and how to delete it. It is part of the
+[security model](README.md); the audit log's second copy is on [where the audit log is kept](audit.md).
 
 ## What hangar keeps
 
@@ -17,25 +16,41 @@ It is part of the [security model](README.md). Where the audit log's second copy
 ## Audit retention
 
 The audit table has its own setting, `HANGAR_AUDIT_RETENTION_DAYS`, separate from jobs and sessions. Each retention
-sweep deletes the oldest rows past it, a batch at a time. `0` keeps every entry.
+sweep deletes the oldest rows past it. `0` keeps every entry.
 
-Keep it at or below the audit bucket's `audit_retention_days`. The bucket is then the longer record.
+Keep it at or below the audit bucket's `audit_retention_days`, so the bucket is the longer record.
 
 ## The audit chain
 
 Each audit row carries an HMAC of its own content and of the row before it. The key is in the vault, not the
-database. So someone holding only the database can't edit, remove or reorder a row and rebuild the links after it.
-Retention keeps an anchor, so the oldest row left still links to something.
+database. A row a purge rewrote carries an HMAC of its new content. The log line of every entry carries its `seq`
+and `hash`.
 
-`hangar doctor` walks the chain and reports the first broken row. A row a purge rewrote carries an HMAC of its new
-content, so it can't hide a later edit. Doctor also fails if the chain was ever started twice. That happens only
-when links were cleared and the mark of the first start removed.
+Retention keeps the last deleted row's link as an anchor. The same step writes an `audit.pruned` entry carrying that
+anchor, so the chain vouches for where it starts.
 
-The log line of every entry carries its `seq` and `hash`, so the bucket shows a row cut from the end of the table.
+### What doctor proves
+
+`hangar doctor` walks the chain and names the first broken row. It is a quick check; the audit bucket is the
+record. It catches someone holding only the database who:
+
+- edits, inserts, reorders or removes a row anywhere but at the end;
+- deletes the oldest rows and writes a new anchor;
+- clears the links and restarts hangar.
+
+Doctor can't see:
+
+- rows cut from the end of the table;
+- a table reset to before the chain: its columns dropped and its start entry deleted;
+- a database restored from a backup, which rolls the table back with a valid chain;
+- changes by someone holding both the database and the vault key.
+
+For those, compare the newest `seq` and `hash` with the bucket. A Docker or single-VM install has no bucket, so
+someone with its database file can rewrite the table undetected.
 
 ### If the chain breaks
 
-A break means a row was changed, removed or unlinked outside hangar. Doctor names the first broken row.
+A break means a row was changed, removed or unlinked outside hangar.
 
 1. Read that row and its neighbours: `GET /api/audit`, or the console's audit view.
 2. Compare them with the same `seq` in the audit bucket ([reading it](audit.md#reading-it)).
@@ -48,26 +63,26 @@ hangar admin purge --person alice --dry-run   # count what would go
 hangar admin purge --person alice             # asks before deleting
 ```
 
-A purge deletes the person's sessions with their checkpoints, artifacts and event logs. It also deletes their jobs,
-schedules, outbox records, personal credentials, tokens, sandbox records, snapshots and flight records, then the
-person.
+A purge first deletes the person's tokens and unlinks their accounts, so nothing new starts as them. Then it deletes
+their sessions with checkpoints, artifacts and event logs, and their jobs, schedules, outbox records and credentials.
+Their sandbox records, snapshots, flight records, SSO binding and spend alerts' marks go too, then the person.
 
 Their audit entries stay. Their id, tokens and linked accounts are replaced with one stand-in, `person:` and a hash.
 The stand-in is the same in every entry, so a reviewer can still follow what they did. Its salt is in the vault, so
 the database alone can't confirm a guessed name.
 
 Names are replaced in `actor`, `target` and detail fields such as `person`. Elsewhere, only a value that is the name
-as a whole is replaced. A common name such as `admin` needs a kind in front, as in `person:admin`. Their display
+as a whole is replaced. A common name such as `admin` needs a kind in front. Their display
 name is replaced only in entries that already name them.
 
-A purge refuses while any of the person's work is live: a running session or job, a sandbox or a leased credential.
-Stop it first. It refuses the owner, too.
+A purge refuses while the person has live work: a running session or job, a sandbox or a leased credential. It refuses the owner and any admin; make an admin a member first.
 
-It also deletes jobs and sessions their tokens or linked accounts own, such as GitHub or Slack jobs. Files of
-sessions deleted earlier, still waiting for the outbox, go too. The audit entries are rewritten before anything is
-deleted. If a step fails, the person's record stays and the purge reports the error. Run it again to finish.
+Jobs and sessions their tokens or linked accounts own go too, as do session files still waiting for the outbox.
 
-The purge itself is audited (`admin.purge`), with the stand-in and how many entries it rewrote.
+The audit entries are rewritten before anything is deleted. If a step fails, or a record of theirs appears meanwhile,
+the person stays; run it again.
+
+The purge itself is audited (`admin.purge`) under the stand-in.
 
 ## Exporting a job
 
@@ -84,10 +99,6 @@ the export is audited.
 
 ## What it doesn't cover
 
-- Objects already sent to the outbox bucket stay until the bucket's retention. The purge lists them.
+- Objects already in the outbox bucket stay until its retention; the purge lists them.
 - The audit bucket is locked, so its lines keep the original names until its retention ends.
-- A name in free text, such as a note, stays. So does a display name or token name another person shares.
-- Someone holding both the database and the vault key can rebuild the chain. The bucket is the record then.
-- Restoring a database backup rolls the table back, and the chain still verifies. Compare the newest `seq` with the
-  bucket after a restore.
-- A Docker or single-VM install has no audit bucket, so only the table can be checked.
+- A name in free text, such as a note, stays, as does a display or token name another person shares.

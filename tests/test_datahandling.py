@@ -140,35 +140,60 @@ def test_rows_from_before_the_chain_are_linked_on_start_and_that_is_audited(tmp_
     con.close()
     store = _store(db)
     v = datahandling.verify_chain(store)
-    assert v["ok"] and v["rows"] == 4 and v["restarts"] == []
+    assert v["ok"] and v["rows"] == 4 and v["starts"] == 1 and v["restarts"] == []
     assert store.audit_tail(1)[0].action == "audit.chain_started"
-    assert store.audit_tail(1)[0].detail == {"rows": 3, "linked_before": 0, "anchor": False}
-    _store(db)  # a second start links nothing more
+    assert store.audit_tail(1)[0].detail == {"rows": 3}
+    _store(db)  # a second start links nothing more and isn't a start
     assert datahandling.verify_chain(store)["rows"] == 4
 
 
 def test_rows_written_before_the_key_loads_are_linked_when_it_does(tmp_path):
-    store = Store(tmp_path / "hangar.db")
-    _events(store, 2)
-    assert store.audit_rows()[0][4] is None
+    db = tmp_path / "hangar.db"
+    store = Store(db)
+    _events(store, 2)  # a new database: the chain starts when the key loads
     store.set_audit_key(KEY)
     v = datahandling.verify_chain(store)
-    assert v["ok"] and v["rows"] == 3
+    assert v["ok"] and v["rows"] == 3 and v["starts"] == 1
+    store = Store(db)  # a later start: its own rows before the key are linked, nothing else
+    _events(store, 2)
+    assert store._db.execute("SELECT count(*) FROM audit WHERE hash IS NULL").fetchone()[0] == 2
+    store.set_audit_key(KEY)
+    v = datahandling.verify_chain(store)
+    assert v["ok"] and v["rows"] == 5 and v["starts"] == 1
 
 
-def test_clearing_links_and_restarting_doesnt_hide_an_edit(tmp_path):
+def test_clearing_every_link_and_restarting_doesnt_hide_an_edit(tmp_path):
+    """The review's probe: clear every digest and link, delete the start entry, edit a row, restart. Only the
+    migration that adds the chain's columns links old rows, so the cleared rows stay breaks."""
     db = tmp_path / "hangar.db"
     store = _store(db)
     _events(store, 4)
-    store._db.execute("UPDATE audit SET hash = NULL, data = replace(data, 'job-3', 'job-9') WHERE id = 5")
-    store = _store(db)  # a restart links only rows that process wrote
-    v = datahandling.verify_chain(store)
-    assert not v["ok"] and v["broken_at"] == 5 and "without a link" in v["reason"]
-    # clearing the "started" mark as well gets the rows linked again, and doctor sees the second start
-    store._db.execute("DELETE FROM kv WHERE key = 'audit.chain.started'")
+    store._db.execute("UPDATE audit SET digest = NULL, hash = NULL")
+    store._db.execute("DELETE FROM audit WHERE data LIKE '%audit.chain_started%'")
+    store._db.execute("UPDATE audit SET data = replace(data, 'job-3', 'job-9') WHERE id = 5")
     store = _store(db)
     v = datahandling.verify_chain(store)
-    assert v["restarts"]
+    assert not v["ok"] and v["broken_at"] == 2 and "without a link" in v["reason"]
+
+
+def test_dropping_the_chain_columns_is_a_second_start(tmp_path):
+    """Resetting the table to before the chain relinks it: the start entry of the first chain, if it is still
+    there, shows the second start. Without it this can't be seen in the table (the page says so)."""
+    db = tmp_path / "hangar.db"
+    store = _store(db)
+    _events(store, 2)
+    for col in ("digest", "hash", "redacted", "rdigest"):
+        store._db.execute(f"ALTER TABLE audit DROP COLUMN {col}")
+    store = _store(db)
+    v = datahandling.verify_chain(store)
+    assert v["ok"] and v["starts"] == 2 and v["restarts"] == [v["last_id"]]
+
+
+def test_a_detail_naming_the_start_action_is_not_a_start(tmp_path):
+    store = _store(tmp_path / "hangar.db")
+    store.audit(AuditEvent(actor="a", action="note.add", target="n", detail={"text": '"action":"audit.chain_started"'}))
+    v = datahandling.verify_chain(store)
+    assert v["ok"] and v["starts"] == 1 and v["restarts"] == []
 
 
 def test_an_unlinked_row_before_linked_ones_stays_a_break(tmp_path):
@@ -181,28 +206,70 @@ def test_an_unlinked_row_before_linked_ones_stays_a_break(tmp_path):
     assert not v["ok"] and v["broken_at"] == 3 and "without a link" in v["reason"]
 
 
+def test_rows_cut_from_the_front_with_a_forged_anchor_break_the_chain(tmp_path):
+    """The review's probe: delete the oldest rows and write the anchor retention would have. No prune entry in
+    the chain carries that anchor, so it is a break, recent rows or expired."""
+    store = _store(tmp_path / "hangar.db")
+    _events(store, 5)
+    rid, ts, _, _, link, *_ = store.audit_rows()[3]
+    store._db.execute("DELETE FROM audit WHERE id <= ?", (rid,))
+    store.kv_set(AUDIT_ANCHOR, json.dumps({"id": rid, "ts": ts - 900 * 86400, "hash": link, "pruned": rid}))
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == rid + 1 and "deleted from the front" in v["reason"]
+
+
+def test_a_forged_anchor_after_a_real_prune_breaks_the_chain(tmp_path):
+    store = _store(tmp_path / "hangar.db")
+    old = time.time() - 500 * 86400
+    store._db.execute("UPDATE audit SET ts = ?", (old,))
+    _events(store, 2, ts=old)
+    _events(store, 4)
+    assert datahandling.prune_audit(store, 400) == 3 and datahandling.verify_chain(store)["ok"]
+    rid, ts, _, _, link, *_ = store.audit_rows()[1]  # cut two recent rows as well, and move the anchor
+    store._db.execute("DELETE FROM audit WHERE id <= ?", (rid,))
+    store.kv_set(AUDIT_ANCHOR, json.dumps({"id": rid, "ts": old, "hash": link, "pruned": 5}))
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and "deleted from the front" in v["reason"]
+
+
+def test_an_edited_prune_entry_breaks_the_chain(tmp_path):
+    store = _store(tmp_path / "hangar.db")
+    store._db.execute("UPDATE audit SET ts = ?", (time.time() - 500 * 86400,))
+    _events(store, 2)
+    assert datahandling.prune_audit(store, 400) == 1
+    store._db.execute("UPDATE audit SET data = replace(data, '\"pruned\":1', '\"pruned\":0') "
+                      "WHERE data LIKE '%audit.pruned%'")
+    assert not datahandling.verify_chain(store)["ok"]
+
+
 # ====================================================================== retention
-def test_retention_deletes_the_oldest_rows_and_the_chain_still_holds(tmp_path):
+def test_retention_deletes_the_oldest_rows_and_the_chain_still_holds(tmp_path, caplog):
     store = _store(tmp_path / "hangar.db")
     old = time.time() - 500 * 86400
     store._db.execute("UPDATE audit SET ts = ?", (old,))  # the chain's start
     _events(store, 5, ts=old)
     _events(store, 3)
-    assert datahandling.prune_audit(store, 400, batch=2) == 6
-    assert len(store.audit_rows()) == 3
+    with caplog.at_level(logging.INFO, logger="hangar.audit"):
+        assert datahandling.prune_audit(store, 400, batch=2) == 6
+    assert [r[0] for r in store.audit_rows()][:3] == [7, 8, 9]
     anchor = json.loads(store.kv_get(AUDIT_ANCHOR))
     assert anchor["id"] == 6 and anchor["pruned"] == 6
     v = datahandling.verify_chain(store)
-    assert v["ok"] and v["first_id"] == 7
+    assert v["ok"] and v["first_id"] == 7 and v["anchor"] == anchor
+    # each batch wrote an entry carrying its anchor, and the bucket gets its line
+    pruned = [e for e in store.audit_tail(10) if e.action == "audit.pruned"]
+    assert [e.detail["anchor"]["id"] for e in pruned] == [6, 4, 2]
+    assert sum('"action":"audit.pruned"' in r.getMessage() for r in caplog.records) == 3
     _events(store, 1)
     assert datahandling.verify_chain(store)["ok"]
 
 
-def test_a_table_pruned_empty_starts_again_from_the_anchor(tmp_path):
+def test_a_table_pruned_to_its_prune_entry_holds_from_the_anchor(tmp_path):
     store = _store(tmp_path / "hangar.db")
     _events(store, 3, ts=time.time() - 30 * 86400)
     store._db.execute("UPDATE audit SET ts = ?", (time.time() - 30 * 86400,))  # the chain's start too
-    assert datahandling.prune_audit(store, 7) == 4 and store.audit_rows() == []
+    assert datahandling.prune_audit(store, 7) == 4
+    assert [json.loads(r[2])["action"] for r in store.audit_rows()] == ["audit.pruned"]
     _events(store, 2)
     assert datahandling.verify_chain(store)["ok"]
     store._db.execute(f"DELETE FROM kv WHERE key = '{AUDIT_ANCHOR}'")  # the anchor is part of the chain
@@ -218,7 +285,13 @@ def test_retention_off_keeps_everything_and_a_row_inside_retention_stops_it(tmp_
     assert datahandling.prune_audit(store, 0) == 0
     store._db.execute("UPDATE audit SET ts = ? WHERE id = 1", (old,))  # the chain's start
     assert datahandling.prune_audit(store, 400) == 3
-    assert len(store.audit_rows()) == 3 and datahandling.verify_chain(store)["ok"]
+    assert len(store.audit_rows()) == 4 and datahandling.verify_chain(store)["ok"]
+
+
+def test_retention_without_the_key_deletes_nothing(tmp_path):
+    store = Store(tmp_path / "hangar.db")
+    _events(store, 2, ts=time.time() - 500 * 86400)
+    assert datahandling.prune_audit(store, 400) == 0
 
 
 async def test_the_retention_sweep_prunes_the_audit_table(settings, store):
@@ -376,6 +449,66 @@ def test_a_purge_that_fails_partway_keeps_the_person_and_can_run_again(app_clien
     assert again["errors"] == [] and again["person_record_deleted"] and again["pseudonym"] == out["pseudonym"]
     assert h.store.get(Person, "alice") is None and h.vault.get_text("cred:alice-claude") is None
     assert datahandling.verify_chain(h.store)["ok"]
+
+
+def test_purge_closes_their_doors_first_and_a_record_that_slips_in_keeps_the_person(app_client, monkeypatch):
+    """Their tokens go and their accounts are unlinked before anything is rewritten, so nothing new starts as them.
+    A record of theirs that appears while the purge runs keeps the person for a rerun, which still knows the names
+    the first run shut out."""
+    c, h, auth = app_client
+    _alice(h)
+    real = h.store.audit_redact
+    late = Job(title="late", instructions="slipped in", environment="default", person="alice",
+               state=JobState.SUCCEEDED)
+
+    def redact(*a, **kw):
+        assert [t.name for t in h.store.list(ApiToken)] == ["bob-laptop"]  # the doors shut before this
+        assert h.store.get(Person, "alice").links == []
+        if h.store.get(Job, late.id) is None and not kw and len(a) == 1:
+            h.store.put(late)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(h.store, "audit_redact", redact)
+    out = c.post("/api/admin/purge", json={"person": "alice"}, headers=auth).json()
+    assert any("records appeared" in e for e in out["errors"]) and not out["person_record_deleted"]
+    assert h.store.get(Person, "alice") is not None and h.store.get(Job, late.id) is not None
+    monkeypatch.undo()
+    h.fleet.audit("system", "mail.bounce", "m-1", by="alice@example.com")  # a name only the first run knew
+    again = c.post("/api/admin/purge", json={"person": "alice"}, headers=auth).json()
+    assert again["errors"] == [] and again["person_record_deleted"]
+    assert h.store.get(Job, late.id) is None
+    assert "alice@example.com" not in "\n".join(r[2] for r in h.store.audit_rows())
+    assert h.vault.get_text(datahandling.PURGE_NAMES + "alice") is None
+    assert datahandling.verify_chain(h.store)["ok"]
+
+
+def test_purge_deletes_their_sso_binding_and_spend_alert_marks(app_client):
+    """sso.py (KAN-294) keeps a binding per person, and spendalert.py (KAN-290) marks a person's cap alerts in kv."""
+    c, h, auth = app_client
+    _alice(h)
+    kv = {"sso:binding:alice": {"person": "alice", "email": "alice@example.com", "subject": "s-1"},
+          "sso:binding:bob": {"person": "bob"},
+          "sso:pending:aa": {"person": "alice"}, "sso:confirm:bb": {"person": "bob"},
+          "spendalert:20409:person:alice:5:80": "1", "spendalert:20409:person:alice-2:5:80": "1",
+          "spendalert:20409:repo:github.com/acme/app:5:80": "1"}
+    for k, v in kv.items():
+        h.store.kv_set(k, v if isinstance(v, str) else json.dumps(v))
+    plan = c.post("/api/admin/purge", json={"person": "alice", "dry_run": True}, headers=auth).json()
+    assert plan["deleted"]["kv"] == 3
+    out = c.post("/api/admin/purge", json={"person": "alice"}, headers=auth).json()
+    assert out["errors"] == []
+    assert {k for k in kv if h.store.kv_get(k) is not None} == {
+        "sso:binding:bob", "sso:confirm:bb", "spendalert:20409:person:alice-2:5:80",
+        "spendalert:20409:repo:github.com/acme/app:5:80"}
+
+
+def test_purge_refuses_an_admin_until_they_are_a_member(app_client):
+    c, h, auth = app_client
+    h.store.put(Person(id="carol", name="Carol", role="admin"))
+    r = c.post("/api/admin/purge", json={"person": "carol"}, headers=auth)
+    assert r.status_code == 400 and "member first" in r.text and h.store.get(Person, "carol") is not None
+    assert c.patch("/api/people/carol", json={"role": "member"}, headers=auth).status_code == 200
+    assert c.post("/api/admin/purge", json={"person": "carol"}, headers=auth).json()["person_record_deleted"]
 
 
 def test_purge_refuses_live_work_the_owner_and_nobody(app_client):

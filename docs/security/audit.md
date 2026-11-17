@@ -37,6 +37,6 @@ The Terraform output `audit_log` prints this query for your project. The Logs Ex
 ## What it doesn't cover
 
 - The table in the database keeps entries for `HANGAR_AUDIT_RETENTION_DAYS` ([data handling](data-handling.md)).
-- The chain shows a row edited or removed in the middle of the table. A row cut from the end shows only against the
-  bucket's newest `seq`.
+- The chain shows a row edited or removed anywhere but the end ([what doctor proves](data-handling.md#what-doctor-proves)).
+  A row cut from the end shows only against the bucket's newest `seq`.
 - A Docker or single-VM install has no Cloud Logging. Ship the container log to your own store to get a second copy.

@@ -2,15 +2,16 @@
 
 * **The audit chain.** store.py links each audit row to the one before it (`hash`), keyed with a secret in the vault.
   `verify_chain` walks the table and finds the first row that was edited, removed or reordered; `hangar doctor`
-  runs it. The anchor that retention
-  keeps starts the chain where the deleted rows ended.
+  runs it. The anchor that retention keeps starts the chain where the deleted rows ended, and an `audit.pruned` entry
+  in the chain carries it.
 * **Audit retention.** HANGAR_AUDIT_RETENTION_DAYS (400 by default, 0 keeps everything) deletes the oldest rows,
   separately from job and session retention (retention.py runs `prune_audit`).
 * **Purge.** `hangar admin purge --person ID` deletes what hangar holds about one person: their sessions (with their
   checkpoints, artifacts, manifests and event logs), jobs, schedules, outbox records, personal credentials, tokens,
-  sandbox records, snapshots and flight records, and the person. Their audit entries stay, with every name hangar
+  sandbox records, snapshots, flight records, SSO binding and spend-alert marks, and the person. Their tokens go and
+  their accounts are unlinked first, so nothing new starts as them. Their audit entries stay, with every name hangar
   knows them by replaced by one stable pseudonym, in the fields that name people only. It refuses while any of their
-  work is live.
+  work is live, and refuses the owner and admins.
 * **Export.** `hangar admin export --job ID`: one tar.gz with the job's record, instructions, context, events,
   result, its sessions' event logs and artifacts, and every audit entry naming the job, its sessions or sandboxes.
 """
@@ -52,7 +53,7 @@ from hangar.models import (
     now,
 )
 from hangar.outbox import OutboxItem
-from hangar.store import AUDIT_ANCHOR, CHAIN_STARTED, Store
+from hangar.store import AUDIT_ANCHOR, AUDIT_PRUNED, CHAIN_STARTED, Store
 from hangar.testresults import TestRun
 
 log = logging.getLogger("hangar.datahandling")
@@ -94,17 +95,19 @@ def audit_key(vault: Any) -> bytes:
 def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
     """Walk the audit table oldest first. `ok` is False at the first row whose link doesn't follow from the row
     before it (a row removed, reordered or inserted), whose JSON doesn't match its digest (edited), that has no
-    link, or that is marked redacted but doesn't match what the purge wrote. `restarts` counts chain starts after
-    the first: each one relinked rows hangar didn't write just then. Removing the newest rows can't be seen here:
-    compare the newest `seq` with the copy off the pod (docs/security/audit.md)."""
+    link, or that is marked redacted but doesn't match what the purge wrote. It is False too when the chain starts
+    from an anchor the newest `audit.pruned` entry doesn't carry (rows cut from the front). `restarts` lists chain
+    starts after the first. What this can't see: rows cut from the end, or a table reset to before the chain. The
+    copy off the pod is the record for those (docs/security/data-handling.md#what-doctor-proves)."""
     key = store.audit_key
     anchor = json.loads(store.kv_get(AUDIT_ANCHOR) or "null")
     prev = anchor["hash"] if anchor else ""
     out: dict[str, Any] = {"ok": key is not None, "rows": 0, "redacted": 0, "first_id": None, "last_id": None,
                            "broken_at": None, "reason": None if key else "the chain's key isn't loaded",
-                           "anchor": anchor, "starts": 0, "restarts": []}
+                           "anchor": None, "starts": 0, "restarts": []}
     if key is None:
         return out
+    vouched = None  # the anchor the newest audit.pruned entry carries
     after = 0
     while True:
         rows = store.audit_rows(after, batch)
@@ -130,16 +133,24 @@ def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
                 if reason:
                     out.update(ok=False, broken_at=rid, reason=reason)
             prev = link or ""
-            if f'"action":"{CHAIN_STARTED}"' in data:
+            try:
+                row = json.loads(data)
+                action, detail = row.get("action"), row.get("detail") or {}
+            except (ValueError, AttributeError):
+                continue
+            if action == AUDIT_PRUNED and isinstance(detail, dict):
+                vouched = detail.get("anchor")
+            elif action == CHAIN_STARTED:
                 out["starts"] += 1
-                try:
-                    d = json.loads(data)["detail"]
-                except (ValueError, KeyError, TypeError):
-                    d = {}
-                # the first start links a table hangar never chained; any other start relinked rows after a chain
-                if out["starts"] > 1 or d.get("linked_before") or d.get("anchor"):
+                if out["starts"] > 1:  # the first links a table hangar never chained; any other relinked rows
                     out["restarts"].append(rid)
         after = rows[-1][0]
+    if anchor != vouched and out["ok"]:
+        out.update(ok=False, broken_at=out["first_id"],
+                   reason="the chain starts from an anchor no prune entry records (rows were deleted from the "
+                          "front, outside retention)" if anchor else
+                          "a prune entry records an anchor the chain doesn't start from")
+    out["anchor"] = vouched if out["ok"] else anchor
     return out
 
 
@@ -329,8 +340,29 @@ def _found(h: Any, person_id: str, names: list[str]) -> dict[str, list[Any]]:
         "env_requests": [r for r in st.list(EnvRequest) if r.session_id in sids or theirs(r, "owner", "requester")],
         "outbox": outbox,
         "environment_claims": [k for k in st.kv_keys("identity:env-owner:") if st.kv_get(k) == person_id],
+        "kv": _their_kv(st, person_id),
         "pending_deletes": _pending_deletes(h, sids, mine),
     }
+
+
+def _their_kv(st: Store, person_id: str) -> list[str]:
+    """Other records keyed by the person: an SSO binding (`sso:binding:<id>`, with their email, provider subject and
+    a sealed refresh token) and their sign-ins in flight (sso.py, KAN-294), and the marks of their daily cap's spend
+    alerts (`spendalert:<day>:person:<id>:<usd>:<pct>`, spendalert.py, KAN-290)."""
+    keys = [k for k in st.kv_keys("sso:binding:") if k == f"sso:binding:{person_id}"]
+    for prefix in ("sso:pending:", "sso:confirm:", "sso:handoff:"):
+        for k in st.kv_keys(prefix):
+            try:
+                v = json.loads(st.kv_get(k) or "null")
+            except ValueError:
+                continue
+            if isinstance(v, dict) and v.get("person") == person_id:
+                keys.append(k)
+    for k in st.kv_keys("spendalert:"):
+        parts = k.split(":")  # spendalert, day, scope, name (may hold ":"), usd, pct
+        if len(parts) >= 6 and parts[2] == "person" and ":".join(parts[3:-2]) == person_id:
+            keys.append(k)
+    return keys
 
 
 def _pending_deletes(h: Any, sids: set[str], names: set[str]) -> list[Path]:
@@ -357,30 +389,63 @@ def _live(found: dict[str, list[Any]]) -> list[str]:
     return live
 
 
+PURGE_NAMES = "purge-names:"  # in the vault while a purge runs: a rerun still knows the names it shut out
+
+
+def _purge_names(h: Any, person_id: str) -> tuple[list[str], list[str]]:
+    """The person's names (aliases), with any a purge of them that stopped partway had already shut out."""
+    names, display = aliases(h.store, person_id)
+    try:
+        kept = json.loads(h.vault.get_text(PURGE_NAMES + person_id) or "{}")
+    except ValueError:
+        kept = {}
+    names = sorted(set(names) | set(kept.get("names", [])), key=len, reverse=True)
+    display = sorted(set(display) | set(kept.get("display", [])))
+    return names, display
+
+
 async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -> dict[str, Any]:
     """Delete everything hangar holds about `person_id` and pseudonymise their audit entries (module docstring).
 
-    The audit rows are rewritten first and the person's record goes last, so a purge that fails partway leaves no
-    name behind and can be run again: the rerun finds the person and whatever is left."""
+    Their doors close first: their tokens go and their linked accounts are unlinked, so nothing new can start as
+    them, and what they hold is found again after that. The audit rows are rewritten next, and the person's record
+    goes last, so a purge that fails partway leaves no name behind and can be run again: the rerun finds the
+    person, the names it shut out (kept sealed in the vault) and whatever is left."""
     people.check_id(person_id)
     if person_id == people.OWNER:
         raise people.PeopleError("the owner holds the server's admin token; it can't be purged")
     st = h.store
-    names, display = aliases(st, person_id)
-    found = await asyncio.to_thread(_found, h, person_id, names)
     person = st.get(Person, person_id)
+    if person is not None and person.role == "admin":
+        raise people.PeopleError(f"{person_id} is an admin: make them a member first "
+                                 f"(PATCH /api/people/{person_id} with role member), then purge")
+    names, display = await asyncio.to_thread(_purge_names, h, person_id)
+    found = await asyncio.to_thread(_found, h, person_id, names)
     counts = {k: len(v) for k, v in found.items()}
     named = await asyncio.to_thread(st.audit_matching, names, 1)
     if person is None and not any(counts.values()) and not named:
         raise KeyError(f"hangar holds nothing about '{person_id}'")
     if live := _live(found):
         raise PurgeBlocked(person_id, live)
-    exported = sorted(i.key for i in found["outbox"] if i.state == "done")
-    report: dict[str, Any] = {"person": person_id, "dry_run": dry_run, "deleted": counts,
-                              "person_record": person is not None, "exported_objects": exported, "errors": []}
     if dry_run:
-        report["audit_names"] = len(names)
-        return report
+        return {"person": person_id, "dry_run": True, "deleted": counts, "person_record": person is not None,
+                "exported_objects": sorted(i.key for i in found["outbox"] if i.state == "done"), "errors": [],
+                "audit_names": len(names)}
+
+    # close their doors: no token of theirs and no linked account can start anything while the rest goes
+    await asyncio.to_thread(h.vault.put, PURGE_NAMES + person_id, json.dumps({"names": names, "display": display}))
+    for t in found["tokens"]:
+        st.delete(ApiToken, t.id)
+    if person is not None and person.links:
+        person.links = []
+        st.put(person)
+    found = await asyncio.to_thread(_found, h, person_id, names)  # what they started before the doors shut
+    if live := _live(found):
+        raise PurgeBlocked(person_id, live)
+    counts = {k: len(v) for k, v in found.items()}
+    exported = sorted(i.key for i in found["outbox"] if i.state == "done")
+    report: dict[str, Any] = {"person": person_id, "dry_run": False, "deleted": counts,
+                              "person_record": person is not None, "exported_objects": exported, "errors": []}
 
     stand_in = await asyncio.to_thread(pseudonym, h, person_id)
     rewrite = redactor(names, stand_in, display)
@@ -396,7 +461,7 @@ async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -
         except Exception as e:  # noqa: BLE001 - report it, go on with the rest, keep the person for a rerun
             errors.append(f"{what}: {e}")
 
-    for t in found["tokens"]:  # first: nothing of theirs can act while the rest goes
+    for t in found["tokens"]:
         await step(f"token {t.id}", st.delete, ApiToken, t.id)
     for sc in found["schedules"]:
         await step(f"schedule {sc.id}", st.delete, ScheduledJob, sc.id)
@@ -429,12 +494,20 @@ async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -
                       ("flight_records", FlightRecord), ("test_runs", TestRun), ("env_requests", EnvRequest)):
         for rec in found[kind]:
             await step(f"{kind} {rec.id}", st.delete, cls, rec.id)
-    for k in found["environment_claims"]:
+    for k in found["environment_claims"] + found["kv"]:
         await step(k, st.kv_delete, k)
+    # anything of theirs that appeared while this ran (a job a door let in before it shut) keeps the person for a
+    # rerun: the person goes only once nothing is left
+    if not errors and (left := {k: len(v) for k, v in
+                                (await asyncio.to_thread(_found, h, person_id, names)).items() if v}):
+        errors.append(f"records appeared while the purge ran ({', '.join(f'{k}: {n}' for k, n in left.items())}); "
+                      "run it again")
     if person is not None and not errors:
         st.delete(Person, person_id)
     # the steps above may have audited the person again: those rows too
     changed += await asyncio.to_thread(st.audit_redact, rewrite, 2000, start)
+    if not errors:
+        await asyncio.to_thread(h.vault.delete, PURGE_NAMES + person_id)
     report["person_record_deleted"] = person is not None and not errors
     report["audit_rows_redacted"] = len(set(changed))
     report["pseudonym"] = stand_in
