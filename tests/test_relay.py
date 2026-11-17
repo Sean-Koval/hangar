@@ -378,3 +378,21 @@ class _current:
 
     def __exit__(self, *exc):
         identity.current.reset(self.tok)
+
+
+def test_a_person_removed_at_the_identity_provider_is_refused(tokens, store):
+    """--- KAN-294: a deprovisioned person gets no principal through a relay claim, may_approve included; they are
+    refused outright, not treated as an unlinked account that could still submit held work."""
+    store.kv_set_json(people.SSO_POLICY_KV, {"on": True, "required": False})
+    store.kv_set_json(people.SSO_BINDING_KV + "ada", {"person": "ada", "disabled_at": 1.0})
+    with pytest.raises(DelegationRefused, match="removed at the identity provider"):
+        _as(tokens, tokens["approve"], "symphony:103", unlinked="approve")
+    store.kv_set_json(people.SSO_BINDING_KV + "ada", {"person": "ada", "suspended_at": 1.0})
+    with pytest.raises(DelegationRefused, match="suspended"):
+        _as(tokens, tokens["approve"], "symphony:103")
+    store.kv_delete(people.SSO_BINDING_KV + "ada")  # never signed in, while SSO is required
+    store.kv_set_json(people.SSO_POLICY_KV, {"on": True, "required": True})
+    with pytest.raises(DelegationRefused, match="hasn't signed in through SSO"):
+        _as(tokens, tokens["approve"], "symphony:103")
+    store.kv_set_json(people.SSO_POLICY_KV, {"on": False})  # SSO turned off: bindings left behind stop no one
+    assert _as(tokens, tokens["approve"], "symphony:103").person == "ada"

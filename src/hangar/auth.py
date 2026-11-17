@@ -223,8 +223,26 @@ class TokenAuth:
         """If no admin token is configured and no tokens exist, mint one and return it (shown once)."""
         if self._admin_hash or self.store.list(ApiToken):
             return None
-        raw, _ = self.create("bootstrap-admin")
+        raw, tok = self.create(BOOTSTRAP_NAME)
+        self.store.kv_set(BOOTSTRAP_KV, tok.id, durable=True)  # --- KAN-294: break-glass is this id, not a name
         return raw
+
+
+BOOTSTRAP_NAME = "bootstrap-admin"
+BOOTSTRAP_KV = "auth:bootstrap_token"
+_NO_BOOTSTRAP = "-"
+
+
+def break_glass_token_id(store: Store) -> str | None:
+    """--- KAN-294: the bootstrap token's id, which SSO never gates. A store from before the id was recorded pins the
+    oldest person-less token of that name, once; finding none, it records that there is none. Either way a token
+    named so later is an ordinary token."""
+    if tid := store.kv_get(BOOTSTRAP_KV):
+        return None if tid == _NO_BOOTSTRAP else tid
+    legacy = sorted((t for t in store.list(ApiToken) if t.name == BOOTSTRAP_NAME and t.person is None),
+                    key=lambda t: t.created_at)
+    store.kv_set(BOOTSTRAP_KV, legacy[0].id if legacy else _NO_BOOTSTRAP, durable=True)
+    return legacy[0].id if legacy else None
 
 
 # ---------------------------------------------------------------------------- --- relay: delegated identity
@@ -313,7 +331,9 @@ def resolve_delegation(auth: TokenAuth, who: Principal | None, headers: Mapping[
         _refuse(audit, who, None, str(e))
     via = f"relay:{who.name}"
     may_approve = "relay_approve" in who.scopes
-    person = people.resolve_external(auth.store, claim.source, claim.id)
+    person = people.resolve_external(auth.store, claim.source, claim.id, include_deprovisioned=True)
+    if person is not None and (why := people.deprovisioned(auth.store, person.id)):  # --- KAN-294
+        _refuse(audit, who, claim, why)
     if person is None:
         if unlinked not in RELAY_UNLINKED:
             _refuse(audit, who, claim, f"HANGAR_RELAY_UNLINKED is '{unlinked}', not one of {', '.join(RELAY_UNLINKED)}")
@@ -406,7 +426,7 @@ class PassportAuth:
         kind, _, ident = sub.partition(":")
         person = None
         if kind == "person" and ident:
-            person = people.resolve_external(self.store, "email", ident)
+            person = people.resolve_external(self.store, "email", ident, include_deprovisioned=True)
             if person is None:
                 self._refuse(sub, f"{sub} isn't linked to a hangar person; an admin links it with "
                                   f"`hangar person link <person> email {ident}`")
@@ -421,6 +441,8 @@ class PassportAuth:
         else:
             self._refuse(sub or None, "a passport's subject must be person:<email> or agent:<id>")
         assert person is not None
+        if why := people.deprovisioned(self.store, person.id):  # --- KAN-294: a leaver's passport gets nothing
+            self._refuse(sub, why)
         return Principal(f"{PASSPORT_NAME}:{'>'.join(chain)}"[:200], PASSPORT_ID + person.id, ["jobs"],
                          person=person.id, role=person.role)
 

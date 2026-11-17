@@ -192,3 +192,20 @@ def test_towers_own_audiences_by_default_or_the_override(world, tower, settings)
     settings.job_passport_audience = f"{ORIGIN}/hooks, {ORIGIN}/jobs/"
     h._passports = None
     assert h.passports().verifier.audiences == [f"{ORIGIN}/hooks", f"{ORIGIN}/jobs"]
+
+
+async def test_a_person_removed_at_the_identity_provider_is_refused(store, tower):
+    """--- KAN-294: a leaver's passport gets nothing, whether it names them or an agent listed as them."""
+    people.add(store, "alice", role="member")
+    people.link(store, "alice", "email", "alice@example.com")
+    store.kv_set_json(people.SSO_POLICY_KV, {"on": True, "required": True})
+    store.kv_set_json(people.SSO_BINDING_KV + "alice", {"person": "alice", "disabled_at": 1.0})
+    pa = PassportAuth(store, PassportVerifier(ORIGIN, AUDS, client=httpx.AsyncClient(
+        transport=httpx.MockTransport(tower))), agents={"ci-bot": "alice"})
+    with pytest.raises(PassportRejected, match="removed at the identity provider"):
+        await pa.principal(passport(tower))
+    with pytest.raises(PassportRejected, match="removed at the identity provider"):
+        await pa.principal(passport(tower, sub="agent:ci-bot", chain=["ci-bot"]))
+    store.kv_delete(people.SSO_BINDING_KV + "alice")
+    with pytest.raises(PassportRejected, match="hasn't signed in through SSO"):
+        await pa.principal(passport(tower))

@@ -339,7 +339,7 @@ def test_an_unknown_email_may_become_a_member_in_an_allowed_domain(make, idp):
 def test_unverified_emails_and_other_groups_are_refused(make, idp):
     c, h = make(sso_required_group="hangar-users")
     idp.user("alice@corp.example", verified=False)
-    assert "hasn't verified" in why(h, sign_in(c, idp))
+    assert "doesn't vouch for" in why(h, sign_in(c, idp))
     idp.user("alice@corp.example", groups=["sales"])
     assert "isn't in the group" in why(h, sign_in(c, idp))
 
@@ -459,14 +459,27 @@ def test_an_unreachable_provider_never_disables_but_staleness_fails_closed(make,
 
 
 def test_sso_required_refuses_people_who_never_signed_in(make, idp):
-    c, h = make(sso_required=True)
+    """On by default whenever a mode is: a token minted before SSO is inside deprovisioning too."""
+    c, h = make()
+    assert h.settings.sso_required is None and sso.required(h.settings)
     people.add(h.store, "carol", role="member")
     raw, _ = h.auth.create("carol-laptop", ["user"], person="carol")
     assert c.get("/api/me", headers={"Authorization": f"Bearer {raw}"}).status_code == 401
-    make_off = h.auth.gate
-    h.auth.gate = None
+    h.settings.sso_required = False  # the explicit opt-out, for a rollout
     assert c.get("/api/me", headers={"Authorization": f"Bearer {raw}"}).status_code == 200
-    h.auth.gate = make_off
+
+
+@pytest.mark.asyncio
+async def test_opting_out_of_sso_required_warns_and_service_people_can_be_exempt(make, idp):
+    c, h = make(sso_required=False)
+    checks = {x["name"]: x for x in await sso.doctor_checks(h)}
+    assert checks["sso required"]["status"] == "warn"
+    h.settings.sso_required = None
+    people.add(h.store, "ci-bot", role="member")
+    raw, _ = h.auth.create("ci", ["jobs"], person="ci-bot")
+    assert h.auth.principal(raw) is None
+    h.settings.sso_exempt_people = "ci-bot"
+    assert h.auth.principal(raw) is not None
 
 
 @pytest.mark.asyncio
@@ -477,7 +490,7 @@ async def test_doctor_warns_while_break_glass_is_in_use(make, idp):
     assert c.get("/api/me", headers={"Authorization": "Bearer break-glass"}).status_code == 200
     checks = {x["name"]: x for x in await sso.doctor_checks(h)}
     assert checks["sso break-glass"]["status"] == "warn" and "used" in checks["sso break-glass"]["detail"]
-    assert checks["sso required"]["status"] == "warn"
+    assert "sso required" not in checks  # on by default whenever a mode is
 
 
 @pytest.mark.asyncio
@@ -486,7 +499,7 @@ async def test_doctor_warns_when_people_have_no_refresh_token(make, idp):
     idp.no_refresh = True
     sign_in(c, idp)
     checks = {x["name"]: x for x in await sso.doctor_checks(h)}
-    assert checks["sso recheck"]["status"] == "warn" and "offline_access" in checks["sso recheck"]["fix"]
+    assert checks["sso recheck"]["status"] == "fail" and "offline_access" in checks["sso recheck"]["fix"]
 
 
 def test_the_session_cookie_is_not_a_bearer_token(make, idp):
@@ -514,7 +527,7 @@ def test_a_rotated_refresh_token_is_kept_even_when_the_check_fails(make, idp):
 
 def test_a_misconfigured_client_drops_no_one(make, idp):
     """unauthorized_client is about hangar's registration, not the person; and a pass that would drop most of the
-    team drops no one, and doctor says why."""
+    team revokes nothing, but suspends them (every token stops) until a clean pass, and doctor says why."""
     c, h = make(sso_required_group="hangar-users")
     for name in ("bob", "carol"):
         people.add(h.store, name, role="member")
@@ -522,6 +535,7 @@ def test_a_misconfigured_client_drops_no_one(make, idp):
         idp.user(f"{name}@corp.example")
         sign_in(c, idp, f"{name}@corp.example")
     tok = _cli_token(c, idp)
+    svc, _ = h.auth.create("ci", ["jobs"], person="alice")
     admin = {"Authorization": "Bearer break-glass"}
     idp.token_error = "unauthorized_client"
     assert c.post("/api/sso/recheck", headers=admin).json() == {"unreachable": 3}
@@ -529,16 +543,23 @@ def test_a_misconfigured_client_drops_no_one(make, idp):
     for name in ("alice", "bob", "carol"):  # the group claim went missing from the client's tokens
         idp.users[f"{name}@corp.example"]["groups"] = []
     assert c.post("/api/sso/recheck", headers=admin).json() == {"halted": 3}
-    assert c.get("/api/me", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
-    assert not any(b.get("disabled_at") for b in sso.bindings(h.store))
+    assert not any(b.get("disabled_at") for b in sso.bindings(h.store))  # nothing revoked...
+    assert all(b.get("suspended_at") for b in sso.bindings(h.store))  # ...but nobody's tokens work meanwhile
+    assert c.get("/api/me", headers={"Authorization": f"Bearer {tok}"}).status_code == 401
+    assert h.auth.principal(svc) is None
+    assert people.resolve_external(h.store, "email", "alice@corp.example") is None  # nor through another door
+    assert c.get("/api/me", headers=admin).status_code == 200  # break-glass still works
     import asyncio
 
     checks = {x["name"]: x for x in asyncio.run(sso.doctor_checks(h))}
-    assert checks["sso recheck"]["status"] == "fail" and "dropped no one" in checks["sso recheck"]["detail"]
+    assert checks["sso recheck"]["status"] == "fail" and "suspended them" in checks["sso recheck"]["detail"]
+    assert checks["sso suspended"]["status"] == "warn"
     idp.users["alice@corp.example"]["groups"] = ["hangar-users"]
     idp.users["bob@corp.example"]["groups"] = ["hangar-users"]  # one person really left: they're dropped
     assert c.post("/api/sso/recheck", headers=admin).json() == {"ok": 2, "disabled": 1}
     assert sso.binding(h.store, "carol")["disabled_at"] and h.store.kv_get_json("sso:halted") is None
+    assert not sso.binding(h.store, "alice")["suspended_at"]  # a clean check lifts the suspension
+    assert c.get("/api/me", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
 
 
 def test_staleness_stops_a_persons_own_tokens_not_their_service_tokens(make, idp):
@@ -553,6 +574,210 @@ def test_staleness_stops_a_persons_own_tokens_not_their_service_tokens(make, idp
     del idp.users["alice@corp.example"]
     c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
     assert h.auth.principal(svc) is None  # and is revoked with the rest when the provider drops them
+
+
+def test_service_tokens_stop_after_the_service_grace(make, idp):
+    """A removed person's jobs token can't outlive them: a provider that never answers for them (no refresh token,
+    IAP, a halted pass) stops it after HANGAR_SSO_SERVICE_STALE_HOURS."""
+    c, h = make()
+    idp.no_refresh = True
+    sign_in(c, idp)
+    svc, _ = h.auth.create("ci", ["jobs"], person="alice")
+    b = sso.binding(h.store, "alice")
+    b["verified_at"] = time.time() - 23 * 3600
+    h.store.kv_set_json("sso:binding:alice", b)
+    assert h.auth.principal(svc) is not None
+    b["verified_at"] = time.time() - 25 * 3600
+    h.store.kv_set_json("sso:binding:alice", b)
+    assert h.auth.principal(svc) is None
+    s = _settings(h.settings, sso_service_stale_hours=1, sso_max_stale_minutes=120)
+    assert any("SERVICE_STALE_HOURS" in p for p in sso.problems(s))
+
+
+def test_a_first_sign_in_needs_a_vouched_email_for_everyone(make, idp):
+    """Entra: an unverified, editable email can't claim a member who never signed in, nor become a new member."""
+    c, h = make(sso_require_email_verified=False, sso_allowed_domains="corp.example", sso_default_role="member")
+    idp.user("alice@corp.example", verified=None, sub="mallory-oid")  # someone else's account, alice's address
+    r = sign_in(c, idp)
+    assert r.status_code == 403 and "doesn't vouch" in why(h, r) and sso.binding(h.store, "alice") is None
+    idp.user("newbie@corp.example", verified=None)
+    assert sign_in(c, idp, "newbie@corp.example").status_code == 403 and people.get(h.store, "newbie") is None
+    real = idp.id_token
+    idp.user("alice@corp.example", verified=None, sub="alice-oid")
+    idp.id_token = lambda e, n=None, **o: real(e, n, xms_edov=True)
+    assert sign_in(c, idp).status_code == 200 and sso.binding(h.store, "alice")["sub"] == "alice-oid"
+    idp.id_token = real  # bound now: later sign-ins find alice by her subject, vouched or not
+    assert sign_in(c, idp).status_code == 200
+
+
+def test_a_bound_person_is_found_by_subject_and_an_admins_links_still_decide(make, idp):
+    c, h = make()
+    sign_in(c, idp)
+    people.add(h.store, "bob", role="admin")
+    people.link(h.store, "bob", "email", "bob@corp.example")
+    # alice's provider account now reads bob's address: she never becomes bob, and isn't let in as alice either
+    idp.users["bob@corp.example"] = idp.users.pop("alice@corp.example")
+    r = sign_in(c, idp, "bob@corp.example")
+    assert r.status_code == 403 and "now linked to bob" in why(h, r) and sso.binding(h.store, "bob") is None
+    idp.users["alice2@corp.example"] = idp.users.pop("bob@corp.example")  # an address linked to nobody: still alice
+    assert sign_in(c, idp, "alice2@corp.example").status_code == 200 and c.get("/api/me").json()["person"] == "alice"
+    people.unlink(h.store, "alice", "email", "alice@corp.example")  # an admin unlinks her: sign-in and recheck end
+    assert "no email linked" in why(h, sign_in(c, idp, "alice2@corp.example"))
+    c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
+    assert sso.binding(h.store, "alice")["disabled_at"]
+
+
+def test_a_person_never_confirmed_past_the_service_grace_is_suspended_everywhere(make, idp):
+    """IAP, or no refresh token: hangar never learns they left. Past the grace, every front door stops them too."""
+    c, h = make()
+    people.link(h.store, "alice", "slack", "T1/U1")
+    idp.no_refresh = True
+    sign_in(c, idp)
+    c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
+    assert people.resolve_external(h.store, "slack", "T1/U1") is not None
+    b = sso.binding(h.store, "alice")
+    b["verified_at"] = time.time() - 25 * 3600
+    h.store.kv_set_json("sso:binding:alice", b)
+    c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
+    assert "suspended" in people.deprovisioned(h.store, "alice")
+    assert people.resolve_external(h.store, "slack", "T1/U1") is None
+    assert sign_in(c, idp).status_code == 200 and not people.deprovisioned(h.store, "alice")  # a sign-in lifts it
+
+
+def test_a_check_on_an_old_binding_never_disables_a_new_one(make, idp):
+    """An admin unbinds, and the person signs in again with another account, while a pass is checking the old one."""
+    c, h = make()
+    sign_in(c, idp)
+    h.store.kv_delete("sso:binding:alice")
+    idp.user("alice@corp.example", sub="alice-new")
+    sign_in(c, idp)
+    h.sso._drop("alice", "the provider refused the refresh", "sub-alice")
+    assert not sso.binding(h.store, "alice")["disabled_at"]
+
+
+def test_slack_refuses_a_deprovisioned_person_rather_than_treating_them_as_an_outsider(make, idp):
+    c, h = make()
+    people.link(h.store, "alice", "slack", "T1/U1")
+    sign_in(c, idp)
+    del idp.users["alice@corp.example"]
+    c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
+    from hangar.slack import SlackFrontDoor
+
+    door = SlackFrontDoor.__new__(SlackFrontDoor)
+    door.store, door.settings = h.store, h.settings
+    h.settings.slack_channels = {"C1": "https://github.com/o/r"}
+    h.settings.slack_users = []
+    assert door._refusal("T1", "C1", "U1") == "Your hangar access has ended."
+
+
+def test_with_sso_off_bindings_left_behind_stop_no_one(make, idp, settings):
+    c, h = make()
+    sign_in(c, idp)
+    del idp.users["alice@corp.example"]
+    c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
+    assert people.deprovisioned(h.store, "alice")
+    settings.sso_mode = "off"
+    sso.SSO(h)  # a restart with SSO off
+    assert not people.deprovisioned(h.store, "alice")
+
+
+def test_a_google_account_must_be_a_workspace_account_of_an_allowed_domain(make, idp, monkeypatch):
+    """A personal Google account registered with a work address has email_verified=true but no hd."""
+    from hangar.config import Settings
+
+    s = _settings(Settings(), sso_issuer="https://accounts.google.com", sso_allowed_domains="")
+    assert any("Google issuer" in p for p in sso.problems(s))
+    c, h = make(sso_allowed_domains="corp.example")
+    monkeypatch.setattr(sso, "google", lambda settings: True)
+    r = sign_in(c, idp)
+    assert r.status_code == 403 and "(hd)" in why(h, r)
+    real = idp.id_token
+    idp.id_token = lambda e, n=None, **o: real(e, n, hd="corp.example")
+    assert sign_in(c, idp).status_code == 200
+
+
+def test_iap_checks_the_workspace_domain(make):
+    iap = FakeIAP()
+    c, h = make(sso_mode="iap", sso_iap_audience=AUD, sso_allowed_domains="corp.example")
+    h.sso.transport = httpx.MockTransport(iap.jwks)
+    assert c.get("/auth/sso/login", headers={sso.IAP_HEADER: iap.assertion("alice@corp.example")}).status_code == 403
+    r = c.get("/auth/sso/login", headers={sso.IAP_HEADER: iap.assertion("alice@corp.example", hd="corp.example")})
+    assert r.status_code == 200
+
+
+def test_a_deprovisioned_person_gets_nothing_through_other_front_doors(make, idp):
+    """Slack, GitHub and Jira name a person through people.resolve_external: a leaver resolves to nobody there.
+    The relay and Tower passports refuse them outright (tests/test_relay.py, tests/test_job_passports.py)."""
+    c, h = make()
+    people.link(h.store, "alice", "slack", "T1/U1")
+    sign_in(c, idp)
+    assert people.resolve_external(h.store, "slack", "T1/U1").id == "alice"
+    del idp.users["alice@corp.example"]
+    c.post("/api/sso/recheck", headers={"Authorization": "Bearer break-glass"})
+    assert people.deprovisioned(h.store, "alice")
+    assert people.resolve_external(h.store, "slack", "T1/U1") is None
+    assert people.resolve_external(h.store, "email", "alice@corp.example") is None
+    assert people.resolve_external(h.store, "email", "alice@corp.example", include_deprovisioned=True).id == "alice"
+
+
+def test_break_glass_is_the_bootstrap_tokens_id_not_its_name(make, idp):
+    from hangar.auth import BOOTSTRAP_KV, break_glass_token_id
+
+    c, h = make()
+    imposter, _ = h.auth.create("bootstrap-admin")  # named like it, but not the recorded bootstrap token
+    h.store.kv_set(BOOTSTRAP_KV, "tok-the-real-one")
+    assert break_glass_token_id(h.store) == "tok-the-real-one" and h.auth.principal(imposter) is None
+    h.store.kv_delete(BOOTSTRAP_KV)  # a store from before the id was recorded: the oldest such token, pinned once
+    assert break_glass_token_id(h.store) is not None and h.auth.principal(imposter) is not None
+    later, _ = h.auth.create("bootstrap-admin")
+    assert h.auth.principal(later) is None
+    h.store.kv_delete(BOOTSTRAP_KV)
+    for t in h.store.list(ApiToken):
+        if t.name == "bootstrap-admin":
+            h.store.delete(ApiToken, t.id)
+    assert break_glass_token_id(h.store) is None  # none to pin: recorded as none, so a later one is ordinary too
+    again, _ = h.auth.create("bootstrap-admin")
+    assert break_glass_token_id(h.store) is None and h.auth.principal(again) is None
+
+
+def test_a_refusal_is_logged_escaped_and_audited_at_a_bounded_rate(make, idp, caplog):
+    c, h = make()
+    r = c.get("/auth/sso/callback?error=x%0Afake%20log%20line")
+    reason = why(h, r)
+    assert "\n" not in reason and "\\n" in reason  # the caller's newline is escaped, not written
+    assert not any("\n" in rec.getMessage() for rec in caplog.records if rec.name == "hangar.sso")
+    for _ in range(sso.REFUSED_AUDITS_PER_MINUTE + 5):
+        c.get("/auth/sso/callback?error=x")
+    assert len([e for e in h.store.audit_tail(200) if e.action == "sso.refused"]) == sso.REFUSED_AUDITS_PER_MINUTE
+
+
+def test_small_checks(settings):
+    assert not sso._local_url("http://localhost.evil.com") and sso._local_url("http://localhost:8080/x")
+    s = _settings(settings, sso_mode="iap", sso_iap_audience="/projects/123/apps/my-proj")
+    assert not any("IAP_AUDIENCE" in p for p in sso.problems(s))
+    s = _settings(settings, sso_mode="iap", sso_iap_audience="/projects/123/anything")
+    assert any("IAP_AUDIENCE" in p for p in sso.problems(s))
+    with pytest.raises(sso.Refused):
+        sso._email("alice@corp.e\u212axample")  # the Kelvin sign, which lowercases to k
+    assert sso._email("  Alice@Corp.Example ") == "alice@corp.example"
+
+
+@pytest.mark.asyncio
+async def test_jwks_ignores_encryption_keys(idp):
+    n = idp.key.public_key().public_numbers()
+    keys = [{"kty": "RSA", "kid": "enc", "use": "enc", "n": _int(n.n), "e": _int(n.e)},
+            {"kty": "RSA", "kid": "sig", "use": "sig", "n": _int(n.n), "e": _int(n.e)}]
+    jwks = sso.JWKS("https://idp.example/jwks", lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"keys": keys}))))
+    assert await jwks.key("sig") is not None and set(jwks._keys) == {"sig"}
+
+
+def test_the_cli_loopback_gets_its_state_back(make, idp):
+    c, _ = make()
+    challenge = sso.s256("v" * 50)
+    r = confirm(c, sign_in(c, idp, query=f"?cli_port=53682&cli_challenge={challenge}&cli_state={'s' * 24}"))
+    assert f"state={'s' * 24}" in _refresh_url(r)
+    assert c.get(f"/auth/sso/login?cli_port=1&cli_challenge={challenge}&cli_state=bad!").status_code == 400
 
 
 def test_an_admins_first_sign_in_needs_a_vouched_email(make, idp):
@@ -588,9 +813,9 @@ class FakeIAP:
         return httpx.Response(200, json={"keys": [{"kty": "EC", "crv": "P-256", "kid": "iap1",
                                                    "x": _int(n.x, 32), "y": _int(n.y, 32)}]})
 
-    def assertion(self, email: str, aud: str = AUD) -> str:
+    def assertion(self, email: str, aud: str = AUD, **over) -> str:
         return jwt_es(self.key, {"iss": sso.IAP_ISSUER, "aud": aud, "sub": "accounts.google.com:" + email,
-                                 "email": email, "iat": int(time.time()), "exp": int(time.time()) + 600})
+                                 "email": email, "iat": int(time.time()), "exp": int(time.time()) + 600, **over})
 
 
 def test_iap_mode(make):

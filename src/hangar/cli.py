@@ -109,7 +109,7 @@ def login(
 def _sso_token(url: str, no_browser: bool, name: str) -> str:
     """--- KAN-294: a token from `hangar login --sso`. The browser signs in at the provider through hangar, which hands
     a one-use code to a listener on 127.0.0.1 (or shows it, with --no-browser); the code is worth a token only with
-    the PKCE verifier this process holds."""
+    the PKCE verifier this process holds, and the listener takes only a code that carries this run's state."""
     import base64
     import hashlib
     import secrets
@@ -120,14 +120,17 @@ def _sso_token(url: str, no_browser: bool, name: str) -> str:
 
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(24)
     got: dict[str, str] = {}
     done = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - http.server's name
             u = urlsplit(self.path)
-            code = parse_qs(u.query).get("code", [""])[0]
-            ok = u.path == "/sso" and code.startswith("hgc_")
+            q = parse_qs(u.query)
+            code, back = q.get("code", [""])[0], q.get("state", [""])[0]
+            ok = (u.path == "/sso" and code.startswith("hgc_") and secrets.compare_digest(back, state)
+                  and not done.is_set())  # one code, from the sign-in this run started
             if ok:
                 got["code"] = code
                 done.set()
@@ -147,7 +150,8 @@ def _sso_token(url: str, no_browser: bool, name: str) -> str:
         server = HTTPServer(("127.0.0.1", 0), Handler)
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    link = f"{url}/auth/sso/login?{urlencode({'cli_port': port, 'cli_challenge': challenge})}"
+    query = {"cli_port": port, "cli_challenge": challenge} | ({} if no_browser else {"cli_state": state})
+    link = f"{url}/auth/sso/login?{urlencode(query)}"
     try:
         if no_browser:
             typer.echo(f"Open this link in a browser and sign in:\n\n    {link}\n")
@@ -171,7 +175,10 @@ def _sso_token(url: str, no_browser: bool, name: str) -> str:
         msg = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else r.text
         typer.secho(f"{url} refused the sign-in: {msg}", fg="red", err=True)
         raise typer.Exit(1)
-    return r.json()["token"]
+    got_back = r.json()
+    # the person the provider signed in, so a sign-in someone else finished with this run's link shows at once
+    typer.echo(f"signed in at the provider as hangar person {got_back.get('person')} ({got_back.get('role')})")
+    return got_back["token"]
 
 
 @app.command("logout")

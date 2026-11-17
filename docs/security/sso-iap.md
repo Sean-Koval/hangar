@@ -18,7 +18,11 @@ refused. So is a cookie for one person under another person's IAP sign-in.
 ```bash
 HANGAR_SSO_MODE=iap
 HANGAR_SSO_IAP_AUDIENCE=/projects/<project number>/global/backendServices/<backend service id>
+HANGAR_SSO_ALLOWED_DOMAINS=example.com
 ```
+
+On App Engine the audience is `/projects/<project number>/apps/<project id>`. With allowed domains set, the
+assertion's Workspace domain (`hd`) must be one of them.
 
 ## Paths that stay outside IAP
 
@@ -47,7 +51,7 @@ IAP stops a removed person at the console at once. IAP sends no refresh token, s
 someone later.
 
 Instead, each console visit through IAP confirms the person again. Their CLI and MCP tokens stop after
-`HANGAR_SSO_MAX_STALE_MINUTES` without one. Raise it for people who mostly use the CLI. That trades a longer delay
-after someone leaves.
+`HANGAR_SSO_MAX_STALE_MINUTES` without one, and their `jobs` tokens after `HANGAR_SSO_SERVICE_STALE_HOURS`. Raise
+them for people who mostly use the CLI. That trades a longer delay after someone leaves.
 
 For deprovisioning without console visits, use the OIDC mode.

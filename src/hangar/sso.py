@@ -13,17 +13,22 @@ Off by default (`HANGAR_SSO_MODE=off`): people sign in with a pasted token, as b
 **Who gets in.** The provider's verified email maps to the hangar person linked to it (`hangar person link <id>
 email <address>`). An email linked to nobody is refused, or (`HANGAR_SSO_DEFAULT_ROLE=member`, which needs
 `HANGAR_SSO_ALLOWED_DOMAINS`) becomes a new member. `HANGAR_SSO_REQUIRED_GROUP` admits only members of that group.
-A person's first sign-in binds them to the provider's subject; a different subject later (a reused email) is
-refused until an admin clears the binding.
+A person's first sign-in needs an email the provider vouches for, and binds them to the provider's subject. Later
+sign-ins find the person by that subject, not the email; a different subject with the same email is refused until an
+admin clears the binding. A Google issuer also needs the account's Workspace domain (`hd`) to be an allowed one.
 
 **Deprovisioning.** Every person who signed in through SSO is checked again at the provider every
 `HANGAR_SSO_RECHECK_MINUTES` (oidc: a refresh-token grant, then the domain, group and email checks again). A provider
 that refuses the refresh, or a person no longer in the group, disables the binding and revokes their tokens, without
 an admin. A person hangar hasn't confirmed for `HANGAR_SSO_MAX_STALE_MINUTES` (the provider unreachable, no refresh
-token, IAP with no console visit) can't use their tokens until it does: the check fails closed.
+token, IAP with no console visit) can't use their tokens until it does: the check fails closed. Their service
+tokens (jobs, metrics) ride out an outage for `HANGAR_SSO_SERVICE_STALE_HOURS`, then stop too. A recheck that would
+drop too many people at once drops no one, and suspends them instead. `HANGAR_SSO_REQUIRED` (on whenever a mode is)
+also stops the tokens of people who never signed in through SSO. Every other front door (the relay, Tower
+passports, Slack, GitHub, Jira) asks `people.deprovisioned` too.
 
-**Break-glass.** The server's admin token and the bootstrap token are never gated, so an admin can still get in
-when the provider is down. Each use is recorded, and `hangar doctor` warns while one is in use.
+**Break-glass.** The server's admin token and the bootstrap token (by its recorded id) are never gated, so an admin
+can still get in when the provider is down. Each use is recorded, and `hangar doctor` warns while one is in use.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ import secrets
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 from fastapi import HTTPException, Request
@@ -62,7 +67,6 @@ CONSOLE_HEADER = "x-requested-with"  # the console sends it on every call; a cro
 IAP_HEADER = "x-goog-iap-jwt-assertion"
 IAP_ISSUER = "https://cloud.google.com/iap"
 IAP_JWKS = "https://www.gstatic.com/iap/verify/public_key-jwk"
-BREAK_GLASS_NAME = "bootstrap-admin"  # the bootstrap token's name (auth.ensure_bootstrap)
 SESSION_NAME = "sso-session"
 PENDING_TTL = 600
 HANDOFF_TTL = 120
@@ -77,6 +81,9 @@ TIMEOUT = 10
 _KV = "sso:"
 _PORT_RE = re.compile(r"^[0-9]{1,5}$")
 _CHALLENGE_RE = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
+_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_IAP_AUD_RE = re.compile(r"^/projects/[0-9]+/(global/backendServices/[0-9]+|apps/[a-z][a-z0-9-]*)$")
+REFUSED_AUDITS_PER_MINUTE = 30  # beyond this, a refused sign-in is only logged: an unauthenticated route
 
 
 class Refused(Exception):
@@ -173,7 +180,8 @@ class JWKS:
                 raise Unreachable(f"the provider's keys answered HTTP {r.status_code}")
             self._fetched = self.clock()  # only a fetch that worked counts toward the once-a-minute limit
             self._keys = {str(k["kid"]): fk for k in keys
-                          if isinstance(k, dict) and k.get("kid") and (fk := _jwk_key(k)) is not None}
+                          if isinstance(k, dict) and k.get("kid") and k.get("use") in (None, "sig")
+                          and (fk := _jwk_key(k)) is not None}
         return self._keys.get(kid)
 
 
@@ -225,7 +233,34 @@ def domains(settings) -> list[str]:
 
 
 def _local_url(url: str) -> bool:
-    return url.startswith(("http://localhost", "http://127.0.0.1"))
+    try:
+        u = urlsplit(url)
+    except ValueError:
+        return False
+    return u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1")
+
+
+def google(settings) -> bool:
+    return (settings.sso_issuer or "").rstrip("/") in GOOGLE_ISSUERS
+
+
+def required(settings) -> bool:
+    """HANGAR_SSO_REQUIRED: unset means on whenever a mode is; false is an explicit opt-out."""
+    return settings.sso_mode != "off" if settings.sso_required is None else bool(settings.sso_required)
+
+
+def exempt(settings) -> set[str]:
+    return {p.strip() for p in (settings.sso_exempt_people or "").split(",") if p.strip()}
+
+
+def _email(raw: Any) -> str:
+    """An email as hangar compares it: stripped and lowercased, ASCII only. Folding other characters can make two
+    addresses the provider keeps apart equal (the Kelvin sign lowercases, and NFKC-normalizes, to k), so anything
+    else is refused rather than folded."""
+    email = str(raw or "").strip()
+    if not email.isascii():
+        raise Refused("the provider sent an email address with non-ASCII characters")
+    return email.lower()
 
 
 def problems(settings) -> list[str]:
@@ -240,9 +275,12 @@ def problems(settings) -> list[str]:
             out.append("HANGAR_SSO_MODE=oidc needs the provider's https issuer URL in HANGAR_SSO_ISSUER")
         if not s.sso_client_id:
             out.append("HANGAR_SSO_MODE=oidc needs HANGAR_SSO_CLIENT_ID")
-    if s.sso_mode == "iap" and not (s.sso_iap_audience or "").startswith("/projects/"):
+    if s.sso_mode == "oidc" and google(s) and not domains(s):
+        out.append("a Google issuer needs HANGAR_SSO_ALLOWED_DOMAINS (the Workspace domains): otherwise any Google "
+                   "account, a personal one included, can claim a person")
+    if s.sso_mode == "iap" and not _IAP_AUD_RE.match(s.sso_iap_audience or ""):
         out.append("HANGAR_SSO_MODE=iap needs HANGAR_SSO_IAP_AUDIENCE "
-                   "(/projects/<number>/global/backendServices/<id>)")
+                   "(/projects/<number>/global/backendServices/<id> or /projects/<number>/apps/<project id>)")
     if s.sso_mode == "iap" and s.sso_required_group:
         out.append("HANGAR_SSO_REQUIRED_GROUP needs HANGAR_SSO_MODE=oidc: IAP's header carries no groups (limit the "
                    "IAP resource's access to the group instead)")
@@ -253,6 +291,8 @@ def problems(settings) -> list[str]:
         out.append("HANGAR_SSO_REQUIRE_EMAIL_VERIFIED=false needs HANGAR_SSO_ALLOWED_DOMAINS")
     if s.sso_max_stale_minutes < s.sso_recheck_minutes:
         out.append("HANGAR_SSO_MAX_STALE_MINUTES must be at least HANGAR_SSO_RECHECK_MINUTES")
+    if s.sso_service_stale_hours * 60 < s.sso_max_stale_minutes:
+        out.append("HANGAR_SSO_SERVICE_STALE_HOURS must be at least HANGAR_SSO_MAX_STALE_MINUTES")
     return out
 
 
@@ -266,7 +306,19 @@ def bindings(store) -> list[dict[str, Any]]:
 
 
 def _put_binding(store, b: dict[str, Any]) -> None:
-    store.kv_set_json(f"{_KV}binding:{b['person']}", b)
+    from hangar.people import SSO_BINDING_KV
+
+    store.kv_set(SSO_BINDING_KV + b["person"], json.dumps(b), durable=True)  # a removal must not roll back
+
+
+def bound_to(store, issuer: str, sub: str) -> str | None:
+    """The person bound to this provider account, by its immutable subject, whatever its email now says."""
+    if not sub:
+        return None
+    for b in bindings(store):
+        if (str(b.get("issuer") or "").rstrip("/"), b.get("sub")) == (issuer.rstrip("/"), sub):
+            return b["person"]
+    return None
 
 
 def vouched(claims: dict[str, Any]) -> bool:
@@ -274,9 +326,12 @@ def vouched(claims: dict[str, Any]) -> bool:
     return claims.get("email_verified") in (True, "true") or claims.get("xms_edov") in (True, "true")
 
 
-def break_glass(tok: ApiToken | None) -> bool:
-    """The server's admin token (None) or the bootstrap token: never gated, so a provider outage can't lock out."""
-    return tok is None or (tok.name == BREAK_GLASS_NAME and tok.person is None)
+def break_glass(tok: ApiToken | None, store) -> bool:
+    """The server's admin token (None) or the bootstrap token, by the id `ensure_bootstrap` recorded (a token merely
+    named like it is ordinary): never gated, so a provider outage can't lock out."""
+    from hangar.auth import break_glass_token_id
+
+    return tok is None or (tok.person is None and tok.id == break_glass_token_id(store))
 
 
 class Gate:
@@ -287,18 +342,21 @@ class Gate:
 
     def __call__(self, person: str, tok: ApiToken | None) -> bool:
         s, store = self.sso.settings, self.sso.store
-        if break_glass(tok):
+        if break_glass(tok, store):
             self.sso.note_break_glass(tok)
             return True
         b = binding(store, person)
         if b is None:
-            return not s.sso_required
-        if b.get("disabled_at"):
+            return person in exempt(s) or not required(s)
+        if b.get("disabled_at") or b.get("suspended_at"):
             return False
-        if now() - float(b.get("verified_at") or 0) <= s.sso_max_stale_minutes * 60:
+        age = now() - float(b.get("verified_at") or 0)
+        if age <= s.sso_max_stale_minutes * 60:
             return True
         # unconfirmed for too long: a person's own tokens stop (fail closed); their service tokens (jobs, metrics)
-        # keep working through a provider outage, and are revoked with the rest if the provider drops them
+        # ride out a provider outage for a bounded grace, then stop too
+        if age > s.sso_service_stale_hours * 3600:
+            return False
         return tok is not None and not (set(tok.scopes) & INTERACTIVE)
 
 
@@ -320,6 +378,11 @@ class SSO:
         self._locks: dict[str, asyncio.Lock] = {}
         self._session_key: bytes | None = None
         self._task: asyncio.Task | None = None
+        from hangar.people import SSO_POLICY_KV
+
+        # what the other front doors enforce (people.deprovisioned): with SSO off, bindings left behind stop no one
+        self.store.kv_set(SSO_POLICY_KV, json.dumps({"on": self.on, "required": self.on and required(self.settings),
+                                                     "exempt": sorted(exempt(self.settings))}), durable=True)
         if self.mode != "off":
             if bad := problems(self.settings):
                 raise ValueError("; ".join(bad))
@@ -426,21 +489,27 @@ class SSO:
         return info if isinstance(info, dict) and info.get("sub") == sub else None
 
     # ------------------------------------------------------------------ who gets in
-    def admit(self, claims: dict[str, Any], *, create: bool = True):
-        """The hangar person the provider's claims name, or Refused. `create`: an unknown email may become a member
-        (HANGAR_SSO_DEFAULT_ROLE); the recheck passes False."""
+    def admit(self, claims: dict[str, Any], *, create: bool = True, bound: str | None = None):
+        """The hangar person the provider's claims name, or Refused. `bound`: the person already bound to this
+        account's subject, who it stays, whatever the email now says. Without one, the email names the person, so
+        the provider must vouch for it (`email_verified`, or Entra's `xms_edov`). `create`: an unknown email may
+        become a member (HANGAR_SSO_DEFAULT_ROLE); the recheck passes False."""
         from hangar import people
 
         s = self.settings
-        email = str(claims.get("email") or "").strip().lower()
+        email = _email(claims.get("email"))
         if not email or "@" not in email:
             raise Refused("the provider sent no email address")
-        if self.mode == "oidc" and s.sso_require_email_verified and claims.get("email_verified") not in (True, "true"):
-            raise Refused(f"the provider hasn't verified {email}")
         if claims.get("xms_edov") in (False, "false"):
             raise Refused(f"the provider says the domain of {email} isn't verified")
+        if self.mode == "oidc" and (bound is None or s.sso_require_email_verified) and not vouched(claims):
+            raise Refused(f"the provider doesn't vouch for {email} (no email_verified, or Entra's xms_edov), so it "
+                          "can't name a hangar person")
         if (allowed := domains(s)) and email.rsplit("@", 1)[1] not in allowed:
             raise Refused(f"{email} isn't in an allowed domain")
+        if allowed and (google(s) if self.mode == "oidc" else self.mode == "iap") \
+                and str(claims.get("hd") or "").lower() not in allowed:
+            raise Refused(f"{email} isn't a Workspace account of an allowed domain (hd)")
         if group := s.sso_required_group:
             groups = claims.get(s.sso_group_claim)
             if not isinstance(groups, list):
@@ -448,7 +517,19 @@ class SSO:
                               "checked")
             if group not in [str(g) for g in groups]:
                 raise Refused(f"{email} isn't in the group {group}")
-        person = people.resolve_external(self.store, "email", email)
+        if bound is not None:
+            person = people.get(self.store, bound)
+            if person is None:
+                raise Refused(f"{bound} no longer exists")
+            # the subject names the person, but an admin's links still decide: an email moved to someone else, or
+            # every email unlinked from them, ends their sign-in
+            other = people.resolve_external(self.store, "email", email, include_deprovisioned=True)
+            if other is not None and other.id != bound:
+                raise Refused(f"{email} is now linked to {other.id}, not {bound}")
+            if not any(k.startswith("email:") for k in person.links):
+                raise Refused(f"{bound} has no email linked any more")
+            return person
+        person = people.resolve_external(self.store, "email", email, include_deprovisioned=True)
         if person is not None:
             return person
         if not create or s.sso_default_role == "none":
@@ -461,19 +542,23 @@ class SSO:
         return person
 
     def bind(self, person, issuer: str, sub: str, email: str, refresh: str | None, *, verified: bool = True) -> None:
-        """Record a successful sign-in. A person bound to another subject is refused (a reused email). An admin's
-        first sign-in needs an email the provider vouches for: otherwise whoever first claims the address (Entra's
-        `email` is editable) would become that admin."""
+        """Record a successful sign-in. A person bound to another subject is refused (a reused email). A first
+        sign-in needs an email the provider vouches for: otherwise whoever first claims the address (Entra's `email`
+        is editable) would become that person. A sign-in lifts a suspension: the provider just vouched for them."""
+        email = _email(email)
         b = binding(self.store, person.id)
-        if b is None and not verified and person.role == "admin":
-            raise Refused(f"the provider doesn't vouch for {email}, so it can't be an admin's first sign-in; turn on "
-                          "the provider's verified-email claim (Entra: the xms_edov optional claim)")
+        if b is None and not verified:
+            raise Refused(f"the provider doesn't vouch for {email}, so it can't be a first sign-in; turn on the "
+                          "provider's verified-email claim (Entra: the xms_edov optional claim)")
+        if not sub:
+            raise Refused("the provider sent no subject for the account")
         person = person.id
         if b and (b.get("issuer"), b.get("sub")) != (issuer, sub):
             raise Refused(f"{email} signed in as a different account at the provider than before; an admin clears "
                           f"the old binding with DELETE /api/sso/bindings/{person}")
         b = {**(b or {}), "person": person, "issuer": issuer, "sub": sub, "email": email, "verified_at": now(),
-             "disabled_at": None, "disabled_why": None, "mode": self.mode}
+             "disabled_at": None, "disabled_why": None, "suspended_at": None, "suspended_why": None,
+             "mode": self.mode}
         if refresh:
             b["refresh"] = base64.b64encode(self.h.vault.encrypt(refresh.encode())).decode()
         _put_binding(self.store, b)
@@ -484,7 +569,7 @@ class SSO:
         b.pop("refresh", None)
         _put_binding(self.store, b)
         revoked = [t.id for t in self.store.list(ApiToken) if (t.person or "owner") == b["person"]
-                   and not break_glass(t)]
+                   and not break_glass(t, self.store)]
         for tid in revoked:
             self.store.delete(ApiToken, tid)
         self.audit("sso", "sso.deprovisioned", b["person"], why=why[:300], revoked=len(revoked))
@@ -532,9 +617,7 @@ class SSO:
                 same = str(claims.get("email") or b.get("email")).lower() == b.get("email")
                 if "email_verified" not in claims and same:
                     claims = {**claims, "email": b["email"], "email_verified": True}
-                p = self.admit(claims, create=False)
-                if p.id != person:
-                    raise Refused(f"{claims.get('email')} is now linked to {p.id}")
+                self.admit(claims, create=False, bound=person)
             except Revoked as e:
                 return "drop", f"the provider refused the refresh ({e}): removed, suspended or signed out everywhere"
             except Refused as e:
@@ -542,20 +625,21 @@ class SSO:
             except (Unreachable, ValueError) as e:
                 log.info("sso: couldn't recheck %s: %s", person, e)
                 return "unreachable", None
-            self._update(person, sub, verified_at=now())
+            self._update(person, sub, verified_at=now(), suspended_at=None, suspended_why=None)
             return "ok", None
 
     async def recheck(self, b: dict[str, Any]) -> str:
         """One person: 'ok', 'disabled', 'stale' (no refresh token) or 'unreachable'."""
         verdict, why = await self.check(b["person"])
         if verdict == "drop":
-            self._drop(b["person"], why or "dropped by the provider")
+            self._drop(b["person"], why or "dropped by the provider", b.get("sub"))
             return "disabled"
         return "disabled" if verdict == "gone" else verdict
 
-    def _drop(self, person: str, why: str) -> None:
+    def _drop(self, person: str, why: str, sub: Any = None) -> None:
+        """Disable, unless the binding changed since it was checked (an unbind and a new sign-in in the meantime)."""
         b = binding(self.store, person)
-        if b is not None and not b.get("disabled_at"):
+        if b is not None and not b.get("disabled_at") and (sub is None or b.get("sub") == sub):
             self.disable(b, why)
 
     async def recheck_all(self) -> dict[str, int]:
@@ -563,24 +647,42 @@ class SSO:
         that is a misconfigured provider, not a team leaving at once. `hangar doctor` fails until a pass is clean."""
         out: dict[str, int] = {}
         drops: list[tuple[str, str]] = []
-        active = [b["person"] for b in bindings(self.store) if not b.get("disabled_at")]
+        subs = {b["person"]: b.get("sub") for b in bindings(self.store) if not b.get("disabled_at")}
+        active = list(subs)
         for person in active:
             verdict, why = await self.check(person)
             if verdict == "drop":
                 drops.append((person, why or "dropped by the provider"))
             elif verdict != "gone":
                 out[verdict] = out.get(verdict, 0) + 1
+        # not confirmed for longer than the service grace (IAP, no refresh token, a long outage): suspended, so the
+        # other front doors stop them too, as the gate already does; a sign-in or a clean check lifts it
+        grace = self.settings.sso_service_stale_hours * 3600
+        for b in bindings(self.store):
+            if not b.get("disabled_at") and not b.get("suspended_at") and b.get("sub") == subs.get(b["person"]) \
+                    and now() - float(b.get("verified_at") or 0) > grace:
+                _put_binding(self.store, {**b, "suspended_at": now(),
+                                          "suspended_why": "not confirmed by the provider within "
+                                                           "HANGAR_SSO_SERVICE_STALE_HOURS"})
         if len(drops) > 1 and len(drops) > BREAKER * len(active):
+            # too many at once to be people leaving: revoke nothing, but suspend each of them (every token stops)
+            # until a clean recheck, a sign-in or an admin's unbind; break-glass still works
             self.store.kv_set_json(f"{_KV}halted", {"at": now(), "drops": len(drops), "of": len(active),
                                                     "why": drops[0][1][:300]})
-            self.audit("sso", "sso.recheck_halted", None, drops=len(drops), of=len(active), why=drops[0][1][:300])
-            log.error("sso: recheck would drop %d of %d people (%s); dropped no one", len(drops), len(active),
-                      drops[0][1])
+            for person, why in drops:
+                b = binding(self.store, person)
+                if b is not None and not b.get("disabled_at") and b.get("sub") == subs.get(person):
+                    _put_binding(self.store, {**b, "suspended_at": b.get("suspended_at") or now(),
+                                              "suspended_why": why[:300]})
+            self.audit("sso", "sso.recheck_halted", None, drops=len(drops), of=len(active), why=drops[0][1][:300],
+                       suspended=[p for p, _ in drops])
+            log.error("sso: recheck would drop %d of %d people (%r); revoked nothing and suspended them",
+                      len(drops), len(active), drops[0][1])
             out["halted"] = len(drops)
         else:
             self.store.kv_delete(f"{_KV}halted")
             for person, why in drops:
-                self._drop(person, why)
+                self._drop(person, why, subs.get(person))
             if drops:
                 out["disabled"] = len(drops)
         self._prune()
@@ -765,25 +867,35 @@ def mount(app, h: Hangar) -> None:
     if not sso.on:
         return
 
+    audited: list[float] = []
+
     def refused(e: Exception, who: str | None = None, *, status: int = 403):
         """The person sees a reference, not the reason: the reason (the provider's answer, an email, a claim) goes
-        to the audit log and the server log under that reference, where an admin looks it up."""
+        to the audit log and the server log under that reference, where an admin looks it up. The reason can carry
+        an unauthenticated caller's text, so it is logged quoted, and audited at most REFUSED_AUDITS_PER_MINUTE."""
         ref = "sso_" + secrets.token_hex(6)
-        sso.audit(who or "sso", "sso.refused" if status == 403 else "sso.unavailable", None, ref=ref,
-                  why=str(e)[:300])
-        log.warning("sso: sign-in %s (%s): %s", "refused" if status == 403 else "unavailable", ref, e)
+        why = repr(str(e))[1:-1][:300]  # escaped: no newline or control character reaches a log
+        t = now()
+        audited[:] = [a for a in audited if t - a < 60]
+        if len(audited) < REFUSED_AUDITS_PER_MINUTE:
+            audited.append(t)
+            sso.audit(who or "sso", "sso.refused" if status == 403 else "sso.unavailable", None, ref=ref, why=why)
+        log.warning("sso: sign-in %s (%s): %r", "refused" if status == 403 else "unavailable", ref, str(e))
         title = "Sign-in refused" if status == 403 else "Sign-in unavailable"
         body = (f"<p>hangar couldn't sign you in. Try again, or give an admin this reference: <code>{ref}</code>"
                 '</p><p><a href="/">Back to hangar</a></p>')
         return _page(title, body, status=status)
 
     def cli_params(request: Request) -> dict[str, Any] | None:
-        port, challenge = request.query_params.get("cli_port"), request.query_params.get("cli_challenge")
+        q = request.query_params
+        port, challenge, state = q.get("cli_port"), q.get("cli_challenge"), q.get("cli_state")
         if port is None and challenge is None:
             return None
         if not (port and _PORT_RE.match(port) and int(port) <= 65535 and challenge and _CHALLENGE_RE.match(challenge)):
             raise HTTPException(400, "cli_port must be a port (0: show the code) and cli_challenge an S256 challenge")
-        return {"port": int(port), "challenge": challenge}
+        if state is not None and not _STATE_RE.match(state):
+            raise HTTPException(400, "cli_state must be 16 to 128 URL-safe characters")
+        return {"port": int(port), "challenge": challenge, "state": state}
 
     def confirm_page(person, cli: dict[str, Any]):
         """A CLI sign-in stops here: a link someone else crafted would otherwise hand them a token for you."""
@@ -812,8 +924,9 @@ def mount(app, h: Hangar) -> None:
                                                                "expires_at": now() + HANDOFF_TTL})
             sso.audit(person.id, "sso.signin", person.id, via="cli")
             if cli["port"]:  # a page, not a redirect: form-action 'self' would block a POST's redirect off-site
+                back = {"code": code} | ({"state": cli["state"]} if cli.get("state") else {})
                 resp = _page("Finish signing in", "<p>Handing the token to your command line…</p>",
-                             refresh=f"http://127.0.0.1:{cli['port']}/sso?{urlencode({'code': code})}")
+                             refresh=f"http://127.0.0.1:{cli['port']}/sso?{urlencode(back)}")
             else:
                 resp = _page("Finish signing in", "<p>Paste this code into <code>hangar login --sso</code>. It "
                              f"works once, within two minutes.</p><p><code>{html.escape(code)}</code></p>")
@@ -834,8 +947,9 @@ def mount(app, h: Hangar) -> None:
         if sso.mode == "iap":
             try:
                 claims = await sso.iap_claims(request.headers.get(IAP_HEADER))
-                person = sso.admit(claims)
-                sso.bind(person, IAP_ISSUER, str(claims.get("sub") or ""), str(claims["email"]).lower(), None)
+                sub = str(claims.get("sub") or "")
+                person = sso.admit(claims, bound=bound_to(h.store, IAP_ISSUER, sub))
+                sso.bind(person, IAP_ISSUER, sub, str(claims["email"]), None)
             except (Refused, Unreachable) as e:
                 return refused(e)
             return await finish(person, cli, request)
@@ -880,9 +994,10 @@ def mount(app, h: Hangar) -> None:
             if not tokens.get("id_token"):
                 raise Refused("the provider sent no id token")
             claims = await sso.id_claims(str(tokens["id_token"]), pending["nonce"])
-            person = sso.admit(claims)
-            sso.bind(person, str(claims["iss"]).rstrip("/"), str(claims.get("sub") or ""),
-                     str(claims["email"]).lower(), tokens.get("refresh_token"), verified=vouched(claims))
+            issuer, sub = str(claims["iss"]).rstrip("/"), str(claims.get("sub") or "")
+            issuer = GOOGLE_ISSUERS[0] if issuer in GOOGLE_ISSUERS else issuer  # Google sends either form
+            person = sso.admit(claims, bound=bound_to(h.store, issuer, sub))
+            sso.bind(person, issuer, sub, str(claims["email"]), tokens.get("refresh_token"), verified=vouched(claims))
         except (Refused, Revoked, Unreachable) as e:
             return refused(e)
         return await finish(person, pending.get("cli"), request)
@@ -989,15 +1104,22 @@ async def doctor_checks(h) -> list[dict[str, Any]]:
             out.append(_check("sso provider", False, str(e), "check HANGAR_SSO_ISSUER and hangar's egress to it"))
         no_refresh = [b["person"] for b in bindings(h.store) if not b.get("disabled_at") and not b.get("refresh")]
         if no_refresh:
-            out.append(_check("sso recheck", None, f"{len(no_refresh)} people have no refresh token, so hangar can't "
-                              "recheck them and their tokens stop after HANGAR_SSO_MAX_STALE_MINUTES",
+            out.append(_check("sso recheck", False, f"{len(no_refresh)} people have no refresh token, so hangar can't "
+                              "ask the provider whether they left; their tokens stop after "
+                              "HANGAR_SSO_MAX_STALE_MINUTES (service tokens after HANGAR_SSO_SERVICE_STALE_HOURS) "
+                              "until they sign in again",
                               "ask for offline access: add offline_access to HANGAR_SSO_SCOPES (Okta, Entra) or "
                               "access_type=offline&prompt=consent to HANGAR_SSO_AUTH_PARAMS (Google)"))
         if halted := h.store.kv_get_json(f"{_KV}halted"):
             out.append(_check("sso recheck", False, f"the last recheck would have dropped {halted.get('drops')} of "
-                              f"{halted.get('of')} people at once, so it dropped no one: {halted.get('why')}",
-                              "check the client registration and HANGAR_SSO_REQUIRED_GROUP; tokens stop after "
-                              "HANGAR_SSO_MAX_STALE_MINUTES until a recheck passes"))
+                              f"{halted.get('of')} people at once, so it revoked nothing and suspended them: "
+                              f"{halted.get('why')}",
+                              "check the client registration and HANGAR_SSO_REQUIRED_GROUP; a clean recheck or a "
+                              "sign-in lifts a suspension, and DELETE /api/sso/bindings/<person> clears one"))
+    suspended = [b["person"] for b in bindings(h.store) if b.get("suspended_at") and not b.get("disabled_at")]
+    if suspended:
+        out.append(_check("sso suspended", None, f"{len(suspended)} people are suspended until the provider confirms "
+                          f"them: {', '.join(suspended[:10])}", "GET /api/sso/bindings shows why"))
     last = sso.break_glass_last()
     if last is not None and now() - last < 7 * 86400:
         out.append(_check("sso break-glass", None, f"the admin or bootstrap token was used "
@@ -1006,8 +1128,22 @@ async def doctor_checks(h) -> list[dict[str, Any]]:
                           "rotate one that was used"))
     else:
         out.append(_check("sso break-glass", True, "the admin and bootstrap tokens haven't been used this week"))
-    if not sso.settings.sso_required:
-        out.append(_check("sso required", None, "people who never signed in through SSO keep their pasted tokens",
-                          "set HANGAR_SSO_REQUIRED=true once everyone has signed in once"))
+    if ex := sorted(exempt(sso.settings)):
+        from hangar import people as _people
+
+        admins = [p for p in ex if (q := _people.get(h.store, p)) is not None and q.role == "admin"]
+        out.append(_check("sso exempt", None if admins else True,
+                          f"never gated: {', '.join(ex)}" + (f"; admins among them: {', '.join(admins)}" if admins
+                                                              else ""),
+                          "exempt only service people with no provider account, never an admin" if admins else None))
+    if sso.mode == "iap":
+        out.append(_check("sso recheck", True, "IAP gives no refresh token: a person's CLI tokens stop "
+                          "HANGAR_SSO_MAX_STALE_MINUTES after their last console visit, and their jobs tokens "
+                          "HANGAR_SSO_SERVICE_STALE_HOURS after it"))
+    if not required(sso.settings):
+        out.append(_check("sso required", None, "HANGAR_SSO_REQUIRED=false: people who never signed in through SSO "
+                          "keep their pasted tokens, and leaving the provider doesn't stop them",
+                          "unset HANGAR_SSO_REQUIRED once everyone has signed in once; list service people (bots, "
+                          "CI) in HANGAR_SSO_EXEMPT_PEOPLE"))
     return out
 

@@ -13,14 +13,20 @@ SSO is off by default. With it off, people paste a token, as before.
   (60). No token is kept in the browser's storage.
 - **The cookie's value is no token.** hangar derives the session's bearer from it with a key only the server holds.
   Copied out of the browser and sent as `Authorization: Bearer`, it is refused.
-- **The CLI** gets its token with `hangar login <url> --sso`. A browser signs in, then asks the person to confirm
-  that they ran the command. A one-use code then goes back to the CLI on `127.0.0.1`. Without a browser, add
-  `--no-browser` and paste the code the page shows.
+- **The CLI** gets its token with `hangar login <url> --sso`. A browser signs in and asks the person to confirm
+  that they ran the command. A one-use code goes back to the CLI on `127.0.0.1`, which prints whom it signed in.
+- **Without a browser**, add `--no-browser` and paste the code the page shows. Never confirm a sign-in you didn't
+  start: whoever sent the link would get your token.
 - **Changes from the console** must carry its own header and come from the same origin, on top of SameSite=Strict.
 
 ## Who gets in
 
-The provider's verified email maps to a hangar person. Link it with `hangar person link <id> email <address>`.
+A person's first sign-in needs an email the provider vouches for: `email_verified`, or Entra's `xms_edov`. That
+email maps to a hangar person. Link it with `hangar person link <id> email <address>`.
+
+The first sign-in binds the person to the provider's account id. Later sign-ins find them by that id. They end once
+their email is unlinked or linked to someone else. Another account with the same email is refused. An admin clears a binding with
+`DELETE /api/sso/bindings/<person>`.
 
 A refused or failed sign-in shows the person only a reference. The reason is in the audit log under it, as
 `sso.refused` or `sso.unavailable`.
@@ -28,14 +34,11 @@ A refused or failed sign-in shows the person only a reference. The reason is in 
 An email linked to nobody is refused. `HANGAR_SSO_DEFAULT_ROLE=member` makes it a new member instead. That needs
 `HANGAR_SSO_ALLOWED_DOMAINS`, so not every account the provider knows gets in.
 
-`HANGAR_SSO_REQUIRED_GROUP` admits only that group's members. The group comes from the id token's
-`HANGAR_SSO_GROUP_CLAIM` (`groups`). A token without that claim is refused.
+`HANGAR_SSO_REQUIRED_GROUP` admits only that group's members, from the id token's `HANGAR_SSO_GROUP_CLAIM`
+(`groups`).
 
-An admin's first sign-in needs an email the provider vouches for. Entra vouches only through its `xms_edov`
-optional claim.
-
-A person's first sign-in binds them to the provider's account id. A later sign-in from another account with the
-same email is refused. An admin clears the old binding with `DELETE /api/sso/bindings/<person>`.
+With Google, the account's Workspace domain (`hd`) must be an allowed domain too. A personal Google account made
+with a work address has none.
 
 ## Leaving the provider
 
@@ -46,22 +49,25 @@ When the provider refuses the refresh (`invalid_grant`), or the person left the 
 revoked, the CLI's included. No admin needs to run `hangar person remove`. Their work stays, visible to admins.
 
 A provider hangar can't reach disables nobody. But a person not confirmed for `HANGAR_SSO_MAX_STALE_MINUTES` (60)
-can't use their own tokens until the provider answers again. The check fails closed. Their `jobs` and `metrics`
-tokens keep working, so CI rides out an outage.
+can't use their own tokens until it answers again. Their `jobs` and `metrics` tokens ride out an outage for
+`HANGAR_SSO_SERVICE_STALE_HOURS` (24), then stop too.
 
-A pass that would disable more than a fifth of the team, and more than one person, disables no one. That looks like
-a broken client registration, not a team leaving. `hangar doctor` fails until a pass is clean.
+A pass that would disable more than a fifth of the team, and more than one person, looks like a broken client
+registration. It revokes nothing, suspends those people instead, and `hangar doctor` fails. A clean pass or a
+sign-in lifts it.
 
-`HANGAR_SSO_REQUIRED=true` also stops the tokens of people who never signed in through SSO. Turn it on once
-everyone has signed in once.
+Past that grace, hangar suspends them too. A disabled or suspended person gets nothing through the relay, Tower
+passports, Slack, GitHub or Jira. Nor does anyone who never signed in.
+
+The tokens of people who never signed in through SSO stop too. `HANGAR_SSO_REQUIRED=false` opts out during a
+rollout. List service people, such as a CI bot, in `HANGAR_SSO_EXEMPT_PEOPLE`.
 
 ## Break-glass
 
-The server's admin token and the bootstrap token are never gated. An admin can still get in while the provider is
+The server's admin token and the bootstrap token, matched by its id, are never gated. An admin can still get in while the provider is
 down. The console keeps a pasted token in the tab's memory only.
 
-Their use is recorded at most once a minute, and audited as `sso.break_glass` at most once an hour. `hangar doctor`
-warns for a week after one. Rotate a
+Each use is audited as `sso.break_glass`, at most once an hour. `hangar doctor` warns for a week after one. Rotate a
 break-glass token once it was used.
 
 ## Turn it on
@@ -81,8 +87,9 @@ hangar refuses to start with a setting that would let in too much. `hangar docto
 
 | Provider | Issuer | Also set |
 | --- | --- | --- |
-| Google Workspace | `https://accounts.google.com` | `HANGAR_SSO_AUTH_PARAMS=access_type=offline&prompt=consent`, for refresh tokens. Google sends no group claim: limit the app to a group in the Admin console instead. |
+| Google Workspace | `https://accounts.google.com` | `HANGAR_SSO_AUTH_PARAMS=access_type=offline&prompt=consent`, for refresh tokens. List every Workspace domain. Google sends no group claim: limit the app to a group in the Admin console instead. |
 | Okta | `https://<org>.okta.com/oauth2/default` | `HANGAR_SSO_SCOPES=openid email profile offline_access groups` |
-| Entra ID | `https://login.microsoftonline.com/<tenant>/v2.0` | `offline_access` in the scopes. Entra sends no `email_verified`: set `HANGAR_SSO_REQUIRE_EMAIL_VERIFIED=false` with allowed domains and a single-tenant issuer, and turn on the `xms_edov` optional claim. |
+| Entra ID | `https://login.microsoftonline.com/<tenant>/v2.0` | `offline_access` in the scopes. Turn on the `xms_edov` optional claim: a first sign-in needs it. Entra sends no `email_verified`, so set `HANGAR_SSO_REQUIRE_EMAIL_VERIFIED=false` with allowed domains and a single-tenant issuer. |
 
-`hangar doctor` warns when someone has no refresh token. Without one, their tokens stop after the stale limit.
+`hangar doctor` fails when someone has no refresh token. hangar then can't learn that they left, and their tokens
+stop after the stale limits.
