@@ -49,7 +49,8 @@ The checks run only in `release.yml` as it is at the tag's commit. A tag on a co
 has no `check` job, and would still publish images. A manual run from another branch runs that branch's workflow.
 So the gate needs one setting no file in the repo can make:
 
-- **A tag ruleset on `v*`.** In the repository's rules, only the owner may create, update or delete `v*` tags.
+- **A tag ruleset on `v*`.** It blocks creating, updating and deleting `v*` tags. Its sole bypass is a deploy key
+  kept on the owner's machine; no role, user or app may bypass it.
 
 hangar's own sandboxes can't push tags anyway: the [git gateway](../security/git-gateway.md) refuses them unless
 `HANGAR_GATEWAY_ALLOW_TAGS` is set. Local Claude Code sessions push as the owner's account, though. The ruleset is
