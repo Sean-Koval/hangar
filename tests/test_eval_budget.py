@@ -117,6 +117,7 @@ async def test_a_members_trials_are_held_to_the_deploys_job_budget(jobs, world):
         people.remove(jobs.store, "mem")
 
 
+@needs_tools
 async def test_running_trials_finish_but_no_new_trial_starts_past_the_cap(jobs, world, monkeypatch):
     exp = experiments.submit(jobs, _spec(world, trials=3, usd=None, parallel=1), Caller("svc", "svc"))
     for _ in range(400):  # the first trial is running
