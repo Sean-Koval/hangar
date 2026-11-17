@@ -57,7 +57,7 @@ registration. It revokes nothing, suspends those people instead, and `hangar doc
 sign-in lifts it.
 
 Past that grace, hangar suspends them too. A disabled or suspended person gets nothing through the relay, Tower
-passports, Slack, GitHub or Jira. Nor does anyone who never signed in.
+passports, Slack, GitHub (whatever repo access they kept) or Jira. Nor does anyone who never signed in.
 
 The tokens of people who never signed in through SSO stop too. `HANGAR_SSO_REQUIRED=false` opts out during a
 rollout. List service people, such as a CI bot, in `HANGAR_SSO_EXEMPT_PEOPLE`.

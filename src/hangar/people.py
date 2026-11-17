@@ -209,6 +209,15 @@ def deprovisioned(store: Store, person_id: str | None) -> str | None:
     return None
 
 
+def left(store: Store, source: str, external_id: str | int | None) -> str | None:
+    """Why the person an account elsewhere is linked to may no longer act (`deprovisioned`), or None. A front door
+    that otherwise trusts the account for what it holds there (repo write access on GitHub, a workspace seat in
+    Slack) asks this first, so a leaver who kept that access is refused rather than treated as an outsider
+    (--- KAN-294)."""
+    p = resolve_external(store, source, external_id, include_deprovisioned=True)
+    return deprovisioned(store, p.id) if p is not None else None
+
+
 def resolve_external(store: Store, source: str, external_id: str | int | None, *,
                      include_deprovisioned: bool = False) -> Person | None:
     """The person an account elsewhere is linked to, for a front door to attribute a job (`Caller(...,

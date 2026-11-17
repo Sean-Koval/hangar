@@ -1721,6 +1721,17 @@ def parse_command(body: str) -> tuple[dict[str, str], str]:
     return opts, text
 
 
+def _github_leaver(svc: JobService, user: Any, login: str, target: str) -> dict[str, Any] | None:
+    """--- KAN-294: refuse a GitHub account whose linked person the identity provider stopped. Repo write access
+    outlives a leaver's SSO, so without this they would fall back to the trust rule and act as the team."""
+    uid = user.get("id") if isinstance(user, dict) else None
+    if (why := people.left(svc.store, "github", uid)) is None:
+        return None
+    svc.admission.refused(f"owner:github:{login}", f"github:{login}", "github.refused", target,
+                          why="deprovisioned", detail=why)
+    return {"ignored": f"{login}'s hangar access has ended"}
+
+
 async def handle_github(svc: JobService, event: str, delivery: str | None, payload: dict[str, Any]) -> dict[str, Any]:
     """Turn a verified GitHub webhook into a job or a follow-up (spec 0009 §5.5)."""
     from hangar.github import MARKER
@@ -1760,6 +1771,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 (svc.settings.github_trigger_label, svc.settings.env_setup_label):  # --- autoinstall
             return {"ignored": "not the trigger label"}
         sender = (payload.get("sender") or {}).get("login", "unknown")
+        if (gone := _github_leaver(svc, payload.get("sender"), sender, f"github:{repo}#{number}")) is not None:
+            return gone
         linked = people.resolve_external(svc.store, "github", (payload.get("sender") or {}).get("id"))  # --- review
         trusted = linked is not None or await svc.trust.labeler_trusted(sender, issue)  # --- review: acts as them
     elif event == "issue_comment":
@@ -1768,6 +1781,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         if payload.get("action") != "created" or MARKER in body or not body.lstrip().startswith("/hangar"):
             return {"ignored": "not a /hangar comment"}
         sender = (c.get("user") or {}).get("login", "unknown")
+        if (gone := _github_leaver(svc, c.get("user"), sender, f"github:{repo}#{number}")) is not None:
+            return gone
         linked = people.resolve_external(svc.store, "github", (c.get("user") or {}).get("id"))  # --- review
         trusted = linked is not None or await svc.trust.trusted(sender, c.get("author_association"))  # --- review
         opts, extra = parse_command(body)
@@ -1829,8 +1844,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     labels = ", ".join(lb.get("name", "") for lb in issue.get("labels") or [])
     author = (issue.get("user") or {}).get("login", "?")
     assoc = issue.get("author_association", "NONE")
-    author_trusted = await svc.trust.trusted(author, assoc) or \
-        people.resolve_external(svc.store, "github", (issue.get("user") or {}).get("id")) is not None  # --- review
+    author_id = (issue.get("user") or {}).get("id")
+    author_trusted = people.left(svc.store, "github", author_id) is None and (  # --- KAN-294: a leaver's text isn't
+        await svc.trust.trusted(author, assoc)  # vetted, whatever access they kept
+        or people.resolve_external(svc.store, "github", author_id) is not None)  # --- review
     context = [ContextItem(name=f"issue-{number}.md", kind="issue", untrusted=not author_trusted, content=(
         f"# {title}\n\n{issue.get('body') or '(no description)'}\n\n---\n{issue.get('html_url', '')}\n"
         f"Opened by {author} ({assoc.lower()})" + (f"; labels: {labels}" if labels else "")))]
@@ -1840,6 +1857,7 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
             # Only trusted people's comments: anyone can comment on a public issue, and comments steer the agent.
             comments = [c for c in await gh.issue_comments(repo, number)
                         if MARKER not in (c.get("body") or "")
+                        and people.left(svc.store, "github", (c.get("user") or {}).get("id")) is None  # KAN-294
                         and await svc.trust.trusted((c.get("user") or {}).get("login"), c.get("author_association"))]
             if comments:
                 context.append(ContextItem(name=f"issue-{number}-comments.md", kind="issue", content="\n\n".join(

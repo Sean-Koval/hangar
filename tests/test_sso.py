@@ -740,6 +740,19 @@ def test_break_glass_is_the_bootstrap_tokens_id_not_its_name(make, idp):
     assert break_glass_token_id(h.store) is None and h.auth.principal(again) is None
 
 
+def test_the_bootstrap_token_is_pinned_at_startup(make, idp):
+    """A store from before the id was recorded gets it pinned when hangar starts, not on the first gated request:
+    a token named like it and minted before any request can't be the one pinned."""
+    from hangar.auth import BOOTSTRAP_KV
+
+    c, h = make()
+    h.store.kv_delete(BOOTSTRAP_KV)
+    h.auth.create("bootstrap-admin")
+    first = min((t for t in h.store.list(ApiToken) if t.name == "bootstrap-admin"), key=lambda t: t.created_at)
+    assert h.auth.ensure_bootstrap() is None  # what the server's startup calls
+    assert h.store.kv_get(BOOTSTRAP_KV) == first.id
+
+
 def test_a_refusal_is_logged_escaped_and_audited_at_a_bounded_rate(make, idp, caplog):
     c, h = make()
     r = c.get("/auth/sso/callback?error=x%0Afake%20log%20line")

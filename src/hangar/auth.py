@@ -220,8 +220,10 @@ class TokenAuth:
         return name if "admin" in scopes or scope in scopes else None
 
     def ensure_bootstrap(self) -> str | None:
-        """If no admin token is configured and no tokens exist, mint one and return it (shown once)."""
+        """If no admin token is configured and no tokens exist, mint one and return it (shown once). Otherwise pin
+        which token is the bootstrap one now, at startup, rather than on the first gated request (--- KAN-294)."""
         if self._admin_hash or self.store.list(ApiToken):
+            break_glass_token_id(self.store)
             return None
         raw, tok = self.create(BOOTSTRAP_NAME)
         self.store.kv_set(BOOTSTRAP_KV, tok.id, durable=True)  # --- KAN-294: break-glass is this id, not a name
