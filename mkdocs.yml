@@ -197,6 +197,7 @@ nav:
           - Harness locks:
               - harness-lock.md
               - Thaw and drift: harness-lock/thaw.md
+              - Hook scripts: harness-lock/hook-scripts.md
           - Codex plugin hooks: codex-plugin-hooks.md
           - Computer use:
               - computer-use.md

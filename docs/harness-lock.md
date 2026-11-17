@@ -85,8 +85,8 @@ form (`harness_lock.identity`, `manifest.section_digest`):
 | `permissions.approvals` | `binding.permissions.approvals` |
 
 So a lock frozen from a turn has that turn's `harness_digest`, and a turn that runs from the lock reports it again.
-The name, revision, paths, provenance (`source`, `pack`), the model policy and native fragments that carry no hooks
-are not identity: renaming a harness or moving a file doesn't change it. `hangar harness check` prints it.
+The name, revision, paths, provenance (`source`, `pack`) and the model policy are not identity. Native files count
+through a settings file's hooks, which [pin the hook scripts](harness-lock/hook-scripts.md). `hangar harness check` prints it.
 
 ## Freezing a turn
 
