@@ -74,7 +74,11 @@ _LIVE_SANDBOX = {SandboxState.PENDING, SandboxState.STARTING, SandboxState.RUNNI
 
 
 class PurgeBlocked(RuntimeError):
-    """The person still has live work: stop it first."""
+    """The person still has live work: stop it first. `message` is the plain answer the API gives."""
+
+    def __init__(self, person_id: str, live: list[str]):
+        self.message = f"{person_id} still has live work; stop it first: {', '.join(live[:20])}"
+        super().__init__(self.message)
 
 
 # ---------------------------------------------------------------------------- the audit chain
@@ -370,7 +374,7 @@ async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -
     if person is None and not any(counts.values()) and not named:
         raise KeyError(f"hangar holds nothing about '{person_id}'")
     if live := _live(found):
-        raise PurgeBlocked(f"{person_id} still has live work; stop it first: {', '.join(live[:20])}")
+        raise PurgeBlocked(person_id, live)
     exported = sorted(i.key for i in found["outbox"] if i.state == "done")
     report: dict[str, Any] = {"person": person_id, "dry_run": dry_run, "deleted": counts,
                               "person_record": person is not None, "exported_objects": exported, "errors": []}
@@ -537,7 +541,7 @@ def mount(app: Any, h: Any, admin: Any) -> None:
         try:
             return await purge(h, str(body.get("person") or ""), who, dry_run=bool(body.get("dry_run")))
         except PurgeBlocked as e:
-            return JSONResponse({"error": str(e)}, status_code=409)
+            return JSONResponse({"error": e.message}, status_code=409)  # built from record names, no trace
 
     @app.get("/api/admin/export/jobs/{job_id}")
     async def admin_export_job(job_id: str, who: str = admin):
