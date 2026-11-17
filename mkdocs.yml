@@ -115,6 +115,8 @@ nav:
           - "Incident: a full disk or quota": runbooks/disk-and-quota.md
           - "Incident: a bad deploy": runbooks/bad-deploy.md
           - "Incident: a deploy waiting too long": runbooks/deploy.md
+          - Backups and recovery objectives: runbooks/recovery.md
+          - Recovery drills: runbooks/drills.md
           - Onboarding a team: runbooks/onboarding.md
           - The per-repo checklist: runbooks/repo-checklist.md
           - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md

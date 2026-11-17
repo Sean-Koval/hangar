@@ -24,3 +24,16 @@ it does all three procedures. Later tags each carry one release.
 Pushing a `v*` tag runs two workflows. `release.yml` publishes the control-plane image and the harness packs to
 GHCR, with a GitHub release that lists them by digest. `deploy.yml` builds the tagged commit and waits for the
 owner's approval to deploy it ([deploying with deploy.yml](../upgrading.md#deploying-with-deployyml)).
+
+## Making a tag
+
+The suite's release checklist is the same for hangar, Tower and flightdeck. For hangar:
+
+1. Move the Unreleased entries in `CHANGELOG.md` under `## vX.Y.Z`, and set `version` in `pyproject.toml` to match.
+2. Merge that to main, and wait for `ci.yml` to pass on the merge commit.
+3. Run `python3 scripts/release_check.py vX.Y.Z` there. It prints the notes, or what is wrong.
+4. Tag the merge commit and push the tag: `git tag -a vX.Y.Z -m vX.Y.Z <sha> && git push origin vX.Y.Z`.
+
+`release.yml` checks it all again before it builds anything. The tag must be on main, CI must have passed on its
+commit, and the version and changelog must match. The [upgrade drill](../runbooks/drills.md) from the previous tag
+must pass too. After the deploy, check that the running image's tag is the one you pushed.

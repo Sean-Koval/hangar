@@ -35,7 +35,47 @@ env:
   PACKS: ghcr.io/sean-koval/hangar-packs
 
 jobs:
+  # KAN-145: the suite's release checklist, before anything is built. The tag is on main, CI passed on its commit,
+  # pyproject.toml and CHANGELOG.md agree with it, and (KAN-143) the upgrade from the previous tag and both
+  # rollbacks pass the drill (docs/runbooks/drills.md).
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+      - name: The tag is on main
+        run: git merge-base --is-ancestor HEAD origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+      - name: The tag matches the version and the changelog
+        run: python3 scripts/release_check.py "$TAG" > /dev/null
+      - name: CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          n=$(gh run list --workflow ci.yml --commit "$sha" --status success --json databaseId --jq length)
+          [ "$n" -gt 0 ] || { echo "::error::no successful ci.yml run on $sha: wait for it, or run ci.yml there"; exit 1; }
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: The upgrade from the previous tag, and both rollbacks
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)
+          if [ -z "$prev" ]; then echo "no earlier tag: nothing to upgrade from"; exit 0; fi
+          uv sync --locked
+          uv run python scripts/ops/drill.py upgrade --from "$prev" --out drill.json
+          uv run python scripts/ops/drill.py restore --out restore.json
+          { echo "## Drills"; echo '```'; cat drill.json restore.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   control-plane:
+    needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -105,6 +145,7 @@ jobs:
           sha: ${{ steps.commit.outputs.sha }}
 
   packs:
+    needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
