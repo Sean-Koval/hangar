@@ -22,6 +22,9 @@ SSO is off by default. With it off, people paste a token, as before.
 
 The provider's verified email maps to a hangar person. Link it with `hangar person link <id> email <address>`.
 
+A refused or failed sign-in shows the person only a reference. The reason is in the audit log under it, as
+`sso.refused` or `sso.unavailable`.
+
 An email linked to nobody is refused. `HANGAR_SSO_DEFAULT_ROLE=member` makes it a new member instead. That needs
 `HANGAR_SSO_ALLOWED_DOMAINS`, so not every account the provider knows gets in.
 

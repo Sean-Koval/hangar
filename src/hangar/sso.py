@@ -765,10 +765,17 @@ def mount(app, h: Hangar) -> None:
     if not sso.on:
         return
 
-    def refused(e: Exception, who: str | None = None):
-        sso.audit(who or "sso", "sso.refused", None, why=str(e)[:300])
-        why = html.escape(str(e), quote=False)
-        return _page("Sign-in refused", f'<p>{why}</p><p><a href="/">Back to hangar</a></p>', status=403)
+    def refused(e: Exception, who: str | None = None, *, status: int = 403):
+        """The person sees a reference, not the reason: the reason (the provider's answer, an email, a claim) goes
+        to the audit log and the server log under that reference, where an admin looks it up."""
+        ref = "sso_" + secrets.token_hex(6)
+        sso.audit(who or "sso", "sso.refused" if status == 403 else "sso.unavailable", None, ref=ref,
+                  why=str(e)[:300])
+        log.warning("sso: sign-in %s (%s): %s", "refused" if status == 403 else "unavailable", ref, e)
+        title = "Sign-in refused" if status == 403 else "Sign-in unavailable"
+        body = (f"<p>hangar couldn't sign you in. Try again, or give an admin this reference: <code>{ref}</code>"
+                '</p><p><a href="/">Back to hangar</a></p>')
+        return _page(title, body, status=status)
 
     def cli_params(request: Request) -> dict[str, Any] | None:
         port, challenge = request.query_params.get("cli_port"), request.query_params.get("cli_challenge")
@@ -835,7 +842,7 @@ def mount(app, h: Hangar) -> None:
         try:
             meta = await sso.metadata()
         except Unreachable as e:
-            return _page("Sign-in unavailable", f"<p>{html.escape(str(e), quote=False)}</p>", status=503)
+            return refused(e, status=503)
         state, nonce, verifier, browser = (secrets.token_urlsafe(32) for _ in range(4))
         h.store.kv_set_json(f"{_KV}pending:{_sha(state)}", {
             "nonce": nonce, "verifier": verifier, "browser": _sha(browser), "cli": cli,

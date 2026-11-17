@@ -174,6 +174,14 @@ def sign_in(c: TestClient, idp: FakeIdP, email: str = "alice@corp.example", quer
     return c.get(f"/auth/sso/callback?code={code}&state={state}")
 
 
+def why(h, r: httpx.Response) -> str:
+    """A refusal page shows only a reference; the reason is in the audit log under it."""
+    assert r.status_code in (403, 503) and "Sign-in" in r.text
+    ref = r.text.split("<code>")[1].split("</code>")[0]
+    [e] = [e for e in h.store.audit_tail(200) if e.detail.get("ref") == ref]
+    return e.detail["why"]
+
+
 def session_cookie(r: httpx.Response) -> str:
     return next(v for v in r.headers.get_list("set-cookie") if v.startswith(sso.SESSION_COOKIE + "="))
 
@@ -251,13 +259,22 @@ def test_an_expired_session_stops_working(make, idp):
 
 
 def test_a_sign_in_belongs_to_the_browser_that_started_it(make, idp):
-    c, _ = make()
+    c, h = make()
     r = c.get("/auth/sso/login")
     code, state = idp.approve(r.headers["location"], "alice@corp.example")
     c.cookies.clear()  # the victim's browser: no pending cookie (login CSRF)
     r = c.get(f"/auth/sso/callback?code={code}&state={state}")
-    assert r.status_code == 403 and "another browser" in r.text
+    assert r.status_code == 403 and "another browser" in why(h, r)
     assert r.headers.get("content-security-policy")
+
+
+def test_an_unreachable_provider_shows_a_reference_not_the_error(make, idp):
+    c, h = make()
+    idp.down = True
+    r = c.get("/auth/sso/login")
+    assert r.status_code == 503 and "ConnectError" not in r.text and "idp.example" not in r.text
+    assert "discovery document" in why(h, r)
+    assert any(e.action == "sso.unavailable" for e in h.store.audit_tail(20))
 
 
 def test_a_state_works_once(make, idp):
@@ -273,13 +290,14 @@ def test_a_tampered_or_foreign_id_token_is_refused(make, idp, monkeypatch):
     real = idp.id_token
     monkeypatch.setattr(idp, "id_token", lambda e, n=None, **o: real(e, n, aud="someone-else"))
     r = sign_in(c, idp)
-    assert r.status_code == 403 and "another application" in r.text
+    assert r.status_code == 403 and "another application" in why(h, r)
+    assert "another application" not in r.text and "corp.example" not in r.text  # the page names no reason
     other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     monkeypatch.setattr(idp, "id_token", lambda e, n=None, **o: jwt_rs(other, {"iss": ISSUER, "aud": CLIENT}))
     r = sign_in(c, idp)
-    assert r.status_code == 403 and "signature" in r.text
+    assert r.status_code == 403 and "signature" in why(h, r)
     monkeypatch.setattr(idp, "id_token", lambda e, n=None, **o: real(e, "not-the-nonce"))
-    assert "this sign-in" in sign_in(c, idp).text
+    assert "this sign-in" in why(h, sign_in(c, idp))
     assert c.get("/api/me").status_code == 401
 
 
@@ -304,7 +322,7 @@ def test_an_unknown_email_gets_nothing_by_default(make, idp):
     c, h = make()
     idp.user("mallory@corp.example")
     r = sign_in(c, idp, "mallory@corp.example")
-    assert r.status_code == 403 and "isn't linked" in r.text
+    assert r.status_code == 403 and "isn't linked" in why(h, r)
     assert people.resolve_external(h.store, "email", "mallory@corp.example") is None
 
 
@@ -315,15 +333,15 @@ def test_an_unknown_email_may_become_a_member_in_an_allowed_domain(make, idp):
     p = people.resolve_external(h.store, "email", "bob.smith@corp.example")
     assert p is not None and p.role == "member" and p.id == "bob.smith"
     idp.user("eve@elsewhere.example")
-    assert "allowed domain" in sign_in(c, idp, "eve@elsewhere.example").text
+    assert "allowed domain" in why(h, sign_in(c, idp, "eve@elsewhere.example"))
 
 
 def test_unverified_emails_and_other_groups_are_refused(make, idp):
-    c, _ = make(sso_required_group="hangar-users")
+    c, h = make(sso_required_group="hangar-users")
     idp.user("alice@corp.example", verified=False)
-    assert "hasn't verified" in sign_in(c, idp).text
+    assert "hasn't verified" in why(h, sign_in(c, idp))
     idp.user("alice@corp.example", groups=["sales"])
-    assert "isn't in the group" in sign_in(c, idp).text
+    assert "isn't in the group" in why(h, sign_in(c, idp))
 
 
 def test_a_reused_email_with_another_subject_is_refused(make, idp):
@@ -331,7 +349,7 @@ def test_a_reused_email_with_another_subject_is_refused(make, idp):
     assert sign_in(c, idp).status_code == 200
     idp.user("alice@corp.example", sub="someone-new")
     r = sign_in(c, idp)
-    assert r.status_code == 403 and "different account" in r.text
+    assert r.status_code == 403 and "different account" in why(h, r)
     assert c.delete("/api/sso/bindings/alice", headers={"Authorization": "Bearer break-glass"}).status_code == 200
     assert sign_in(c, idp).status_code == 200
 
@@ -544,13 +562,13 @@ def test_an_admins_first_sign_in_needs_a_vouched_email(make, idp):
     people.link(h.store, "root", "email", "root@corp.example")
     idp.user("root@corp.example", verified=None)
     r = sign_in(c, idp, "root@corp.example")
-    assert r.status_code == 403 and "xms_edov" in r.text
+    assert r.status_code == 403 and "xms_edov" in why(h, r)
     assert sign_in(c, idp).status_code == 200  # a member is fine (the domain is allowed)
     real = idp.id_token
     idp.id_token = lambda e, n=None, **o: real(e, n, xms_edov=True)
     assert sign_in(c, idp, "root@corp.example").status_code == 200
     idp.id_token = lambda e, n=None, **o: real(e, n, xms_edov=False)
-    assert "isn't verified" in sign_in(c, idp, "root@corp.example").text
+    assert "isn't verified" in why(h, sign_in(c, idp, "root@corp.example"))
 
 
 def test_iap_cant_check_a_group():
