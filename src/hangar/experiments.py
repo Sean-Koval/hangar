@@ -68,7 +68,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from hangar import people
+from hangar import jobbudget, people
 from hangar.models import JOB_TERMINAL, Budget, ContextItem, Job, JobBudget, JobState, now
 
 if TYPE_CHECKING:
@@ -905,7 +905,10 @@ def _start_trial(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
     try:
         child = jobs._submit(req, Caller(job.requester, job.owner, person=job.person),
                              source="shadow" if spec.source == "shadow" else "experiment",  # --- #183
-                             untrusted_source=job.untrusted_source)
+                             untrusted_source=job.untrusted_source,
+                             # --- KAN-290: a trial's job budget is held to the repo policy's or the deploy's
+                             # unless the experiment's submitter may raise it (JobService.submit set the label)
+                             raise_budget=job.labels.get(jobbudget.RAISE_LABEL) == "yes")
     except JobError as e:
         t.state, t.outcome, t.reason, t.finished_at = "done", "failed", f"could not start: {e}", now()
         return

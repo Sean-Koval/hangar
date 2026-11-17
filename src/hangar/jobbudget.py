@@ -58,6 +58,9 @@ def resolve(req: JobBudget | None, policy: RepoPolicy | None, settings: Any, def
     return merge(req, policy.job_budget if policy else None, base)
 
 
+RAISE_LABEL = "hangar.budget.raise"  # on an experiment's job: "yes" when its submitter may raise job budgets
+
+
 def ceiling(job_budget: JobBudget | None, cap: JobBudget | None) -> JobBudget | None:
     """KAN-290: per field, the lower of the job's and the cap's, so a caller can lower the repo policy's or the
     deploy's job budget but not raise it. A field the cap leaves unset stays the job's."""

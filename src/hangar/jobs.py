@@ -434,8 +434,10 @@ class JobService:
         # --- front-door-auth: every front door's submissions are rate limited, capped and audited when refused
         with self.admission.refusals(caller, source):
             self.admission.admit(req, caller, source, untrusted=approval is not None)
-            return self._submit(req, caller, source, source_ref, approval, untrusted_source,
-                                raise_budget=self._may_raise_job_budget(caller))
+            may = self._may_raise_job_budget(caller)
+            if req.labels.get(experiments.KIND_LABEL) == experiments.KIND:  # KAN-290: its trials are held as it is
+                req = req.model_copy(update={"labels": {**req.labels, jobbudget.RAISE_LABEL: "yes" if may else "no"}})
+            return self._submit(req, caller, source, source_ref, approval, untrusted_source, raise_budget=may)
 
     def _may_raise_job_budget(self, caller: Caller) -> bool:
         """KAN-290: only an admin's own submission may ask for more than the repo policy's or the deploy's job
