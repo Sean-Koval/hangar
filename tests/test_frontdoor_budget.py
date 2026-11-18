@@ -280,6 +280,25 @@ async def test_monthly_caps_hold_new_work_beside_the_daily_ones(jobs, world):  #
     jobs.settings.person_max_usd_per_month = None
 
 
+async def test_a_new_job_can_spend_only_what_is_left_of_its_monthly_caps(jobs, world):  # noqa: F811
+    """KAN-543: what the monthly test used to show only through a race, checked directly. A job admitted under a
+    monthly cap gets a job budget of what the cap leaves, the least of the repo's and the person's."""
+    made = []
+    try:
+        update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=0.5), "admin")
+        made.append(j := _submit(jobs, world, deliver="none"))
+        assert j.job_budget.max_cost_usd == pytest.approx(0.5)
+        jobs.settings.person_max_usd_per_month = 0.2
+        made.append(j := jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                               deliver="none"), Caller("@ana:laptop", "tok-a", person="ana")))
+        assert j.job_budget.max_cost_usd == pytest.approx(0.2)
+    finally:
+        jobs.settings.person_max_usd_per_month = None
+        update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=None), "admin")
+        for j in made:
+            jobs.cancel(j.id, "t")
+
+
 def test_month_start_is_the_first_of_the_month_in_the_zone():
     from datetime import datetime
     from zoneinfo import ZoneInfo
