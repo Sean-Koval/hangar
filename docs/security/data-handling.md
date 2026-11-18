@@ -72,15 +72,14 @@ Their audit entries stay. Their id, tokens and linked accounts are replaced with
 It is the same in every entry, so a reviewer can still follow them. Its salt is in the vault, so
 the database alone can't confirm a guessed name.
 
-Names are replaced in `actor`, `target` and detail fields such as `person`. Elsewhere, only a value that is the name
-as a whole is replaced. A common name such as `admin` needs a kind in front. Their display
+Names are replaced in `actor`, `target` and detail fields such as `person`. Elsewhere, only a whole value is replaced. A common name such as `admin` needs a kind in front. Their display
 name is replaced only in entries that already name them.
 
 A purge refuses while the person has live work: a running session or job, a sandbox or a leased credential. It refuses the owner and any admin; make an admin a member first.
 
-Jobs and sessions their tokens or linked accounts own go too, as do session files still waiting for the outbox.
+Jobs and sessions their tokens or accounts own go too, unless they name another person, and so do session files awaiting the outbox. Branches they created stay, credited to nobody.
 
-After their tokens and links, it rewrites their audit entries before deleting any other record. If a step fails, or a record of theirs
+It rewrites their audit entries before deleting other records. If a step fails, or a record of theirs
 appears meanwhile, the person stays; run it again.
 
 The purge itself is audited (`admin.purge`) under the stand-in.

@@ -8,6 +8,7 @@ a laptop or a single VM. On GKE the file lives on a PersistentVolume (one replic
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import logging
 import sqlite3
@@ -20,7 +21,8 @@ from typing import Any, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
-from hangar.auditchain import audit_digest, audit_link, audit_redaction  # --- KAN-296: the audit chain's HMACs
+# --- KAN-296: the audit chain's HMACs
+from hangar.auditchain import REDACTION_V2, audit_digest, audit_link, audit_redaction, audit_redaction_v1
 from hangar.clouddoctor import DoctorFinding  # --- clouddoctor: what the Cloud Doctor found
 from hangar.envrequests import EnvRequest  # --- computer: requests agents file with their owners
 from hangar.flightrec import FlightRecord  # --- clouddoctor: failed and slow runs
@@ -62,6 +64,7 @@ audit_log = logging.getLogger("hangar.audit")
 # still holds, and the new JSON is checked against its own HMAC (`rdigest`) instead (datahandling.verify_chain).
 AUDIT_ANCHOR = "audit.chain.anchor"
 CHAIN_STARTED = "audit.chain_started"
+REDACTIONS_REBOUND = "audit.redactions_rebound"  # --- KAN-553: the one-time rebind of first-form redactions
 AUDIT_PRUNED = "audit.pruned"
 _CHAIN_COLUMNS = (("digest", "TEXT"), ("hash", "TEXT"), ("redacted", "INTEGER NOT NULL DEFAULT 0"), ("rdigest", "TEXT"))
 
@@ -453,6 +456,7 @@ class Store:
         existed are linked only by the migration that adds its columns (an upgrade, or a new database), and that
         start is audited. Never otherwise: a row whose link was cleared later stays a break for `hangar doctor`,
         whatever else in the database was changed with it."""
+        logged: list[tuple[int, str | None, str]] = []
         with self._lock:
             self._audit_key = key
             have = {r[1] for r in self._db.execute("PRAGMA table_info(audit)").fetchall()}
@@ -479,11 +483,36 @@ class Store:
                     digest = audit_digest(key, row[0] or "")
                     prev = audit_link(key, prev, rid, digest)
                     self._db.execute("UPDATE audit SET digest=?, hash=? WHERE id=?", (digest, prev, rid))
+                # --- KAN-553: rows a purge redacted under the first form, whose HMAC covered the JSON alone, are
+                # rebound to their id and first digest, once: the rebind is itself an entry in the chain, so it
+                # can't be removed to run again, and a first-form pair copied in later (from an old backup) stays
+                # a break. One that doesn't match the first form stays a break too.
+                rebound: list[int] = []
+                # a durable flag beside the entry, so retention deleting the entry doesn't run it again
+                done = self._db.execute("SELECT 1 FROM kv WHERE key=?", (REDACTIONS_REBOUND,)).fetchone() or \
+                    self._db.execute("SELECT 1 FROM audit WHERE json_extract(data, '$.action') = ? LIMIT 1",
+                                     (REDACTIONS_REBOUND,)).fetchone()
+                for rid, data, digest, rdigest in [] if done else self._db.execute(
+                        "SELECT id, data, digest, rdigest FROM audit WHERE redacted=1 AND rdigest IS NOT NULL "
+                        "AND rdigest NOT LIKE ?", (REDACTION_V2 + "%",)).fetchall():
+                    if hmac.compare_digest(rdigest, audit_redaction_v1(key, data or "")):
+                        self._db.execute("UPDATE audit SET rdigest=? WHERE id=?",
+                                         (audit_redaction(key, rid, digest or "", data or ""), rid))
+                        rebound.append(rid)
+                if not done:
+                    self._db.execute("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING",
+                                     (REDACTIONS_REBOUND, json.dumps({"rows": len(rebound)})))
+                if rebound:
+                    logged.append(self._audit_write(AuditEvent(
+                        actor="system", action=REDACTIONS_REBOUND, target=str(rebound[0]),
+                        detail={"rows": len(rebound), "last": rebound[-1]})))
                 if upgrade:  # audited, so the copy off the pod shows when and how many; doctor allows only one
                     rid, link, data = self._audit_write(AuditEvent(
                         actor="system", action=CHAIN_STARTED, target=str(ids[0] if ids else 0),
                         detail={"rows": len(ids)}))
             if upgrade:
+                self._audit_log(data, rid, link)
+            for rid, link, data in logged:
                 self._audit_log(data, rid, link)
 
     def _audit_prev(self) -> str:
@@ -548,16 +577,16 @@ class Store:
         after = after_id
         while True:
             with self._lock:
-                rows = self._db.execute("SELECT id, data FROM audit WHERE id > ? ORDER BY id LIMIT ?",
+                rows = self._db.execute("SELECT id, data, digest FROM audit WHERE id > ? ORDER BY id LIMIT ?",
                                         (after, batch)).fetchall()
                 if not rows:
                     return changed
                 with self._atomic(True):
-                    for rid, data in rows:
+                    for rid, data, digest in rows:
                         new = rewrite(data or "")
                         if new != data:
                             self._db.execute("UPDATE audit SET data=?, redacted=1, rdigest=? WHERE id=?",
-                                             (new, audit_redaction(key, new), rid))
+                                             (new, audit_redaction(key, rid, digest or "", new), rid))
                             changed.append(rid)
             after = rows[-1][0]
 
