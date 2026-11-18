@@ -25,6 +25,7 @@ makes claims near-instant for big repos.
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -363,6 +364,9 @@ class EnvSpec(BaseModel):
     services: dict[str, Service] = Field(default_factory=dict)
     ports: list[PreviewPort] = Field(default_factory=list, max_length=16)
     source_dir: Path | None = Field(default=None, exclude=True)
+    # --- KAN-304: a spec saved over a shipped one: the shipped spec's directory, where a relative path (skill,
+    # plugin) not found beside the saved file is looked up. The API can't upload those files.
+    _shipped_dir: Path | None = PrivateAttr(default=None)
     # Resolved by the fleet before a provider sees the spec: harness name -> pack image to mount read-only.
     packs: dict[str, str] = Field(default_factory=dict, exclude=True)
 
@@ -486,7 +490,30 @@ def skill_dir(spec: EnvSpec, rel: str) -> Path:
     """The directory of the spec's skill at `rel`: relative to the file that declared it (a parent's, for an
     inherited skill), contained in that file's directory."""
     base = next((sk._base for sk in spec.skills if sk.path == rel and sk._base is not None), None)
-    return _contained_path(base or spec.source_dir or Path("."), rel)
+    return _contained_path(base or spec_dir(spec, rel), rel)
+
+
+def spec_dir(spec: EnvSpec, rel: str) -> Path:
+    """The directory a relative path of the spec's own is resolved in: beside its file, or, for a spec saved over a
+    shipped one, the shipped spec's directory when only that has it (KAN-304). Not a containment check."""
+    here = spec.source_dir or Path(".")
+    there = spec._shipped_dir
+    if there is not None and not (here / rel).exists() and (there / rel).exists():
+        return there
+    return here
+
+
+def check_paths(spec: EnvSpec) -> None:
+    """Every skill path the spec names resolves (KAN-304): a ValueError, which the API answers with a 400. Not for a
+    prebuilt image, which never reads them."""
+    if spec.image:
+        return
+    for sk in spec.skills:
+        if sk.path:
+            try:
+                skill_dir(spec, sk.path)
+            except FileNotFoundError as e:
+                raise ValueError(f"environment {spec.name}: {e}") from None
 
 
 def _contained_path(root: Path, rel: str) -> Path:
@@ -582,10 +609,13 @@ class EnvCatalog:
         self.save_dir = save_dir
         self.dirs = [*dirs, save_dir] if save_dir is not None and save_dir not in dirs else list(dirs)
         self._raw: dict[str, tuple[dict[str, Any], Path]] = {}
+        # KAN-304: a spec saved over a shipped one -> the shipped spec's directory, where its relative paths live
+        self._shipped: dict[str, Path] = {}
         self.reload()
 
     def reload(self) -> None:
         self._raw.clear()
+        self._shipped.clear()
         for d in self.dirs:
             if not d.exists():
                 continue
@@ -593,7 +623,15 @@ class EnvCatalog:
                 data = yaml.safe_load(f.read_text()) or {}
                 name = data.get("name") or f.stem
                 data["name"] = name
-                self._raw[name] = (data, f.parent)
+                self._put(name, data, f.parent)
+
+    def _put(self, name: str, data: dict[str, Any], where: Path) -> None:
+        """Record `name`'s spec as read from `where`, remembering the shipped spec it overrides (KAN-304)."""
+        if where == self.save_dir and name in self._raw and (old := self._raw[name][1]) != where:
+            self._shipped[name] = old  # only an API save: a later shipped dir still wins outright
+        elif where != self.save_dir:
+            self._shipped.pop(name, None)
+        self._raw[name] = (data, where)
 
     def names(self) -> list[str]:
         return sorted(self._raw)
@@ -603,13 +641,25 @@ class EnvCatalog:
         name = data["name"]
         if not NAME_RE.match(str(name)):
             raise ValueError(f"invalid environment name '{name}': lowercase letters, digits, '.', '_', '-'")
-        target = save_dir or self.save_dir or (self.dirs[0] if self.dirs else Path("envs"))
-        self._raw[name] = (data, target)
-        spec = self.get(name)  # validates
+        target = self.target(save_dir)
+        spec = self.staged(name, data, target).get(name)  # validates; a refused save leaves the catalog as it was
+        check_paths(spec)  # --- KAN-304: refused now (a 400), not broken at render time
+        self._put(name, data, target)
         if save_dir is not None or self.save_dir is not None or self.dirs:
             target.mkdir(parents=True, exist_ok=True)
             (target / f"{name}.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
         return spec
+
+    def target(self, save_dir: Path | None = None) -> Path:
+        """Where a spec saved through the API/UI is written."""
+        return save_dir or self.save_dir or (self.dirs[0] if self.dirs else Path("envs"))
+
+    def staged(self, name: str, data: dict[str, Any], where: Path | None = None) -> EnvCatalog:
+        """A copy of the catalog with `data` saved as `name`, for checking a spec without saving it."""
+        scratch = copy.copy(self)
+        scratch._raw, scratch._shipped = dict(self._raw), dict(self._shipped)
+        scratch._put(name, data, where or self.target())
+        return scratch
 
     def raw(self, name: str) -> dict[str, Any]:
         return self._raw[name][0]
@@ -636,7 +686,7 @@ class EnvCatalog:
         bases: dict[str, Path | None] = {}
         if parent := data.get("extends"):
             parent_spec = self.get(parent, (*_seen, name), _merge=_merge)
-            bases = {sk.path: sk._base or parent_spec.source_dir for sk in parent_spec.skills if sk.path}
+            bases = {sk.path: sk._base or spec_dir(parent_spec, sk.path) for sk in parent_spec.skills if sk.path}
             # --- #124: a parent's default sudo (false) isn't a "no" its children inherit (heavy implies sudo)
             skip = {"source_dir"} | ({"sudo"} if "sudo" not in parent_spec.model_fields_set else set())
             merged = _merge(parent_spec.model_dump(exclude=skip), data)
@@ -648,10 +698,13 @@ class EnvCatalog:
             merged["skills"] = remove_skills(merged.get("skills") or [], remove, f"environment {name}")
         spec = EnvSpec.model_validate(merged)
         spec.source_dir = src
+        spec._shipped_dir = self._shipped.get(name)  # --- KAN-304: what a saved override's paths fall back to
         own = {sk.get("path") for sk in (data.get("skills") or []) if isinstance(sk, dict)}
         for sk in spec.skills:  # inherited: relative to the parent's file (a child saved elsewhere can't see it)
-            if sk.path and sk.path in bases and sk.path not in own:
-                sk._base = bases[sk.path]
+            if not sk.path or sk.path not in bases:
+                continue
+            if sk.path not in own or not (spec_dir(spec, sk.path) / sk.path).exists():
+                sk._base = bases[sk.path]  # KAN-304: also an inherited skill the child lists again (lists replace)
         return spec
 
 

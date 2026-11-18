@@ -366,3 +366,141 @@ def test_hangar_envs_name_the_repo_venv_for_the_check():
         spec = cat.get(name)
         assert spec.repo and spec.repo.bin == [".venv/bin"]
         assert "HANGAR_REPO_BIN=/workspace/hangar/.venv/bin" in render(spec).dockerfile
+
+
+# --- KAN-304: a spec saved over a shipped one keeps the shipped directory for its relative paths
+def _shipped_parent(tmp_path):
+    shipped, saved = tmp_path / "envs", tmp_path / "data" / "envs"
+    (shipped / "skills" / "conv").mkdir(parents=True)
+    (shipped / "skills" / "conv" / "SKILL.md").write_text("---\nname: conv\n---\nhi\n")
+    (shipped / "parent.yaml").write_text("name: parent\nharnesses: [claude-code]\nskills:\n  - path: skills/conv\n")
+    return shipped, saved
+
+
+def test_a_saved_override_of_a_shipped_spec_keeps_its_skills(tmp_path):
+    """Found live: saving `claude-python` through the API (warm_pool 0) moved its file to the data volume, and its
+    relative skill path then failed every render with "skill path not found"."""
+    from hangar.envspec import render, skill_dir
+
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "parent", "harnesses": ["claude-code"], "skills": [{"path": "skills/conv"}], "warm_pool": 0})
+    cat.add({"name": "child", "extends": "parent"})
+    conv = (shipped / "skills" / "conv").resolve()
+    for c in (cat, EnvCatalog([shipped], save_dir=saved)):  # as saved, and as read back after a restart
+        assert c.get("parent").warm_pool == 0 and skill_dir(c.get("parent"), "skills/conv") == conv
+        assert any(p.endswith("SKILL.md") for p in render(c.get("parent")).files)
+        assert skill_dir(c.get("child"), "skills/conv") == conv
+        assert any(p.endswith("SKILL.md") for p in render(c.get("child")).files)
+
+
+def test_an_override_can_still_use_a_skill_put_beside_its_saved_file(tmp_path):
+    from hangar.envspec import skill_dir
+
+    shipped, saved = _shipped_parent(tmp_path)
+    (saved / "skills" / "mine").mkdir(parents=True)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "parent", "skills": [{"path": "skills/conv"}, {"path": "skills/mine"}]})
+    assert skill_dir(cat.get("parent"), "skills/mine") == (saved / "skills" / "mine").resolve()
+
+
+def test_a_save_naming_a_missing_skill_is_refused_and_changes_nothing(tmp_path):
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    with pytest.raises(ValueError, match="skills/missing"):
+        cat.add({"name": "parent", "skills": [{"path": "skills/missing"}]})
+    assert cat.raw("parent")["skills"] == [{"path": "skills/conv"}] and cat.get("parent").source_dir == shipped
+    assert not (saved / "parent.yaml").exists()
+    with pytest.raises(ValueError, match="skills/missing"):
+        cat.add({"name": "new", "skills": [{"path": "skills/missing"}]})
+    assert "new" not in cat.names()
+
+
+def test_a_staged_spec_is_checked_as_a_save_would_be_without_touching_the_catalog(tmp_path):
+    from hangar.envspec import check_paths
+
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    data = {"name": "parent", "skills": [{"path": "skills/conv"}], "warm_pool": 0}
+    check_paths(cat.staged("parent", data).get("parent"))  # resolves against the shipped directory
+    assert "warm_pool" not in cat.raw("parent") and not (saved / "parent.yaml").exists()
+    with pytest.raises(ValueError, match="skills/nope"):
+        check_paths(cat.staged("parent", {"name": "parent", "skills": [{"path": "skills/nope"}]}).get("parent"))
+
+
+def test_a_saved_child_can_list_an_inherited_skill_again(tmp_path):
+    """Component lists replace (#132), so keeping one of the parent's skills means naming it again."""
+    from hangar.envspec import skill_dir
+
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "child", "extends": "parent", "skills": [{"path": "skills/conv"}]})
+    assert skill_dir(cat.get("child"), "skills/conv") == (shipped / "skills" / "conv").resolve()
+
+
+def test_a_later_shipped_dir_still_wins_outright(tmp_path):
+    """Only an API save keeps the shipped directory; two shipped dirs (env_dirs, locks) keep 'later wins'."""
+    from hangar.envspec import skill_dir
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        (d / "skills" / "s").mkdir(parents=True)
+        (d / "e.yaml").write_text("name: e\nskills:\n  - path: skills/s\n")
+    e = EnvCatalog([a, b]).get("e")
+    assert e.source_dir == b and skill_dir(e, "skills/s") == (b / "skills" / "s").resolve()
+
+
+def test_the_manifest_digests_an_overrides_skill_where_render_finds_it(tmp_path):
+    from hangar.manifest import declared_skills
+
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "parent", "harnesses": ["claude-code"], "skills": [{"path": "skills/conv"}], "warm_pool": 0})
+    cat.add({"name": "child", "extends": "parent"})
+    for name in ("parent", "child"):
+        assert [d["digest"] is not None for d in declared_skills(cat.get(name), "claude-code")] == [True]
+
+
+def test_a_copy_beside_the_saved_override_wins_over_the_shipped_one(tmp_path):
+    """R-hangar on KAN-304: an operator who copied and edited a skill onto the data volume (the workaround for this
+    bug) keeps their copy."""
+    from hangar.envspec import skill_dir
+
+    shipped, saved = _shipped_parent(tmp_path)
+    (saved / "skills" / "conv").mkdir(parents=True)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "parent", "skills": [{"path": "skills/conv"}], "warm_pool": 0})
+    cat.add({"name": "child", "extends": "parent"})
+    for name in ("parent", "child"):
+        assert skill_dir(cat.get(name), "skills/conv") == (saved / "skills" / "conv").resolve()
+
+
+def test_an_overrides_local_plugin_resolves_beside_it_or_in_the_shipped_dir(tmp_path):
+    from hangar import plugins
+    from tests.test_plugins import _mkt
+
+    shipped, saved = _shipped_parent(tmp_path)
+    _mkt(saved / "mkt", name="mine")
+    _mkt(shipped / "shipmkt", name="ship")
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "parent", "harnesses": ["claude-code"],
+             "plugins": [{"name": "workflow", "marketplace": "mine", "path": "mkt"},
+                         {"name": "workflow", "marketplace": "ship", "path": "shipmkt"}]})
+    spec = cat.get("parent")
+    assert plugins._root(spec, spec.plugins[0]) == (saved / "mkt").resolve()
+    assert plugins._root(spec, spec.plugins[1]) == (shipped / "shipmkt").resolve()
+
+
+def test_removing_an_override_brings_the_shipped_spec_back(tmp_path):
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "parent", "skills": [{"path": "skills/conv"}], "warm_pool": 0})
+    cat.remove("parent")
+    p = cat.get("parent")
+    assert p.source_dir == shipped and p._shipped_dir is None and "warm_pool" not in cat.raw("parent")
+
+
+def test_a_prebuilt_image_env_is_not_refused_for_a_skill_path(tmp_path):
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    cat.add({"name": "img", "image": "ghcr.io/o/agent:1", "skills": [{"path": "skills/elsewhere"}]})

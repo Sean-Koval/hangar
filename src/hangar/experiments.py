@@ -665,7 +665,7 @@ def _pin_sets(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, varia
 def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
     """What a variant's sandboxes get on top of the environment's image: skills (their files, read now, so the
     experiment keeps the version it started with) and instructions."""
-    from hangar.envspec import _contained_path, remove_skills, skill_name
+    from hangar.envspec import _contained_path, remove_skills, skill_name, spec_dir
     from hangar.jobs import JobError
     from hangar.manifest import _dir_digest
 
@@ -690,7 +690,7 @@ def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
                 skills.append({"name": ref.name, "source": "environment"})
                 continue
             try:
-                src = _contained_path(env.source_dir or Path("."), ref.path or "")
+                src = _contained_path(spec_dir(env, ref.path or ""), ref.path or "")  # --- KAN-304
             except (ValueError, FileNotFoundError) as e:
                 raise JobError(f"skill {ref.path}: {e}") from e
             files: dict[str, str] = {}
