@@ -281,6 +281,10 @@ def problems(settings) -> list[str]:
     if s.sso_mode == "iap" and not _IAP_AUD_RE.match(s.sso_iap_audience or ""):
         out.append("HANGAR_SSO_MODE=iap needs HANGAR_SSO_IAP_AUDIENCE "
                    "(/projects/<number>/global/backendServices/<id> or /projects/<number>/apps/<project id>)")
+    if s.sso_mode == "iap" and not domains(s):
+        out.append("HANGAR_SSO_MODE=iap needs HANGAR_SSO_ALLOWED_DOMAINS (the Workspace domains): IAP's header "
+                   "doesn't say whether Google vouches for the email, so without a Workspace domain (hd) to check, "
+                   "any Google account IAP lets through could claim a person's email")
     if s.sso_mode == "iap" and s.sso_required_group:
         out.append("HANGAR_SSO_REQUIRED_GROUP needs HANGAR_SSO_MODE=oidc: IAP's header carries no groups (limit the "
                    "IAP resource's access to the group instead)")
@@ -816,8 +820,15 @@ class SessionMiddleware:
             except (Refused, Unreachable) as e:
                 return await _deny(send, 401, f"IAP: {e}")
             b = binding(self.h.store, p.person) if p and p.person else None
-            if b is None or str(claims.get("email") or "").lower() != b.get("email"):
+            if b is None or str(claims.get("email") or "").lower() != b.get("email") \
+                    or str(claims.get("sub") or "") != b.get("sub"):
                 return await _deny(send, 401, "the session and the IAP sign-in are different people")
+            # --- KAN-556: each request, as at sign-in: a session made before IAP mode checked hd keeps no account
+            # outside the Workspace domains
+            email = str(claims.get("email") or "").lower()
+            if (allowed := domains(sso.settings)) and (str(claims.get("hd") or "").lower() not in allowed
+                                                      or email.rsplit("@", 1)[-1] not in allowed):
+                return await _deny(send, 401, "the IAP sign-in isn't a Workspace account of an allowed domain")
             if now() - float(b.get("verified_at") or 0) >= 60:
                 b["verified_at"] = now()
                 _put_binding(self.h.store, b)
