@@ -413,7 +413,11 @@ class SlackFrontDoor:
         if channel not in self.settings.slack_channels:
             return ("This channel isn't connected to a repo. An admin can map it in HANGAR_SLACK_CHANNELS "
                     "(docs/slack.md).")
-        if self._person(team, user, user_team) is not None:  # --- review: a linked account acts as its person
+        linked = people.resolve_external(self.store, "slack", f"{user_team or team}/{user}",
+                                         include_deprovisioned=True)
+        if linked is not None and people.deprovisioned(self.store, linked.id):  # --- KAN-294: never an outsider
+            return "Your hangar access has ended."
+        if linked is not None:  # --- review: a linked account acts as its person
             return None
         users = self.settings.slack_users
         # --- front-door-auth: in a Slack Connect channel, members of other organizations post too. They count

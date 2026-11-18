@@ -78,6 +78,9 @@ class Hangar:
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         teamcreds.migrate(self.store, self.settings, self.fleet.audit)  # --- teamcreds: before people: the owner's
         self.auth = TokenAuth(self.store, self.settings.admin_token)
+        from hangar.sso import SSO  # --- KAN-294: sign-in through the identity provider; off by default
+
+        self.sso = SSO(self)
         self.sessions = SessionService(self.fleet, self.vault)
         self.jobs = JobService(self.fleet, self.sessions)
         from hangar.envrequests import EnvRequests  # --- computer: what agents ask their owners for
@@ -488,6 +491,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
+        h.sso.start()  # --- KAN-294: rechecks people at the identity provider
         inbox_notify.of(h.jobs).start()  # --- inbox delivery (#157): DMs for questions and approvals
         events_out.of(h.jobs).start(plugin_host.notifiers)  # --- plugin host: hangar.event/v1 to the notifiers
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
@@ -505,6 +509,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
+        await h.sso.stop()  # --- KAN-294
         await inbox_notify.of(h.jobs).stop()  # --- inbox delivery (#157)
         await events_out.of(h.jobs).stop()  # --- plugin host
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
@@ -539,6 +544,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar.frontdoor import FrontDoorMiddleware, RateLimited
 
     app.add_middleware(FrontDoorMiddleware, hangar=h, oauth=oauth)
+    from hangar import sso as sso_mod  # --- KAN-294: outside the front door, so it sees the session's bearer
+
+    sso_mod.mount(app, h)
+    if h.sso.on:
+        app.add_middleware(sso_mod.SessionMiddleware, hangar=h)
     app.add_middleware(observe.HTTPMiddleware)  # --- observe: outermost, so refused requests are seen too
 
     @app.exception_handler(RateLimited)

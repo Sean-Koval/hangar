@@ -67,6 +67,7 @@
 # Auth and tokens: who is calling and what they may do.
 /src/hangar/auth.py                @Sean-Koval
 /src/hangar/oauth.py               @Sean-Koval
+/src/hangar/sso.py                 @Sean-Koval
 /src/hangar/identity.py            @Sean-Koval
 /src/hangar/identity_api.py        @Sean-Koval
 /src/hangar/people.py              @Sean-Koval

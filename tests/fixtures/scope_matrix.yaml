@@ -2047,6 +2047,13 @@ snapshots.delete:
   rest: DELETE /api/snapshots/{snap_id}
   scope: admin
   owner: admin
+sso.get_config:
+  server: hangar
+  mcp: null
+  rest: GET /auth/sso/config
+  scope: public
+  owner: any
+  enforced_by: 'sso.mount: the console asks before sign-in which SSO mode is on; it holds no secret'
 status.get:
   server: hangar
   mcp: null

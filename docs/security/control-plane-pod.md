@@ -57,6 +57,9 @@ Turn IAP on when only browsers use this hangar, or put the callers above on a se
 `iap` in the `hangar` BackendConfig and create the OAuth client secret `iap-oauth`. Grant
 `roles/iap.httpsResourceAccessor` to the people who may sign in.
 
+With `HANGAR_SSO_MODE=iap`, hangar checks IAP's signed header too, and signs the console in from it.
+[Single sign-on with IAP](sso-iap.md#paths-that-stay-outside-iap) lists the paths for the second backend.
+
 ## What else
 
 The cluster's own settings are on [Running hangar on GKE](../gke.md). The egress

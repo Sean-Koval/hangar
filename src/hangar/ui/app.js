@@ -391,9 +391,13 @@ try {
   const old = localStorage.getItem("hangar.token");
   if (old) { if (!sessionStorage.getItem("hangar.token")) sessionStorage.setItem("hangar.token", old); localStorage.removeItem("hangar.token"); }
 } catch { /* storage blocked: the gate asks for the token */ }
+// --- KAN-294: with SSO on, the console signs in through the identity provider and the server keeps the session in
+// an HttpOnly cookie, so no token is in script's reach. A pasted break-glass token then lives in this tab's memory
+// only, never in sessionStorage.
+const sso = { mode: "off", token: "" };
 const store = {
-  get token() { try { return sessionStorage.getItem("hangar.token") || ""; } catch { return ""; } },
-  set token(v) { try { v ? sessionStorage.setItem("hangar.token", v) : sessionStorage.removeItem("hangar.token"); } catch {} },
+  get token() { if (sso.mode !== "off") return sso.token; try { return sessionStorage.getItem("hangar.token") || ""; } catch { return ""; } },
+  set token(v) { if (sso.mode !== "off") { sso.token = v || ""; return; } try { v ? sessionStorage.setItem("hangar.token", v) : sessionStorage.removeItem("hangar.token"); } catch {} },
   get theme() { try { return localStorage.getItem("hangar.theme") || ""; } catch { return ""; } },
   set theme(v) { try { v ? localStorage.setItem("hangar.theme", v) : localStorage.removeItem("hangar.theme"); } catch {} },
 };
@@ -423,13 +427,15 @@ const state = { view: "fleet", envs: [], creds: [], harnesses: [], overview: nul
   jobs: [], selectedJob: null, sessions: [], selectedSession: null };
 
 async function api(method, path, body, { raw = false } = {}) {
-  const opts = { method, headers: { Authorization: `Bearer ${store.token}` } };
+  // the console header marks a same-origin call: a cross-site form can't send it, and the SSO cookie needs it
+  const opts = { method, headers: { "X-Requested-With": "hangar" } };
+  if (store.token) Object.assign(opts.headers, { Authorization: `Bearer ${store.token}` });
   if (body !== undefined) {
     if (typeof body === "string") { opts.body = body; opts.headers["Content-Type"] = "application/yaml"; }
     else { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   }
   const r = await fetch(path, opts);
-  if (r.status === 401) { showGate("That token was not accepted."); throw new Error("unauthorized"); }
+  if (r.status === 401) { showGate(store.token || sso.mode === "off" ? "That token was not accepted." : "Your session ended. Sign in again."); throw new Error("unauthorized"); }
   const data = raw ? r : await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(data.error || data.detail || `${r.status} ${r.statusText}`), { status: r.status });
   return data;
@@ -484,7 +490,18 @@ $("#gate-form").addEventListener("submit", async (e) => {
   store.token = $("#gate-token").value.trim();
   try { state.me = await api("GET", "/api/me"); boot(); } catch {}
 });
-$("#signout").addEventListener("click", () => { store.token = ""; showGate(); });
+$("#signout").addEventListener("click", async () => {
+  if (sso.mode !== "off" && !store.token) await fetch("/auth/sso/logout", { method: "POST", headers: { "X-Requested-With": "hangar" } }).catch(() => {});
+  store.token = ""; showGate();
+});
+// --- KAN-294: the gate offers SSO first when it is on; the token field stays, for break-glass
+function gateMode() {
+  const on = sso.mode !== "off";
+  $("#gate-sso").hidden = !on;
+  $("#gate-paste").hidden = on;
+  $("#gate-break-glass").hidden = !on;
+  $("#gate-submit").className = on ? "af-btn af-btn--secondary" : "af-btn af-btn--primary";
+}
 
 /* ------------------------------------------------------------------ routing */
 function route() {
@@ -1763,5 +1780,10 @@ function drawSpend(rows, since) {
 }
 
 /* ------------------------------------------------------------------ start */
-if (store.token) api("GET", "/api/me").then((me) => { state.me = me; boot(); }).catch(() => showGate());
-else showGate();
+fetch("/auth/sso/config").then((r) => (r.ok ? r.json() : { mode: "off" })).catch(() => ({ mode: "off" })).then((cfg) => {
+  sso.mode = cfg.mode || "off";
+  if (sso.mode !== "off") { try { sessionStorage.removeItem("hangar.token"); } catch {} }  // nothing kept from before SSO
+  gateMode();
+  if (store.token || sso.mode !== "off") api("GET", "/api/me").then((me) => { state.me = me; boot(); }).catch(() => showGate());
+  else showGate();
+});

@@ -17,7 +17,8 @@ shipped).
 | OAuth 2.1 for MCP clients, with consent, PKCE and a 90-day limit | In place | [OAuth connectors](../people.md#oauth-connectors) |
 | Approvals: an admin or a policy approver, never on their own job | In place | [Who may approve](../../triggers.md#who-may-approve) |
 | The console sends a strict CSP and runs only hangar's own scripts; its HTML sinks are audited | In place | KAN-174, L-7; `tests/test_ui_csp.py`. The admin token in `sessionStorage` is an [accepted risk](risks.md#accepted-for-10) |
-| IAP in front of the GKE ingress | Partial | Off by choice, [with the reason](../control-plane-pod.md#identity-aware-proxy): the API is public with token auth (KAN-174, L-8) |
+| IAP in front of the GKE ingress | Partial | Off by choice, [with the reason](../control-plane-pod.md#identity-aware-proxy): the API is public with token auth (KAN-174, L-8). `HANGAR_SSO_MODE=iap` checks IAP's header and [lists the paths it can't cover](../sso-iap.md#paths-that-stay-outside-iap) (KAN-294) |
+| Console sign-in through the company's identity provider, ended by removal there | In place, off by default | KAN-294; [Single sign-on](../sso.md); `tests/test_sso.py`. With SSO on, the console holds an `HttpOnly` Strict cookie, not a token in `sessionStorage` |
 
 ## Secrets and encryption
 

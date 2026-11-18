@@ -67,6 +67,8 @@ details[open] > summary { margin-bottom: var(--af-space-8); }
 .gate-brand { display: flex; align-items: center; gap: var(--af-space-16); }
 .gate-card p { margin: 0; color: var(--af-fg-muted); }
 .gate-card .af-btn { align-self: flex-start; }
+.gate-sso { display: flex; flex-direction: column; gap: var(--af-space-16); }  /* KAN-294 */
+.gate-sso[hidden] { display: none; }
 
 /* ---------- shell: Airframe app header, content capped at container-max ---------- */
 .shell { min-height: 100vh; }

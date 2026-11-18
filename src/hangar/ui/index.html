@@ -23,14 +23,20 @@
       <span class="af-mark af-mark--lg af-hue--hangar" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20 V13 A9 9 0 0 1 21 13 V20"/><path d="M2 20 H22"/><path d="M9 20 V15 H15 V20"/></svg></span>
       <h1>hangar</h1>
     </div>
-    <p>Paste an API token to open the control plane. A bootstrap token is printed when the server
+    <div id="gate-sso" class="gate-sso" hidden>
+      <p>Sign in with your team account to open the control plane.</p>
+      <a id="gate-sso-link" class="af-btn af-btn--primary" href="/auth/sso/login">Sign in with SSO</a>
+    </div>
+    <p id="gate-paste">Paste an API token to open the control plane. A bootstrap token is printed when the server
       first starts and saved to <code>~/.hangar/bootstrap-token</code>.</p>
+    <p id="gate-break-glass" hidden>Break-glass only: an admin token works while the identity provider is down. It is
+      kept in this tab's memory, and every use is recorded.</p>
     <div class="af-field">
       <label class="af-field__label" for="gate-token">API token</label>
       <div class="af-input"><input id="gate-token" type="password" autocomplete="off" placeholder="hgr_…" required></div>
     </div>
     <p id="gate-error" hidden></p>
-    <button class="af-btn af-btn--primary" type="submit">Open hangar</button>
+    <button id="gate-submit" class="af-btn af-btn--primary" type="submit">Open hangar</button>
   </form>
 </div>
 
