@@ -1,6 +1,6 @@
 # Deploying the microVM tiers
 
-This page is part of [The microVM tier: E2B and CubeSandbox as hangar providers](../microvm.md).
+Three ways to host a microVM tier. Part of [the microVM tier](../microvm.md).
 
 Both platforms need `/dev/kvm` and host-level setup, and neither runs as an unprivileged Pod (spec 0013 §5.3).
 

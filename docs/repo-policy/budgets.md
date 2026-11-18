@@ -1,6 +1,6 @@
 # Budgets and shadows
 
-This page is part of [Repo policy: the defaults every front door applies](../repo-policy.md).
+Spend caps for a job, and shadow runs. Part of [repo policy](../repo-policy.md).
 
 ## Budgets
 

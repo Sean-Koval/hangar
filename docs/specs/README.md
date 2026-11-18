@@ -1,10 +1,21 @@
-# hangar specs
+---
+hide:
+  - toc
+---
 
-Design specs for the next round of work. They came out of the first live GKE run on 2026-10-11: two Claude Code agents in gVisor sandboxes made real changes and opened PRs (#13, #14), and the run exposed the gaps these specs close. Each spec was drafted by a Claude Code agent in its own hangar sandbox, working in parallel. This page reconciles them.
+# Design notes: the specs behind hangar
+
+The design records behind hangar: what each spec owns, and whether it was built.
+
+They came out of the first live GKE run on 2026-10-11. Two Claude Code agents in gVisor sandboxes opened real PRs
+(#13, #14), and the run exposed the gaps these specs close. A Claude Code agent drafted each one in its own hangar
+sandbox.
 
 **North star (owner, 2026-10-12):** a software factory. Coding agents run on our own infrastructure and do development work that clients, applications and services hand them, with context, while engineers follow, steer and take over. hangar is the control plane for that: environments, harnesses, sandboxes, credentials and runs are the factory floor; jobs (0009) are the front door; evals, labeling and learning are features built from the work it does.
 
 Status (2026-10-17): **built** means its milestones shipped (the PR numbers are where); **partly built** means some of it shipped, sometimes in another shape; **superseded** means other work replaced it; **deferred** means it isn't scheduled. Each spec's own `Status:` line says the same. The PR column is the PR that added the spec.
+
+<div class="hg-stack" markdown>
 
 | Spec | Status | Owns | PR |
 | --- | --- | --- | --- |
@@ -23,6 +34,8 @@ Status (2026-10-17): **built** means its milestones shipped (the PR numbers are 
 | [0013 E2B and CubeSandbox as references](0013-e2b-cube-fast-sandboxes.md) | partly built: `hangar-envd` and the `e2b` provider flavours (experimental, outside 1.0); the E2B-compatible API was built, then removed (KAN-217); the microVM tier on GKE isn't validated live | The envd wire protocol `hangar-envd` must speak, verified with the real E2B SDKs. E2B's control API, endpoint by endpoint. How CubeSandbox and E2B start fast (snapshot restore, shared page cache, reflink, eBPF). An E2B-compatible API for hangar, with CubeSandbox and self-hosted E2B as `e2b` provider flavours. A microVM tier on GKE nested virtualization. Where Rust pays. Phase gates per tier. Builds on 0012 (#54). | #58 |
 | [0014 The sister tool's interfaces](0014-sister-tool-interfaces.md) | built (#114; the outbox, #163) | The boundary between hangar (the runtime: sandboxes, sessions, jobs, policy, emitting data) and a sister tool that interprets runs (harness inspection, trace timelines, behavior specs, evals); the three versioned interfaces it reads: the effective harness manifest (`hangar.manifest/v1`), trace export in OTLP/JSON on the OpenTelemetry GenAI conventions (`hangar.trace/v1`) and the experiment job kind (`hangar.experiment/v1`); what moved out of 0005 and 0007 | #114 |
 | [0015 The governance decision point](0015-governance-decision-point.md) | mostly built: every kind wired (#172, #173), events (#190), the passport client (#174); break-glass not yet. Tower's decision API is built | How hangar (the Run plane) asks Tower (the Govern plane) for job release, risky tool calls, landing, egress and secret approvals: the `hangar.decision/v1` request and response, the client interface (`governance.py`: `DecisionPoint`, local and HTTP), timeouts, the fail-closed table, `off`/`shadow`/`enforce` and break-glass, overnight and outage behaviour, identity (service key, then passports), correlation, receipts, signed events, the rollout and the Tower changes it needs | #208 |
+
+</div>
 
 The specs marked superseded or deferred (0001, 0004, 0005, 0007, 0008) are design history: they stay in the repo and
 are reachable from this table, but not from the site's navigation. The [cross-spec decisions](decisions.md) say

@@ -1,6 +1,6 @@
 # Infra states and deploys
 
-This page is part of [Deploying from CI/CD](../cicd.md).
+Each infra state, compared. Part of [CI/CD](../cicd.md).
 
 | State | What runs | What it costs a week (*estimate*, [team-scale.md](../team-scale/cost.md)) | Webhooks | Jobs and sessions | A merge to main | How to get back |
 | --- | --- | --- | --- | --- | --- | --- |

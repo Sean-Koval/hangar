@@ -1,6 +1,6 @@
 # How steering works
 
-This page is part of [Steering a running agent](../steering.md).
+The driver behind a steerable turn. Part of [steering](../steering.md).
 
 The turn still runs in tmux, so `hangar sb attach` and the run log work as before. Instead of the harness's one-shot command, the run script starts hangar's driver (`src/hangar/driver.py`, standard library only), copied into the sandbox for each turn:
 

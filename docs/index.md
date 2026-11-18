@@ -88,7 +88,8 @@ The console on `:8787` opens on **Needs you**: held tool calls, jobs waiting to 
 ## Where to go next
 
 <div class="af-tools">
-  <a class="af-tool" href="guide/#quickstart"><small>Five minutes</small><b>Quickstart</b><span>Docker and uv on a laptop: <code>hangar up</code>, a credential, a first task, your own environment, then GKE and a team.</span></a>
-  <a class="af-tool" href="concepts/"><small>The words</small><b>Concepts</b><span>Environment, harness, sandbox, session and job, and what hangar gives you that a laptop does not.</span></a>
-  <a class="af-tool" href="console/"><small>The screens</small><b>The web console</b><span>Needs you, Jobs, Sessions, the Fleet, terminals, and what each action does.</span></a>
+  <a class="af-tool" href="start-here/"><small>New to hangar</small><b>Start here</b><span>The words, the quickstart, a first task and the console.</span></a>
+  <a class="af-tool" href="guides/"><small>One page per task</small><b>Guides</b><span>Jobs, sessions, landing, front doors, environments and usage.</span></a>
+  <a class="af-tool" href="reference/"><small>Look it up</small><b>Reference</b><span>The APIs, the contracts and the security model.</span></a>
+  <a class="af-tool" href="operations/"><small>Run it for a team</small><b>Operations</b><span>Deploy, prove, run and upgrade one hangar.</span></a>
 </div>

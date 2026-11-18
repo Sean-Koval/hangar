@@ -137,7 +137,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "specs/0013-e2b-cube-fast-sandboxes.md": (4647, 14, SPEC),
     "specs/0014-sister-tool-interfaces.md": (3341, 61, SPEC),
     "specs/0015-governance-decision-point.md": (2463, 35, SPEC),
-    "specs/README.md": (340, 22, "the index of design records, one entry per spec"),
+    "specs/README.md": (331, 20, "the index of design records, one entry per spec"),
     "specs/decisions.md": (1517, 15, SPEC),
     "steering.md": (1313, 18, LATER + "the turn, approvals, the uid split"),
     "steering/how-it-works.md": (1057, 19, MOVED.format("steering.md") + "split it by question"),

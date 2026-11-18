@@ -1,6 +1,6 @@
 # Backups and restore on GKE
 
-This page is part of [Running hangar on GKE](../gke.md).
+Backing up and restoring hangar's database. Part of [GKE](../gke.md).
 
 Everything hangar knows is one SQLite file on the `hangar-data` volume: sessions and their checkpoint lists, jobs, schedules, tokens, the vault and the settings `hangar config` stores. Checkpoints themselves are in the bucket. Losing the disk loses the database, so back it up.
 

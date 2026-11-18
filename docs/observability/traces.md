@@ -1,6 +1,6 @@
 # Traces
 
-This page is part of [Observability: traces, metrics, cost](../observability.md).
+What hangar traces, and how. Part of [observability](../observability.md).
 
 Tracing is off unless the standard OpenTelemetry variables name an exporter. Set one of these on the control plane:
 

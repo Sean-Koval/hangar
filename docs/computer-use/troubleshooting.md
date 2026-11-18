@@ -1,6 +1,6 @@
 # Computer use under gVisor, and self-diagnosis
 
-This page is part of [The agent's own computer, and an environment it can diagnose](../computer-use.md).
+Running the desktop under gVisor, and the agent's self-diagnosis. Part of [computer use](../computer-use.md).
 
 ## Under gVisor
 

@@ -1,6 +1,6 @@
 # Environment images on GKE
 
-This page is part of [Running hangar on GKE](../gke.md).
+Building environment images and harness packs. Part of [GKE](../gke.md).
 
 Every image and pack tag is content-addressed: an environment's tag is a digest of its rendered build, and a pack's tag is its harness's locked version plus a digest of its recipe. So which images a commit needs is known before it runs, and they are built before anyone waits on them:
 

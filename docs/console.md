@@ -3,6 +3,12 @@
 The control plane serves a web console on the same port as the API, `:8787` by default (`HANGAR_PORT`). Open it,
 paste an API token, and it shows the fleet.
 
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-fleet.png"><img src="assets/front/ui-fleet.png#only-dark" alt="The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend"></a>
+<a href="assets/front/ui-fleet-light.png"><img src="assets/front/ui-fleet-light.png#only-light" alt="The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend"></a>
+<figcaption>The Fleet's List: the headline, the deck as a band, and each agent's status, work, now-line, owner, model, stage rail and spend.</figcaption>
+</figure>
+
 The server prints a bootstrap admin token when it first starts. It saves it to `~/.hangar/bootstrap-token`, in its
 data directory. The console uses an admin's routes, so use an admin token; the token stays in that tab's session
 storage until you choose **Sign out** or close the browser.
@@ -32,12 +38,6 @@ live turns spent.
 **New sandbox** starts one or more identical sandboxes from an environment, each on its own numbered work branch.
 **Show stopped** adds stopped sandboxes. The **Owner** chips keep one person's agents (`?owner=`, kept in the URL as
 `#fleet?owner=priya`).
-
-<figure class="af-figure af-figure--lead">
-<a href="assets/front/ui-fleet.png"><img src="assets/front/ui-fleet.png#only-dark" alt="The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend"></a>
-<a href="assets/front/ui-fleet-light.png"><img src="assets/front/ui-fleet-light.png#only-light" alt="The Fleet: the headline, the decision deck as a band, and the agents of base-codex as rows with what each is doing now, its owner, model, stage rail, stage times, token sparkline and spend"></a>
-<figcaption>The Fleet's List: the headline, the deck as a band, and each agent's status, work, now-line, owner, model, stage rail and spend.</figcaption>
-</figure>
 
 Under the header is the **deck** from [Needs you](console/needs-you.md), as a band you can hide (it remembers). Then
 comes every agent, grouped by environment, attention first: what needs you, failed, denied, running, queued, spun down.

@@ -1,0 +1,20 @@
+<svg class="af-d" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 212" role="img" aria-label="A session: turn, checkpoint, suspend, resume">
+<style>
+  .af-d .bg { fill: var(--af-canvas, #000000); }
+  .af-d .box { fill: var(--af-raised, #141414); }
+  .af-d .box-hub { fill: var(--af-raised, #141414); stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; }
+  .af-d .box-plan { fill: none; stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; stroke-dasharray: 4 4; }
+  .af-d .box-ext { fill: var(--af-surface, #0A0A0A); stroke: var(--af-line-strong, #6B6B6B); stroke-width: 1; }
+  .af-d .person { fill: var(--af-surface, #0A0A0A); stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1; }
+  .af-d .name { font: 700 16px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #FFFFFF); }
+  .af-d .name-s { font: 700 14px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #FFFFFF); }
+  .af-d .title { font: 700 20px "Archivo", "Helvetica Neue", Arial, sans-serif; font-stretch: 125%; fill: var(--af-fg, #FFFFFF); }
+  .af-d .body { font: 400 13px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-muted, #A6A6A6); }
+  .af-d .lbl { font: 500 12.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .edge { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; }
+  .af-d .edge-plan { fill: none; stroke: var(--af-fg-subtle, #8A8A8A); stroke-width: 1.25; stroke-dasharray: 5 4; }
+  .af-d .elabel { font: 400 12.5px "Red Hat Text", "Helvetica Neue", Arial, sans-serif; fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .arrowhead { fill: var(--af-fg-subtle, #8A8A8A); }
+  .af-d .dot { fill: var(--af-dot-field, #262626); }
+</style>
+<defs><marker id="session-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs><rect class="bg" width="680" height="212"/><rect class="box" x="16" y="16" width="148" height="126" rx="12"/><text class="lbl" x="32" y="44">You send</text><text class="name-s" x="32" y="66">A turn</text><text class="body" x="32" y="88">The agent works</text><text class="body" x="32" y="106">in a sandbox, on</text><text class="body" x="32" y="124">the session branch</text><rect class="box-hub" x="182" y="16" width="148" height="126" rx="12"/><clipPath id="session-pe182-16-148-126"><rect x="182" y="16" width="148" height="126" rx="12"/></clipPath><rect x="182" y="16" width="148" height="3" fill="var(--af-product-hangar, #24C1C9)" clip-path="url(#session-pe182-16-148-126)"/><text class="lbl" x="198" y="44">After every turn</text><text class="name-s" x="198" y="66">Checkpoint</text><text class="body" x="198" y="88">The conversation,</text><text class="body" x="198" y="106">commits and</text><text class="body" x="198" y="124">uncommitted files</text><path class="edge" d="M164 79H180" marker-end="url(#session-arrow)"/><rect class="box" x="348" y="16" width="148" height="126" rx="12"/><text class="lbl" x="364" y="44">Idle</text><text class="name-s" x="364" y="66">Suspend</text><text class="body" x="364" y="88">The sandbox is</text><text class="body" x="364" y="106">released; only</text><text class="body" x="364" y="124">storage is kept</text><path class="edge" d="M330 79H346" marker-end="url(#session-arrow)"/><rect class="box-ext" x="514" y="16" width="148" height="126" rx="12"/><text class="lbl" x="530" y="44">You send again</text><text class="name-s" x="530" y="66">Resume</text><text class="body" x="530" y="88">A fresh sandbox,</text><text class="body" x="530" y="106">restored from</text><text class="body" x="530" y="124">the checkpoint</text><path class="edge" d="M496 79H512" marker-end="url(#session-arrow)"/><path class="edge" d="M588 142V172H256V144" marker-end="url(#session-arrow)"/><text class="elabel" x="422" y="192" text-anchor="middle">its next turn is checkpointed too</text></svg>

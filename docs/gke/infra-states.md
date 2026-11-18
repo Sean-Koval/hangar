@@ -1,6 +1,6 @@
 # Infra states on GKE
 
-This page is part of [Running hangar on GKE](../gke.md).
+What runs in each infra state. Part of [GKE](../gke.md).
 
 | State | What runs | What it costs a week (*estimate*, [team-scale.md](../team-scale/cost.md)) | Webhooks | Jobs and sessions | A merge to main ([cicd.md](../cicd/infra-states.md)) | How to get back |
 | --- | --- | --- | --- | --- | --- | --- |

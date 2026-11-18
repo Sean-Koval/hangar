@@ -34,7 +34,32 @@
   .md-typeset .hg-features table:not([class]) td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; margin-top: .3rem; }
 }
 
+/* A table whose first column is an identifier (a setting, an event kind, a metric): the name is never cut mid-word
+   ("environmen|t") where there is room for it. It breaks only at a space or a hyphen and the column takes the width
+   that needs. On a phone the name may still break, so the other columns stay on the screen. */
+@media (min-width: 600px) { .md-typeset table:not([class]) td:first-child code { word-break: normal; overflow-wrap: normal; } }
+
+/* An index table on phones (a section's landing page, the runbooks, the release notes): wrap it in <div class="hg-stack"
+   markdown>. Three columns at 390 px leave one word to a line, so each row stacks: the first cell is the row's name,
+   the cells after it read as its notes. The header row goes, so the first column must name the thing. */
+@media (max-width: 599px) {
+  .md-typeset .hg-stack table:not([class]), .md-typeset .hg-stack tbody,
+  .md-typeset .hg-stack tr, .md-typeset .hg-stack table:not([class]) td { display: block; width: auto; }
+  .md-typeset .hg-stack thead { display: none; }
+  .md-typeset .hg-stack table:not([class]) tr { padding: .7rem 0; border-top: 1px solid var(--af-line-subtle); }
+  .md-typeset .hg-stack table:not([class]) tr:hover { background: transparent; }
+  .md-typeset .hg-stack table:not([class]) td { border: 0; padding: 0; min-width: 0; }
+  .md-typeset .hg-stack table:not([class]) td:first-child { font-weight: 600; }
+  .md-typeset .hg-stack table:not([class]) td + td { margin-top: .3rem; color: var(--af-fg-muted); }
+}
+
+/* A section's landing page (start-here.md, guides.md, reference.md, operations.md): the card grid sits closer to the
+   heading that names it, and a page's closing "Next" grid is set off by the section rule above it. */
+.md-typeset h2 + .af-tools { margin-top: .9em; }
+/* three or six cards fill their rows as threes, where Airframe's auto-fill grid would leave a gap after four */
+@media (min-width: 760px) { .md-typeset .af-tools.hg-tools--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
 @media (forced-colors: active) {
-  .md-typeset .hg-features table:not([class]) tr { border-color: CanvasText; }
+  .md-typeset .hg-features table:not([class]) tr, .md-typeset .hg-stack table:not([class]) tr { border-color: CanvasText; }
   .md-typeset figure.af-figure--lead > a > img { box-shadow: none; outline: 1px solid CanvasText; }
 }

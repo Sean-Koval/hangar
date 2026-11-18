@@ -1,6 +1,6 @@
 # The e2b provider and hot resume
 
-This page is part of [The microVM tier: E2B and CubeSandbox as hangar providers](../microvm.md).
+The experimental e2b provider and its hot resume. Part of [the microVM tier](../microvm.md).
 
 ## The e2b provider
 
