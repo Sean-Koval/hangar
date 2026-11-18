@@ -516,7 +516,7 @@ async def test_an_ask_turn_runs_through_the_sidecar_end_to_end(side, svc, live, 
     assert "touch tool-ran.txt" in a.detail and not repo_file(svc, s, "tool-ran.txt").exists()
     # the relay was started as the agent, by its interpreter's path, its token on stdin and nowhere else
     relay = [x for x in side.log if x[0] == "sandbox" and isolation.RELAY in x[1]]
-    assert len(relay) == 1 and relay[0][1].startswith(f"{PYTHON} -I {isolation.RELAY} ") and relay[0][2]
+    assert len(relay) == 1 and relay[0][1].startswith(f"/usr/bin/python3 -I {isolation.RELAY} ") and relay[0][2]
     token = relay[0][2].strip()
     assert not any(token.decode() in cmd for _, cmd, _ in side.log)
     # the run's tmux is the driver's, its socket in hangar-ctl: the dashboard's view of it reads there
