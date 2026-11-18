@@ -301,6 +301,16 @@ def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bo
         raise JobError(f"task {task.id}: base_sha {task.base_sha} isn't the pin set's {tp.base_sha}")
     if task.repo and tp.repo and task.repo != tp.repo:
         raise JobError(f"task {task.id}: repo {task.repo} isn't the pin set's {tp.repo}")
+    if task.workspace is not None:  # --- KAN-192: its files must be the commit the pin set pinned
+        from hangar import workspaces
+
+        try:
+            ws = workspaces.commit(jobs.fleet.settings, task.workspace)
+        except workspaces.WorkspaceError as e:
+            raise JobError(f"task {task.id}: could not commit its workspace: {e}") from e
+        if ws != tp.base_sha or tp.repo:
+            raise JobError(f"task {task.id}: its workspace is commit {ws}, and the pin set pinned "
+                           f"{tp.repo or tp.base_sha}")
     # --- KAN-192: the grader that runs is the task's own, else the request's; the pin set's for the task, else its own
     if (got := grader_digest(task.grader or req.grader)) != (want := tp.grader_digest or p.grader_digest):
         raise JobError(f"task {task.id}: the grader isn't the pin set's (digest {got} vs {want})")

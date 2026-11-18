@@ -140,6 +140,15 @@ def _trial(fleet: Fleet, s: Session) -> tuple[str, str] | None:
     return exp, key.split("/")[0]
 
 
+def workspace(fleet: Fleet, s: Session) -> str | None:
+    """--- KAN-192: the workspace commit a trial's session clones (experiments.workspace_commit), from the runner's
+    own records; None for a session that isn't a real trial, or a task with a repo."""
+    from hangar import experiments
+
+    t = _trial(fleet, s)
+    return fleet.store.kv_get(f"{experiments.KV_WORKSPACE}{t[0]}:{t[1]}") if t else None
+
+
 def script(branch: str, pin: str | None) -> str:
     """Put the checkout on `pin` (when given) as `branch`, and leave nothing in the repo but that branch's history:
     no remote (and so no fetch refspec), no other ref, no reflog, no borrowed objects, nothing unreachable."""
@@ -191,6 +200,8 @@ async def isolate(sessions: SessionService, s: Session, sb: Sandbox) -> None:
             fleet.gateway.close(sb.id)
             sb.info["git"] = {**git, "push_refs": [], "closed": True}
             grant = "closed"
+        elif sb.info.get("workspace"):  # --- KAN-192: cloned from hangar's bundle, with no git credential
+            grant = "none"
         else:
             grant = "direct"  # no grant to close: the environment's own credential (docs/security/graders.md)
             sb.info.setdefault("warnings", []).append(
