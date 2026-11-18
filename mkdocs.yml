@@ -326,6 +326,7 @@ nav:
           - Recovery:
               - Backups and recovery objectives: runbooks/recovery.md
               - Recovery drills: runbooks/drills.md
+              - The live intake check: runbooks/intake-check.md
           - Team scale:
               - team-scale.md
               - The team load test: team-scale/load-test.md
