@@ -341,6 +341,49 @@ def landing_states() -> str:
     return svg(WIDE, y + h + 92, "How a PR lands", b, "landing")
 
 
+
+def steps_row(steps, label: str, pid: str, back: str | None = None) -> str:
+    """Four steps in one row, (eyebrow, name, lines, kind, product) each; `back` labels an edge from the last to the second."""
+    w, gap = 148, (WIDE - 2 * M - 4 * 148) // 3
+    xs = [M + i * (w + gap) for i in range(4)]
+    y, h = 16, tall(max((s[2] for s in steps), key=len), True)
+    b = []
+    for i, (eyebrow, name, lines, kind, product) in enumerate(steps):
+        b.append(box(xs[i], y, w, h, name, lines, eyebrow=eyebrow, kind=kind, product=product))
+        if i:
+            b.append(edge(f"M{xs[i - 1] + w} {y + h // 2}H{xs[i] - 2}"))
+    end = y + h
+    if back:
+        b.append(edge(f"M{xs[3] + w // 2} {y + h}V{y + h + 30}H{xs[1] + w // 2}V{y + h + 2}"))
+        b.append(text((xs[1] + xs[3] + w) // 2, y + h + 50, back, anchor="middle"))
+        end = y + h + 54
+    return svg(WIDE, end + 16, label, b, pid)
+
+
+START_PATH = (
+    ("Step 1", "The words", ["Environment,", "harness, sandbox,", "session and job"], "box", None),
+    ("Step 2", "hangar up", ["Docker and uv on", "a laptop, about", "five minutes"], "box-hub", "hangar"),
+    ("Step 3", "First task", ["A sandbox, an API", "key and a prompt", "from your client"], "box", None),
+    ("Step 4", "The console", ["Watch the agent", "work, on", "localhost:8787"], "box-ext", None),
+)
+OPERATE_LOOP = (
+    ("Once", "Deploy", ["GKE, or your", "company's cluster,", "from CI/CD"], "box", None),
+    ("Every deploy", "Prove", ["Acceptance checks", "on the cluster;", "hangar doctor"], "box-hub", "hangar"),
+    ("Day to day", "Run", ["SLOs and alerts,", "runbooks, backups", "and drills"], "box", None),
+    ("Each release", "Upgrade", ["Back up, prebuild,", "deploy; roll back", "if a check fails"], "box-ext", None),
+)
+
+
+def start_path() -> str:
+    """The first steps: the words, hangar up, a first task, the console."""
+    return steps_row(START_PATH, "The first steps: the words, hangar up, a first task, the console", "start")
+
+
+def operate_loop() -> str:
+    """Running hangar: deploy once, prove every deploy, run it day to day, upgrade each release."""
+    return steps_row(OPERATE_LOOP, "Running hangar: deploy, prove, run, upgrade", "operate", back="every upgrade is proved again")
+
+
 # ------------------------------------------------------------------------- the stacked variants, for phones
 BX, BW = 20, 310  # every stacked box's x and width
 RW = 268  # the width when an edge returns up the right-hand side
@@ -443,6 +486,24 @@ def landing_states_stacked() -> str:
     return svg(NARROW, end + 68, "How a PR lands", b, "landing-stacked")
 
 
+def steps_stacked(steps, label: str, pid: str, back: str | None = None) -> str:
+    rows = [(name, lines, kind, eyebrow, product) for eyebrow, name, lines, kind, product in steps]
+    body, tops, end = stack(16, rows, gap=28, bw=RW if back else BW)
+    b = [body]
+    if back:
+        second, last = tops[1], tops[-1]
+        b.append(back_edge(last[0] + last[1] // 2, second[0] + second[1] // 2, back, (second[0] + last[0] + last[1]) // 2))
+    return svg(NARROW, end + 16, label, b, pid)
+
+
+def start_path_stacked() -> str:
+    return steps_stacked(START_PATH, "The first steps: the words, hangar up, a first task, the console", "start-stacked")
+
+
+def operate_loop_stacked() -> str:
+    return steps_stacked(OPERATE_LOOP, "Running hangar: deploy, prove, run, upgrade", "operate-stacked", back="every upgrade is proved again")
+
+
 def main() -> None:
     OUT.write_text(hangar_suite())
     print("wrote", OUT)
@@ -456,11 +517,15 @@ def main() -> None:
         ("jobs-flow", jobs_flow),
         ("slack-flow", slack_flow),
         ("landing-states", landing_states),
+        ("start-path", start_path),
+        ("operate-loop", operate_loop),
         ("concepts-map-stacked", concepts_map_stacked),
         ("control-plane-stacked", control_plane_stacked),
         ("jobs-flow-stacked", jobs_flow_stacked),
         ("slack-flow-stacked", slack_flow_stacked),
         ("landing-states-stacked", landing_states_stacked),
+        ("start-path-stacked", start_path_stacked),
+        ("operate-loop-stacked", operate_loop_stacked),
     ):
         (DIAGRAMS / f"{name}.svg").write_text(fn())
         print("wrote", DIAGRAMS / f"{name}.svg")
