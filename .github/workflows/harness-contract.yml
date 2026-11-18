@@ -1,14 +1,17 @@
 # The harness contract (docs/harnesses.md): the real agent CLIs, at the versions src/hangar/harnesses.lock.yaml pins,
 # driven by hangar's driver offline against scripted model APIs (tests/test_*real_clis.py), plus the protocols the
 # driver speaks with them, which must match the recorded ones (tests/fixtures/protocol). It runs the CLIs on PRs that
-# touch harness, driver or isolation code, and on every push to main. Every PR runs the workflow so the required
-# `contract` check always reports: on a PR that touches none of those paths the job is skipped, which counts as
+# touch harness, driver or isolation code, on every push to main and nightly (KAN-275: a CLI or runner change can break
+# a guarantee on a quiet day; a failed nightly run opens or comments on one issue labelled `harness-contract`). Every
+# PR runs the workflow so the required `contract` check always reports: on a PR that touches none of those paths the job is skipped, which counts as
 # passing. The CLIs are cached by the lock and the recipes, so a run that finds them takes about a minute. It needs no secrets and never talks to the cluster.
 name: harness-contract
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "41 6 * * *"  # KAN-275: nightly, 36 minutes before the canary (07:17 UTC)
   workflow_dispatch:
 
 concurrency:
@@ -39,7 +42,7 @@ jobs:
       - id: paths
         run: |
           changed=$(git diff --name-only HEAD^1 HEAD)
-          if grep -Eq '^(src/hangar/harnesses\.py|src/hangar/harnesses\.lock\.yaml|src/hangar/driver\.py|src/hangar/harden\.py|src/hangar/isolation\.py|src/hangar/verifyloop\.py|src/hangar/steer\.py|src/hangar/cache\.py|src/hangar/events\.py|src/hangar/canary\.py|tests/test_[^/]*real_clis\.py|tests/test_cache\.py|tests/fixtures/live/.*|tests/fixtures/protocol/.*|\.github/workflows/harness\-contract\.yml)$' <<< "$changed"; then run=true; else run=false; fi
+          if grep -Eq '^(src/hangar/harnesses\.py|src/hangar/harnesses\.lock\.yaml|src/hangar/driver\.py|src/hangar/harden\.py|src/hangar/isolation\.py|src/hangar/verifyloop\.py|src/hangar/steer\.py|src/hangar/govhook[^/]*\.py|src/hangar/cache\.py|src/hangar/events\.py|src/hangar/canary\.py|tests/test_[^/]*real_clis\.py|tests/test_cache\.py|tests/fixtures/live/.*|tests/fixtures/protocol/.*|\.github/workflows/harness\-contract\.yml)$' <<< "$changed"; then run=true; else run=false; fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "harness contract needed: $run"
 
@@ -71,7 +74,11 @@ jobs:
           echo "$HOME/.cache/hangar-clis/codex/libexec/codex-path" >> "$GITHUB_PATH"  # codex's bundled rg
       - name: Contract tests
         run: |
-          uv run --locked pytest -v --junitxml junit-contract.xml tests/test_*real_clis.py tests/test_cache.py
+          uv run --locked pytest -v --junitxml junit-contract.xml tests/test_*real_clis.py tests/test_cache.py \
+            tests/test_codex_plugins.py::test_the_real_codex_runs_exactly_the_trusted_hooks \
+            tests/test_codex_plugins.py::test_the_real_codex_reports_the_lock_plugins_hooks_hangar_didnt_trust \
+            tests/test_codex_plugins.py::test_a_real_codex_turn_fires_the_workflow_plugins_hooks_only_when_trusted \
+            tests/test_modelgw.py::test_a_real_claude_code_turn_through_the_gateway
       - name: Every test ran
         if: always()
         run: |
@@ -84,3 +91,27 @@ jobs:
           path: junit-contract.xml
           if-no-files-found: ignore
           retention-days: 30
+
+  # KAN-275: a nightly failure has no PR to show it, so it opens one issue (or comments on the open one) for on-call,
+  # as the canary does. It runs none of the CLIs and holds only the issue permission.
+  report:
+    needs: contract
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="The nightly harness contract run failed against the locked CLIs: $RUN"
+          open=$(gh issue list -R "$GITHUB_REPOSITORY" --label harness-contract --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh label create harness-contract -R "$GITHUB_REPOSITORY" --color B60205 --force >/dev/null
+            gh issue create -R "$GITHUB_REPOSITORY" --title "Nightly harness contract failed" --label harness-contract --body "$body"
+          fi
