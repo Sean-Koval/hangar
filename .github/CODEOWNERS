@@ -130,4 +130,5 @@
 /src/hangar/github.py              @Sean-Koval
 /src/hangar/slack.py               @Sean-Koval
 /src/hangar/jira.py                @Sean-Koval
+/src/hangar/confluence.py          @Sean-Koval
 /src/hangar/setup_api.py           @Sean-Koval
