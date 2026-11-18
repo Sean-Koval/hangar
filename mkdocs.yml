@@ -222,6 +222,7 @@ nav:
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
           - Gaps found in the 1.0 review: security/review-1.0.md
+          - Gaps found in the second 1.0 review: security/review-delta-1.0.md
           - Reviewing hangar for production:
               - security/review/index.md
               - Controls and evidence: security/review/controls.md
