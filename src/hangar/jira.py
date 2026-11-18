@@ -1330,10 +1330,15 @@ class JiraFrontDoor:
         description = adf_text(fields.get("description")).strip() or "(no description)"
         # --- KAN-292: the comments, parent or epic, subtasks, links and text attachments, where acceptance details
         # usually are
-        sections, pages = await self._ticket_sections(cfg, key, fields.get("description"), summary, account or "")
         # --- review: always untrusted: anyone with Edit Issues can rewrite the summary and description, whoever
         # reported it; and the summary stays out of the instructions
         head = f"# {key}: {summary}\n\n{description[:50_000]}\n\n---\n{cfg.url}/browse/{key}\n" + "; ".join(meta)
+        # --- KAN-293: what the job's context can still hold beside this file and acceptance.md (built from the
+        # description), so the Confluence pages never push the job over its limit
+        held = getattr(getattr(svc, "settings", None), "job_max_context_bytes", 2_000_000)
+        room = held - max(cfg.context_max_bytes, len(head.encode()) + 1_000) - len(description.encode()) - 20_000
+        sections, pages = await self._ticket_sections(cfg, key, fields.get("description"), summary, account or "",
+                                                      budget=max(0, room))
         context = [ContextItem(name=f"jira-{key}.md", kind="issue", untrusted=True,
                                content=assemble(head, sections, cfg.context_max_bytes))]
         context += [ContextItem(name=p.name, kind="text", untrusted=True, content=p.content) for p in pages]
@@ -1414,7 +1419,8 @@ class JiraFrontDoor:
         return {"refused": why}
 
     async def _ticket_sections(self, cfg: JiraConfig, key: str, description: Any = None, summary: str = "",
-                               account: str = "") -> tuple[list[tuple[str, str]], list[confluence.Page]]:
+                               account: str = "", budget: int | None = None
+                               ) -> tuple[list[tuple[str, str]], list[confluence.Page]]:
         """--- KAN-292: the rest of the ticket, or a line saying why it couldn't be read; and (KAN-293) the
         Confluence pages it links to, as context files."""
         try:
@@ -1426,15 +1432,21 @@ class JiraFrontDoor:
                                  "is not stored")], []
         try:  # bounded, so a slow Jira can't hold the delivery past Jira's own webhook timeout
             tc = await asyncio.wait_for(fetch_context(api, cfg, key), CONTEXT_SECONDS)
-            urls = [*tc.confluence, *confluence.urls_in(description),
-                    *(u for c in trusted_comments(self.jobs, cfg, tc) for u in confluence.urls_in(c.get("body")))]
-            site = httpx.URL(cfg.url).host.lower()
-            urls = [u for u in urls if u in tc.confluence or confluence.looks_like_confluence(u, site)]
+            try:
+                urls = [*tc.confluence, *confluence.urls_in(description),
+                        *(u for c in trusted_comments(self.jobs, cfg, tc) for u in confluence.urls_in(c.get("body")))]
+                site = httpx.URL(cfg.url).host.lower()
+                urls = [u for u in urls if u in tc.confluence or confluence.looks_like_confluence(u, site)]
+            except Exception:  # an odd description or comment: only the remote links, as KAN-292 lists them
+                urls = list(tc.confluence)
             res = confluence.Result([], [])
-            if urls or cfg.confluence.search_spaces:
-                # what the job's context can still hold beside the ticket's own file
+            if budget is None:
                 held = getattr(getattr(self.jobs, "settings", None), "job_max_context_bytes", 2_000_000)
                 budget = max(0, held - cfg.context_max_bytes - 20_000)
+            if (urls or cfg.confluence.search_spaces) and budget < confluence.MIN_ROOM:
+                res = confluence.Result([], [f"- {u} (not read: no room left in the job's context)"
+                                             for u in dict.fromkeys(urls)])
+            elif urls or cfg.confluence.search_spaces:
                 try:  # fetch keeps its own deadline and never raises; this is the backstop
                     res = await asyncio.wait_for(
                         confluence.fetch(api, cfg, urls, summary, account=account, budget=budget),

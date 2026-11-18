@@ -16,9 +16,13 @@ hangar reads a page only on the Jira site's own host, under `/wiki`. A remote li
 
 hangar reads a page only when the person who started the job can read it too: Confluence's permission check answers that first. So a link can't pull a restricted page into a job its starter couldn't open. What the starter can read may still reach the job's result, which hangar posts on the ticket.
 
+Checking what another person can read may need Confluence's administrator permission on hangar's account. Without it, every link says "hangar's token can't check who may read Confluence pages" and no page is read. Grant it, or leave the pages unread.
+
 ## What the agent gets
 
-Each page becomes `confluence-<id>-<slug>.md` in the job's context directory. The file starts with the page's id, space key and link. Everything the page's editors wrote follows between two markers that call it untrusted. That is the title, space name, last editor, the text as Markdown, and up to 25 child page titles. Child pages are listed, not read.
+Each page becomes `confluence-<id>-<slug>.md` in the job's context directory. The file starts with the page's id, space key and link. Everything the page's editors wrote follows between two markers that call it untrusted. That is the title, space name, last editor and the text as Markdown.
+
+The file says when the page has child pages, but doesn't name them. Their titles come from hangar's token, which may see more than the starter.
 
 The files are marked untrusted, as `jira-<key>.md` is: anyone who can edit a page wrote it. The agent reads them as reference, never as instructions. The team harness's `confluence-context` skill says how to cite a page and when to ask.
 
