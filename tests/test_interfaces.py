@@ -318,6 +318,38 @@ def test_shell_ops_and_repo_paths():
     assert traces._skill_name('{"skill": "pdf"}') == "pdf" and traces._skill_name("not json") is None
 
 
+def test_shell_ops_find_tests_in_loops_behind_wrapper_flags_and_in_ci_scripts():
+    """KAN-279: the four commands the Nov 2 validation got wrong, and the cases around each fix."""
+    ops = traces.shell_ops
+    assert ops("for f in a b; do pytest $f; done") == ["test"]
+    assert ops("uv run --project svc pytest -x") == ["test"]
+    assert ops("bash scripts/ci/verify.sh") == ["test"]
+    assert ops("python3 -m pytest --version") == []
+    # a keyword opens the segment: loops, conditions, groups
+    for cmd in ("while true; do npm test; sleep 5; done", "if pytest -q; then echo ok; fi", "{ go test ./...; }",
+                "until make check; do sleep 1; done", "if true; then :; else cargo test; fi"):
+        assert ops(cmd) == ["test"], cmd
+    assert ops("echo do pytest") == [] and ops("for f in *.py; do rm $f; done") == ["delete"]
+    # a wrapper flag's value is not the program
+    for cmd in ("uv --directory svc run pytest", "uv run --with pytest-xdist --python 3.12 pytest -n 4",
+                "poetry -C svc run pytest", "pnpm --dir web exec vitest run", "sudo -u ci pytest",
+                "timeout -s KILL 600 make test", "env -C svc pytest", "npx -p jest jest", "nice -n 5 tox"):
+        assert ops(cmd) == ["test"], cmd
+    assert ops("uv run --project svc python app.py") == [] and ops("uv sync --project svc") == []
+    # a test or CI script, by a shell or by its path
+    for cmd in ("sh -e ./run_tests.sh", "./scripts/ci/verify.sh", "bash -x scripts/test-all.sh", "zsh ci.sh",
+                "scripts/check.sh", "bash tests.sh"):
+        assert ops(cmd) == ["test"], cmd
+    for cmd in ("bash scripts/deploy.sh", "./checkout.sh", "./testdata.sh", "cat scripts/ci/verify.sh",
+                "verify.sh", "bash -c 'echo hi'", "bash"):
+        assert ops(cmd) == [], cmd
+    # a runner asked only to describe itself or list its tests runs none
+    for cmd in ("pytest --help", "pytest --collect-only -q tests/", "pytest --co", "jest --listTests",
+                "go test -h", "uv run pytest --version", "npm test -- --help"):
+        assert ops(cmd) == [], cmd
+    assert ops("pytest --version && pytest -q") == ["test"] and ops("pytest -v") == ["test"]
+
+
 def test_shell_ops_come_from_the_whole_command_not_the_clipped_preview(settings, broker):
     """A long command (files written by heredoc, then tests and a commit) keeps its ops past the 200-char preview,
     while `hangar.tool.input` stays the preview and says it was clipped. An event recorded before the parser stored

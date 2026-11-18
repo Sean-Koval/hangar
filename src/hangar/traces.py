@@ -70,6 +70,25 @@ _TEST_SUBCOMMANDS = {"go": {"test"}, "cargo": {"test", "nextest"}, "npm": {"test
 _WRAPPERS = {"uv": "run", "poetry": "run", "pipenv": "run", "hatch": "run", "pdm": "run", "bundle": "exec",
              "pnpm": "exec", "npx": None, "bunx": None, "sudo": None, "time": None, "env": None, "nice": None,
              "timeout": None, "xvfb-run": None}
+# The wrapper flags that take a value as the next word (`uv run --project svc pytest`): that value isn't the program.
+_WRAPPER_VALUE_FLAGS = {
+    "uv": {"--project", "--directory", "--with", "--with-requirements", "--with-editable", "--python", "-p",
+           "--package", "--extra", "--group", "--only-group", "--no-group", "--env-file", "--index", "--from",
+           "--config-file", "--cache-dir"},
+    "poetry": {"-C", "--directory", "-P", "--project"}, "pdm": {"-p", "--project"}, "hatch": {"-e", "--env"},
+    "pipenv": set(), "bundle": {"--gemfile"}, "pnpm": {"-C", "--dir", "-F", "--filter"},
+    "npx": {"-p", "--package"}, "bunx": {"-p", "--package"}, "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
+    "time": {"-f", "--format", "-o", "--output"}, "env": {"-u", "--unset", "-C", "--chdir"},
+    "nice": {"-n", "--adjustment"}, "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "xvfb-run": {"-n", "--server-num", "-s", "--server-args", "-e", "--error-file", "-f", "--auth-file", "-w",
+                 "--wait", "-p", "--xauth-protocol"}}
+# Shell words that open a segment before its command: `for f in a; do pytest $f; done`, `if pytest; then ...`.
+_KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{"}
+_SHELLS = {"sh", "bash", "zsh", "dash"}
+# A test or CI script, run by a shell or by its path: scripts/ci/verify.sh, ./run_tests.sh, check-all.sh.
+_TEST_SCRIPT = re.compile(r"(run[_-])?(tests?|verify|check|ci)([_.-][\w.-]*)?\.sh")
+# A runner asked only to describe itself or list its tests runs none: pytest --version, jest --listTests.
+_PROBE_FLAGS = {"--version", "--help", "-h", "--collect-only", "--co", "--listTests", "--list"}
 _SEGMENT = re.compile(r"&&|\|\||[;|\n]")
 
 
@@ -85,21 +104,30 @@ def _words(segment: str) -> list[str]:
     return words
 
 
+def _skip_flags(words: list[str], takes_value: set[str]) -> list[str]:
+    """`words` past the leading flags, a flag's value with it when the flag takes one (`--project svc`), a timeout's
+    duration and env's assignments."""
+    while words and (words[0].startswith("-") or re.fullmatch(r"\d+[smh]?|[A-Za-z_]\w*=.*", words[0])):
+        words = words[2:] if words[0] in takes_value else words[1:]
+    return words
+
+
 def _op(words: list[str]) -> str | None:
+    while words and words[0] in _KEYWORDS:
+        words = words[1:]
     for _ in range(4):  # uv run pytest, sudo -E npx jest, timeout 60 make test
         if not words:
             return None
         head = words[0].rsplit("/", 1)[-1] if words[0] != "./gradlew" else words[0]
         if head in _WRAPPERS and len(words) > 1 and not (head == "pnpm" and words[1] in _TEST_SUBCOMMANDS["pnpm"]):
-            sub = _WRAPPERS[head]
+            sub, values = _WRAPPERS[head], _WRAPPER_VALUE_FLAGS.get(head, set())
             rest = words[1:]
             if sub is not None:
-                if rest[0] != sub:
+                rest = _skip_flags(rest, values)  # uv --project svc run pytest
+                if not rest or rest[0] != sub:
                     break
                 rest = rest[1:]
-            while rest and (rest[0].startswith("-") or re.fullmatch(r"\d+[smh]?|[A-Za-z_]\w*=.*", rest[0])):
-                rest = rest[1:]  # the wrapper's own flags, a timeout's duration, env's assignments
-            words = rest
+            words = _skip_flags(rest, values)
             continue
         break
     if not words:
@@ -114,11 +142,16 @@ def _op(words: list[str]) -> str | None:
         return "pr.open"
     if head in ("rm", "rmdir", "unlink", "shred") or (head == "find" and "-delete" in words):
         return "delete"
+    probe = bool(_PROBE_FLAGS.intersection(words[1:]))
     if head in _TEST_PROGRAMS or (head.startswith("python") and words[1:3] in (["-m", "pytest"], ["-m", "unittest"])):
-        return "test"
+        return None if probe else "test"
     if head in _TEST_SUBCOMMANDS and args and (args[0] in _TEST_SUBCOMMANDS[head] or (
             head in ("npm", "pnpm", "yarn", "bun") and args[0] == "run" and len(args) > 1
             and args[1].split(":")[0] in ("test", "tests"))):
+        return None if probe else "test"
+    script = _skip_flags(words[1:], set())[:1] if head in _SHELLS and "-c" not in words[1:2] else (
+        words[:1] if "/" in words[0] else [])
+    if script and _TEST_SCRIPT.fullmatch(script[0].rsplit("/", 1)[-1]):
         return "test"
     return None
 
