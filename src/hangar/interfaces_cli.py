@@ -105,7 +105,10 @@ def _import_all(transcript: Path | None, out: Path, session_id: str | None, mani
         typer.echo(f"imported {n} session(s) into {out}" + (f" ({', '.join(tickets)})" if tickets else "")
                    + (f"; {skipped} unchanged" if skipped else ""), err=True)
     else:
-        typer.echo(f"nothing new: {skipped} session(s) unchanged since the last import; wrote nothing", err=True)
+        rest = [f"{done[k]} {w}" for k, w in (("older", "older than --since"), ("other_repo", "in another repo"))
+                if done[k]]
+        typer.echo(f"nothing new: {skipped} session(s) unchanged since the last import"
+                   + "".join(f", {r}" for r in rest) + "; wrote nothing", err=True)
     if done["failed"]:
         typer.secho(f"{len(done['failed'])} transcript(s) couldn't be imported (see failed above)", fg="yellow",
                     err=True)

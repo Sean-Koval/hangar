@@ -23,10 +23,10 @@ hangar trace import --all --since 7d --repo hangar --out analysis/
 
 `--all` imports every session under `~/.claude/projects` (`--projects` names another folder) into
 `analysis/<session id>/`. `index.json` records each transcript's size and time. A second run skips what hasn't
-changed, writes nothing and says so. A grown session is imported again.
+changed, writes nothing and says so. A grown session is imported again. `--repo` takes a folder's name or its path.
 
-A branch that starts with a Jira key, such as `KAN-35-apply-atomic`, puts `hangar.ticket.key` on the session span.
-`hangar.git.branch` and `hangar.repo.dir` are recorded too.
+A branch that starts with a Jira key, such as `KAN-35-apply-atomic`, puts `hangar.ticket.key` on the session span
+and on each turn, with `hangar.git.branch`. `hangar.repo.dir` is recorded too.
 
 ## What it reads
 

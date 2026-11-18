@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -599,3 +600,97 @@ def test_import_all_reads_claude_code_s_folder_by_default(tmp_path: Path, monkey
     assert trace_import.projects_dir() == tmp_path / "cfg" / "projects"
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")
     assert trace_import.projects_dir() == Path.home() / ".claude" / "projects"
+
+
+def test_a_session_dir_is_always_a_plain_name_of_its_own(tmp_path: Path) -> None:
+    taken: dict[str, str] = {}
+    for sid in ("..", ".", "index.json", "a/b", "a b", "x" * 200, ""):
+        d = trace_import._dir_for(sid, sid or "k", taken)
+        assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", d), d
+    assert trace_import._dir_for("s-1", "p1/s-1.jsonl", {"s-1": "p2/s-1.jsonl"}) != "s-1"
+    assert trace_import._dir_for("s-1", "p1/s-1.jsonl", {"s-1": "p1/s-1.jsonl"}) == "s-1"
+
+
+def test_import_all_keeps_two_folders_sessions_of_one_name_apart(tmp_path: Path) -> None:
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    _project(projects, "s-same", "KAN-1-a", cwd="/work/one")
+    _project(projects, "s-same", "KAN-2-b", cwd="/work/two")
+    r, done = _run_all(projects, out)
+    assert r.exit_code == 0, r.output
+    dirs = sorted(e["dir"] for e in done["imported"])
+    assert len(set(dirs)) == 2 and all((out / d / "trace.json").exists() for d in dirs)
+    r, done = _run_all(projects, out)
+    assert done["imported"] == [] and done["unchanged"] == 2
+
+
+def test_import_all_goes_on_past_a_bad_transcript_and_keeps_its_index(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    _project(projects, "s-a", "KAN-1-a")
+    _project(projects, "s-bad", "main")
+    real = trace_import.import_transcript
+
+    def boom(path: Path, *a, **k):
+        if path.stem == "s-bad":
+            raise RuntimeError("unreadable")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(trace_import, "import_transcript", boom)
+    r, done = _run_all(projects, out)
+    assert r.exit_code == 1 and [e["session"] for e in done["imported"]] == ["s-a"]
+    assert done["failed"][0]["error"] == "RuntimeError: unreadable"
+    assert list(json.loads((out / "index.json").read_text())["sessions"]) == ["-work-hangar/s-a.jsonl"]
+    assert not list(out.glob(".index-*"))
+
+
+def test_import_all_imports_again_when_its_output_is_gone_or_older(tmp_path: Path,
+                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    _project(projects, "s-a", "KAN-1-a")
+    _run_all(projects, out)
+    shutil.rmtree(out / "s-a")
+    r, done = _run_all(projects, out)
+    assert [e["dir"] for e in done["imported"]] == ["s-a"]
+    monkeypatch.setattr(trace_import, "IMPORTER", trace_import.IMPORTER + 1)
+    r, done = _run_all(projects, out)
+    assert [e["dir"] for e in done["imported"]] == ["s-a"]
+
+
+def test_import_all_refuses_an_out_folder_inside_the_projects_folder(tmp_path: Path) -> None:
+    projects = tmp_path / "projects"
+    _project(projects, "s-a", "main")
+    r = CliRunner().invoke(cli.app, ["trace", "import", "--all", "--projects", str(projects), "--out",
+                                     str(projects / "imported")])
+    assert r.exit_code == 2 and "inside the projects folder" in r.output
+
+
+def test_nothing_new_names_what_was_left_out(tmp_path: Path) -> None:
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    _project(projects, "s-a", "main", cwd="/work/other")
+    r, done = _run_all(projects, out, "--repo", "hangar")
+    assert done["other_repo"] == 1 and "1 in another repo" in r.stderr and "wrote nothing" in r.stderr
+
+
+@pytest.mark.parametrize(("cwd", "repo", "hit"), [
+    ("/work/hangar/src", "hangar", True), ("/work/hangar-old", "hangar", False),
+    ("/work/hangar/src", "/work/hangar", True), ("/work/hangar/src", "/work/hangar/", True),
+    ("/work/hangarx", "/work/hangar", False),
+    (r"C:\Users\me\hangar\src", "hangar", True), (r"C:\Users\me\hangar", r"c:\users\me\hangar", True),
+    (r"C:\Users\me\other", "hangar", False), (None, "hangar", False),
+])
+def test_repo_matches_a_name_or_a_path(cwd: str | None, repo: str, hit: bool) -> None:
+    assert trace_import.repo_matches(cwd, repo) is hit
+
+
+def test_each_turn_carries_its_own_branch_redacted(tmp_path: Path) -> None:
+    token = "ghp_" + "aB3dE5gH7jK9mN1pQ3rS5tU7vW9yZ1bC3dE5"
+    p = _project(tmp_path / "projects", "s-two", "KAN-35-first")
+    with p.open("a") as f:
+        f.write(json.dumps({**_prompt("Next.", "2026-11-01T10:05:00.000Z"), "sessionId": "s-two",
+                            "gitBranch": f"KAN-36-{token}", "cwd": "/work/hangar"}) + "\n")
+    imp = trace_import.import_transcript(p, manifest=False)
+    turns = [_attrs(s) for s in _spans(imp.trace) if _attrs(s).get("hangar.kind") == "turn"]
+    assert [t.get("hangar.ticket.key") for t in turns][-2:] == ["KAN-35", "KAN-36"]
+    assert token not in json.dumps(imp.trace)
