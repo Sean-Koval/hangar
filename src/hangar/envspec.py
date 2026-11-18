@@ -498,9 +498,16 @@ def spec_dir(spec: EnvSpec, rel: str) -> Path:
     shipped one, the shipped spec's directory when only that has it (KAN-304). Not a containment check."""
     here = spec.source_dir or Path(".")
     there = spec._shipped_dir
-    if there is not None and not (here / rel).exists() and (there / rel).exists():
+    if there is not None and not _exists(here / rel) and _exists(there / rel):
         return there
     return here
+
+
+def _exists(p: Path) -> bool:
+    try:
+        return p.exists()
+    except OSError:  # a name too long, a NUL: not there (resolving it fails later with the reason)
+        return False
 
 
 def check_paths(spec: EnvSpec) -> None:
@@ -514,6 +521,8 @@ def check_paths(spec: EnvSpec) -> None:
                 skill_dir(spec, sk.path)
             except FileNotFoundError as e:
                 raise ValueError(f"environment {spec.name}: {e}") from None
+            except OSError:  # e.g. ENAMETOOLONG; its message would name the server's directory
+                raise ValueError(f"environment {spec.name}: skill path not usable: {sk.path[:200]}") from None
 
 
 def _contained_path(root: Path, rel: str) -> Path:
@@ -703,7 +712,7 @@ class EnvCatalog:
         for sk in spec.skills:  # inherited: relative to the parent's file (a child saved elsewhere can't see it)
             if not sk.path or sk.path not in bases:
                 continue
-            if sk.path not in own or not (spec_dir(spec, sk.path) / sk.path).exists():
+            if sk.path not in own or not _exists(spec_dir(spec, sk.path) / sk.path):
                 sk._base = bases[sk.path]  # KAN-304: also an inherited skill the child lists again (lists replace)
         return spec
 

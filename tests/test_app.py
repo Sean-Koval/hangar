@@ -237,6 +237,11 @@ def test_a_shipped_environment_saved_through_the_api_still_renders(client, setti
     assert r.status_code == 200, r.text
     assert (settings.saved_env_dir / "agent.yaml").exists()
     assert client.get("/api/environments/agent/context").status_code == 200
+    # validate stages the spec where a save would write it, so it agrees with the save
+    v = client.post("/api/environments/validate", content=yaml.safe_dump({**shipped, "description": "v"})).json()
+    assert v["valid"], v
+    v = client.post("/api/environments/validate", content="name: mine\nskills:\n  - path: skills/nope\n").json()
+    assert not v["valid"] and "skills/nope" in v["errors"][0]
     bad = client.put("/api/environments/mine", content="extends: plain\nskills:\n  - path: skills/nope\n")
     assert bad.status_code == 400 and "skills/nope" in bad.text and str(settings.saved_env_dir) not in bad.text
     assert not (settings.saved_env_dir / "mine.yaml").exists()

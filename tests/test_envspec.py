@@ -504,3 +504,23 @@ def test_a_prebuilt_image_env_is_not_refused_for_a_skill_path(tmp_path):
     shipped, saved = _shipped_parent(tmp_path)
     cat = EnvCatalog([shipped], save_dir=saved)
     cat.add({"name": "img", "image": "ghcr.io/o/agent:1", "skills": [{"path": "skills/elsewhere"}]})
+
+
+def test_a_shipped_dir_after_the_save_dir_drops_the_fallback(tmp_path):
+    """[A, save, B]: B's spec wins outright, so it has no shipped directory to fall back to."""
+    a, saved, b = tmp_path / "a", tmp_path / "saved", tmp_path / "b"
+    for d in (a, saved, b):
+        d.mkdir()
+    (a / "e.yaml").write_text("name: e\n")
+    (saved / "e.yaml").write_text("name: e\nwarm_pool: 0\n")
+    (b / "e.yaml").write_text("name: e\ndescription: b\n")
+    e = EnvCatalog([a, saved, b], save_dir=saved).get("e")
+    assert e.source_dir == b and e._shipped_dir is None
+
+
+def test_an_over_long_skill_path_is_a_400_not_a_500(tmp_path):
+    shipped, saved = _shipped_parent(tmp_path)
+    cat = EnvCatalog([shipped], save_dir=saved)
+    with pytest.raises(ValueError) as e:
+        cat.add({"name": "parent", "skills": [{"path": "skills/" + "x" * 300}]})
+    assert str(saved) not in str(e.value) and str(shipped) not in str(e.value)
