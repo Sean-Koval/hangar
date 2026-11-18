@@ -65,15 +65,18 @@ exclude_docs: |
   templates/
 
 # The site's map, in the order a newcomer reads it: start here (the words, the quickstart, the console), the guides by
-# task, the reference (the APIs first), design notes, operations. Every page under docs/ is in it except what
-# exclude_docs lists and the superseded and deferred specs (0001, 0004, 0005, 0007, 0008): a design record that no
-# longer describes hangar would mislead from the nav, so they keep their pages and are reached from specs/README.md
-# only. The built specs stay in the nav: they are the reasoning behind what runs today.
+# task, the reference (the APIs first), design notes, operations. Each tab opens on a landing page of its own
+# (start-here.md, guides.md, reference.md, operations.md; specs/README.md for the design notes): a lede, a picture and
+# a card for each page a reader is likely to want, so a tab never opens on a deep page. Every page under docs/ is in
+# the map except what exclude_docs lists and the superseded and deferred specs (0001, 0004, 0005, 0007, 0008): a
+# design record that no longer describes hangar would mislead from the nav, so they keep their pages and are reached
+# from specs/README.md only. The built specs stay in the nav: they are the reasoning behind what runs today.
 # tests/test_editorial.py checks every page in this map exists, and holds each page to the editorial rule: 700 words of
 # prose, 60 to a paragraph, 25 to a sentence (a page written before the rule keeps under its listed ceilings).
 nav:
   - Home: index.md
   - Start here:
+      - Overview: start-here.md
       - Concepts:
           - The words: concepts.md
           - What hangar gives you: concepts/control-plane.md
@@ -106,28 +109,9 @@ nav:
           - Subscription logins: team/subscription-logins.md
           - What the vendors allow: team/vendor-terms.md
           - "Check it: hangar doctor": team/doctor.md
-      - Runbooks:
-          - runbooks/README.md
-          - On call and escalation: runbooks/on-call.md
-          - "Incident: a stuck job": runbooks/stuck-job.md
-          - "Incident: a credential leak": runbooks/credential-leak.md
-          - "Incident: Tower down": runbooks/tower-down.md
-          - "Incident: a full disk or quota": runbooks/disk-and-quota.md
-          - "Incident: a bad deploy": runbooks/bad-deploy.md
-          - "Incident: a deploy waiting too long": runbooks/deploy.md
-          - Backups and recovery objectives: runbooks/recovery.md
-          - Recovery drills: runbooks/drills.md
-          - Onboarding a team: runbooks/onboarding.md
-          - The per-repo checklist: runbooks/repo-checklist.md
-          - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md
-          - The Friday harness review: runbooks/harness-review.md
-          - "Run capture: the outbox": runbooks/outbox.md
-          - "Run capture: how runs are written": runbooks/outbox-writes.md
-          - Governance break-glass: runbooks/break-glass.md
-          - "Break-glass: once Tower decides": runbooks/break-glass-tower.md
-          - Tower beside hangar on GKE: runbooks/tower.md
   - Guides:
-      - Work:
+      - Overview: guides.md
+      - Hand work to an agent:
           - Jobs:
               - jobs/README.md
               - After you submit a job: jobs/after-submit.md
@@ -148,26 +132,28 @@ nav:
               - How steering works: steering/how-it-works.md
               - The uid split: steering/uid-split.md
               - hangar-owned harness settings: steering/harness-settings.md
-          - Governed approvals: governed-approvals.md
-          - The Tower hook: governance-hook.md
-          - Job release and landing through Tower: tower-release-landing.md
-          - Tower passports on the job API: tower-passports.md
           - Streaming: streaming.md
           - Context exchange: context-exchange.md
+          - Change sets: changesets.md
+      - Review and landing:
           - Landing:
               - landing.md
               - How a PR lands: landing/how-a-pr-lands.md
               - The review packet and the inbox: landing/review.md
           - When the webhook doesn't arrive: pr-reconcile.md
           - AI first-pass review: ai-review.md
-          - Change sets: changesets.md
+      - Governance with Tower:
+          - Governed approvals: governed-approvals.md
+          - The Tower hook: governance-hook.md
+          - Job release and landing through Tower: tower-release-landing.md
+          - Tower passports on the job API: tower-passports.md
       - Front doors:
           - Repo policy:
               - repo-policy.md
               - "Is this repo ready?": repo-policy/readiness.md
               - Budgets and shadows: repo-policy/budgets.md
               - Offline multi-repository release observations: repo-policy/release-observations.md
-          - Intake (Jira, GitHub Projects):
+          - Intake from Jira:
               - intake.md
               - Jira intake: intake/jira.md
               - Who releases a ticket to agents: intake/agent-release.md
@@ -217,6 +203,7 @@ nav:
           - Cost reporting: cost-reporting.md
           - Reviewer attention baseline: metrics-baseline.md
   - Reference:
+      - Overview: reference.md
       - APIs:
           - The Fleet API: api/fleet.md
           - hangar-envd: envd.md
@@ -239,32 +226,39 @@ nav:
               - security/review/index.md
               - Controls and evidence: security/review/controls.md
               - Open findings and accepted risks: security/review/risks.md
-          - The git credential gateway: security/git-gateway.md
-          - Who may continue a custom session branch: security/branch-creators.md
-          - Egress allowlists: security/egress.md
-          - The GKE egress default: security/egress-default.md
-          - Package mirrors: security/package-mirrors.md
-          - Sandbox networking on Docker: security/docker-network.md
-          - Secret scanning and redaction: security/secret-scanning.md
-          - Credentials in sandboxes: security/credentials.md
-          - Taint tracking: security/taint.md
-          - Front-door security: security/front-doors.md
-          - People and OAuth connectors: security/people.md
-          - Single sign-on: security/sso.md
-          - Single sign-on with IAP: security/sso-iap.md
-          - Sealed graders: security/graders.md
-          - The driver sidecar on GKE: security/driver-sidecar.md
-          - Turning the driver sidecar on: security/driver-sidecar-check.md
-          - Trees and the verify gate under the sidecar: security/driver-sidecar-trees.md
-          - The driver's own user on E2B: security/e2b-driver-user.md
-          - Build caches: security/build-caches.md
-          - Screens and requests: security/screen.md
-          - The vault key ring: security/vault-key.md
-          - How the control-plane pod is locked down: security/control-plane-pod.md
-          - Where the audit log is kept: security/audit.md
-          - Data handling: security/data-handling.md
-      - CI: ci.md
-      - Verify in a job: ci-verify.md
+          - Credentials and git:
+              - Credentials in sandboxes: security/credentials.md
+              - The git credential gateway: security/git-gateway.md
+              - Who may continue a custom session branch: security/branch-creators.md
+              - The vault key ring: security/vault-key.md
+          - Network:
+              - Egress allowlists: security/egress.md
+              - The GKE egress default: security/egress-default.md
+              - Package mirrors: security/package-mirrors.md
+              - Sandbox networking on Docker: security/docker-network.md
+          - Untrusted input:
+              - Front-door security: security/front-doors.md
+              - Taint tracking: security/taint.md
+              - Secret scanning and redaction: security/secret-scanning.md
+          - People and sign-on:
+              - People and OAuth connectors: security/people.md
+              - Single sign-on: security/sso.md
+              - Single sign-on with IAP: security/sso-iap.md
+          - Isolation:
+              - Sealed graders: security/graders.md
+              - The driver sidecar on GKE: security/driver-sidecar.md
+              - Turning the driver sidecar on: security/driver-sidecar-check.md
+              - Trees and the verify gate under the sidecar: security/driver-sidecar-trees.md
+              - The driver's own user on E2B: security/e2b-driver-user.md
+              - Build caches: security/build-caches.md
+              - Screens and requests: security/screen.md
+              - How the control-plane pod is locked down: security/control-plane-pod.md
+          - Records:
+              - Where the audit log is kept: security/audit.md
+              - Data handling: security/data-handling.md
+      - CI:
+          - CI: ci.md
+          - Verify in a job: ci-verify.md
   - Design notes:
       - specs/README.md
       - Cross-spec decisions: specs/decisions.md
@@ -279,52 +273,80 @@ nav:
           - 0013 E2B and CubeSandbox: specs/0013-e2b-cube-fast-sandboxes.md
           - 0014 Sister tool interfaces: specs/0014-sister-tool-interfaces.md
           - 0015 Governance decision point: specs/0015-governance-decision-point.md
-      - Research - Google AX: research/ax.md
-      - Research - Test-first acceptance: research/test-first.md
-      - Research - Test-first isolation: research/test-first-isolation.md
+      - Research:
+          - Google AX: research/ax.md
+          - Test-first acceptance: research/test-first.md
+          - Test-first isolation: research/test-first-isolation.md
   - Operations:
-      - Running on GKE:
-          - gke.md
-          - Environment images on GKE: gke/images.md
-          - "Kata, the heavy tier and Pod snapshots on GKE": gke/microvms.md
-          - Sandbox nodes off at night: gke/power.md
-          - Infra states on GKE: gke/infra-states.md
-          - Backups and restore on GKE: gke/backups.md
-      - Deploying from CI/CD:
-          - cicd.md
-          - Infra states and deploys: cicd/infra-states.md
-      - Deploy on your company's cluster: deploy-company.md
-      - Acceptance on the cluster:
-          - acceptance.md
-          - "The first run: fixtures and the live run": acceptance/first-run.md
-          - When an acceptance check fails: acceptance/failures.md
-      - Upgrading: upgrading.md
-      - Release notes:
-          - releases/README.md
-          - "Enforced intake and API keys": releases/enforce.md
-          - "Harness lock, outbox and doors": releases/adopt-capture.md
-          - "Harness lock, outbox and doors: the steps": releases/adopt-capture-procedure.md
-          - "Secure intake and API keys": releases/safe-release.md
-          - "Secure intake: the extends merge rules": releases/safe-release-merge.md
-          - "One hangar for a team": releases/team-release.md
-          - "One hangar for a team: changed defaults": releases/team-release-changes.md
-          - "One hangar for a team: backup to budgets": releases/team-release-procedure.md
-          - "One hangar for a team: doors and sandboxes": releases/team-release-sandboxes.md
-          - "One hangar for a team: operations, rollback": releases/team-release-operations.md
-          - "Upgrading an early install": releases/overnight-stack.md
-          - "Early install: changed defaults": releases/overnight-stack-defaults.md
-          - "Early install: upgrade and prove": releases/overnight-stack-procedure.md
-      - Troubleshooting: troubleshooting.md
-      - Team scale:
-          - team-scale.md
-          - The team load test: team-scale/load-test.md
-          - GKE capacity for 60 sessions: team-scale/gke-capacity.md
-          - What 60 sessions cost on GKE: team-scale/cost.md
-          - The heavy tier at team scale: team-scale/heavy-tier.md
-          - Spend guardrails: team-scale/spend-guardrails.md
-      - The Cloud Doctor: doctor.md
-      - MicroVM tier (E2B, CubeSandbox; experimental):
-          - microvm.md
-          - The e2b provider and hot resume: microvm/e2b.md
-          - Deploying the microVM tiers: microvm/deployment.md
-      - Local microVMs: local-microvms.md
+      - Overview: operations.md
+      - Deploy:
+          - Running on GKE:
+              - gke.md
+              - Environment images on GKE: gke/images.md
+              - "Kata, the heavy tier and Pod snapshots on GKE": gke/microvms.md
+              - Sandbox nodes off at night: gke/power.md
+              - Infra states on GKE: gke/infra-states.md
+              - Backups and restore on GKE: gke/backups.md
+          - Deploying from CI/CD:
+              - cicd.md
+              - Infra states and deploys: cicd/infra-states.md
+          - Deploy on your company's cluster: deploy-company.md
+          - MicroVM tier (E2B, CubeSandbox; experimental):
+              - microvm.md
+              - The e2b provider and hot resume: microvm/e2b.md
+              - Deploying the microVM tiers: microvm/deployment.md
+          - Local microVMs: local-microvms.md
+      - Prove:
+          - Acceptance on the cluster:
+              - acceptance.md
+              - "The first run: fixtures and the live run": acceptance/first-run.md
+              - When an acceptance check fails: acceptance/failures.md
+          - Troubleshooting: troubleshooting.md
+          - The Cloud Doctor: doctor.md
+      - Run:
+          - Runbooks:
+              - runbooks/README.md
+              - Onboarding a team: runbooks/onboarding.md
+              - The per-repo checklist: runbooks/repo-checklist.md
+              - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md
+              - The Friday harness review: runbooks/harness-review.md
+              - "Run capture: the outbox": runbooks/outbox.md
+              - "Run capture: how runs are written": runbooks/outbox-writes.md
+              - Tower beside hangar on GKE: runbooks/tower.md
+          - Incidents:
+              - On call and escalation: runbooks/on-call.md
+              - A stuck job: runbooks/stuck-job.md
+              - A credential leak: runbooks/credential-leak.md
+              - Tower down: runbooks/tower-down.md
+              - A full disk or quota: runbooks/disk-and-quota.md
+              - A bad deploy: runbooks/bad-deploy.md
+              - A deploy waiting too long: runbooks/deploy.md
+              - Governance break-glass: runbooks/break-glass.md
+              - "Break-glass: once Tower decides": runbooks/break-glass-tower.md
+          - Recovery:
+              - Backups and recovery objectives: runbooks/recovery.md
+              - Recovery drills: runbooks/drills.md
+          - Team scale:
+              - team-scale.md
+              - The team load test: team-scale/load-test.md
+              - GKE capacity for 60 sessions: team-scale/gke-capacity.md
+              - What 60 sessions cost on GKE: team-scale/cost.md
+              - The heavy tier at team scale: team-scale/heavy-tier.md
+              - Spend guardrails: team-scale/spend-guardrails.md
+      - Upgrade:
+          - Upgrading: upgrading.md
+          - Release notes:
+              - releases/README.md
+              - "Enforced intake and API keys": releases/enforce.md
+              - "Harness lock, outbox and doors": releases/adopt-capture.md
+              - "Harness lock, outbox and doors: the steps": releases/adopt-capture-procedure.md
+              - "Secure intake and API keys": releases/safe-release.md
+              - "Secure intake: the extends merge rules": releases/safe-release-merge.md
+              - "One hangar for a team": releases/team-release.md
+              - "One hangar for a team: changed defaults": releases/team-release-changes.md
+              - "One hangar for a team: backup to budgets": releases/team-release-procedure.md
+              - "One hangar for a team: doors and sandboxes": releases/team-release-sandboxes.md
+              - "One hangar for a team: operations, rollback": releases/team-release-operations.md
+              - "Upgrading an early install": releases/overnight-stack.md
+              - "Early install: changed defaults": releases/overnight-stack-defaults.md
+              - "Early install: upgrade and prove": releases/overnight-stack-procedure.md
