@@ -20,7 +20,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
-from hangar import harness_review, testresults
+from hangar import cmdfacts, harness_review, testresults
 from hangar.events import RunEvent, total_usage
 from hangar.models import Job, Session, SessionTurn, Usage, now
 
@@ -419,6 +419,19 @@ def _shell_ops_of(start: RunEvent | None, inp: str | None) -> list[str]:
     return [o for o in ops.split(",") if o] if isinstance(ops, str) else shell_ops(inp)
 
 
+def _shell_facts_of(start: RunEvent | None, inp: str | None) -> dict[str, Any]:
+    """--- KAN-287: the files a command writes, the programs it runs and whether its test runs were only probes, as the
+    parser read them from the whole command; an event recorded before it stored them is read from its clipped text."""
+    recorded = start is not None and any(k in start.data for k in ("writes", "runs", "probe"))
+    clipped = start is not None and start.data.get("clipped") is True
+    if not recorded and inp and (clipped or inp.endswith("…")):  # a clipped preview: its last word is cut off
+        inp = inp.removesuffix("…").rsplit(None, 1)[0] if " " in inp.strip() else ""
+    d = start.data if recorded and start is not None else cmdfacts.facts(inp)
+    return {"hangar.shell.writes": cmdfacts.split(d.get("writes")) or None,
+            "hangar.shell.runs": cmdfacts.split(d.get("runs")) or None,
+            "hangar.shell.probe": True if d.get("probe") is True else None}
+
+
 def _sub_parent(x: Export, parent: str | None, key: str, ev: RunEvent) -> tuple[str | None, str | None]:
     """--- KAN-338: (the span to hang a subagent's step under: its `subagent` span, the Task/Agent call that started
     it; that call's id). The turn and None for the agent's own steps."""
@@ -491,6 +504,7 @@ def _tool_span(x: Export, parent: str | None, key: str, harness: str | None, con
     suffix = None  # GenAI's command and skill refinements: `execute_tool {tool} {executable or skill}`
     if kind == "shell":
         attrs["hangar.shell.ops"] = _shell_ops_of(start, inp) or None
+        attrs.update(_shell_facts_of(start, inp))
         attrs["process.executable.name"] = suffix = executable(inp)
     if kind == "skill":
         attrs["gen_ai.skill.name"] = suffix = _skill_name(inp)

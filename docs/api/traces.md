@@ -104,7 +104,8 @@ words in each `&&`, `||`, `;` or `|` segment, in order, deduplicated:
 | `pr.open` | `gh pr create` |
 | `delete` | `rm`, `rmdir`, `unlink`, `shred`, `git rm`, `find … -delete` |
 
-They are read from the whole command, not the clipped `hangar.tool.input`. A clipped input has `hangar.tool.input_clipped=true`.
+These and the [command facts](shell-facts.md) come from the whole command, not the clipped `hangar.tool.input`
+(`hangar.tool.input_clipped=true`).
 
 **Order.** Tool calls and events are timestamped when hangar read them from the run log, so several can share a
 time. `hangar.seq` is each one's position in the session's event log: a total order within a session. On
@@ -219,7 +220,7 @@ hangar: `hangar.tool.kind`, `hangar.tool.input` (a one-line summary: the command
 clipped, redacted), `hangar.tool.output` (the start of the result; clipped, redacted), `hangar.tool.ok`,
 `hangar.seq` and `hangar.seq.end`, `hangar.file.path` and `hangar.file.repo_path` (edit and read; a Codex
 `apply_patch` naming several files has only `hangar.file.path`: its `file.change` events have one each),
-`hangar.shell.ops` (shell), `hangar.mcp.server` and `hangar.mcp.tool` (mcp), `hangar.tool.incomplete=true`
+`hangar.shell.*` (shell), `hangar.mcp.server` and `hangar.mcp.tool` (mcp), `hangar.tool.incomplete=true`
 when the turn ended before the result (the span then ends with the turn), and `hangar.git.tree` with
 `hangar.git.tree.trusted` (#165, added within v1): the working tree's git tree id the call left, on `edit` and
 `shell` calls of a live turn that changed the tree (absent when the tree didn't change: a step's state is then the
