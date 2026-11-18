@@ -96,6 +96,8 @@ NAME = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
 MAX_SKILL_BYTES = 1024 * 1024  # a variant's skills, all files together
 MAX_GRADER_FILES = 1024 * 1024  # one grader's files, all together
 MAX_EXPERIMENT_GRADER_FILES = 16 * 1024 * 1024  # --- KAN-192: every grader of an experiment (it lives in its state)
+MAX_WORKSPACE_FILES, MAX_WORKSPACE = 500, 1024 * 1024  # --- KAN-192: one task's workspace (16 MB in all, as above)
+KV_WORKSPACE = "experiment-workspace:"  # + <experiment>:<task>: the task's workspace commit (workspaces.py)
 GRADE_OUT = "/tmp/hangar-grade/out.json"
 GRADE_WORK = "/tmp/hangar-grade"
 # --- sealed (#126): where a grader's hidden tests and `hangar-grade` go, outside the repo: root-owned on Docker (whose
@@ -217,11 +219,34 @@ class Task(BaseModel):
     context: list[ContextItem] | None = Field(None, max_length=20)
     # --- KAN-192: the task's own grader, in place of the experiment's: its own command, and its own 64 files and 1 MB
     grader: Grader | None = None
+    # --- KAN-192: the task's files, in place of a repo: hangar commits them and clones that commit (workspaces.py)
+    workspace: dict[str, str] | None = Field(None, max_length=MAX_WORKSPACE_FILES)
+
+    @field_validator("workspace")
+    @classmethod
+    def _workspace(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("a workspace needs at least one file")
+        from hangar import workspaces
+
+        for p in v:
+            if why := workspaces.path_error(p):
+                raise ValueError(f"workspace file '{p[:60]}' {why}")
+        if d := workspaces.clash(list(v)):
+            raise ValueError(f"workspace path '{d[:60]}' is both a file and a folder")
+        if sum(len(x.encode()) for x in v.values()) > MAX_WORKSPACE:
+            raise ValueError("a task's workspace is limited to 1 MB")
+        return v
 
     @model_validator(mode="after")
     def _what(self) -> Task:
         if not self.instructions and not self.issue:
             raise ValueError(f"task {self.id}: give `instructions` or an `issue`")
+        if self.workspace is not None and (self.repo or self.issue or self.base_branch):
+            raise ValueError(f"task {self.id}: a `workspace` is the task's repo: give no `repo`, `issue` or "
+                             "`base_branch` with it")
         return self
 
 
@@ -293,6 +318,9 @@ class ExperimentSpec(BaseModel):
                              "`grader` for the rest")
         if sum(len(x.encode()) for g in graders for x in g.files.values()) > MAX_EXPERIMENT_GRADER_FILES:
             raise ValueError("the graders' files are limited to 16 MB in all, across the experiment's tasks")
+        if sum(len(x.encode()) for t in self.tasks for x in (t.workspace or {}).values()) > \
+                MAX_EXPERIMENT_GRADER_FILES:
+            raise ValueError("the tasks' workspaces are limited to 16 MB in all")
         if len({g.canary for g in graders if g.canary}) > 1:
             raise ValueError("an experiment has one canary: give the same one to every grader, or none")
         return self
@@ -612,16 +640,19 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
     tasks: dict[str, Any] = {}
     for t in spec.tasks:
         env = fleet.catalog.get(spec.environment)
-        repo = t.repo or (f"https://github.com/{t.issue.split('#')[0]}.git" if t.issue else None) or (
-            env.repo.url if env.repo else None)
-        pinned = t.base_sha or await _github_sha(jobs, repo, t.base_branch)
+        ws = await workspace_commit(jobs, job.id, t) if t.workspace is not None else None  # --- KAN-192
+        if ws and t.base_sha and t.base_sha != ws:
+            raise _Stop("pin_set", f"task {t.id}: base_sha {t.base_sha} isn't its workspace's commit {ws}")
+        repo = None if ws else t.repo or (f"https://github.com/{t.issue.split('#')[0]}.git" if t.issue else None) \
+            or (env.repo.url if env.repo else None)
+        pinned = ws or t.base_sha or await _github_sha(jobs, repo, t.base_branch)
         if pinned:
             fleet.store.kv_set(f"{KV_BASE}{job.id}:{t.id}", pinned)
         issue_text = await _issue_text(jobs, t.issue) if t.issue else None
         from hangar import trialcache  # --- #180: the task's identity for the trial cache
 
         tasks[t.id] = {"repo": repo, "base_branch": t.base_branch, "base_sha": pinned,
-                       "issue": t.issue, "issue_text": issue_text,
+                       "issue": t.issue, "issue_text": issue_text, **({"workspace": ws} if ws else {}),
                        "task_digest": (spec.task_digests or {}).get(t.id)
                        or trialcache.task_digest(t, spec.environment, grader_for(spec, t.id))}
     # --- review(#114): egress too: an approved egress request widens an environment mid-experiment
@@ -1374,6 +1405,19 @@ def new_canary() -> str:
     return f"{CANARY_PREFIX}{uuid.uuid4()}"
 
 
+async def workspace_commit(jobs: JobService, exp: str, task: Task) -> str:
+    """--- KAN-192: the commit of a task's workspace (workspaces.py), made again if hangar lost its bundle, and recorded
+    for the experiment's trials (KV_WORKSPACE: only the runner writes it; a trial's session reads it)."""
+    from hangar import workspaces
+
+    try:
+        sha = await asyncio.to_thread(workspaces.commit, jobs.fleet.settings, task.workspace or {})
+    except workspaces.WorkspaceError as e:
+        raise _Stop("error", f"task {task.id}: could not commit its workspace: {e}") from e
+    jobs.fleet.store.kv_set(f"{KV_WORKSPACE}{exp}:{task.id}", sha)
+    return sha
+
+
 def grader_for(spec: ExperimentSpec, task: str) -> Grader | None:
     """--- KAN-192: the grader a task's trials get: its own, else the experiment's."""
     own = next((t.grader for t in spec.tasks if t.id == task), None)
@@ -1667,8 +1711,9 @@ async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSp
         labels = {GRADER_LABEL: job.id, TRIAL_LABEL: key}
         if g.network == "mirror":
             labels[delivery.NETWORK_LABEL] = "mirror"
-        sb = await fleet.create(env_name, repo=tp.get("repo"), branch=next(
-            (x.base_branch for x in spec.tasks if x.id == task), None),
+        own = next((x for x in spec.tasks if x.id == task), None)
+        ws = await workspace_commit(jobs, job.id, own) if own and own.workspace is not None else None  # KAN-192
+        sb = await fleet.create(env_name, repo=tp.get("repo"), branch=own.base_branch if own else None, workspace=ws,
             credentials=validation_credentials(fleet, env), provider=spec.provider,
             ttl_minutes=max(10, g.timeout_seconds // 60 + 15), person=job.person, actor=f"experiment:{job.id}",
             labels=labels, purpose="automated")  # --- #125: and strict

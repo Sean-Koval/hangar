@@ -665,7 +665,8 @@ class SessionService:
             push_branch=s.branch,  # workstream F: the one branch a gateway-mode sandbox may push
             person=s.person,  # --- identity: the session's person's sandbox, with their credentials
             purpose="automated" if s.job_id else "interactive",  # --- #125: a job's session is automated
-            harness_lock=s.harness_lock)  # --- #221: its prefix layer mounted from the lock it was thawed from
+            harness_lock=s.harness_lock,  # --- #221: its prefix layer mounted from the lock it was thawed from
+            workspace=trialiso.workspace(self.fleet, s))  # --- KAN-192: a workspace task's commit
         self._credential_warnings(s, sb)
         if s.checkpoints and sb.info.get("repo_path"):
             stage("restoring the last checkpoint")
