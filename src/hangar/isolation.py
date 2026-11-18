@@ -67,8 +67,9 @@ DRIVER = f"{HOME}/driver.py"
 CAPS = "+setuid,+setgid,+kill"
 LINKED = ("log", "exit", "pid", "sh")  # what the agent's ~/.hangar/runs points at
 # --- harden: the setup's checks changed (2: sudo under requiretty, the system PATH, the harness and managed settings;
-# 3: the driver sidecar, KAN-186); a sandbox whose answer was cached under another version is probed again
-VERSION = 3
+# 3: the driver sidecar, KAN-186; 4: the probe runs /bin/sh, not the agent's PATH's sh, KAN-555); a sandbox whose
+# answer was cached under another version is probed again
+VERSION = 4
 # --- KAN-186: the driver sidecar (providers/kubernetes.py, add_driver_sidecar)
 SIDECAR = "sidecar"  # sb.info["isolation"]["backend"]
 CTL = "/var/lib/hangar-ctl"  # kubernetes.DRIVER_CTL: in memory, mounted only in the driver's container
@@ -77,6 +78,9 @@ RELAY = f"{HOME}/relay.py"  # the agent's end, read-only in its container
 # What starts the relay, and what the relay starts the harness with, is found on this PATH in the agent's container:
 # the probe checks the agent can't write any of it (Docker's SYSTEM_PATH, the image's own directories)
 SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# --- KAN-555: what every exec isolation.py makes starts with. A bare "sh" is found through the container's PATH,
+# which starts with the agent's ~/.local/bin: a planted sh there would answer the probe as it liked
+SH = "/bin/sh"
 RELAY_TIMEOUT = 90  # the relay waits up to 60 s for the driver (driver.RELAY_WAIT), then connects
 _RELAY_TOKENS: dict[str, str] = {}  # run id -> its relay token, from steer.prepare to start (one process, one turn)
 # --- harden: a hardened turn's harness files hold its environment and MCP servers' secrets: only while it runs
@@ -311,11 +315,18 @@ exit 3; fi
 for p in $(echo "$PATH" | tr : ' '); do
   ! changeable "$p" || {{ echo "the agent can write $p (hangar's PATH)"; exit 3; }}
 done
-for t in python3 env bash; do
+for t in sh python3 env bash; do
   x=$(command -v $t) || {{ echo "the agent's container has no $t"; exit 3; }}
   ! changeable "$x" && ! changeable "$(readlink -f "$x")" || {{ echo "the agent can change $x"; exit 3; }}
 done
-echo "python $(command -v python3)"
+py=$(command -v python3)
+# --- KAN-555: what the relay's python loads before it reads its token: its library directories, and each link to it
+for d in $("$py" -I -c 'import site, sys; print("\n".join([*sys.path, *site.getsitepackages()]))' 2>/dev/null); do
+  [ -z "$d" ] || ! changeable "$d" || {{ echo "the agent can change $d (python's path)"; exit 3; }}
+done
+x=$py; while [ -L "$x" ]; do t=$(readlink "$x"); case $t in /*) x=$t;; *) x=$(dirname "$x")/$t;; esac
+  ! changeable "$x" || {{ echo "the agent can change $x (a link to python3)"; exit 3; }}; done
+echo "python $py"
 harness=ok
 b={bin}
 if [ -z "$b" ]; then harness="the harness has no structured mode"
@@ -342,6 +353,15 @@ def _under(path: str, mounts: list[str]) -> bool:
     return bool(path) and any(path == m or path.startswith(m.rstrip("/") + "/") for m in mounts)
 
 
+def safe_python(path: str | None) -> str | None:
+    """--- KAN-555: the relay's python (it reads the relay token on stdin) only from a directory on SAFE_PATH, the
+    ones the probe checked the agent can't write, under its own name. Anything else the probe said is refused."""
+    if not path or not re.fullmatch(r"/[A-Za-z0-9/._-]+", path) or ".." in path:
+        return None
+    head, _, name = path.rpartition("/")
+    return path if head in SAFE_PATH.split(":") and re.fullmatch(r"python3(\.[0-9]+)?", name) else None
+
+
 async def _probe_sidecar(prov: Provider, sb: Sandbox) -> dict[str, Any]:
     """--- KAN-186: split when the pod has the driver sidecar in the shape that keeps the agent out (read from the
     pod's spec through the API, not from inside it), the two containers run as different users, and the agent's
@@ -356,14 +376,14 @@ async def _probe_sidecar(prov: Provider, sb: Sandbox) -> dict[str, Any]:
         pod = await prov.sidecar_pod(sb)  # type: ignore[attr-defined]
         if pod.get("why"):
             return shared(pod["why"])
-        drv = await prov.exec_raw(sb, ["sh", "-c", SIDECAR_DRIVER], 30, user=USER)  # type: ignore[attr-defined]
+        drv = await prov.exec_raw(sb, [SH, "-c", SIDECAR_DRIVER], 30, user=USER)  # type: ignore[attr-defined]
         binary = live_bin(HARNESSES.get(sb.info.get("harness") or ""))
         script = SIDECAR_AGENT.format(path=SAFE_PATH, ctl=CTL, home=HOME, bin=shlex.quote(binary))
-        agent = await prov.exec_raw(sb, ["sh", "-c", script], 60)  # type: ignore[attr-defined]
+        agent = await prov.exec_raw(sb, [SH, "-c", script], 60)  # type: ignore[attr-defined]
     except Exception as e:  # noqa: BLE001 - any failure leaves the sandbox as it was: single-user
         return shared(f"checking it failed: {e}")
     dlines = drv.stdout.strip().splitlines()
-    if drv.exit_code != 0 or not dlines or not dlines[0].strip().isdigit():
+    if drv.exit_code != 0 or not dlines or not re.fullmatch(r"[0-9]+", dlines[0].strip()):
         return shared(f"the driver's container didn't answer (exit {drv.exit_code}: "
                       f"{(drv.stderr or drv.stdout).strip()[-200:]})")
     if len(dlines) > 1:
@@ -373,14 +393,21 @@ async def _probe_sidecar(prov: Provider, sb: Sandbox) -> dict[str, Any]:
         return shared((alines or [agent.stderr.strip()[-200:] or f"exit {agent.exit_code}"])[-1])
     got = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() if " " in ln else "" for ln in alines}
     duid, auid = int(dlines[0]), got.get("agent", "")
-    if not auid.isdigit() or duid == 0 or duid == int(auid):
+    if not re.fullmatch(r"[0-9]+", auid) or duid == 0 or duid == int(auid):
         return shared(f"the driver's container runs as uid {duid}, the agent's as {auid}")
+    # --- KAN-555: the pod's spec, read through the API, outranks what either container says about itself
+    for who, said, spec in (("driver's", duid, pod.get("driver_uid")), ("agent's", int(auid), pod.get("agent_uid"))):
+        if said != spec:  # None: the spec gave no uid, which a pod hangar made always has
+            return shared(f"the {who} container says it runs as uid {said}, but the pod's spec says {spec}")
+    python = safe_python(got.get("python"))
+    if python is None:
+        return shared(f"the agent's python3 ({got.get('python', 'none')[:100]}) isn't in a system directory")
     harness = got.get("harness", "not checked")
     readonly = list(pod.get("readonly") or [])
     if harness == "ok" and not (_under(binary, readonly) and _under(got.get("real", ""), readonly)):
         harness = f"{binary} isn't on a read-only volume in the agent's container (a harness pack)"
     return {"mode": "split", "backend": SIDECAR, "uid": duid, "agent_uid": int(auid), "v": VERSION,
-            "python": got.get("python") or "/usr/bin/python3",
+            "python": python,
             **({"harness": binary} if harness == "ok" else {"harness_why": harness[:300]})}
 
 
@@ -445,7 +472,7 @@ async def _put_exec(prov: Provider, sb: Sandbox, parent: str, archive: bytes) ->
     # mkdir: RUNS 0755 (the agent reads its run's files through the read-only mount); CTL isn't mounted there at all
     script = (f"PATH={SAFE_PATH}; umask 022; mkdir -p {q(parent)} && head -c {len(data)} | base64 -d "
               f"| tar -xpf - -C {q(parent)}")
-    res = await prov.exec_raw(sb, ["sh", "-c", script], 60, stdin=data, user=USER)  # type: ignore[attr-defined]
+    res = await prov.exec_raw(sb, [SH, "-c", script], 60, stdin=data, user=USER)  # type: ignore[attr-defined]
     if res.exit_code != 0:
         raise RuntimeError(f"could not write into {parent} in sandbox {sb.id} (tar exit {res.exit_code}): "
                            f"{(res.stderr or res.stdout)[-300:]}")
@@ -560,7 +587,11 @@ async def _start_sidecar(prov: Provider, sb: Sandbox, settings: Settings, run_id
                              f"-s {run_id} -x 200 -y 50 -c {HOME} {q(pane)}", timeout=20)
     if res.exit_code != 0:
         return res
-    python = (sb.info.get("isolation") or {}).get("python") or "/usr/bin/python3"
+    python = safe_python((sb.info.get("isolation") or {}).get("python"))  # --- KAN-555
+    if python is None:
+        await kill(prov, sb, settings, run_id, interrupted=True, side=True)
+        return ExecResult(exit_code=1, stdout="", stderr="the agent's relay didn't start: its python3 isn't one the "
+                          "probe checked")
     try:
         rel = await prov.exec_raw(sb, [python, "-I", RELAY, f"{r}.port"], RELAY_TIMEOUT,  # type: ignore[attr-defined]
                                   stdin=f"{token}\n".encode())

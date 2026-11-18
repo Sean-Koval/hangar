@@ -49,7 +49,7 @@ class Scripted:
         self.raw: list[tuple[list[str], str | None]] = []
 
     async def sidecar_pod(self, sb):
-        return {"why": self.why, "readonly": self.readonly}
+        return {"why": self.why, "readonly": self.readonly, "agent_uid": 1000, "driver_uid": 1001}
 
     async def exec_raw(self, sb, argv, timeout, stdin=None, user=None):
         self.raw.append((argv, user))
@@ -78,7 +78,44 @@ async def test_a_pod_with_the_sidecar_runs_split_and_hangar_can_own_the_harness(
     assert isolation.sidecar(sb) and isolation.pinned(sb)
     (dargv, duser), (aargv, auser) = p.raw
     assert duser == isolation.USER and auser is None  # one check in each container, as its own user
-    assert aargv[:2] == ["sh", "-c"] and f"[ ! -e {isolation.CTL} ]" in aargv[2] and "managed settings" in aargv[2]
+    assert aargv[:2] == ["/bin/sh", "-c"] and f"[ ! -e {isolation.CTL} ]" in aargv[2] and "managed settings" in aargv[2]
+    assert dargv[0] == "/bin/sh"  # --- KAN-555: never a sh found through the container's PATH
+
+
+@pytest.mark.parametrize("python", ["/home/agent/.local/bin/python3", "/usr/bin/../../tmp/python3", "/usr/bin/sh",
+                                    "/usr/bin/python3 -c x", "", "/opt/venv/bin/python3"])
+async def test_a_python_off_the_system_path_keeps_turns_single_user(python):
+    # --- KAN-555: the relay reads its token on stdin, so its python must be one the agent can't have planted
+    b = isolation.live_bin(HARNESSES["claude-code"])
+    sb = _sb()
+    assert await isolation.ensure(_fleet(), Scripted(agent=f"python {python}\nharness ok\nreal {b}\nagent 1000\n"),
+                                  sb) is False
+    assert "isn't in a system directory" in sb.info["isolation"]["why"]
+    assert isolation.safe_python("/usr/local/bin/python3.12") == "/usr/local/bin/python3.12"
+
+
+@pytest.mark.parametrize("uids,why", [
+    ({"agent_uid": 1002, "driver_uid": 1001}, "the agent's container says it runs as uid 1000, but the pod's spec"),
+    ({"agent_uid": 1000, "driver_uid": 1003}, "the driver's container says it runs as uid 1001, but the pod's spec"),
+    ({}, "but the pod's spec says None"),  # a spec that names no uid fails closed
+])
+async def test_the_pods_spec_outranks_what_the_containers_say(uids, why):
+    class Spec(Scripted):
+        async def sidecar_pod(self, sb):
+            return {"why": None, "readonly": self.readonly, **uids}
+
+    sb = _sb()
+    assert await isolation.ensure(_fleet(), Spec(), sb) is False
+    assert why in sb.info["isolation"]["why"]
+
+
+async def test_the_probe_checks_what_pythons_loads_and_every_link_to_it():
+    # --- KAN-555: the relay's python reads the token; its library path and the links to it are the agent's to change
+    p, sb = Scripted(), _sb()
+    await isolation.ensure(_fleet(), p, sb)
+    script = p.raw[1][0][2]
+    assert "site.getsitepackages()" in script and "(python's path)" in script and "(a link to python3)" in script
+    assert all(argv[0].startswith("/") for argv, _ in p.raw)  # never a program found through the agent's PATH
 
 
 @pytest.mark.parametrize("prov,why", [
@@ -140,6 +177,12 @@ def test_the_pod_hangar_makes_has_the_shape_the_probe_wants():
     got = sidecar_shape(_pod())
     assert got["why"] is None and f"{PACK_ROOT}/claude-code" in got["readonly"]
     assert isolation.HOME in got["readonly"]
+    # --- KAN-555: the uids the probe's answers are held to: the agent's from the pod's securityContext, which its
+    # container inherits, unless the container sets its own
+    assert (got["agent_uid"], got["driver_uid"]) == (1000, 1001)
+    pod = _pod()
+    pod["spec"]["containers"][0]["securityContext"]["runAsUser"] = 1002
+    assert sidecar_shape(pod)["agent_uid"] == 1002
 
 
 def _break(fn):
@@ -155,6 +198,7 @@ def _break(fn):
      "over the control volume"),
     (lambda s, st: s["containers"][0]["volumeMounts"][-1].update(readOnly=False), "without readOnly"),
     (lambda s, st: s["containers"][1]["securityContext"].update(runAsUser=1000), "isn't its own"),
+    (lambda s, st: s["containers"][0]["securityContext"].update(runAsUser=0), "isn't its own"),  # --- KAN-555
     (lambda s, st: s["containers"][0]["securityContext"].update(allowPrivilegeEscalation=True), "may escalate"),
     (lambda s, st: st["containerStatuses"][1].update(ready=False), "isn't ready"),
     (lambda s, st: s["volumes"][-1].pop("emptyDir"), "aren't emptyDirs"),
@@ -348,7 +392,8 @@ class FakeSidecar(FakeProvider):
             return ExecResult(exit_code=0, stdout="1001\n", stderr="")  # one user here: say what a pod would
         if not driver and "hangar-probe" in script:
             b = isolation.live_bin(HARNESSES["live-claude"])
-            return ExecResult(exit_code=0, stdout=f"python {PYTHON}\nharness ok\nreal {b}\nagent 1000\n", stderr="")
+            return ExecResult(exit_code=0, stdout=f"python /usr/bin/python3\nharness ok\nreal {b}\nagent 1000\n",
+                              stderr="")
         if driver and "tar -xpf" in script:  # isolation.put: unpacked as the driver's container would, paths mapped
             parent = Path(self.view(sandbox, script.rsplit("-C ", 1)[1].strip("'"), True))
             parent.mkdir(parents=True, exist_ok=True)
@@ -366,10 +411,12 @@ class FakeSidecar(FakeProvider):
                         dest.write_bytes(data)
                     dest.chmod(m.mode)
             return ExecResult(exit_code=0, stdout="", stderr="")
+        argv = [PYTHON if a == "/usr/bin/python3" else a for a in argv]  # the probe's answer, as this host has it
         return await self._run(sandbox, [self.view(sandbox, a, driver) for a in argv], driver, stdin)
 
     async def sidecar_pod(self, sb):
-        return {"why": None, "readonly": [HARNESSES["live-claude"].prefix, isolation.HOME]}
+        return {"why": None, "readonly": [HARNESSES["live-claude"].prefix, isolation.HOME], "agent_uid": 1000,
+                "driver_uid": 1001}
 
     def cleanup(self) -> None:
         for tmp in self.root.glob("*/vol/hangar-ctl/tmux"):
@@ -516,7 +563,7 @@ async def test_a_relay_that_cant_start_fails_the_turn_and_stops_its_driver(side,
     s, sb = await _sandbox(svc, live, "sf")
     sb.info.pop("isolation", None)
     await isolation.ensure(svc.fleet, side, sb)
-    sb.info["isolation"]["python"] = "/nonexistent/python3"
+    sb.info["isolation"]["python"] = "/usr/local/bin/python3.99"  # on the system path, but not there
     svc.fleet.store.put(sb)
     s.approvals = "ask"
     svc.send("sf", "TOOL make the file", requester="ana")

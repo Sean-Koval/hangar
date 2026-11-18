@@ -45,19 +45,18 @@ Claude Code takes `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, a subscr
 
 The agent container mounts nothing from the host: no home directory, checkout or Docker socket. It sits on an
 internal Docker network, which has no route out. Its only neighbour is the sidecar, which is also on Docker's
-default bridge.
+default bridge. Its bridge has no IPv4 address and the agent no IPv6, so this computer isn't on it.
 
 The sidecar serves two things:
 
 - **An HTTP CONNECT proxy** (`HTTPS_PROXY`). Anything but CONNECT gets 405, so plain HTTP fails closed. The host and
   port must match the allowlist, and the name must resolve to public addresses only. The tunnel goes to an address
   it checked.
-- **A DNS server that refuses every query.** The agent's `--dns` is the sidecar. Docker's resolver answers container
-  names itself and forwards every other name there, where it is refused.
+- **A DNS server that refuses every query.** The agent's `--dns` is the sidecar. Docker's resolver forwards every
+  name but a container's there, where it is refused.
 
 So no name on the internet resolves inside the agent, allowed or not. Tools reach allowed hosts by name through the
-proxy, which resolves them itself. DNS can't carry data out, and nothing reaches port 53 anywhere else. Recent
-Docker already stops forwarding for internal networks; the sidecar makes that hold on every version.
+proxy, which resolves them itself. DNS can't carry data out, and nothing reaches port 53 anywhere else.
 
 ## The checks
 
@@ -69,18 +68,19 @@ Docker already stops forwarding for internal networks; the sidecar makes that ho
 - an off-list host, plain HTTP and a request that skips the proxy are refused;
 - `getent hosts` fails for an off-list host and for an allowed one;
 - a DNS query sent straight to `1.1.1.1:53`, over UDP or TCP, gets nothing back;
+- nothing listening on this computer answers at the gateway addresses;
 - the agent probe: `claude --version` is hangar's pin, and `claude -p "say ok" --output-format json` succeeds in the
   first instance. Without a Claude credential it fails and says which variables to set. `--no-agent-probe` skips it.
 
 ## On macOS
 
-Egress is enforced the same way on macOS, by construction. Docker Desktop runs every container in its Linux VM, and
+Egress is enforced the same way on macOS. Docker Desktop runs every container in its Linux VM, and
 the internal network, the sidecar and the `--dns` setting all live inside it. Nothing depends on the Mac's own
 firewall or resolver.
 
 That is a design claim until it is measured. `hangar env local check` on a Mac is the qualification: its DNS checks
 are the ones that would catch a resolver leak. Its egress and DNS checks have passed on Linux (Docker 29.9); the
-macOS run is tracked on KAN-472. Colima and OrbStack also run containers in a Linux VM, but are unqualified.
+macOS run is tracked on KAN-472. Colima and OrbStack, also Linux VMs, are unqualified.
 
 ## What it doesn't do
 

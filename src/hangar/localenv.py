@@ -107,6 +107,16 @@ def build(spec: Any, harness: str, extra_ca: Path | None) -> str:
     return tag
 
 
+# --- KAN-555: on an internal bridge the host still holds the gateway address, so the agent could reach anything
+# listening on 0.0.0.0 there (a dev database, a local model, a proxy that skips the allowlist). With no IPv4 address
+# on the bridge, the host isn't on the network at all; the sidecar and the agent still reach each other.
+NETWORK_OPTS = ("-o", "com.docker.network.bridge.inhibit_ipv4=true")
+# --- KAN-555: and no IPv6 in the agent, not even link-local, which some Docker engines give an IPv4 network; without
+# NET_RAW it can't send the raw packets that would find a neighbour's address either (cloud pods drop every capability)
+NO_IPV6 = ("--sysctl", "net.ipv6.conf.all.disable_ipv6=1", "--sysctl", "net.ipv6.conf.default.disable_ipv6=1",
+           "--cap-drop", "NET_RAW")
+
+
 def names(instance: str) -> SimpleNamespace:
     return SimpleNamespace(agent=f"hangar-local-{instance}", proxy=f"hangar-local-{instance}-egress",
                            net=f"hangar-local-{instance}-net")
@@ -123,7 +133,7 @@ def agent_args(dns: str, env_file: str, env: dict[str, str] | None = None) -> li
     name it doesn't own to `dns`, the sidecar, which refuses it: no lookup leaves, whatever the host's resolver is.
     `env` is non-secret (the harness's PATH and env); secrets go through `env_file` only."""
     proxy = f"http://egress:{PROXY_PORT}"
-    return ["--dns", dns, "--env-file", env_file,
+    return ["--dns", dns, "--env-file", env_file, *NO_IPV6,
             *(x for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") for x in ("-e", f"{k}={proxy}")),
             "-e", "NO_PROXY=localhost,127.0.0.1", "-e", "no_proxy=localhost,127.0.0.1",
             *(x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}"))]
@@ -262,7 +272,7 @@ def start(spec: Any, image: str, instance: str, passed_names: list[str], environ
     `env` is the non-secret environment (harness_env); the passed names' values go through an env file."""
     n = names(instance)
     labels = ["--label", f"{LABEL}={instance}"]
-    docker("network", "create", "--internal", *labels, n.net)
+    docker("network", "create", "--internal", *NETWORK_OPTS, *labels, n.net)
     docker("run", "-d", "--name", n.proxy, *labels, *sidecar_args(egress_rules(spec)))
     docker("network", "connect", "--alias", "egress", n.net, n.proxy)
     dns = docker("inspect", "-f", "{{(index .NetworkSettings.Networks \"" + n.net + "\").IPAddress}}",
@@ -518,6 +528,64 @@ def egress_failures(container: str, allowed_url: str) -> list[str]:
     return out
 
 
+def gateways(*nets: str) -> list[str]:
+    """The IPv4 gateways Docker gives `nets`: where the host would answer, were it reachable."""
+    out = []
+    for name in nets:
+        r = docker("network", "inspect", "-f", "{{range .IPAM.Config}}{{.Gateway}} {{end}}", name, check=False)
+        out += [g for g in r.stdout.decode(errors="replace").split() if re.fullmatch(r"[0-9.]+", g)]
+    return list(dict.fromkeys(out))
+
+
+def host_failures(container: str, net: str) -> list[str]:
+    """--- KAN-555: nothing on this computer is reachable from the agent. A listener on all of the host's addresses is
+    tried at each gateway address. Any answer, a refusal (whoever refused holds the address: where the listener
+    can't be seen, as from Docker Desktop's VM, that still shows the host is on the network), a connection the
+    listener sees or an IPv6 address in the agent fails the check."""
+    import socket
+    import threading
+
+    out = []
+    v6 = sh(container, "cat /proc/net/if_inet6 2>/dev/null")
+    if v6.returncode == 0 and v6.stdout.strip():
+        out.append("the agent has IPv6 addresses (link-local ones reach this computer)")
+    if not gateways(net):
+        return [*out, f"Docker lists no gateway address for {net}, so the host check proved nothing"]
+    gws = gateways(net, "bridge")
+    reached: list[str] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.bind(("0.0.0.0", 0))  # noqa: S104 - the point: what a careless dev server would do
+        srv.listen(4)
+        srv.settimeout(0.5)
+        port, stop = srv.getsockname()[1], threading.Event()
+
+        def accept() -> None:
+            while not stop.is_set():
+                try:
+                    conn, addr = srv.accept()
+                except OSError:
+                    continue
+                reached.append(addr[0])
+                conn.close()
+
+        t = threading.Thread(target=accept, daemon=True)
+        t.start()
+        for gw in gws:
+            r = sh(container, f"timeout 5 bash -c '</dev/tcp/{gw}/{port}' 2>&1")
+            said = (r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")).strip()
+            if r.returncode == 0:
+                out.append(f"the agent reached this computer at {gw}:{port}")
+            elif r.returncode in (126, 127):
+                out.append(f"the host check couldn't run in the agent (exit {r.returncode}: {said[-200:]})")
+            elif "refused" in said.lower():
+                out.append(f"{gw} refused the agent's connection, so this computer is on the agent's network")
+        stop.set()
+        t.join(2)
+    if reached and not any("reached this computer" in o for o in out):
+        out.append(f"this computer saw a connection from the agent's network ({', '.join(sorted(set(reached)))})")
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ the CLI
 EnvName = Annotated[str, typer.Argument(help="the environment to run")]
 EnvDirs = Annotated[list[Path], typer.Option("--env-dir", help="a directory of environment specs (repeatable)")]
@@ -576,8 +644,9 @@ def check_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contr
               keep: Annotated[bool, typer.Option(help="leave the instances running")] = False,
               agent_probe: Annotated[bool, typer.Option(help="ask the baked agent CLI for one answer (`claude -p`) "
                                                              "in the first instance")] = True) -> None:
-    """Two fresh instances report the same; nothing is mounted; off-list hosts and every DNS lookup are refused;
-    the agent CLI answers with the passed credential; the agent's Atlassian account is its own (--release-config)."""
+    """Two fresh instances report the same; nothing is mounted; off-list hosts, every DNS lookup and this computer
+    are out of reach; the agent CLI answers with the passed credential; the agent's Atlassian account is its own
+    (--release-config)."""
     refuse_unless_agent_identity(release_config, dict(os.environ))
     failures: list[str] = []
     texts: list[str] = []
@@ -597,6 +666,9 @@ def check_cmd(env: EnvName, env_dir: EnvDirs, harnesses: Harnesses = None, contr
                 failures += bad
                 typer.echo("egress: FAILED" if bad else "egress: allowed host reached; off-list hosts, proxy-skipping "
                            "requests and DNS lookups refused", err=True)
+                bad = host_failures(n.agent, n.net)
+                failures += bad
+                typer.echo("host: FAILED" if bad else "host: nothing on this computer answered the agent", err=True)
                 if agent_probe and n.harness is not None:
                     bad = claude_probe(n.agent, spec, n.harness, n.passed)
                     failures += bad

@@ -914,8 +914,9 @@ def sidecar_shape(pod: dict) -> dict[str, Any]:
     if dsc.get("privileged") or dsc.get("allowPrivilegeEscalation", True) is not False:
         return bad(f"the {DRIVER_CONTAINER} container is privileged or may escalate")
     auid, duid = msc.get("runAsUser", psc.get("runAsUser")), dsc.get("runAsUser", psc.get("runAsUser"))
-    if duid is None or auid is None or duid == auid or duid == 0:
+    if duid is None or auid is None or duid == auid or duid == 0 or auid == 0:  # --- KAN-555: the agent never root
         return bad(f"the {DRIVER_CONTAINER} container's runAsUser ({duid}) isn't its own (the agent's: {auid})")
+    out.update(agent_uid=auid, driver_uid=duid)  # --- KAN-555: what the probe's answers are held to
     vols = {v.get("name"): v for v in spec.get("volumes") or []}
     if "emptyDir" not in (vols.get("hangar-ctl") or {}) or "emptyDir" not in (vols.get("hangar-home") or {}):
         return bad("the pod's hangar-ctl and hangar-home volumes aren't emptyDirs")

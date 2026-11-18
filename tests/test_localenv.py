@@ -74,6 +74,8 @@ def test_docker_arguments_mount_nothing_and_name_the_dns():
     assert agent[:2] == ["--dns", "172.30.0.2"]
     assert not {"-v", "--volume", "--mount", "--privileged"} & set(agent + side)
     assert "HTTPS_PROXY=http://egress:3128" in agent
+    # --- KAN-555: no IPv6 (link-local would reach the host) and no raw sockets in the agent
+    assert "net.ipv6.conf.all.disable_ipv6=1" in agent and agent[agent.index("--cap-drop") + 1] == "NET_RAW"
 
 
 def test_clones_and_contract(tmp_path):
@@ -250,6 +252,7 @@ def test_check_runs_the_probe_in_the_first_instance(monkeypatch, tmp_path):
     monkeypatch.setattr(localenv, "setup_harness", lambda *a: [])
     monkeypatch.setattr(localenv, "report", lambda *a: (0, "same\n"))
     monkeypatch.setattr(localenv, "egress_failures", lambda *a: [])
+    monkeypatch.setattr(localenv, "host_failures", lambda *a: [])
     monkeypatch.setattr(localenv, "down", lambda *a: None)
     monkeypatch.setattr(localenv, "docker", lambda *a, **k: SimpleNamespace(stdout=b"[]", returncode=0))
     args = ["env", "local", "check", "agent", "--env-dir", str(tmp_path)]
@@ -258,6 +261,67 @@ def test_check_runs_the_probe_in_the_first_instance(monkeypatch, tmp_path):
     assert started[0]["PATH"].startswith("/opt/hangar/harness/claude-code/bin:")
     r = CliRunner().invoke(cli.app, [*args, "--no-agent-probe"])
     assert r.exit_code == 0, r.output
+
+
+def test_the_network_leaves_the_host_off_it(monkeypatch):
+    """--- KAN-555: the internal network's bridge has no IPv4 address, so the host isn't on it."""
+    calls = []
+
+    def docker(*a, **k):
+        calls.append(a)
+        return SimpleNamespace(stdout=b"10.0.0.2", returncode=0)
+
+    monkeypatch.setattr(localenv, "docker", docker)
+    monkeypatch.setattr(localenv, "egress_rules", lambda spec: [])
+    localenv.start(SimpleNamespace(), "img", "t", [], {})
+    net = next(c for c in calls if c[:2] == ("network", "create"))
+    assert "--internal" in net and "com.docker.network.bridge.inhibit_ipv4=true" in net
+
+
+def test_the_host_probe_fails_when_the_agent_reaches_this_computer(monkeypatch):
+    """--- KAN-555: a listener on all addresses, tried at each gateway; the fake agent connects only when told to."""
+    reach = {"on": True}
+
+    def sh(container, script):
+        m = re.search(r"/dev/tcp/([0-9.]+)/(\d+)", script)
+        if m is None:  # the IPv6 look: none here
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        if reach["on"]:
+            with socket.create_connection(("127.0.0.1", int(m.group(2))), timeout=2):
+                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        return SimpleNamespace(returncode=1, stdout=b"bash: connect: Connection timed out", stderr=b"")
+
+    monkeypatch.setattr(localenv, "sh", sh)
+    monkeypatch.setattr(localenv, "gateways", lambda *nets: ["172.30.0.1"])
+    assert "reached this computer at 172.30.0.1" in localenv.host_failures("agent", "net")[0]
+    reach["on"] = False
+    assert localenv.host_failures("agent", "net") == []
+
+
+@pytest.mark.parametrize("answers,gws,expect", [
+    ({"tcp": (1, "bash: connect: Connection refused")}, ["172.30.0.1"], "172.30.0.1 refused the agent's connection"),
+    ({"tcp": (127, "bash: command not found")}, ["172.30.0.1"], "couldn't run in the agent (exit 127"),
+    ({"if_inet6": (0, "fe80000000000000 02 40 20 80 eth0")}, ["172.30.0.1"], "the agent has IPv6 addresses"),
+    ({}, [], "lists no gateway address for net"),
+    ({"tcp": (1, "bash: connect: No route to host")}, ["172.30.0.1"], None),
+])
+def test_the_host_probe_fails_closed(monkeypatch, answers, gws, expect):
+    """--- KAN-555: a refusal, a check that can't run, IPv6 in the agent or no gateway to try never passes."""
+    def sh(container, script):
+        key = "tcp" if "/dev/tcp" in script else "if_inet6"
+        code, said = answers.get(key, (1, "") if key == "tcp" else (0, ""))
+        return SimpleNamespace(returncode=code, stdout=said.encode(), stderr=b"")
+
+    monkeypatch.setattr(localenv, "sh", sh)
+    monkeypatch.setattr(localenv, "gateways", lambda *nets: gws)
+    got = localenv.host_failures("agent", "net")
+    assert (got == []) if expect is None else any(expect in g for g in got), got
+
+
+def test_gateways_reads_the_network_and_the_default_bridge(monkeypatch):
+    out = {"net": b"172.30.0.1 ", "bridge": b"172.17.0.1 fd00::1 "}
+    monkeypatch.setattr(localenv, "docker", lambda *a, **k: SimpleNamespace(stdout=out[a[-1]], returncode=0))
+    assert localenv.gateways("net", "bridge") == ["172.30.0.1", "172.17.0.1"]
 
 
 # ============================================================================ the sidecar on loopback
