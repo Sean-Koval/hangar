@@ -151,7 +151,7 @@ def test_rows_redacted_under_the_first_form_are_rebound_on_start(tmp_path):
     for rid in ids:  # what KAN-296 wrote
         data = store._db.execute("SELECT data FROM audit WHERE id=?", (rid,)).fetchone()[0]
         store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), rid))
-    store._db.execute("UPDATE audit SET rdigest='x' || substr(rdigest, 2) WHERE id=?", (ids[-1],))  # tampered (x: never hex)
+    store._db.execute("UPDATE audit SET rdigest='x' || substr(rdigest, 2) WHERE id=?", (ids[-1],))  # tampered: x isn't hex
     store = _store(tmp_path / "hangar.db")
     got = dict(store._db.execute("SELECT id, rdigest FROM audit WHERE redacted=1").fetchall())
     assert all(got[i].startswith(REDACTION_V2) for i in ids[:-1]) and not got[ids[-1]].startswith(REDACTION_V2)
