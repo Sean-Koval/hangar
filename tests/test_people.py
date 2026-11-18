@@ -553,3 +553,18 @@ async def test_caps_count_identitys_person_not_the_token(fleet, settings):
     assert fairness.person_of("laptop", "owner") == "owner"
     assert fairness.person_of("job:job-1", "alice") is None
     assert fairness.person_of("github:octocat") == "github:octocat"  # triggered jobs: no person yet
+
+
+def test_doctor_names_whoever_holds_a_reserved_name(store):
+    """--- KAN-552 review: a person or token named before the names were reserved keeps the name; doctor says so."""
+    from types import SimpleNamespace
+
+    from hangar.models import ApiToken
+
+    h = SimpleNamespace(store=store)
+    people.add(store, "alice")
+    assert people.doctor_checks(h) == []
+    store.put(Person(id="jobs", name="Jobs"))  # added before the reservation
+    store.put(ApiToken(name="tower", token_hash="x" * 64, scopes=["jobs"], person="alice"))
+    [c] = people.doctor_checks(h)
+    assert c["status"] == "warn" and "person jobs" in c["detail"] and "token tower" in c["detail"]

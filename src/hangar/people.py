@@ -427,3 +427,21 @@ def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> 
         if c is not None and c.person is not None and c.person != person:
             raise CredentialError(f"secrets: {var}: credential '{name}' is {c.person}'s own and goes only into "
                                   "their sandboxes")
+
+
+def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """--- KAN-552: a person or token that took one of hangar's own names before they were reserved keeps it, and
+    still matches records hangar writes under that string. Warn, naming them; nothing when none is held."""
+    from hangar.auth import _RESERVED_NAMES
+    from hangar.doctor import _check
+
+    ids = sorted(p.id for p in h.store.list(Person) if p.id in RESERVED_IDS)
+    toks = sorted(t.name for t in h.store.list(ApiToken) if (t.name or "").lower() in _RESERVED_NAMES)
+    if not ids and not toks:
+        return []
+    held = ([f"person {i}" for i in ids] + [f"token {n}" for n in toks])[:10]
+    return [_check("reserved names", None,
+                   f"{', '.join(held)} holds a name hangar writes itself as an owner or requester, so it can match "
+                   "records that aren't theirs",
+                   "move their work to a new id and remove them (hangar person add, then hangar person remove), and "
+                   "revoke such tokens (hangar token revoke)")]
