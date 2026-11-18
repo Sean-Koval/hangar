@@ -17,6 +17,7 @@ AUDIT_TF = (ROOT / "deploy/terraform/gke/audit.tf").read_text()
 
 def test_each_entry_is_one_line_of_the_json_the_table_holds(tmp_path, caplog):
     store = Store(tmp_path / "hangar.db")
+    store.set_audit_key(b"k" * 32)
     event = AuditEvent(actor="admin", action="job.approve", target="job-1",
                        detail={"note": "two\nlines", "rule": "policy"})
     with caplog.at_level(logging.INFO, logger="hangar.audit"):
@@ -25,7 +26,11 @@ def test_each_entry_is_one_line_of_the_json_the_table_holds(tmp_path, caplog):
     assert len(records) == 1
     line = records[0].getMessage()
     assert "\n" not in line
-    assert json.loads(line) == json.loads(event.model_dump_json())
+    logged = json.loads(line)
+    # --- KAN-296: the table's JSON, then the row's place in the hash chain, so a gap in the table shows off the pod
+    seq, link = logged.pop("seq"), logged.pop("hash")
+    assert logged == json.loads(event.model_dump_json())
+    assert (seq, link) == store.audit_rows()[-1][::4][:2] and link
     assert store.audit_tail(1)[0] == event  # the table still holds it
 
 

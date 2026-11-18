@@ -1584,8 +1584,9 @@ app.add_typer(_power_app, name="power")
 
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups
-admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md), and rotating "
-                        "the vault key (docs/security/README.md).")
+admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md), rotating "
+                        "the vault key (docs/security/README.md), and purging a person or exporting a job "
+                        "(docs/security/data-handling.md).")
 app.add_typer(admin_app, name="admin")
 
 
@@ -1687,6 +1688,54 @@ def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only s
     for b in r.get("blockers") or []:
         typer.echo(f"  still running from before the rotation: {b}")
     typer.secho(f"next: {r['next']}", fg="green")
+
+
+# --- KAN-296: data handling (datahandling.py, docs/security/data-handling.md)
+@admin_app.command("purge")
+def admin_purge(person: str = typer.Option(..., "--person", help="The person's id (`hangar person ls`)."),
+                dry_run: bool = typer.Option(False, "--dry-run", help="Only count what would be deleted."),
+                yes: bool = typer.Option(False, "--yes", help="Don't ask before deleting."),
+                as_json: bool = typer.Option(False, "--json")):
+    """Delete everything hangar holds about one person: sessions, jobs, artifacts, outbox records, personal
+    credentials, tokens and the person. Their audit entries stay, under a stable pseudonym. Can't be undone."""
+    plan = _call("POST", "/api/admin/purge", json={"person": person, "dry_run": True})
+    if dry_run or not yes:
+        if as_json and dry_run:
+            return _print(plan)
+        typer.echo(f"{person}: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in plan["deleted"].items() if n)
+                   + (", the person" if plan["person_record"] else ""))
+        if plan["exported_objects"]:
+            typer.echo(f"  {len(plan['exported_objects'])} objects already exported to the outbox bucket stay "
+                       "there until its retention (listed in --json)")
+        if dry_run:
+            return
+        typer.confirm("Delete all of this? It can't be undone", abort=True)
+    r = _call("POST", "/api/admin/purge", json={"person": person})
+    if as_json:
+        return _print(r)
+    typer.secho(f"purged {person}: {r['audit_rows_redacted']} audit entries now name {r['pseudonym']}", fg="green")
+    for e in r["errors"]:
+        typer.secho(f"  {e}", fg="yellow")
+
+
+@admin_app.command("export")
+def admin_export(job: str = typer.Option(..., "--job", help="The job's id."),
+                 out: Path | None = typer.Option(None, "--out",
+                                                 help="Where to write it (default ./<job>-export.tar.gz).")):
+    """One archive with a job's instructions, context, events, result, artifacts and audit entries, for review."""
+    from urllib.parse import quote
+
+    with _client() as c:
+        r = c.get(f"/api/admin/export/jobs/{quote(job, safe='')}")
+    if r.status_code >= 400:
+        typer.secho(f"error {r.status_code}: {r.text[:300]}", fg="red", err=True)
+        raise typer.Exit(1)
+    dest = out or Path(f"{job}-export.tar.gz")
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
+    with os.fdopen(fd, "wb") as f:
+        f.write(r.content)
+    dest.chmod(0o600)  # an existing file keeps its mode through O_CREAT
+    typer.secho(f"saved {dest} ({len(r.content)} bytes)", fg="green")
 
 
 # ---------------------------------------------------------------------------- --- clouddoctor (ops_cli.py)

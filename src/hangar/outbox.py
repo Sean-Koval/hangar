@@ -996,7 +996,8 @@ class Outbox:
             if p.exists():
                 shutil.move(str(p), str(d / "events" / p.name))
         svc.activity.log._last.pop(s.id, None)
-        (d / "marker.json").write_text(json.dumps({"session_id": s.id, "name": s.name, "deleted_at": now(),
+        (d / "marker.json").write_text(json.dumps({"session_id": s.id, "name": s.name, "person": s.person,
+                                                   "deleted_at": now(),
                                                    "requester": requester,
                                                    "runs": [t.run_id for t in s.turns if t.run_id and t.started_at]}))
         log.info("session %s deleted; its event log and manifests wait for the outbox", s.id)
