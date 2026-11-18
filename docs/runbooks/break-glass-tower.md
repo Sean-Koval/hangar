@@ -66,7 +66,15 @@ hangar governance status
 hangar governance local --end                                                         # once Tower answers
 ```
 
-An admin starts it, and a **second admin** confirms it: another person, not another token. `--until` takes a duration
+An admin starts it, and a **second admin** confirms it: another person, not another token. hangar records who could
+hold each token: its person, plus whoever held the token that minted it. The two steps need tokens no one person could
+hold both of.
+
+So confirm with your own sign-in (the console or `hangar login --sso`) or a token minted on the server's host (`hangar token create
+--person <you>`). A token an admin minted for you through the API counts as theirs too. A token minted before
+this was recorded can't take a step.
+
+`--until` takes a duration
 or an RFC 3339 time, at most 24 hours ahead, and it ends by itself. Each step is audited `governance.break_glass`, and
 `hangar doctor` warns while it is started or active.
 

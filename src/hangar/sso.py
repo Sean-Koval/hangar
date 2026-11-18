@@ -754,13 +754,14 @@ class SSO:
         scopes = ["admin"] if person.role == "admin" else ["user", "jobs"]
         cookie = secrets.token_urlsafe(32)
         tok = ApiToken(name=SESSION_NAME, token_hash=hash_token(self.session_bearer(cookie)), scopes=scopes,
-                       person=person.id, expires_at=now() + self.settings.sso_session_minutes * 60)
+                       person=person.id, expires_at=now() + self.settings.sso_session_minutes * 60,
+                       holders=[person.id])  # --- KAN-554: their own sign-in
         self.store.put(tok)
         return cookie
 
     def mint_cli(self, person, name: str) -> tuple[str, ApiToken]:
         scopes = ["admin"] if person.role == "admin" else ["user", "mcp", "jobs"]
-        return self.h.auth.create(name, scopes, person=person.id)
+        return self.h.auth.create(name, scopes, person=person.id, holders=[person.id])  # --- KAN-554: own sign-in
 
 
 def _new_person_id(store, email: str) -> str:

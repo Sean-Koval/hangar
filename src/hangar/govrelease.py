@@ -682,7 +682,8 @@ def doctor_checks(h: Any) -> list[dict[str, Any]]:
 
 def mount(app: Any, h: Any, admin: Any) -> None:
     """`GET|POST /api/governance/break-glass` (admins): see, start, confirm and end break-glass. The person behind
-    the admin token counts, so one admin with two tokens can't confirm their own."""
+    the admin token counts, so one admin with two tokens can't confirm their own; and so do the token's holders
+    (KAN-554), so an admin can't confirm with a token they minted for another admin."""
     from hangar import identity
     from hangar.governance import (
         BreakGlassError,
@@ -699,6 +700,14 @@ def mount(app: Any, h: Any, admin: Any) -> None:
             raise BreakGlassError("break-glass needs an admin person's token")
         return p.person
 
+    def holders() -> tuple[str, ...]:  # --- KAN-554
+        p = identity.principal()
+        if p is None or p.holders is None:
+            raise BreakGlassError("break-glass needs a token hangar knows the holders of: one from your own sign-in "
+                                  "(hangar login --sso), the server's admin token, or one minted on its host "
+                                  "(hangar token create --person <you>)")
+        return p.holders
+
     @app.get("/api/governance/break-glass")
     async def glass_get(_: str = admin):
         return glass_view(load_break_glass(h.store))
@@ -706,7 +715,7 @@ def mount(app: Any, h: Any, admin: Any) -> None:
     @app.post("/api/governance/break-glass")
     async def glass_start(body: GlassStart, actor: str = admin):
         t = time.time()
-        bg = start_break_glass(h.store, who(), body.reason, parse_until(body.until, t), t)
+        bg = start_break_glass(h.store, who(), body.reason, parse_until(body.until, t), t, holders=holders())
         h.fleet.audit(actor, "governance.break_glass", None, step="start", person=bg.started_by, until=bg.until,
                       reason=bg.reason)
         log.warning("governance: break-glass started by %s until %.0f: %s", bg.started_by, bg.until, bg.reason)
@@ -714,7 +723,7 @@ def mount(app: Any, h: Any, admin: Any) -> None:
 
     @app.post("/api/governance/break-glass/confirm")
     async def glass_confirm(actor: str = admin):
-        bg = confirm_break_glass(h.store, who())
+        bg = confirm_break_glass(h.store, who(), holders=holders())
         h.fleet.audit(actor, "governance.break_glass", None, step="confirm", person=bg.confirmed_by,
                       started_by=bg.started_by, until=bg.until)
         log.warning("governance: break-glass ACTIVE until %.0f (started by %s, confirmed by %s)", bg.until,

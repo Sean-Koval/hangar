@@ -193,6 +193,10 @@ class ApiToken(BaseModel):
     last_used: float | None = None
     person: str | None = None  # --- identity: who it belongs to; None: people.OWNER (tokens minted before people)
     expires_at: float | None = None  # --- KAN-294: an SSO console session's token stops working at this time
+    # --- KAN-554: everyone who could hold this token: its person, plus whoever held the token that minted it. An SSO
+    # or CLI sign-in, the server's own admin token and a token minted on the host hold only their person. None: minted
+    # before this was recorded, so unknown. Break-glass needs two tokens no one person could hold both of.
+    holders: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------- --- identity: people (people.py)
