@@ -208,3 +208,35 @@ async def test_errors_are_capped():
         await client.open_pr("o/r", "b", "main", "t", "body", True)
     await client.close()
     assert len(e.value.errors) == 10 and all(len(x) <= 200 for x in e.value.errors)
+
+
+async def test_masks_that_outgrow_the_limit_cut_the_summary_not_the_trailers(svc, world, monkeypatch):  # noqa: F811
+    """R-hangar on 488: a body that masking pushes past 65,536 is cut in the summary again, so the Jira line and the
+    trailers stay. A known short value masked as `[hangar: secret removed]` grows the text."""
+    from hangar import secretscan
+
+    real = secretscan.mask
+
+    def mask(text, broker=None):
+        out, kinds = real(text, broker)
+        return out.replace("SEKRET", "[hangar: secret removed]"), kinds + (["test"] if "SEKRET" in out else [])
+
+    monkeypatch.setattr(secretscan, "mask", mask)
+    job = _job(svc, world)
+    job.ticket = "jira:KAN-339"
+    job.result.summary = "SEKRET " * 2_000 + "x" * 90_000  # 36,000 more characters once masked
+    await svc._ensure_pr(job, draft=True)
+    body = svc.fake.prs[0]["body"]
+    assert len(body) <= 65_536 and "SEKRET" not in body and "summary was cut" in body
+    assert "Jira: KAN-339" in body and "Hangar-Job:" in body
+    assert body.index("summary was cut") < body.index("Hangar-Job:")
+
+
+async def test_a_cut_inside_a_tilde_or_long_fence_closes_it(svc, world):  # noqa: F811
+    for fence in ("~~~", "````"):
+        svc.fake.prs.clear()
+        job = _job(svc, world)
+        job.result.summary = f"log:\n{fence}python\n```\n" + "line\n" * 30_000  # ``` inside a ```` block is text
+        await svc._ensure_pr(job, draft=True)
+        body = svc.fake.prs[0]["body"]
+        assert f"\n{fence}\n\n_The agent's summary was cut" in body, fence

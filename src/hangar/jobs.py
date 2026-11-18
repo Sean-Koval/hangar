@@ -1545,8 +1545,10 @@ class JobService:
                 draft = aireview.hold(self, job, draft)  # --- KAN-228: held as a draft for the self-review
                 title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
                 body = secretscan.clean(self, job, self._pr_body(job), "the PR body")
-                if len(body) > GITHUB_PR_BODY_LIMIT:  # --- KAN-339: masks are longer than what they hide; rare
-                    body = body[:GITHUB_PR_BODY_LIMIT]
+                if (over := len(body) - GITHUB_PR_BODY_LIMIT) > 0:  # --- KAN-339: masks outgrow what they hide; rare
+                    # cut that much more of the summary, so hangar's lines and the trailers stay (already reported)
+                    body = secretscan.mask(self._pr_body(job, MAX_PR_BODY - over), self.broker)[0]
+                    body = body[:GITHUB_PR_BODY_LIMIT]  # can't be over now; a bound, not a cut
                 try:
                     pr = await gh.open_pr(repo, job.branch, base,
                                           secretscan.clean(self, job, title, "the PR title"),  # --- egress
@@ -1596,7 +1598,7 @@ class JobService:
                                 verify_exit_code=job.result.verify_exit_code, verify_ran=ran)
         return self.broker.redact(out)[:8000] if out else None
 
-    def _pr_body(self, job: Job) -> str:
+    def _pr_body(self, job: Job, cap: int | None = None) -> str:
         # `___`, not `---`: git reads a `---` line as the end of a message, and the trailers below must parse (#137)
         lines = ["", "___"]
         if job.verify:
@@ -1628,7 +1630,7 @@ class JobService:
         from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
 
         return _cap_body(self, job, job.result.summary or "_The agent left no summary._", "\n".join(lines),
-                         trailers.block(self, job))
+                         trailers.block(self, job), MAX_PR_BODY if cap is None else cap)
 
     async def _keep(self, job: Job, s) -> None:
         """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the
@@ -1766,13 +1768,20 @@ def _cap_body(svc: JobService, job: Job, summary: str, rest: str, trailers: str,
 
     note = (f"\n\n_The agent's summary was cut to fit GitHub's limit. The full summary is the job's RESULT.md: see "
             f"hangar job {job.id} (`hangar job get {job.id}`) and its artifacts._")
-    room = max(0, cap - len(rest) - len(trailers) - len(note) - 4)  # 4: a closing fence, below
+    room = max(0, cap - len(rest) - len(trailers) - len(note) - 21)  # 21: a closing fence, below
     for start, end, _ in secretscan.find(summary, svc.broker):
         if start < room < end:
             room = start
     kept = summary[:room].rstrip()
-    if kept.count("```") % 2:  # cut inside a code block: close it, so the note and the rest aren't code
-        kept += "\n```"
+    fence = ""  # cut inside a code block (``` or ~~~, three or more): close it, so the note and the rest aren't code
+    for line in kept.splitlines():
+        if m := re.match(r" {0,3}(`{3,}|~{3,})", line):
+            if not fence:
+                fence = m.group(1)
+            elif m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line.strip(" `~"):
+                fence = ""
+    if fence:
+        kept += "\n" + fence
     return kept + note + rest + trailers
 
 
