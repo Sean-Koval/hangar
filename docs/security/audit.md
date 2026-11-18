@@ -27,7 +27,7 @@ After that, nobody can shorten it or delete the bucket early. The lock is perman
 ## Reading it
 
 ```bash
-gcloud logging read 'textPayload:"hangar.audit: {"' --project PROJECT_ID \
+gcloud logging read 'textPayload=~"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} INFO hangar[.]audit: [{]"' --project PROJECT_ID \
   --bucket hangar-audit --location global --view _AllLogs --freshness 30d
 ```
 
