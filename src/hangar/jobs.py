@@ -434,10 +434,29 @@ class JobService:
         # --- front-door-auth: every front door's submissions are rate limited, capped and audited when refused
         with self.admission.refusals(caller, source):
             self.admission.admit(req, caller, source, untrusted=approval is not None)
-            return self._submit(req, caller, source, source_ref, approval, untrusted_source)
+            may = self._may_raise_job_budget(caller)
+            if req.labels.get(experiments.KIND_LABEL) == experiments.KIND:  # KAN-290: its trials are held as it is
+                req = req.model_copy(update={"labels": {**req.labels, jobbudget.RAISE_LABEL: "yes" if may else "no"}})
+            return self._submit(req, caller, source, source_ref, approval, untrusted_source, raise_budget=may)
+
+    def _may_raise_job_budget(self, caller: Caller) -> bool:
+        """KAN-290: only an admin's own submission may ask for more than the repo policy's or the deploy's job
+        budget. A jobs-scoped token, a front door acting for a sender, and a member are held to it. A caller with no
+        person and no restriction is the server's admin token or hangar itself."""
+        if caller.restricted:
+            return False
+        if caller.person is None:
+            return True
+        from hangar import people
+
+        p = people.get(self.store, caller.person)
+        return p is not None and p.role == "admin"
 
     def _submit(self, req: SubmitJob, caller: Caller, source: str = "api", source_ref: str | None = None,
-                approval: JobApproval | None = None, untrusted_source: str | None = None) -> Job:
+                approval: JobApproval | None = None, untrusted_source: str | None = None,
+                raise_budget: bool = True) -> Job:
+        """`raise_budget`: False holds the job's own budget to the policy's or the deploy's (submit() decides; hangar's
+        own child jobs, submitted here directly, carry budgets hangar chose)."""
         req = normalize_repo(req)  # --- KAN-136: owner/name is a GitHub clone URL; refused here if unresolvable
         requester = caller.requester
         if req.idempotency_key:  # --- durable: the store's index, so a retry months later still finds its job
@@ -517,7 +536,18 @@ class JobService:
         except teamcreds.SubscriptionRefused as e:
             raise JobError(str(e)) from e
         attempts = strategies.check_submit(req, self.settings.best_of_n_max, policy)
-        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings)  # --- frontdoor
+        # --- frontdoor; KAN-290: an env-setup job's own default (HANGAR_ENV_SETUP_MAX_COST_USD, autoinstall._begin)
+        # wins over HANGAR_JOB_BUDGET_*, which the deploys now set lower than a setup needs
+        setup = req.labels.get("hangar.kind") == "env-setup"
+        job_budget = jobbudget.resolve(req.job_budget, policy, self.settings, defaults=not setup)
+        experiment = req.labels.get(experiments.KIND_LABEL) == experiments.KIND
+        if not raise_budget and req.job_budget is not None and not experiment:
+            # KAN-290: a ceiling, not a default. An env setup's is HANGAR_ENV_SETUP_* (autoinstall._begin)
+            cap = jobbudget.resolve(None, policy, self.settings, defaults=not setup)
+            if setup:
+                cap = jobbudget.merge(cap, JobBudget(max_cost_usd=self.settings.env_setup_max_cost_usd,
+                                                     max_turns=self.settings.env_setup_max_turns))
+            job_budget = jobbudget.ceiling(job_budget, cap)
         if why := jobbudget.check_submit(job_budget, attempts, req.judge):
             raise JobError(why)
         repo = req.repo or (spec.repo.url if spec.repo else None)
@@ -584,6 +614,10 @@ class JobService:
             from hangar.triggers import new_approval
 
             approval = job.approval = new_approval(self, requester, f"budget: {over}")
+        if not setup and not experiment:
+            # --- KAN-290: no more than what is left of its daily and monthly caps (an env setup's and an
+            # experiment's own children are each held to it as they are submitted)
+            job.job_budget = jobbudget.within(job.job_budget, jobbudget.headroom(self, repo, caller.person))
         job.strategy, job.n, job.judge = req.strategy, attempts, req.judge  # workstream D
         job.sequential = strategies.sequential_for(req, policy)  # --- KAN-231
         taint.seed_job(job)  # --- taint (#129): untrusted task text or context: tainted from turn 1
@@ -1750,6 +1784,17 @@ def parse_command(body: str) -> tuple[dict[str, str], str]:
     return opts, text
 
 
+def _github_leaver(svc: JobService, user: Any, login: str, target: str) -> dict[str, Any] | None:
+    """--- KAN-294: refuse a GitHub account whose linked person the identity provider stopped. Repo write access
+    outlives a leaver's SSO, so without this they would fall back to the trust rule and act as the team."""
+    uid = user.get("id") if isinstance(user, dict) else None
+    if (why := people.left(svc.store, "github", uid)) is None:
+        return None
+    svc.admission.refused(f"owner:github:{login}", f"github:{login}", "github.refused", target,
+                          why="deprovisioned", detail=why)
+    return {"ignored": f"{login}'s hangar access has ended"}
+
+
 async def handle_github(svc: JobService, event: str, delivery: str | None, payload: dict[str, Any]) -> dict[str, Any]:
     """Turn a verified GitHub webhook into a job or a follow-up (spec 0009 §5.5)."""
     from hangar.github import MARKER
@@ -1789,6 +1834,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
                 (svc.settings.github_trigger_label, svc.settings.env_setup_label):  # --- autoinstall
             return {"ignored": "not the trigger label"}
         sender = (payload.get("sender") or {}).get("login", "unknown")
+        if (gone := _github_leaver(svc, payload.get("sender"), sender, f"github:{repo}#{number}")) is not None:
+            return gone
         linked = people.resolve_external(svc.store, "github", (payload.get("sender") or {}).get("id"))  # --- review
         trusted = linked is not None or await svc.trust.labeler_trusted(sender, issue)  # --- review: acts as them
     elif event == "issue_comment":
@@ -1797,6 +1844,8 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
         if payload.get("action") != "created" or MARKER in body or not body.lstrip().startswith("/hangar"):
             return {"ignored": "not a /hangar comment"}
         sender = (c.get("user") or {}).get("login", "unknown")
+        if (gone := _github_leaver(svc, c.get("user"), sender, f"github:{repo}#{number}")) is not None:
+            return gone
         linked = people.resolve_external(svc.store, "github", (c.get("user") or {}).get("id"))  # --- review
         trusted = linked is not None or await svc.trust.trusted(sender, c.get("author_association"))  # --- review
         opts, extra = parse_command(body)
@@ -1858,8 +1907,10 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
     labels = ", ".join(lb.get("name", "") for lb in issue.get("labels") or [])
     author = (issue.get("user") or {}).get("login", "?")
     assoc = issue.get("author_association", "NONE")
-    author_trusted = await svc.trust.trusted(author, assoc) or \
-        people.resolve_external(svc.store, "github", (issue.get("user") or {}).get("id")) is not None  # --- review
+    author_id = (issue.get("user") or {}).get("id")
+    author_trusted = people.left(svc.store, "github", author_id) is None and (  # --- KAN-294: a leaver's text isn't
+        await svc.trust.trusted(author, assoc)  # vetted, whatever access they kept
+        or people.resolve_external(svc.store, "github", author_id) is not None)  # --- review
     context = [ContextItem(name=f"issue-{number}.md", kind="issue", untrusted=not author_trusted, content=(
         f"# {title}\n\n{issue.get('body') or '(no description)'}\n\n---\n{issue.get('html_url', '')}\n"
         f"Opened by {author} ({assoc.lower()})" + (f"; labels: {labels}" if labels else "")))]
@@ -1869,6 +1920,7 @@ async def handle_github(svc: JobService, event: str, delivery: str | None, paylo
             # Only trusted people's comments: anyone can comment on a public issue, and comments steer the agent.
             comments = [c for c in await gh.issue_comments(repo, number)
                         if MARKER not in (c.get("body") or "")
+                        and people.left(svc.store, "github", (c.get("user") or {}).get("id")) is None  # KAN-294
                         and await svc.trust.trusted((c.get("user") or {}).get("login"), c.get("author_association"))]
             if comments:
                 context.append(ContextItem(name=f"issue-{number}-comments.md", kind="issue", content="\n\n".join(

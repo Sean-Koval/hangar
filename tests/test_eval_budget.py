@@ -94,6 +94,30 @@ async def test_an_experiment_over_the_authors_remaining_cap_is_refused(jobs, wor
 
 
 @needs_tools
+async def test_a_members_trials_are_held_to_the_deploys_job_budget(jobs, world):  # noqa: F811
+    """KAN-290: a trial's job budget is a ceiling like any job's: only an admin's experiment may raise it."""
+    from hangar import people
+
+    people.add(jobs.store, "mem", role="member")
+    jobs.settings.job_budget_max_cost_usd = 5
+    try:
+        async def first_trial(caller: Caller, usd: float) -> Job:
+            exp = experiments.submit(jobs, _spec(world, trials=1, usd=usd), caller)
+            for _ in range(400):
+                if trials := [j for j in jobs.list() if j.labels.get(experiments.EXP_LABEL) == exp.id]:
+                    jobs.cancel(exp.id, "t")
+                    return trials[0]
+                await __import__("asyncio").sleep(0.05)
+            raise AssertionError("no trial started")
+
+        assert (await first_trial(Caller("mem", "tok-mem", person="mem"), 300)).job_budget.max_cost_usd == 5
+        assert (await first_trial(Caller("svc", "svc"), 50)).job_budget.max_cost_usd == 50  # the admin token's
+    finally:
+        jobs.settings.job_budget_max_cost_usd = None
+        people.remove(jobs.store, "mem")
+
+
+@needs_tools
 async def test_running_trials_finish_but_no_new_trial_starts_past_the_cap(jobs, world, monkeypatch):
     exp = experiments.submit(jobs, _spec(world, trials=3, usd=None, parallel=1), Caller("svc", "svc"))
     for _ in range(400):  # the first trial is running

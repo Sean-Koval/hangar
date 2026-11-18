@@ -115,6 +115,8 @@ nav:
           - "Incident: a full disk or quota": runbooks/disk-and-quota.md
           - "Incident: a bad deploy": runbooks/bad-deploy.md
           - "Incident: a deploy waiting too long": runbooks/deploy.md
+          - Backups and recovery objectives: runbooks/recovery.md
+          - Recovery drills: runbooks/drills.md
           - Onboarding a team: runbooks/onboarding.md
           - The per-repo checklist: runbooks/repo-checklist.md
           - "Onboarding: phase 2, the daily loop and rollback": runbooks/onboarding-phase-2.md
@@ -197,6 +199,7 @@ nav:
           - Harness locks:
               - harness-lock.md
               - Thaw and drift: harness-lock/thaw.md
+              - Hook scripts: harness-lock/hook-scripts.md
           - Codex plugin hooks: codex-plugin-hooks.md
           - Computer use:
               - computer-use.md
@@ -247,6 +250,8 @@ nav:
           - Taint tracking: security/taint.md
           - Front-door security: security/front-doors.md
           - People and OAuth connectors: security/people.md
+          - Single sign-on: security/sso.md
+          - Single sign-on with IAP: security/sso-iap.md
           - Sealed graders: security/graders.md
           - The driver sidecar on GKE: security/driver-sidecar.md
           - Turning the driver sidecar on: security/driver-sidecar-check.md
@@ -257,6 +262,7 @@ nav:
           - The vault key ring: security/vault-key.md
           - How the control-plane pod is locked down: security/control-plane-pod.md
           - Where the audit log is kept: security/audit.md
+          - Data handling: security/data-handling.md
       - CI: ci.md
       - Verify in a job: ci-verify.md
   - Design notes:
@@ -315,6 +321,7 @@ nav:
           - GKE capacity for 60 sessions: team-scale/gke-capacity.md
           - What 60 sessions cost on GKE: team-scale/cost.md
           - The heavy tier at team scale: team-scale/heavy-tier.md
+          - Spend guardrails: team-scale/spend-guardrails.md
       - The Cloud Doctor: doctor.md
       - MicroVM tier (E2B, CubeSandbox; experimental):
           - microvm.md

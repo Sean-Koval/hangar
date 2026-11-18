@@ -48,6 +48,8 @@ def quick(svc: JobService, job: Job, user: dict[str, Any], association: Any = No
     login = str(user.get("login") or "")
     if not login or is_bot(user):
         return None
+    if people.left(svc.store, "github", user.get("id")) is not None:  # --- KAN-294: why_trusted refuses them
+        return None
     uid = user.get("id")
     linked = people.resolve_external(svc.store, "github", uid) \
         if isinstance(uid, int) and not isinstance(uid, bool) else None  # by id: a renamed login can be re-registered
@@ -71,6 +73,8 @@ async def why_trusted(svc: JobService, job: Job, user: dict[str, Any], associati
     """Why this reviewer may start a fix round on `job` ("the job's person", "an admin", ...), or None."""
     login = str(user.get("login") or "")
     if not login or is_bot(user):
+        return None
+    if people.left(svc.store, "github", user.get("id")) is not None:  # --- KAN-294: whatever access they kept
         return None
     if why := quick(svc, job, user, association):
         return why

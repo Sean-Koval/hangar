@@ -113,14 +113,15 @@ trials rather than checkpointing them, marks them `infra_error` / `power_down` (
 and the experiment queues a fresh attempt; like every queued eval job it waits for the next window, not for the 10:00
 power-up. When people work late, evals wait: that starvation is accepted.
 
+## Spend guardrails
+
+The deploys cap spend by default (KAN-290). [Spend guardrails](team-scale/spend-guardrails.md) lists the caps, what
+can still overshoot them and who raises them.
+
 ## Limits and follow-ups
 
-- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. Job budgets
-  and daily spend caps per repo and per person ([repo-policy.md](repo-policy/budgets.md#budgets)) are opt-in, so on defaults
-  nothing bounds what a job spends across its follow-ups, verify-fix and auto-fix turns, and the per-person cap
-  bounds one person, not a GitHub label storm across many. A slot is also a job, not a sandbox: 24 best-of-4 jobs
-  could hold all 120 sandboxes, and every new session would be refused at `max_sandboxes`. Once
-  `HANGAR_JOB_BUDGET_MAX_COST_USD` and the repos' `max_usd_per_day` (or `HANGAR_PERSON_MAX_USD_PER_DAY`) are set,
+- **Budgets before concurrency.** Auto job slots stop at 8 (`fairness.AUTO_JOB_SLOTS_MAX`), not 24. A slot is a job,
+  not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes. With the [spend guardrails](#spend-guardrails) set,
   `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
 - **The reconciler** reads only live and unfinished sandboxes, from the state index (`reconciler.sandboxes_in`), once
   per pass on its own task. `hangar gc` still lists every record; it is an admin's occasional command.

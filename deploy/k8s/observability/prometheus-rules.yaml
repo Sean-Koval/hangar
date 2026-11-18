@@ -79,6 +79,18 @@ spec:
           annotations:
             summary: Production is too far behind main; a deploy waits for approval
             runbook_url: https://sean-koval.github.io/hangar/runbooks/deploy/
+        - alert: HangarSpendCap80  # KAN-290: once a cap a share a day (src/hangar/spendalert.py)
+          expr: sum(increase(hangar_spend_cap_alerts_total{level="80"}[10m])) > 0
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: A person's or a repo's daily spend cap is 80% spent
+            runbook_url: https://sean-koval.github.io/hangar/team-scale/#spend-guardrails
+        - alert: HangarSpendCapSpent
+          expr: sum(increase(hangar_spend_cap_alerts_total{level="100"}[10m])) > 0
+          labels: {severity: ticket, product: hangar}
+          annotations:
+            summary: A person's or a repo's daily spend cap is spent; their new jobs wait for approval
+            runbook_url: https://sean-koval.github.io/hangar/team-scale/#spend-guardrails
         - alert: HangarTowerFailClosed
           expr: |
             sum(increase(hangar_governance_fail_closed_total{failure=~"unreachable|server_error|circuit_open|rate_limited"}[10m])) > 0

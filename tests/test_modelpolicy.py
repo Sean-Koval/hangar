@@ -405,9 +405,10 @@ def test_list_environments_says_what_each_model_costs(fleet):
 
 
 def test_jobs_with_no_budget_and_no_daily_cap_get_a_doctor_warning(fleet):
-    """--- integ3 (review #105): nothing caps jobs unless the owner sets a budget. Hangar sets no default cap (the
+    """--- integ3 (review #105): nothing caps jobs unless a budget is set. Hangar's code sets no default cap (the
     owner's call); the doctor and `hangar status` say so instead. --- least-privilege: jobs default to `balanced`
-    now, and the warning still fires: it is about the missing budget, and `frontier` is still a job away."""
+    now, and the warning still fires: it is about the missing budget, and `frontier` is still a job away. --- KAN-290:
+    on a laptop (Docker) it stays a warning."""
     from types import SimpleNamespace
 
     from hangar.repopolicy import RepoPolicies
@@ -415,20 +416,51 @@ def test_jobs_with_no_budget_and_no_daily_cap_get_a_doctor_warning(fleet):
     h = SimpleNamespace(fleet=fleet)
     g = modelpolicy.spend_guard(fleet)
     assert g["uncapped"] and g["job_default"] == "balanced" and "claude-opus-5-5" in g["claude_code"]
+    assert not modelpolicy.is_deploy(fleet)
     [c] = modelpolicy.doctor_checks(h)
     assert c["name"] == "model spend" and c["status"] == "warn"
     assert c["detail"].startswith("jobs have no budget: they default to `balanced` (Claude Code: `claude-opus-5-5`")
     assert "`frontier` where an environment, repo policy or job asks for it" in c["detail"]
-    assert "HANGAR_JOB_BUDGET_MAX_COST_USD" in c["detail"] and "hangar sets none" in c["fix"]
+    assert "HANGAR_JOB_BUDGET_MAX_COST_USD" in c["detail"] and "docs/team-scale.md#spend-guardrails" in c["fix"]
     RepoPolicies(fleet.store).put(RepoPolicy(repo="acme/app", max_usd_per_day=20))
     assert modelpolicy.spend_guard(fleet)["repos_capped"] == ["acme/app"]
     assert modelpolicy.doctor_checks(h)[0]["status"] == "warn"  # one repo's cap doesn't bound the rest
     fleet.settings.person_max_usd_per_day = 50
     [c] = modelpolicy.doctor_checks(h)
-    assert c["status"] == "ok" and "$50 a person a day" in c["detail"]
-    fleet.settings.person_max_usd_per_day = None
+    assert c["status"] == "warn" and "$50 a person a day" in c["detail"]  # the others are still unset
+    assert "HANGAR_JOB_BUDGET_MAX_COST_USD, HANGAR_REPO_MAX_USD_PER_DAY are not set" in c["detail"]
     fleet.settings.job_budget_max_cost_usd = 5
-    assert modelpolicy.doctor_checks(h)[0]["detail"].endswith("bounded at $5 a job")
+    fleet.settings.repo_max_usd_per_day = 40
+    [c] = modelpolicy.doctor_checks(h)
+    assert c["status"] == "ok"
+    assert c["detail"].endswith("bounded at $5 a job and $50 a person a day and $40 a repo a day")
+    fleet.settings.person_max_usd_per_day = fleet.settings.repo_max_usd_per_day = None
+    fleet.settings.job_budget_max_cost_usd = None
+
+
+@pytest.mark.parametrize(("job", "person", "repo", "want"), [
+    (None, None, None, "fail"),  # no budget at all
+    (5, None, None, "fail"),  # no daily cap
+    (None, 20, 40, "fail"),  # no job budget
+    (5, 20, None, "warn"),  # a person cap and a job budget; repos without a policy cap are uncapped
+    (5, None, 40, "warn"),
+    (5, 20, 40, "ok"),
+])
+def test_a_deploy_with_no_budget_fails_the_doctor(fleet, job, person, repo, want):
+    """--- KAN-290: on a Kubernetes deploy a missing job budget, or no daily cap at all, fails `hangar doctor`."""
+    from types import SimpleNamespace
+
+    s = fleet.settings
+    old = (s.default_provider, s.job_budget_max_cost_usd, s.person_max_usd_per_day, s.repo_max_usd_per_day)
+    s.default_provider = "kubernetes"
+    s.job_budget_max_cost_usd, s.person_max_usd_per_day, s.repo_max_usd_per_day = job, person, repo
+    try:
+        assert modelpolicy.is_deploy(fleet)
+        [c] = modelpolicy.doctor_checks(SimpleNamespace(fleet=fleet))
+        assert c["status"] == want, c
+        assert (c["fix"] is None) == (want == "ok")
+    finally:
+        s.default_provider, s.job_budget_max_cost_usd, s.person_max_usd_per_day, s.repo_max_usd_per_day = old
 
 
 # ====================================================================== concreteness (#167)

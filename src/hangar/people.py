@@ -183,13 +183,50 @@ def unlink(store: Store, person_id: str, source: str, external_id: str) -> Perso
     return p
 
 
-def resolve_external(store: Store, source: str, external_id: str | int | None) -> Person | None:
+SSO_BINDING_KV = "sso:binding:"  # --- KAN-294: sso.py's binding of a person to their provider account
+SSO_POLICY_KV = "sso:policy"  # --- KAN-294: what sso.py enforces now (it writes this at startup, SSO on or off)
+
+
+def deprovisioned(store: Store, person_id: str | None) -> str | None:
+    """Why SSO stops this person, or None: removed at the identity provider, suspended (a halted recheck, or not
+    confirmed for longer than the service grace), or never signed in while SSO is required. Every front door that
+    names a person by an account elsewhere asks this, so a leaver gets nothing through any of them. With SSO off,
+    nobody (--- KAN-294)."""
+    if not person_id:
+        return None
+    policy = store.kv_get_json(SSO_POLICY_KV) or {}
+    if not policy.get("on"):
+        return None
+    b = store.kv_get_json(SSO_BINDING_KV + person_id)
+    if not b:
+        if policy.get("required") and person_id not in (policy.get("exempt") or []):
+            return f"{person_id} hasn't signed in through SSO, which this hangar requires"
+        return None
+    if b.get("disabled_at"):
+        return f"{person_id} was removed at the identity provider"
+    if b.get("suspended_at"):
+        return f"{person_id} is suspended until the identity provider confirms them"
+    return None
+
+
+def left(store: Store, source: str, external_id: str | int | None) -> str | None:
+    """Why the person an account elsewhere is linked to may no longer act (`deprovisioned`), or None. A front door
+    that otherwise trusts the account for what it holds there (repo write access on GitHub, a workspace seat in
+    Slack) asks this first, so a leaver who kept that access is refused rather than treated as an outsider
+    (--- KAN-294)."""
+    p = resolve_external(store, source, external_id, include_deprovisioned=True)
+    return deprovisioned(store, p.id) if p is not None else None
+
+
+def resolve_external(store: Store, source: str, external_id: str | int | None, *,
+                     include_deprovisioned: bool = False) -> Person | None:
     """The person an account elsewhere is linked to, for a front door to attribute a job (`Caller(...,
     person=p.id)`): a GitHub user's numeric id (the payload's `sender.id`, never the login), a Slack `TEAM/USER`
     (the poster's own workspace: `user_team` in a Slack Connect channel), a Jira account id (Data Center: the user
     key) or an email. None for anyone linked to nobody, and for an id that isn't one. A linked account acts as its
     person (docs/team.md#who-is-trusted); anyone else's work runs for the team under the front door's own trust
-    rule. A Jira id with an `@` is looked up as an email."""
+    rule. A Jira id with an `@` is looked up as an email. A person the identity provider stopped (`deprovisioned`)
+    resolves to None, as if linked to nobody, unless `include_deprovisioned` (SSO's own sign-in)."""
     if external_id is None or external_id == "" or isinstance(external_id, bool):
         return None
     external_id = str(external_id)
@@ -199,7 +236,10 @@ def resolve_external(store: Store, source: str, external_id: str | int | None) -
         key = external_key(source, external_id)
     except PeopleError:
         return None
-    return _linked_to(store, key)
+    p = _linked_to(store, key)
+    if p is not None and not include_deprovisioned and deprovisioned(store, p.id):
+        return None
+    return p
 
 
 # ---------------------------------------------------------------------------- visibility

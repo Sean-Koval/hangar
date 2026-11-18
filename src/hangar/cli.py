@@ -72,12 +72,22 @@ def login(
     url: str = typer.Argument(..., help="Your hangar, e.g. https://34.8.98.95.sslip.io"),
     token_file: Path | None = typer.Option(None, "--token-file", help="Read the token from a file "
                                            "(e.g. ~/.hangar/gke-admin-token) instead of a prompt."),
+    sso: bool = typer.Option(False, "--sso", help="Sign in through the team's identity provider in a browser "
+                             "(KAN-294); hangar mints this machine's token."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="With --sso: print the sign-in link and ask for "
+                                    "the code the page shows, for a machine without a browser."),
+    name: str = typer.Option("cli-sso", "--name", help="With --sso: the new token's name."),
 ):
     """Remember which hangar to use, so other commands work without HANGAR_URL/HANGAR_TOKEN.
 
-    The token is checked against the server, then saved to ~/.hangar/cli.json (mode 600)."""
+    The token is checked against the server, then saved to ~/.hangar/cli.json (mode 600). With --sso the token comes
+    from a sign-in at the identity provider instead of a paste."""
     url = url.rstrip("/")
-    token = (token_file.expanduser().read_text() if token_file else typer.prompt("API token", hide_input=True)).strip()
+    if sso:
+        token = _sso_token(url, no_browser, name)
+    else:
+        token = (token_file.expanduser().read_text() if token_file
+                 else typer.prompt("API token", hide_input=True)).strip()
     try:
         r = httpx.get(f"{url}/api/me", headers={"Authorization": f"Bearer {token}"}, timeout=20)
     except httpx.HTTPError as e:
@@ -94,6 +104,81 @@ def login(
     os.chmod(cfg, 0o600)
     who = r.json().get("actor") or "ok"
     typer.secho(f"logged in to {url} as {who}; saved to {cfg}", fg="green")
+
+
+def _sso_token(url: str, no_browser: bool, name: str) -> str:
+    """--- KAN-294: a token from `hangar login --sso`. The browser signs in at the provider through hangar, which hands
+    a one-use code to a listener on 127.0.0.1 (or shows it, with --no-browser); the code is worth a token only with
+    the PKCE verifier this process holds, and the listener takes only a code that carries this run's state."""
+    import base64
+    import hashlib
+    import secrets
+    import threading
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlencode, urlsplit
+
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(24)
+    got: dict[str, str] = {}
+    done = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server's name
+            u = urlsplit(self.path)
+            q = parse_qs(u.query)
+            code, back = q.get("code", [""])[0], q.get("state", [""])[0]
+            ok = (u.path == "/sso" and code.startswith("hgc_") and secrets.compare_digest(back, state)
+                  and not done.is_set())  # one code, from the sign-in this run started
+            if ok:
+                got["code"] = code
+                done.set()
+            body = b"Signed in to hangar. You can close this tab." if ok else b"Not a hangar sign-in."
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):  # quiet
+            pass
+
+    server = None
+    port = 0
+    if not no_browser:
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    query = {"cli_port": port, "cli_challenge": challenge} | ({} if no_browser else {"cli_state": state})
+    link = f"{url}/auth/sso/login?{urlencode(query)}"
+    try:
+        if no_browser:
+            typer.echo(f"Open this link in a browser and sign in:\n\n    {link}\n")
+            got["code"] = typer.prompt("Code from the page").strip()
+        else:
+            typer.echo(f"Opening your browser to sign in. If it doesn't open, go to:\n\n    {link}\n")
+            webbrowser.open(link)
+            if not done.wait(300):
+                typer.secho("no sign-in within 5 minutes; run hangar login --sso again", fg="red", err=True)
+                raise typer.Exit(1)
+    finally:
+        if server is not None:
+            server.shutdown()
+    try:
+        r = httpx.post(f"{url}/auth/sso/cli/token", json={"code": got["code"], "verifier": verifier, "name": name},
+                       timeout=20)
+    except httpx.HTTPError as e:
+        typer.secho(f"can't reach {url}: {e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+    if r.status_code != 200:
+        msg = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else r.text
+        typer.secho(f"{url} refused the sign-in: {msg}", fg="red", err=True)
+        raise typer.Exit(1)
+    got_back = r.json()
+    # the person the provider signed in, so a sign-in someone else finished with this run's link shows at once
+    typer.echo(f"signed in at the provider as hangar person {got_back.get('person')} ({got_back.get('role')})")
+    return got_back["token"]
 
 
 @app.command("logout")
@@ -1500,8 +1585,9 @@ app.add_typer(_power_app, name="power")
 
 
 # ---------------------------------------------------------------------------- overnight/sweep: database backups
-admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md), and rotating "
-                        "the vault key (docs/security/README.md).")
+admin_app = typer.Typer(no_args_is_help=True, help="Database backups and restores (docs/gke.md), rotating "
+                        "the vault key (docs/security/README.md), and purging a person or exporting a job "
+                        "(docs/security/data-handling.md).")
 app.add_typer(admin_app, name="admin")
 
 
@@ -1603,6 +1689,54 @@ def admin_rotate_key(status: bool = typer.Option(False, "--status", help="Only s
     for b in r.get("blockers") or []:
         typer.echo(f"  still running from before the rotation: {b}")
     typer.secho(f"next: {r['next']}", fg="green")
+
+
+# --- KAN-296: data handling (datahandling.py, docs/security/data-handling.md)
+@admin_app.command("purge")
+def admin_purge(person: str = typer.Option(..., "--person", help="The person's id (`hangar person ls`)."),
+                dry_run: bool = typer.Option(False, "--dry-run", help="Only count what would be deleted."),
+                yes: bool = typer.Option(False, "--yes", help="Don't ask before deleting."),
+                as_json: bool = typer.Option(False, "--json")):
+    """Delete everything hangar holds about one person: sessions, jobs, artifacts, outbox records, personal
+    credentials, tokens and the person. Their audit entries stay, under a stable pseudonym. Can't be undone."""
+    plan = _call("POST", "/api/admin/purge", json={"person": person, "dry_run": True})
+    if dry_run or not yes:
+        if as_json and dry_run:
+            return _print(plan)
+        typer.echo(f"{person}: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in plan["deleted"].items() if n)
+                   + (", the person" if plan["person_record"] else ""))
+        if plan["exported_objects"]:
+            typer.echo(f"  {len(plan['exported_objects'])} objects already exported to the outbox bucket stay "
+                       "there until its retention (listed in --json)")
+        if dry_run:
+            return
+        typer.confirm("Delete all of this? It can't be undone", abort=True)
+    r = _call("POST", "/api/admin/purge", json={"person": person})
+    if as_json:
+        return _print(r)
+    typer.secho(f"purged {person}: {r['audit_rows_redacted']} audit entries now name {r['pseudonym']}", fg="green")
+    for e in r["errors"]:
+        typer.secho(f"  {e}", fg="yellow")
+
+
+@admin_app.command("export")
+def admin_export(job: str = typer.Option(..., "--job", help="The job's id."),
+                 out: Path | None = typer.Option(None, "--out",
+                                                 help="Where to write it (default ./<job>-export.tar.gz).")):
+    """One archive with a job's instructions, context, events, result, artifacts and audit entries, for review."""
+    from urllib.parse import quote
+
+    with _client() as c:
+        r = c.get(f"/api/admin/export/jobs/{quote(job, safe='')}")
+    if r.status_code >= 400:
+        typer.secho(f"error {r.status_code}: {r.text[:300]}", fg="red", err=True)
+        raise typer.Exit(1)
+    dest = out or Path(f"{job}-export.tar.gz")
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
+    with os.fdopen(fd, "wb") as f:
+        f.write(r.content)
+    dest.chmod(0o600)  # an existing file keeps its mode through O_CREAT
+    typer.secho(f"saved {dest} ({len(r.content)} bytes)", fg="green")
 
 
 # ---------------------------------------------------------------------------- --- clouddoctor (ops_cli.py)

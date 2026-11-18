@@ -368,8 +368,37 @@ def check(root: Path) -> dict[str, Any]:
         for f in sorted((root / "native").rglob("*")):
             if f.is_file() and f.relative_to(root).as_posix() not in paths:
                 errs.append(f"{f.relative_to(root).as_posix()} is not in the lock")
+        errs += _stale_native_pins(root / "native", lock)
     return {"ok": not errs, "digest": harness_digest(lock), "name": lock["name"], "revision": lock["revision"],
             "problems": errs, "components": len(lock["components"])}
+
+
+def _stale_native_pins(native: Path, lock: dict[str, Any]) -> list[str]:
+    """KAN-374: a `native/<runtime>/**/settings.json` that carries `env.HARNESS_NATIVE_DIGEST`, and whose bytes are
+    what the lock's `binding.hooks` digest for it pins (as freeze writes it), must name the runtime's other native
+    files as they are; otherwise a hook script changed while the hooks digest, and so the harness's identity, stayed
+    the same. A settings file without the pin (a lock from before it), or one the lock keys to another text (the
+    team harness renders the pin afresh and locks that), is left alone."""
+    from hangar.harnesses import HARNESSES
+
+    pinned_by = {str(x.get("source") or "").removeprefix("environment:"): x.get("digest")
+                 for x in (lock.get("binding") or {}).get("hooks") or []}
+    errs = []
+    for rt in sorted(d for d in native.iterdir() if d.is_dir()):
+        home = _config_root(HARNESSES.get(rt.name))
+        files = {f.relative_to(rt).as_posix(): f.read_bytes() for f in sorted(rt.rglob("*"))
+                 if f.is_file() and not f.is_symlink()}
+        others = {k: v for k, v in files.items() if k.rsplit("/", 1)[-1] != manifest.SETTINGS_FILE}
+        for rel, data in files.items():
+            if rel.rsplit("/", 1)[-1] != manifest.SETTINGS_FILE or (pin := manifest.native_pin(data)) is None:
+                continue
+            if not home or pinned_by.get(f"{home}/{rel}") != _sha(data):
+                continue
+            if (actual := manifest.native_digest(others)) != pin:
+                errs.append(f"native/{rt.name}/{rel}: its {manifest.NATIVE_PIN} is {pin}, but the native files beside "
+                            f"it digest to {actual}: a hook script changed without the settings file, so the "
+                            "harness_digest would not show it")
+    return errs
 
 
 def _unpinned_plugins(root: Path, lock: dict[str, Any]) -> list[str]:
@@ -500,10 +529,7 @@ def _source_files(spec: EnvSpec, rel: str) -> dict[str, bytes] | None:
     return read_dir(src) if src.is_dir() else None
 
 
-def _config_root(h: Any) -> str | None:
-    """The harness's config directory under $HOME (`.claude`, `.codex`, `.pi/agent`, `.gemini`)."""
-    f = getattr(h, "instructions_file", None) or getattr(h, "skills_dir", None)
-    return f.rsplit("/", 1)[0] if f and "/" in f else None
+_config_root = manifest.config_root
 
 
 def freeze(fleet: Fleet, m: dict[str, Any], spec: EnvSpec, *, name: str | None = None,
@@ -626,7 +652,12 @@ def freeze(fleet: Fleet, m: dict[str, Any], spec: EnvSpec, *, name: str | None =
     root = _config_root(h)
     hook_digests = {x.get("source", "").removeprefix("environment:"): x.get("digest")
                     for x in m.get("hooks") or [] if str(x.get("source") or "").startswith("environment:")}
-    native = {**{k: v for k, v in spec.files.items() if not k.startswith("/")}, **spec.agent_config.files}
+    native = manifest.home_files(spec)  # as the image stages them, and as the manifest read them
+    others = manifest.siblings(native, root) if root else {}
+    # KAN-374: a settings file whose HARNESS_NATIVE_DIGEST still names its sibling files, and whose hooks digest is
+    # the turn's, proves the siblings are the turn's too
+    pinned = any(manifest.native_pin(c) and manifest.hooks_digest(c, others) == (hook_digests.get(p), None)
+                 for p, c in native.items() if root and p.startswith(root + "/") and p.endswith(manifest.SETTINGS_FILE))
     for path, content in sorted(native.items()):
         if not root or not path.startswith(root + "/") or not harness:
             continue
@@ -636,13 +667,21 @@ def freeze(fleet: Fleet, m: dict[str, Any], spec: EnvSpec, *, name: str | None =
             gaps.append(f"{path}: not a usable path")
             continue
         data = content.encode()
-        if path in hook_digests and hook_digests[path] != manifest._sha(content):
-            gaps.append(f"native:{harness}/{rest}: changed in environment {spec.name} since the turn (its hooks' "
-                        "digest differs)")
-            continue
-        if path not in hook_digests:
+        if path in hook_digests:
+            digest, mismatch = manifest.hooks_digest(content, others)
+            if mismatch:
+                gaps.append(f"native:{harness}/{rest}: its {manifest.NATIVE_PIN} is {mismatch['pinned']}, but the "
+                            f"native files beside it in environment {spec.name} digest to {mismatch['actual']} (a "
+                            "hook script changed without the settings file)")
+                continue
+            if hook_digests[path] != digest:
+                gaps.append(f"native:{harness}/{rest}: changed in environment {spec.name} since the turn (its hooks' "
+                            "digest differs)")
+                continue
+        elif not pinned or rest.rsplit("/", 1)[-1] == manifest.SETTINGS_FILE:  # a pin covers the files beside it
             warnings.append(f"native:{harness}/{rest}: read from environment {spec.name} as it is now (the manifest "
-                            "records only settings files' hooks)")
+                            f"records only settings files' hooks, and no settings file pins it with "
+                            f"{manifest.NATIVE_PIN})")
         _text_ok(redact, rel, data, gaps)
         files[rel] = data
         comps.append({"id": f"native:{harness}/{rest}", "digest": _sha(data), "path": rel})

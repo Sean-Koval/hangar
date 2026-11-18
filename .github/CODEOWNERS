@@ -14,6 +14,8 @@
 # CI and deployment: the checks a merge waits on, and what runs in the cluster.
 /.github/                          @Sean-Koval
 /scripts/ci/                       @Sean-Koval
+/scripts/ops/                      @Sean-Koval
+/scripts/release_check.py          @Sean-Koval
 /deploy/                           @Sean-Koval
 
 # Sandboxing and isolation: the boundary between the agent and the control plane.
@@ -65,11 +67,15 @@
 # Auth and tokens: who is calling and what they may do.
 /src/hangar/auth.py                @Sean-Koval
 /src/hangar/oauth.py               @Sean-Koval
+/src/hangar/sso.py                 @Sean-Koval
 /src/hangar/identity.py            @Sean-Koval
 /src/hangar/identity_api.py        @Sean-Koval
 /src/hangar/people.py              @Sean-Koval
 /src/hangar/frontdoor.py           @Sean-Koval
 /src/hangar/app.py                 @Sean-Koval
+# Data handling (KAN-296): the audit hash chain, and purging a person or exporting a job.
+/src/hangar/datahandling.py        @Sean-Koval
+/src/hangar/auditchain.py          @Sean-Koval
 
 # Approvals and governance: who may release, approve, steer or land an agent's work, and the verdicts they rely on
 # (AI review, test results, grades, trusted senders, review-triggered fix rounds, the MCP front door).

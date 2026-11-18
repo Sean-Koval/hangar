@@ -1058,6 +1058,12 @@ class Landing:
     async def qualifies(self, job: Job, login: str) -> str | None:
         """Why `login`'s approval lands the PR ("approver", "code owner"), or None. A tainted job (#130) also needs
         someone other than the job's own person or requester."""
+        from hangar import people
+
+        uid = self._login_ids.get(login.lower())
+        if uid is not None and people.left(self.svc.store, "github", uid) is not None:  # --- KAN-294
+            self.svc._event(job, f"@{login} approved, but their hangar access has ended: it doesn't land the PR")
+            return None
         if (why := self._taint_refusal(job, login)) is not None:
             self.svc._event(job, why)
             return None

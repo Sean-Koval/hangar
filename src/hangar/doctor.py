@@ -264,6 +264,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import outbox  # --- outbox (#163, #189): a backlog, withheld objects, retention held for export
 
     out += outbox.doctor_checks(h)
+    from hangar import datahandling  # --- KAN-296: the audit chain and its retention
+
+    out += await datahandling.doctor_checks(h)
     from hangar import harness_repo  # --- #138: the team harness repo: reachable, last refresh, channels
 
     out += harness_repo.doctor_checks(h)
@@ -271,6 +274,9 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
 
     out += codex_plugins.doctor_checks(h)
     out += mcp_checks(h)  # --- #140: both MCP servers
+    from hangar import sso  # --- KAN-294: the provider, and the break-glass token in use
+
+    out += await sso.doctor_checks(h)
     await asyncio.sleep(0)
     return out
 

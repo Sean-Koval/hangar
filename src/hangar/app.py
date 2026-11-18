@@ -73,11 +73,17 @@ class Hangar:
         from hangar import keys  # --- durable: a key ring (newest first), and its rotation
 
         self.vault = Vault(self.store, keys.load(self.settings, self.store))
+        from hangar import datahandling  # --- KAN-296: the audit chain's key is in the vault
+
+        self.store.set_audit_key(datahandling.audit_key(self.vault))
         self.broker = Broker(self.store, self.vault, self.settings.sandbox_user)
         self.catalog = EnvCatalog(self.settings.env_dirs, save_dir=self.settings.saved_env_dir)
         self.fleet = Fleet(self.settings, self.store, self.broker, self.catalog)
         teamcreds.migrate(self.store, self.settings, self.fleet.audit)  # --- teamcreds: before people: the owner's
         self.auth = TokenAuth(self.store, self.settings.admin_token)
+        from hangar.sso import SSO  # --- KAN-294: sign-in through the identity provider; off by default
+
+        self.sso = SSO(self)
         self.sessions = SessionService(self.fleet, self.vault)
         self.jobs = JobService(self.fleet, self.sessions)
         from hangar.envrequests import EnvRequests  # --- computer: what agents ask their owners for
@@ -488,6 +494,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         h.rotation.resume()  # --- durable: a key rotation a restart interrupted carries on
         h.retention.start()  # --- scale
         h.ops.start()  # --- clouddoctor
+        h.sso.start()  # --- KAN-294: rechecks people at the identity provider
         inbox_notify.of(h.jobs).start()  # --- inbox delivery (#157): DMs for questions and approvals
         events_out.of(h.jobs).start(plugin_host.notifiers)  # --- plugin host: hangar.event/v1 to the notifiers
         outbox.of(h.fleet).start(h.sessions, h.jobs)  # --- outbox (#163): drains while the pools are off too
@@ -505,6 +512,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await h.rotation.stop()  # --- durable
         await h.retention.stop()  # --- scale
         await h.ops.stop()  # --- clouddoctor
+        await h.sso.stop()  # --- KAN-294
         await inbox_notify.of(h.jobs).stop()  # --- inbox delivery (#157)
         await events_out.of(h.jobs).stop()  # --- plugin host
         await outbox.of(h.fleet).stop()  # --- outbox (#163)
@@ -539,6 +547,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar.frontdoor import FrontDoorMiddleware, RateLimited
 
     app.add_middleware(FrontDoorMiddleware, hangar=h, oauth=oauth)
+    from hangar import sso as sso_mod  # --- KAN-294: outside the front door, so it sees the session's bearer
+
+    sso_mod.mount(app, h)
+    if h.sso.on:
+        app.add_middleware(sso_mod.SessionMiddleware, hangar=h)
     app.add_middleware(observe.HTTPMiddleware)  # --- observe: outermost, so refused requests are seen too
 
     @app.exception_handler(RateLimited)
@@ -1314,6 +1327,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from hangar import deploylag  # --- KAN-216: how far production is behind main, and its alert
 
     deploylag.register()
+    from hangar import spendalert  # --- KAN-290: daily caps at 80% and 100%
+
+    spendalert.register()
     from hangar import backup  # --- overnight/sweep: database backups (hangar admin)
 
     backup.mount(app, h, A)
@@ -1335,6 +1351,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     opstatus.mount(app, h, A)
     flightrec.mount(app, h, A, U)
     outbox.mount(app, h, A)  # --- outbox (#163): GET /api/admin/outbox, retry, backfill
+    from hangar import datahandling  # --- KAN-296: POST /api/admin/purge, GET /api/admin/export/jobs/{id}
+
+    datahandling.mount(app, h, A)
     weekly.mount(app, h, U)  # --- #168: GET /api/metrics/weekly, /api/metrics/standup
     harness_review.mount(app, h, U)  # --- #169: the Friday harness review's queue and labels
     credhealth.mount(app, h, A)

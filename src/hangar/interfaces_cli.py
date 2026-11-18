@@ -48,12 +48,22 @@ def trace_import(
                                            "session events (a JSON array or JSONL) or stream-json."),
     out: Path = typer.Option(..., "--out", help="Directory for events.jsonl and trace.json."),
     session_id: str | None = typer.Option(None, "--session-id", help="Default: the transcript's own."),
+    manifest: Path | None = typer.Option(None, "--manifest", exists=True, dir_okay=False, readable=True,
+                                         help="The team-harness manifest the session ran with. Default: the "
+                                              "session's project .claude/team-harness.json, else ~/.claude's."),
+    no_manifest: bool = typer.Option(False, "--no-manifest", help="Stamp no team harness on the turns."),
 ):
     """Turn a Claude Code session hangar didn't run into hangar events and a hangar.trace/v1 export, offline
     (docs/api/trace-import.md). Nothing is sent anywhere."""
     from hangar import trace_import as ti
 
-    summary = ti.write(ti.import_transcript(transcript, session_id), out)
+    if manifest is not None and no_manifest:
+        raise typer.BadParameter("--manifest and --no-manifest contradict each other")
+    try:
+        imp = ti.import_transcript(transcript, session_id, False if no_manifest else manifest or True)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    summary = ti.write(imp, out)
     typer.echo(json.dumps(summary, indent=1))
     typer.echo(f"wrote {out}/events.jsonl and {out}/trace.json", err=True)
 

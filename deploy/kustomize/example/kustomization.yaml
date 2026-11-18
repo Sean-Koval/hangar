@@ -38,3 +38,10 @@ configMapGenerator:
       - HANGAR_PUBLIC_URL=https://hangar.example.com
       - HANGAR_REGISTRY=registry.example.com/hangar                         # module output registry, or yours
       - HANGAR_SESSION_STORE=gs://example-project-hangar-sessions           # module output session_bucket_url
+      # Spend guardrails (KAN-290). The base sets them on (docs/team-scale.md#spend-guardrails); put your team's
+      # amounts here, and the zone your working day is in, so a daily cap resets at your midnight.
+      - HANGAR_JOB_BUDGET_MAX_COST_USD=5
+      - HANGAR_PERSON_MAX_USD_PER_DAY=20
+      - HANGAR_PERSON_MAX_USD_PER_MONTH=400
+      - HANGAR_REPO_MAX_USD_PER_DAY=40
+      - HANGAR_BUDGET_DAY_TIMEZONE=America/New_York

@@ -307,6 +307,12 @@ class Settings(BaseSettings):
     person_max_usd_per_day: float | None = None
     # --- KAN-300: the same per calendar month (HANGAR_BUDGET_DAY_TIMEZONE's months), beside the daily cap
     person_max_usd_per_month: float | None = None
+    # --- KAN-290: the daily cap of every repo whose policy sets no `max_usd_per_day` of its own (a policy's own cap
+    # wins). Unset or 0 = only repos with a policy cap are capped.
+    repo_max_usd_per_day: float | None = None
+    # --- KAN-290: the shares of a person's or a repo's daily cap that alert (spendalert.py): a Slack DM, a
+    # `hangar.slo: event=spend_cap` line for Cloud Monitoring, and hangar_spend_cap_alerts_total. [] turns them off.
+    spend_alert_at: list[float] = Field(default_factory=lambda: [0.8, 1.0])
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
     # --- workstream A: triggers ----------------------------------------------
     # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the
@@ -608,6 +614,9 @@ class Settings(BaseSettings):
     resident_minutes: float = Field(60, ge=1)
     job_retention_days: float = Field(30, ge=0)
     session_retention_days: float = Field(30, ge=0)
+    # --- KAN-296: audit entries older than this are deleted from the database, oldest first, keeping the audit chain
+    # whole (datahandling.py, docs/security/data-handling.md). Separate from job and session retention. 0 = kept.
+    audit_retention_days: float = Field(400, ge=0)
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import
@@ -738,6 +747,28 @@ class Settings(BaseSettings):
     # --- #182: monthly eval spend (evalbudget.py), per calendar month UTC: the team's (0: off) and each author's
     eval_budget_usd_month: float = Field(1500.0, ge=0)
     eval_author_cap_usd_month: float = Field(400.0, ge=0)
+
+    # --- KAN-294: single sign-on for the console and the CLI (sso.py, docs/security/sso.md). off (the default):
+    # people sign in with a pasted token, as before. oidc: an OpenID Connect provider (Google Workspace, Okta, Entra)
+    # with PKCE; iap: Google IAP in front of the console, its signed header checked on every console request.
+    sso_mode: Literal["off", "oidc", "iap"] = "off"
+    sso_issuer: str | None = None  # oidc: the provider's issuer URL, e.g. https://accounts.google.com
+    sso_client_id: str | None = None
+    sso_client_secret_credential: str | None = None  # oidc: the vault credential holding the client secret
+    sso_scopes: str = "openid email profile"  # Okta and Entra: add offline_access, for deprovisioning checks
+    sso_auth_params: str = ""  # extra authorize query, e.g. access_type=offline&prompt=consent (Google)
+    sso_allowed_domains: str = ""  # comma-separated email domains; empty: any domain the provider vouches for
+    sso_require_email_verified: bool = True  # the id token's email_verified must be true (Entra sends none)
+    sso_group_claim: str = "groups"
+    sso_required_group: str | None = None  # only members of this group (in sso_group_claim) may sign in
+    sso_default_role: Literal["none", "member"] = "none"  # an email linked to nobody: refused, or a new member
+    sso_required: bool | None = None  # unset: on whenever a mode is set; tokens of people never bound stop too
+    sso_exempt_people: str = ""  # comma-separated service people (bots, CI) with no provider account: never gated
+    sso_session_minutes: int = Field(60, ge=5, le=720)  # the console's session cookie
+    sso_recheck_minutes: int = Field(10, ge=1, le=1440)  # oidc: how often each person is checked at the provider
+    sso_max_stale_minutes: int = Field(60, ge=5, le=10080)  # a person unconfirmed this long: their tokens stop
+    sso_service_stale_hours: int = Field(24, ge=1, le=720)  # ...and after this long, their jobs/metrics tokens too
+    sso_iap_audience: str | None = None  # iap: /projects/<number>/global/backendServices/<id>
 
     @model_validator(mode="before")
     @classmethod

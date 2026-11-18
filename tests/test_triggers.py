@@ -723,3 +723,52 @@ def test_cli_approve_and_schedule(monkeypatch):
                                     "job": {"instructions": "update deps", "environment": "python",
                                             "deliver": "draft_pr"},
                                     "allow_overlap": False, "enabled": True})]
+
+
+async def test_a_github_account_whose_person_left_is_refused(intake):
+    """--- KAN-294: repo write access outlives a leaver's SSO. Their GitHub account still resolves to them, so the
+    GitHub door refuses them (labelling, /hangar, approving, review rounds, landing), audited, instead of falling
+    back to the trust rule and acting as the team. Their issue text and comments are not vetted context either."""
+    from hangar import reviewtrust
+    from hangar.repopolicy import RepoPolicy
+
+    people.add(intake.store, "ada", role="admin")
+    people.link(intake.store, "ada", "github", "7")
+    intake.store.kv_set_json(people.SSO_POLICY_KV, {"on": True, "required": False})
+    intake.store.kv_set_json(people.SSO_BINDING_KV + "ada", {"person": "ada", "disabled_at": 1.0})
+    labeled = {"action": "labeled", "label": {"name": "hangar"}, "repository": {"full_name": "o/r"}}
+    res = await handle_github(intake, "issues", "d-l1", {**labeled, "issue": _issue(61),
+                                                         "sender": {"login": "ada-gh", "id": 7}})
+    assert res == {"ignored": "ada-gh's hangar access has ended"}
+    body = _comment(_issue(62), "/hangar do it", "ada-gh", "MEMBER")
+    body["comment"]["user"]["id"] = 7
+    assert "access has ended" in (await handle_github(intake, "issue_comment", "d-l2", body))["ignored"]
+    body = _comment(_issue(63), "/hangar approve", "ada-gh", "OWNER")
+    body["comment"]["user"]["id"] = 7
+    assert "access has ended" in (await handle_github(intake, "issue_comment", "d-l3", body))["ignored"]
+    refused = [e for e in intake.store.audit_tail(20) if e.action == "github.refused" and e.actor == "github:ada-gh"]
+    assert len(refused) == 3 and all(e.detail["why"] == "deprovisioned" for e in refused)
+    assert not intake._jobs
+    # a maintainer labels the leaver's issue: it runs, but the leaver's text is untrusted context
+    issue = {**_issue(64, "ada-gh", "MEMBER"), "user": {"login": "ada-gh", "id": 7}}
+    res = await handle_github(intake, "issues", "d-l4", {**labeled, "issue": issue, "sender": {"login": "sean"}})
+    job = intake.get(res["job"])
+    assert job.context[0].untrusted and job.untrusted_source == "github:ada-gh"
+    # review rounds and landing approvals
+    user = {"login": "ada-gh", "id": 7}
+    assert reviewtrust.quick(intake, job, user, "OWNER") is None
+    assert await reviewtrust.why_trusted(intake, job, user, "OWNER") is None
+    intake.policies.put(RepoPolicy(repo="o/r", land="auto_after_approval", approvers=["ada-gh"]))
+    job.repo = "https://github.com/o/r.git"
+    intake.landing._login_ids["ada-gh"] = 7
+    assert await intake.landing.qualifies(job, "ada-gh") is None
+    # suspended counts the same; once the identity provider confirms them again, they act as themselves
+    intake.store.kv_set_json(people.SSO_BINDING_KV + "ada", {"person": "ada", "suspended_at": 1.0})
+    assert people.left(intake.store, "github", 7) is not None
+    intake.store.kv_set_json(people.SSO_BINDING_KV + "ada", {"person": "ada"})
+    assert people.left(intake.store, "github", 7) is None
+    assert reviewtrust.quick(intake, job, user, "OWNER") == "an admin"
+    assert await intake.landing.qualifies(job, "ada-gh") == "approver in the repo policy"
+    res = await handle_github(intake, "issues", "d-l5", {**labeled, "issue": _issue(65),
+                                                         "sender": {"login": "ada-gh", "id": 7}})
+    assert intake.get(res["job"]).person == "ada"

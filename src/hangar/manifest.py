@@ -84,6 +84,76 @@ def _canon(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
 
 
+# --- KAN-374: a settings file's hooks digest covers the hook scripts it runs
+NATIVE_PIN = "HARNESS_NATIVE_DIGEST"
+SETTINGS_FILE = "settings.json"
+
+
+def native_digest(files: dict[str, bytes | str]) -> str:
+    """One digest of {path: content} (the native files beside a settings file, paths relative to the harness's config
+    directory): each path with the sha256 of its content, in path order. The team harness's renderer writes this as
+    `env.HARNESS_NATIVE_DIGEST` in each settings file (KAN-473), so that file's digest moves when a hook script does."""
+    h = hashlib.sha256()
+    for path in sorted(files):
+        data = files[path]
+        h.update(f"{path}\0{hashlib.sha256(data.encode() if isinstance(data, str) else data).hexdigest()}\n".encode())
+    return "sha256:" + h.hexdigest()
+
+
+def native_pin(content: str | bytes) -> str | None:
+    """The settings file's `env.HARNESS_NATIVE_DIGEST`, or None when it carries none (or isn't JSON)."""
+    try:
+        env = json.loads(content).get("env")
+    except (ValueError, AttributeError):
+        return None
+    pin = env.get(NATIVE_PIN) if isinstance(env, dict) else None
+    return pin if isinstance(pin, str) else None
+
+
+_HOME_PATH = re.compile(r"^/home/[^/]+/(?P<rel>.+)$")
+
+
+def home_files(spec: EnvSpec) -> dict[str, str]:
+    """The config files the environment puts under $HOME, keyed by their path under it, as the image stages them:
+    `agent_config.files` first, then `files`, so a `files` entry for the same path wins. An absolute path under
+    `/home/<user>/` counts as its home-relative path (KAN-374: a hook script placed there is still beside the
+    settings file)."""
+    out = dict(spec.agent_config.files)
+    for path, content in spec.files.items():
+        if not path.startswith("/"):
+            out[path] = content
+        elif got := _HOME_PATH.match(path):
+            out[got["rel"]] = content
+    return out
+
+
+def siblings(files: dict[str, Any], root: str) -> dict[str, Any]:
+    """The files under `root/` other than settings files, keyed by their path under `root` (what a pin covers)."""
+    return {k[len(root) + 1:]: v for k, v in files.items()
+            if k.startswith(root + "/") and k.rsplit("/", 1)[-1] != SETTINGS_FILE}
+
+
+def hooks_digest(content: str, others: dict[str, Any]) -> tuple[str, dict[str, str] | None]:
+    """(the digest a settings file's hooks are recorded with, the mismatch or None). It is the file's own digest, so
+    every existing lock keeps its identity, unless the file pins its sibling native files (`HARNESS_NATIVE_DIGEST`)
+    and they no longer hash to the pin: then a hook script changed under the same settings file, and the digest is
+    one no lock can hold, so the turn's harness_digest drifts from its lock's."""
+    own = _sha(content)
+    pin = native_pin(content)
+    if pin is None:
+        return own, None
+    actual = native_digest(others)
+    if actual == pin:
+        return own, None
+    return _sha(f"{own}\0{NATIVE_PIN}\0{actual}"), {"pinned": pin, "actual": actual}
+
+
+def config_root(h: Any) -> str | None:
+    """The harness's config directory under $HOME (`.claude`, `.codex`, `.pi/agent`, `.gemini`)."""
+    f = getattr(h, "instructions_file", None) or getattr(h, "skills_dir", None)
+    return f.rsplit("/", 1)[0] if f and "/" in f else None
+
+
 def _url(url: str) -> str:
     """Where an MCP server is, without credentials: no user info, query or fragment (tokens live there)."""
     try:
@@ -176,7 +246,7 @@ def _hooks(spec: EnvSpec, harness: str | None, env: dict[str, str],
            turn: SessionTurn | None = None) -> list[dict[str, Any]]:
     """Hooks the harness runs: hangar's verify gate (a Stop hook in --settings for Claude Code, the driver for
     Codex), hangar's managed Tower hook with its script's digest (KAN-78), and any the environment's own config files
-    declare (Claude Code's settings.json `hooks`)."""
+    declare (Claude Code's settings.json `hooks`), each with its settings file's `hooks_digest` (KAN-374)."""
     from hangar import govhook
     from hangar.verifyloop import CLAUDE_ENV, GATE_ENV
 
@@ -193,14 +263,21 @@ def _hooks(spec: EnvSpec, harness: str | None, env: dict[str, str],
             g = json.loads(raw)
             out.append({"event": "turn.completed", "source": "hangar:verify_gate", "harness": harness,
                         "command": g.get("command"), "rounds": g.get("rounds")})
-    files = {**spec.agent_config.files, **{k: v for k, v in spec.files.items() if not k.startswith("/")}}
+    files = home_files(spec)
+    home = config_root(HARNESSES.get(harness or ""))
     for path, content in sorted(files.items()):
-        if not path.endswith("settings.json"):
+        if not path.endswith(SETTINGS_FILE):
             continue
+        root = home if home and path.startswith(home + "/") else path.split("/", 1)[0] if "/" in path else ""
+        digest, mismatch = (hooks_digest(content, siblings(files, root) if root else {})
+                            if path.rsplit("/", 1)[-1] == SETTINGS_FILE else (_sha(content), None))
         with contextlib.suppress(ValueError, AttributeError):
             for event, entries in (json.loads(content).get("hooks") or {}).items():
-                out.append({"event": event, "source": f"environment:{path}",
-                            "count": len(entries) if isinstance(entries, list) else 1, "digest": _sha(content)})
+                e = {"event": event, "source": f"environment:{path}",
+                     "count": len(entries) if isinstance(entries, list) else 1, "digest": digest}
+                if mismatch:
+                    e["native"] = mismatch  # KAN-374: its hook scripts aren't the ones its pin names
+                out.append(e)
     return out
 
 

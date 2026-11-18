@@ -24,3 +24,37 @@ it does all three procedures. Later tags each carry one release.
 Pushing a `v*` tag runs two workflows. `release.yml` publishes the control-plane image and the harness packs to
 GHCR, with a GitHub release that lists them by digest. `deploy.yml` builds the tagged commit and waits for the
 owner's approval to deploy it ([deploying with deploy.yml](../upgrading.md#deploying-with-deployyml)).
+
+## Making a tag
+
+The suite's release checklist is the same for hangar, Tower and flightdeck. For hangar:
+
+1. Move the Unreleased entries in `CHANGELOG.md` under `## vX.Y.Z`, and set `version` in `pyproject.toml` to match.
+   For a pre-release, spell both the way the tag does: tag `v1.0.0-rc.1` needs version `1.0.0-rc.1`, not `1.0.0rc1`.
+2. Merge that to main, and wait for `ci.yml` to pass on the merge commit. If it didn't run there, run it by hand
+   on main.
+3. Run `python3 scripts/release_check.py vX.Y.Z` there. It prints the notes, or what is wrong.
+4. Tag the merge commit and push the tag: `git tag -a vX.Y.Z -m vX.Y.Z <sha> && git push origin vX.Y.Z`.
+
+`release.yml` checks it all again before it builds anything. The tag must be on main, CI must have passed on its
+commit, and the version and changelog must match. The [upgrade drill](../runbooks/drills.md) from the previous tag
+must pass too, with the restore drill.
+
+The release notes carry the changelog section above the image digests. After the deploy, check that the
+running image's tag is the one you pushed.
+
+### What makes this binding
+
+The checks run only in `release.yml` as it is at the tag's commit. A tag on a commit from before this checklist
+has no `check` job, and would still publish images. A manual run from another branch runs that branch's workflow.
+So the gate needs one setting no file in the repo can make:
+
+- **A tag ruleset on `v*`.** It blocks creating, updating and deleting `v*` tags. Its sole bypass is a deploy key
+  kept on the owner's machine; no role, user or app may bypass it.
+
+hangar's own sandboxes can't push tags anyway: the [git gateway](../security/git-gateway.md) refuses them unless
+`HANGAR_GATEWAY_ALLOW_TAGS` is set. Local Claude Code sessions push as the owner's account, though. The ruleset is
+what keeps an agent from cutting a release.
+
+A manual run of `release.yml` must start from main. It may publish an old tag again only if that tag already has a
+GitHub release.

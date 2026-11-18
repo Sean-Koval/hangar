@@ -9,6 +9,8 @@ trail) still find them. Archived records are deleted after HANGAR_SANDBOX_ARCHIV
 HANGAR_SESSION_RETENTION_DAYS, except what is still referenced (store._KEPT, store._REFERENCED_BY). They are never
 deleted: lookups by id and name, listings and the usage report read the archive too. The same loop lets go of the
 jobs and sessions nothing needs in memory any more (resident.py), every few minutes.
+
+--- KAN-296: audit entries older than HANGAR_AUDIT_RETENTION_DAYS are deleted, oldest first (datahandling.py).
 """
 
 from __future__ import annotations
@@ -70,6 +72,12 @@ class Retention:
         out["sessions_archived"] = await self._archive(Session, SESSION_SETTLED, s.session_retention_days)
         if out["jobs_archived"] or out["sessions_archived"]:
             log.info("archived %d jobs and %d sessions", out["jobs_archived"], out["sessions_archived"])
+        # --- KAN-296: the audit table's own retention, oldest rows first, the chain kept whole
+        from hangar.datahandling import prune_audit
+
+        out["audit_pruned"] = await asyncio.to_thread(prune_audit, self.store, s.audit_retention_days, BATCH)
+        if out["audit_pruned"]:
+            log.info("deleted %d audit entries older than %g days", out["audit_pruned"], s.audit_retention_days)
         return out
 
     async def _archive(self, cls: type, states: tuple, days: float, field: str = "updated_at") -> int:

@@ -47,6 +47,15 @@ data:
   # are unaffected. Keep it: with the driver sidecar on, it lets those turns run in a pod whose sidecar passes hangar's
   # probe, and still refuses them anywhere else (docs/security/review-1.0.md).
   HANGAR_UID_SPLIT: "required"
+  # Spend guardrails, on by default (KAN-290; docs/team-scale.md#spend-guardrails). From a cap of $400 an engineer a
+  # month (KAN-214; amounts pending decision KAN-536): $20 a person a day, $40 a repo a day (two engineers), $5 a job.
+  # hangar DMs the person and the admins at 80% and 100% of a daily cap. Raise one in this ConfigMap; `hangar doctor`
+  # fails a deploy with none.
+  HANGAR_JOB_BUDGET_MAX_COST_USD: "5"
+  HANGAR_PERSON_MAX_USD_PER_DAY: "20"
+  HANGAR_PERSON_MAX_USD_PER_MONTH: "400"
+  HANGAR_REPO_MAX_USD_PER_DAY: "40"
+  HANGAR_BUDGET_DAY_TIMEZONE: "America/New_York"  # daily caps reset at local midnight, not 19:00 or 20:00 here
   # The driver sidecar (KAN-186): a `hangar-driver` container per sandbox pod that runs a turn's driver out of the
   # agent's reach. Off until the checks in docs/security/driver-sidecar-check.md pass on this cluster.
   HANGAR_K8S_DRIVER_SIDECAR: "false"

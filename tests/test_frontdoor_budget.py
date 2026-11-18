@@ -87,9 +87,10 @@ async def test_the_repo_policy_sets_budgets(jobs, world):  # noqa: F811
 
 
 async def test_a_repo_over_its_daily_cap_holds_new_work(jobs, world):  # noqa: F811
+    first = _submit(jobs, world)  # admitted before the cap, so its job budget isn't lowered to the cap (KAN-290)
     update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_day=0.002), "admin")
-    first = await until(jobs, _submit(jobs, world).id, DONE)
-    assert first.state == JobState.SUCCEEDED  # admitted under the cap; it spent $0.003
+    first = await until(jobs, first.id, DONE)
+    assert first.state == JobState.SUCCEEDED  # it spent $0.003
     assert jobbudget.repo_spent_today(jobs, first.repo.removesuffix(".git")) == pytest.approx(0.003)
     held = _submit(jobs, world)
     assert held.state == JobState.AWAITING_APPROVAL
@@ -104,10 +105,10 @@ async def test_a_repo_over_its_daily_cap_holds_new_work(jobs, world):  # noqa: F
 async def test_a_person_over_their_daily_cap_holds_their_new_work(jobs, world):  # noqa: F811
     """--- integration: the per-person daily cap (HANGAR_PERSON_MAX_USD_PER_DAY) counts what the person identity
     records on the work spent, through all their tokens, and holds only their work."""
+    first = jobs.submit(SubmitJob(instructions="make fix.txt say good", repo=world["url"], environment="seamenv"),
+                        Caller("@alice:laptop", "tok-a", person="alice"))  # before the cap: budget not lowered
     jobs.settings.person_max_usd_per_day = 0.002
-    first = await until(jobs, jobs.submit(SubmitJob(instructions="make fix.txt say good", repo=world["url"],
-                                                    environment="seamenv"),
-                                          Caller("@alice:laptop", "tok-a", person="alice")).id, DONE)
+    first = await until(jobs, first.id, DONE)
     assert first.state == JobState.SUCCEEDED and first.person == "alice"
     assert jobbudget.person_spent_today(jobs, "alice") == pytest.approx(0.003)
     held = jobs.submit(SubmitJob(instructions="again", repo=world["url"], environment="seamenv"),

@@ -18,6 +18,8 @@ says what to do, in order, and what to check after.
 | [A full disk or quota](disk-and-quota.md) | hangar's data disk, a node's disk or a GCP quota is full (`data-disk`, `node-disk`, `sandbox-creates-failing`) | The on-call owner |
 | [A deploy waiting too long](deploy.md) | Production is behind main and a deploy waits for approval (`deploy-lag`): who approves, and what to do with a stale run | The on-call owner, or the second approver |
 | [A bad deploy](bad-deploy.md) | The control plane crash-loops or stops answering after a deploy (`restarts`, `api-down`); links the rollback | The on-call owner |
+| [Backups and recovery objectives](recovery.md) | What holds hangar's state, how each store is backed up, and the RPO and RTO | An admin |
+| [Recovery drills](drills.md) | Before each release, and after a change to the store: prove a restore, an upgrade and both rollbacks | An admin |
 | [Governance break-glass](break-glass.md) | Tower is unreachable or denies what it shouldn't: what hangar does today, putting a kind back from `enforce`, and the break-glass command | An admin, and a second admin to confirm |
 
 The incident runbooks follow from hangar's [SLOs](../slos.md) and [alerts](../alerting.md). Upgrading a running hangar has its own ordered procedures in [upgrading.md](../upgrading.md), and the nightly power
