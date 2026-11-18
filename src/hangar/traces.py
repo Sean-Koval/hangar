@@ -99,7 +99,7 @@ _COUNTS = {"-j", "-l"}  # make's job and load counts are optional: `make -j test
 _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{"}
 _SHELLS = {"sh", "bash", "zsh", "dash"}
 # A test or CI script, run by a shell or by its path: scripts/ci/verify.sh, ./run_tests.sh, unit-tests.sh. A deploy
-# or release script named after CI (ci-deploy.sh, verify_signature.sh) is not one.
+# or release script named after CI (ci-deploy.sh, ci_publish.sh) is not one.
 _SCRIPT_KIND = r"(?:all|unit|units|e2e|integration|integ|smoke|local|suite|py|python|go|js)"
 _TEST_SCRIPT = re.compile(rf"(?:run[_-]?)?(?:{_SCRIPT_KIND}[_-])?(?:tests?|verify|checks?|ci)(?:[_-]{_SCRIPT_KIND})?"
                           r"\.(?:sh|bash)")
