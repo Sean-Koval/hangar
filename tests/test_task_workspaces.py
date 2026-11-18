@@ -167,6 +167,37 @@ def test_a_trials_request_runs_only_the_workspace_its_pin_set_pinned(fleet):
         ask(ws, MOD)
 
 
+def test_post_trials_commits_a_workspace_off_the_event_loop(settings, monkeypatch):
+    """Committing a workspace runs git subprocesses, so the route does it in a thread, not on the event loop."""
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from hangar.app import create_app
+
+    monkeypatch.setattr(pinsets, "check", lambda fleet, body: None)
+    on_loop, commit = [], workspaces.commit
+
+    def spy(settings, files):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return commit(settings, files)
+
+    monkeypatch.setattr(workspaces, "commit", spy)
+    settings.admin_token = "t0ken"
+    body = {"harness": "claude-code", "harness_lock": "team@sha256:" + "1" * 64,
+            "harness_digest": "sha256:" + "1" * 64, "environment": "plain", "environment_spec_digest": "sha256:x",
+            "model_id": "claude-opus-5-5", "egress_digest": "sha256:y", "tasks": {"t": {"base_sha": MOD_SHA}}}
+    with TestClient(create_app(settings), headers={"Authorization": "Bearer t0ken"}) as c:
+        pin = c.post("/api/pinsets", json=body).json()["id"]
+        r = c.post("/api/trials", json={"pin_set": pin, "task": _task(workspace={"mod.py": "x\n"}), "budget": BUDGET})
+    assert r.status_code == 422 and "its workspace is commit" in r.text
+    assert on_loop == [False]
+
+
 # ====================================================================== grading a workspace task
 @pytest.fixture
 async def ws_grading(fleet, tmp_path, monkeypatch):
