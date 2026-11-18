@@ -72,7 +72,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "intake.md": (1413, 28, LATER + "Jira, the agent ticket, deliveries"),
     "intake/jira.md": (1089, 14, MOVED.format("intake.md") + "split it by question"),
     "jobs/agent-loop.md": (1430, 12, LATER + "the loop, its stops"),
-    "jobs/experiments.md": (1640, 30, LATER + "the trial, the grade"),
+    "jobs/experiments.md": (1640, 28, LATER + "the trial, the grade"),
     "jobs/from-github-slack-jira.md": (869, 15, LATER + "one page per door"),
     "jobs/reference.md": (589, 12, "a reference: one entry per label, outcome and setting, looked up, not read"),
     "jobs/test-results.md": (1239, 27, LATER + "the report, the flaky list"),

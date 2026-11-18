@@ -68,6 +68,7 @@ def task_digest(task: Any, environment: str, grader: Any = None) -> str:
     """A task's identity for the cache: what decides its result, not its name."""
     t = task.model_dump(mode="json") if hasattr(task, "model_dump") else dict(task)
     hidden = {}
+    grader = t.get("grader") or grader  # --- KAN-192: a task's own grader is the one it's graded by
     if grader is not None:
         files = grader.files if hasattr(grader, "files") else (grader.get("files") or {})
         hidden = {p: "sha256:" + hashlib.sha256(c.encode()).hexdigest() for p, c in sorted(files.items())}
@@ -75,6 +76,8 @@ def task_digest(task: Any, environment: str, grader: Any = None) -> str:
             "repo": t.get("repo"), "base_branch": t.get("base_branch"),
             "reference_patch": "sha256:" + hashlib.sha256(t["reference_patch"].encode()).hexdigest()
             if t.get("reference_patch") else None, "hidden_tests": hidden, "environment": environment}
+    if own := t.get("grader"):  # --- KAN-192: a task's own grader (its files are hidden_tests); absent, digests stay
+        body["grader"] = {k: v for k, v in own.items() if k not in ("files", "canary")}
     return "sha256:" + hashlib.sha256(_canon(body).encode()).hexdigest()
 
 

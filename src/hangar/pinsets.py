@@ -368,7 +368,7 @@ def trial_view(jobs: JobService, trial_id: str, owner: str | None = None) -> dic
         "reason": t.reason, "outcome_class": t.outcome_class, "infra_reason": t.infra_reason, "excluded": t.excluded,
         "job": t.job, "session": t.session, "manifests": t.manifests, "harness_digest": t.harness_digest,
         "environment_digest": t.environment_digest, "config_digest": t.config_digest, "drift": t.drift,
-        "verify": t.verify, "grade": experiments.mask_canary(t.grade, (st.spec.get("grader") or {}).get("canary")),
+        "verify": t.verify, "grade": experiments.mask_canary(t.grade, experiments.spec_canary(st.spec)),
         "usage": t.usage, "started_at": t.started_at, "finished_at": t.finished_at, "runs": runs,
         # --- #179: a fork's trial
         "fork_of": t.fork_of, "replay": t.replay, "tainted": t.tainted, "aa": t.aa,
