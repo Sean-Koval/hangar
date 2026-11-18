@@ -219,9 +219,10 @@ def serve(
     import uvicorn
     from pydantic import ValidationError
 
+    from hangar import logfmt
     from hangar.config import get_settings
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logfmt.configure(logging.INFO)  # --- KAN-556: one record, one log entry, so nothing in one forges another
     try:
         s = get_settings()
     except ValidationError as e:  # --- KAN-74: a removed switch (or any bad HANGAR_* value) names itself and the fix
@@ -231,7 +232,8 @@ def serve(
             typer.secho(f"hangar can't start: {msg}", fg="red", err=True)
         raise typer.Exit(2) from None
     uvicorn.run("hangar.app:create_app", factory=True, host=host or s.host, port=port or s.port, reload=reload,
-                log_level="info", timeout_graceful_shutdown=s.shutdown_grace_seconds)  # --- overnight/sweep
+                log_level="info", timeout_graceful_shutdown=s.shutdown_grace_seconds,  # --- overnight/sweep
+                log_config=None)  # --- KAN-556: uvicorn's lines go through logfmt too
 
 
 # ---------------------------------------------------------------------------- tokens

@@ -47,9 +47,9 @@ into `hangar.git.tree` on the tool call and `hangar.git.tree.start` / `.end` on 
   `bench/results/2026-10-17-tree-hash.json`, a shared 2-vCPU VM). One hash slower than 2 s stops hashing for the turn,
   recorded as `skipped: "slow"` (`hangar.git.tree.skipped` on the turn). Large untracked files that `.gitignore`
   doesn't cover cost what they cost to hash: that is what trips the limit.
-- **Trust.** Under [the uid split](uid-split.md) the run log is hangar's, so the lines are trusted. Without it the
-  agent shares the driver's user and could append a forged `hangar.tree` line: those trees are recorded with
-  `trusted: false` (`hangar.git.tree.trusted`), and #179 checks trees again when it replays a prefix.
+- **Trust.** Under [the uid split](uid-split.md) a tree is trusted only when the driver signed it with the run's key.
+  hangar reads no unsigned `hangar.*` line of a keyed run, and prefixes the harness's. Without the split, trees are
+  `trusted: false` (`hangar.git.tree.trusted`), and #179 checks them again on replay.
 - **One-shot turns** (no driver: a harness without a structured mode, or no `python3` in the sandbox) record the start
   and end trees only, through an exec as the sandbox's user at the turn's start and end, kept on the turn record
   (`git_trees`, not in its event log), always `trusted: false`.

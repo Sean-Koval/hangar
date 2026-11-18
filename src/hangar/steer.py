@@ -275,6 +275,18 @@ def reseal(store: Any, ring: Any) -> int:
     return n
 
 
+def run_key(svc: SessionService, run_id: str | None) -> bytes | None:
+    """--- KAN-556: a live run's key, which its driver signs its events with (driver.Out); None once it's forgotten
+    or the run takes no commands. Never raises: without it, the run's trees are just not trusted."""
+    if not run_id:
+        return None
+    try:
+        raw = svc.store.kv_get(KV + run_id)
+        return svc.vault.decrypt(raw.encode()) if raw else None
+    except Exception:  # noqa: BLE001 - a key that won't open signs nothing
+        return None
+
+
 def forget(svc: SessionService, run_id: str | None) -> None:
     """The run is over (or never started): its key is of no more use."""
     if run_id:
