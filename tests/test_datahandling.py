@@ -4,6 +4,7 @@ hangar-workload module companies deploy."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -471,6 +472,35 @@ async def test_an_empty_page_with_a_token_is_read_on(monkeypatch):
     monkeypatch.setattr(datahandling, "_list_entries", entries)
     assert await datahandling._read_bucket(VIEW, "t") == ([(3, "h")], None)
     assert asked == [(30, None), (30, "p2")]
+
+
+async def test_a_bucket_that_keeps_paging_is_read_a_bounded_number_of_times(monkeypatch):
+    """Review: empty pages with a token, forever, stop after _MAX_PAGES in each window, and say so."""
+    asked: list = []
+
+    async def entries(view, tk, days, page=None):
+        asked.append(days)
+        return 200, {"entries": [], "nextPageToken": f"p{len(asked)}"}
+
+    monkeypatch.setattr(datahandling, "_list_entries", entries)
+    lines, why = await datahandling._read_bucket(VIEW, "t")
+    assert lines == [] and why == f"no audit line in {datahandling._MAX_PAGES} pages"
+    assert asked == [30] * datahandling._MAX_PAGES + [3650] * datahandling._MAX_PAGES
+
+
+async def test_a_bucket_read_that_hangs_is_not_run(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, _logged(store, 1, caplog))
+
+    async def slow(view, tk, days, page=None):
+        await asyncio.sleep(5)
+        return 200, {}
+
+    monkeypatch.setattr(datahandling, "_list_entries", slow)
+    monkeypatch.setattr(datahandling, "_READ_SECONDS", 0.05)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "warn" and line["detail"] == "not run: the bucket read timed out"
 
 
 async def test_a_comparison_that_breaks_is_not_run(settings, store, monkeypatch, caplog):

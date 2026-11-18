@@ -45,6 +45,9 @@ put the `hangar-workload` module's output in your `hangar-site`. The same apply 
 Doctor reads the bucket's lines of the last 30 days. Suppose a table is restored from an older backup, then written
 past. Doctor sees it while the overwritten lines are among those 30 days: the bucket then holds one entry twice.
 
+The read stops after 20 pages, or 30 seconds in all, so doctor never waits on Logging. A read that times out, or
+finds no line, says "not run".
+
 ## What it doesn't cover
 
 - The table in the database keeps entries for `HANGAR_AUDIT_RETENTION_DAYS` ([data handling](data-handling.md)).

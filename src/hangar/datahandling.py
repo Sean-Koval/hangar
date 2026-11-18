@@ -218,6 +218,8 @@ _LINE_RE = re.compile(r"^(?:\S+ \S+ [A-Z]+ )?hangar\.audit: (?=\{)")
 _PAGE = 500
 _WINDOW_DAYS = 30  # every line of the last 30 days, up to _MAX_LINES: a restore written past shows as two links
 _MAX_LINES = 5000
+_MAX_PAGES = 20  # per window: empty pages with a token can go on, and each call may take up to 20 s
+_READ_SECONDS = 30.0  # the whole read; past it the line is not run, so doctor never hangs on Logging
 _FIX_BEHIND = ("treat the bucket as the record: find out who had the database, and what was restored "
                "(docs/security/data-handling.md#if-the-chain-breaks)")
 
@@ -249,20 +251,23 @@ async def _list_entries(view: str, token: str, days: float, page_token: str | No
 
 async def _read_bucket(view: str, token: str) -> tuple[list[tuple[int, str | None]], str | None]:
     """The audit lines of the last 30 days (up to _MAX_LINES), else the newest one ever: (lines, why not read)."""
+    gave_up = False
     for days, cap in ((_WINDOW_DAYS, _MAX_LINES), (3650, 1)):
         lines: list[tuple[int, str | None]] = []
         page: str | None = None
-        while len(lines) < cap:  # a page may come back empty with a token when the search ran out of time
+        for _ in range(_MAX_PAGES):  # a page may come back empty with a token when the search ran out of time
             code, data = await _list_entries(view, token, days, page)
             if code != 200:
                 return [], f"HTTP {code}"
             lines += _bucket_lines(data)
             page = data.get("nextPageToken") or None
-            if not page:
+            if not page or len(lines) >= cap:
                 break
+        else:
+            gave_up = bool(page)
         if lines:
             return lines, None
-    return [], None
+    return [], (f"no audit line in {_MAX_PAGES} pages" if gave_up else None)
 
 
 def _bucket_lines(data: dict[str, Any]) -> list[tuple[int, str | None]]:
@@ -340,7 +345,9 @@ async def bucket_check(h: Any) -> dict[str, Any]:
     if not token:
         return _check("audit bucket", None, "not run: hangar has no Google credentials to read the bucket with", fix)
     try:
-        lines, why = await _read_bucket(view, token)
+        lines, why = await asyncio.wait_for(_read_bucket(view, token), _READ_SECONDS)
+    except TimeoutError:
+        return _check("audit bucket", None, "not run: the bucket read timed out", fix)
     except Exception as e:  # noqa: BLE001 - not read is not run, never a pass
         return _check("audit bucket", None, f"not run: the bucket wasn't read ({type(e).__name__})", fix)
     if why:
