@@ -160,6 +160,31 @@ def test_rows_redacted_under_the_first_form_are_rebound_on_start(tmp_path):
     assert not v["ok"] and v["broken_at"] == ids[-1]
 
 
+def test_the_rebind_runs_once_so_a_first_form_pair_copied_in_later_stays_a_break(tmp_path):
+    """--- KAN-553 review: a first-form (data, rdigest) pair from a backup taken before the upgrade, copied over a
+    row after the rebind ran, must not be rebound at the next start."""
+    from hangar.auditchain import audit_redaction_v1
+    from hangar.store import REDACTIONS_REBOUND
+
+    db = tmp_path / "hangar.db"
+    store = _store(db)
+    _events(store, 2, actor="alice")
+    store.audit(AuditEvent(actor="bob", action="credential.export", target="prod-key"))
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    first = min(r[0] for r in store.audit_rows() if r[5])
+    data = store._db.execute("SELECT data FROM audit WHERE id=?", (first,)).fetchone()[0]
+    store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), first))
+    store = _store(db)  # the upgrade: rebinds it, once, and says so in the chain
+    assert datahandling.verify_chain(store)["ok"]
+    assert [r for r in store.audit_rows() if REDACTIONS_REBOUND in (r[2] or "")]
+    bobs = max(r[0] for r in store.audit_rows() if "credential.export" in (r[2] or ""))
+    store._db.execute("UPDATE audit SET data=?, redacted=1, rdigest=? WHERE id=?",
+                      (data, audit_redaction_v1(KEY, data), bobs))  # the old backup's pair, over bob's entry
+    store = _store(db)
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == bobs and "redacted" in v["reason"]
+
+
 def test_the_redacted_digest_is_no_oracle_for_the_name(tmp_path):
     """The kept digest is an HMAC: putting a guessed name back and hashing it confirms nothing."""
     import hashlib

@@ -64,6 +64,7 @@ audit_log = logging.getLogger("hangar.audit")
 # still holds, and the new JSON is checked against its own HMAC (`rdigest`) instead (datahandling.verify_chain).
 AUDIT_ANCHOR = "audit.chain.anchor"
 CHAIN_STARTED = "audit.chain_started"
+REDACTIONS_REBOUND = "audit.redactions_rebound"  # --- KAN-553: the one-time rebind of first-form redactions
 AUDIT_PRUNED = "audit.pruned"
 _CHAIN_COLUMNS = (("digest", "TEXT"), ("hash", "TEXT"), ("redacted", "INTEGER NOT NULL DEFAULT 0"), ("rdigest", "TEXT"))
 
@@ -455,6 +456,7 @@ class Store:
         existed are linked only by the migration that adds its columns (an upgrade, or a new database), and that
         start is audited. Never otherwise: a row whose link was cleared later stays a break for `hangar doctor`,
         whatever else in the database was changed with it."""
+        logged: list[tuple[int, str | None, str]] = []
         with self._lock:
             self._audit_key = key
             have = {r[1] for r in self._db.execute("PRAGMA table_info(audit)").fetchall()}
@@ -482,18 +484,30 @@ class Store:
                     prev = audit_link(key, prev, rid, digest)
                     self._db.execute("UPDATE audit SET digest=?, hash=? WHERE id=?", (digest, prev, rid))
                 # --- KAN-553: rows a purge redacted under the first form, whose HMAC covered the JSON alone, are
-                # rebound to their id and first digest. One that doesn't match the first form stays a break.
-                for rid, data, digest, rdigest in self._db.execute(
+                # rebound to their id and first digest, once: the rebind is itself an entry in the chain, so it
+                # can't be removed to run again, and a first-form pair copied in later (from an old backup) stays
+                # a break. One that doesn't match the first form stays a break too.
+                rebound: list[int] = []
+                done = self._db.execute("SELECT 1 FROM audit WHERE json_extract(data, '$.action') = ? LIMIT 1",
+                                        (REDACTIONS_REBOUND,)).fetchone()
+                for rid, data, digest, rdigest in [] if done else self._db.execute(
                         "SELECT id, data, digest, rdigest FROM audit WHERE redacted=1 AND rdigest IS NOT NULL "
                         "AND rdigest NOT LIKE ?", (REDACTION_V2 + "%",)).fetchall():
                     if hmac.compare_digest(rdigest, audit_redaction_v1(key, data or "")):
                         self._db.execute("UPDATE audit SET rdigest=? WHERE id=?",
                                          (audit_redaction(key, rid, digest or "", data or ""), rid))
+                        rebound.append(rid)
+                if rebound:
+                    logged.append(self._audit_write(AuditEvent(
+                        actor="system", action=REDACTIONS_REBOUND, target=str(rebound[0]),
+                        detail={"rows": len(rebound), "last": rebound[-1]})))
                 if upgrade:  # audited, so the copy off the pod shows when and how many; doctor allows only one
                     rid, link, data = self._audit_write(AuditEvent(
                         actor="system", action=CHAIN_STARTED, target=str(ids[0] if ids else 0),
                         detail={"rows": len(ids)}))
             if upgrade:
+                self._audit_log(data, rid, link)
+            for rid, link, data in logged:
                 self._audit_log(data, rid, link)
 
     def _audit_prev(self) -> str:
