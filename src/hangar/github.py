@@ -65,7 +65,47 @@ def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
 
 
 class GitHubError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None, errors: list[str] | None = None):
+        super().__init__(message)
+        self.status, self.errors = status, errors or []  # KAN-339: errors[], one line per entry
+
+
+def _errors(r: httpx.Response) -> list[str]:
+    """GitHub's `errors[]` for a failed call, compactly: `code=… field=… message` per entry."""
+    try:
+        d = r.json()
+    except ValueError:
+        return []
+    raw = d.get("errors") if isinstance(d, dict) else None
+    out = []
+    for e in raw if isinstance(raw, list) else []:
+        if isinstance(e, dict):
+            bits = [f"{k}={e[k]}" for k in ("code", "field") if e.get(k)]
+            if e.get("message"):
+                bits.append(str(e["message"]))
+            out.append(" ".join(bits))
+        elif e:
+            out.append(str(e))
+    return [e for e in out if e]
+
+
+def _error_text(method: str, path: str, r: httpx.Response, errs: list[str], cap: int = 500) -> str:
+    """A failed call, in at most `cap` characters: the status, GitHub's `message` and, compactly, its `errors[]`
+    (KAN-339: a 422 says why only there), which keep at least half the room. Never the request or its token."""
+    head = f"GitHub {method} {path}: {r.status_code} "
+    try:
+        d = r.json()
+    except ValueError:
+        d = None
+    if not isinstance(d, dict):
+        return (head + " ".join(r.text.split())).strip()[:cap]
+    msg = str(d.get("message") or "").strip() or f"HTTP {r.status_code}"
+    if not errs:
+        return (head + msg)[:cap]
+    detail = " (" + "; ".join(errs)
+    keep = cap - min(len(detail) + 1, cap // 2)  # the message gives way to errors[], down to half the room
+    text = (head + msg)[:keep] + detail
+    return text[:cap - 1] + ")" if len(text) >= cap else text + ")"
 
 
 def _iso_ts(iso: str) -> float:
@@ -92,11 +132,8 @@ class GitHub:
     async def _req(self, method: str, path: str, **kw) -> Any:
         r = await self._client.request(method, path, **kw)
         if r.status_code >= 400:
-            try:
-                msg = r.json().get("message", r.text)
-            except ValueError:
-                msg = r.text
-            raise GitHubError(f"GitHub {method} {path}: {r.status_code} {msg}"[:500])
+            errs = _errors(r)
+            raise GitHubError(_error_text(method, path, r, errs), r.status_code, errs)
         return r.json() if r.content else None
 
     async def find_pr(self, repo: str, branch: str) -> dict[str, Any] | None:
