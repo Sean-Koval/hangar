@@ -45,6 +45,7 @@ Each incident runbook names the alerts it answers. Start with [on call](on-call.
 | [Run capture: the outbox](outbox.md) | Switching run capture on, checking that a run landed, retention and deletion requests, and what to do when uploads fail | An admin, with the GCP project's owner for the bucket |
 | [Backups and recovery objectives](recovery.md) | What holds hangar's state, how each store is backed up, and the RPO and RTO | An admin |
 | [Recovery drills](drills.md) | Before each release, and after a change to the store: prove a restore, an upgrade and both rollbacks | An admin |
+| [The live intake check](intake-check.md) | After a release reaches production: one real Jira ticket becomes one job and one draft PR, and a second move starts no duplicate | An admin who is linked in Jira |
 
 </div>
 

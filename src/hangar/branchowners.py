@@ -57,3 +57,27 @@ def foreign(rec: dict[str, Any] | None, person: str | None) -> bool:
     """Whether a branch with this record belongs to someone other than `person`: recorded, and not recorded as
     theirs. A record with no person (nobody's sandbox) is foreign to everyone."""
     return rec is not None and (rec.get("person") is None or rec.get("person") != person)
+
+
+def recorded_for(store: Store, person: str) -> list[str]:
+    """--- KAN-553: the keys of the records that name `person` as a branch's creator (a purge clears them)."""
+    out = []
+    for k in store.kv_keys(PREFIX):
+        try:
+            rec = json.loads(store.kv_get(k) or "null")
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("person") == person:
+            out.append(k)
+    return out
+
+
+def forget_person(store: Store, key: str) -> None:
+    """--- KAN-553: keep the record as nobody's: still foreign to every person, so the branch isn't free to take."""
+    try:
+        rec = json.loads(store.kv_get(key) or "null")
+    except ValueError:
+        return
+    if isinstance(rec, dict):
+        store.kv_set(key, json.dumps({**rec, "person": None, "sandbox": None, "session": None, "job": None}),
+                     durable=True)

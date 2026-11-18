@@ -39,4 +39,7 @@ The Terraform output `audit_log` prints this query for your project. The Logs Ex
 - The table in the database keeps entries for `HANGAR_AUDIT_RETENTION_DAYS` ([data handling](data-handling.md)).
 - The chain shows a row edited or removed anywhere but the end ([what doctor proves](data-handling.md#what-doctor-proves)).
   A row cut from the end shows only against the bucket's newest `seq`.
+  An entry a purge rewrote is sealed to its row, so it can't be copied over another entry.
+- A purge run after a rollback to v0.2.0 writes the older seal. Before upgrading again, delete the
+  `audit.redactions_rebound` key from the `kv` table, or doctor reports those entries as edited.
 - A Docker or single-VM install has no Cloud Logging. Ship the container log to your own store to get a second copy.

@@ -337,7 +337,8 @@ class Receiver:
         if not w.driver_approval or not self._turn_running(s, w):
             return False
         try:
-            await steering.answer(self.sessions, s, w.driver_approval, decision, "tower", message or None)
+            await steering.answer(self.sessions, s, w.driver_approval, decision, "tower", message or None,
+                                  via_tower=True)
         except (steering.SteerError, KeyError) as e:
             log.info("session %s: could not answer %s: %s", s.id, w.driver_approval, e)
             return False

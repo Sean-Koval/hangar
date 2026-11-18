@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -32,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hangar import people
+from hangar import branchowners, people
 from hangar.auditchain import audit_digest, audit_link, audit_redaction
 from hangar.envrequests import EnvRequest
 from hangar.flightrec import FlightRecord
@@ -124,7 +125,8 @@ def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
                 reason = None
                 if not link or not digest:
                     reason = "a row without a link (written outside hangar, or its link was cleared)"
-                elif redacted and (not rdigest or audit_redaction(key, data) != rdigest):
+                elif redacted and (not rdigest
+                                   or not hmac.compare_digest(audit_redaction(key, rid, digest, data), rdigest)):
                     reason = "a row marked redacted doesn't match what the purge wrote (edited since)"
                 elif not redacted and audit_digest(key, data) != digest:
                     reason = "the row was edited after it was written"
@@ -210,6 +212,10 @@ def pseudonym(h: Any, person_id: str) -> str:
         salt = secrets.token_hex(32)
         h.vault.put(SALT_NAME, salt)
     return "person:" + hashlib.sha256(f"{salt}\n{person_id}".encode()).hexdigest()[:16]
+
+
+# --- KAN-553: owner and requester values hangar itself writes (sessions.py, models.py defaults): nobody's names
+FIXED_OWNERS = frozenset({"admin", "system", "jobs", "tower", "hangar"})
 
 
 def aliases(store: Store, person_id: str) -> tuple[list[str], list[str]]:
@@ -308,22 +314,30 @@ def _found(h: Any, person_id: str, names: list[str]) -> dict[str, list[Any]]:
     """What hangar holds about the person: by `person`, and by an `owner` or requester that is one of their names
     (a token id, a linked account), as GitHub, Slack and older jobs and sessions record it."""
     st = h.store
-    mine = set(names)
+    # --- KAN-553: hangar writes fixed strings as owner and requester (a job's session is owned by "jobs", defaults are
+    # "admin" and "system"), so a person by such an id must not match them; and a record whose `person` names someone
+    # else is never theirs, whatever its owner says
+    mine = set(names) - FIXED_OWNERS
+
+    def unclaimed(rec: Any) -> bool:
+        return getattr(rec, "person", None) in (None, person_id)
 
     def theirs(rec: Any, *fields: str) -> bool:
-        return any(getattr(rec, f, None) in mine for f in fields)
+        return unclaimed(rec) and any(getattr(rec, f, None) in mine for f in fields)
+
+    def by(cls: type, field: str) -> list[Any]:
+        return [r for r in st.list_where(cls, archived=True, **{field: sorted(mine)}) if unclaimed(r)] if mine else []
 
     sessions = {s.id: s for s in st.list_where(Session, archived=True, person=person_id)}
-    sessions.update({s.id: s for s in st.list_where(Session, archived=True, owner=list(mine))})
+    sessions.update({s.id: s for s in by(Session, "owner")})
     jobs = {j.id: j for j in st.list_where(Job, archived=True, person=person_id)}
-    jobs.update({j.id: j for j in st.list_where(Job, archived=True, owner=list(mine))})
-    jobs.update({j.id: j for j in st.list_where(Job, archived=True, requester=list(mine))})
+    jobs.update({j.id: j for j in by(Job, "owner") + by(Job, "requester")})
     schedules = {sc.id: sc for sc in st.list(ScheduledJob) if sc.person == person_id or theirs(sc, "owner")}
     sids = set(sessions) | {a.session_id for j in jobs.values() for a in j.attempts if a.session_id} \
         | {j.session_id for j in jobs.values() if j.session_id}
     jids = set(jobs)
     sandboxes = {sb.id: sb for sb in st.list_where(Sandbox, archived=True, person=person_id)}
-    sandboxes.update({sb.id: sb for sb in st.list_where(Sandbox, archived=True, created_by=list(mine))})
+    sandboxes.update({sb.id: sb for sb in by(Sandbox, "created_by")})
     sbids = set(sandboxes)
     outbox = [i for i in st.list(OutboxItem) if i.session_id in sids or i.job_id in jids]
     return {
@@ -341,6 +355,7 @@ def _found(h: Any, person_id: str, names: list[str]) -> dict[str, list[Any]]:
         "outbox": outbox,
         "environment_claims": [k for k in st.kv_keys("identity:env-owner:") if st.kv_get(k) == person_id],
         "kv": _their_kv(st, person_id),
+        "branch_creators": branchowners.recorded_for(st, person_id),
         "pending_deletes": _pending_deletes(h, sids, mine),
     }
 
@@ -496,6 +511,8 @@ async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -
             await step(f"{kind} {rec.id}", st.delete, cls, rec.id)
     for k in found["environment_claims"] + found["kv"]:
         await step(k, st.kv_delete, k)
+    for k in found["branch_creators"]:  # --- KAN-553: kept, as nobody's, so the branch stays foreign to everyone
+        await step(k, branchowners.forget_person, st, k)
     # anything of theirs that appeared while this ran (a job a door let in before it shut) keeps the person for a
     # rerun: the person goes only once nothing is left
     if not errors and (left := {k: len(v) for k, v in
