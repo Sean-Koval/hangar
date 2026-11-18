@@ -78,7 +78,7 @@ async def test_an_over_long_body_is_cut_and_the_pr_opens(svc, world):  # noqa: F
     await svc._ensure_pr(job, draft=True)
     assert job.result.pr_number == 7 and job.result.pr_error is None
     body = svc.fake.prs[0]["body"]
-    assert len(body) <= MAX_PR_BODY and "cut at 60,000 characters" in body and "RESULT.md" in body
+    assert len(body) <= MAX_PR_BODY and "was cut" in body and "RESULT.md" in body
     assert body.startswith("a 41-file change")
     assert body.index("RESULT.md") < body.index("Hangar-Job:")  # the trailers stay last
 
@@ -89,7 +89,7 @@ async def test_the_cut_body_is_still_scanned_for_secrets(svc, world):  # noqa: F
     job.result.summary = f"token {token} leaked\n" + "x" * 90_000
     await svc._ensure_pr(job, draft=True)
     body = svc.fake.prs[0]["body"]
-    assert token not in body and "cut at 60,000" in body and len(body) <= 65_536
+    assert token not in body and "was cut" in body and len(body) <= 65_536
 
 
 async def test_an_existing_pr_is_adopted(svc, world):  # noqa: F811
@@ -132,3 +132,79 @@ async def test_errors_keep_room_under_the_cap():
     await client.close()
     msg = str(e.value)
     assert len(msg) <= 500 and "(code=custom why why" in msg and "a plain string)" in msg
+
+
+async def test_the_cut_keeps_hangars_own_lines(svc, world):  # noqa: F811
+    job = _job(svc, world)
+    job.verify, job.result.verify_exit_code = "pytest -q", 1
+    job.result.touched_tests = ["tests/test_x.py"]
+    job.result.summary = "long\n" + "x" * 90_000
+    await svc._ensure_pr(job, draft=True)
+    body = svc.fake.prs[0]["body"]
+    assert len(body) <= MAX_PR_BODY and "summary was cut" in body
+    assert "Verification `pytest -q`: **failed (exit 1)**" in body  # a long summary can't hide a failed check
+    assert "The agent changed the check's own tests" in body
+    assert body.index("summary was cut") < body.index("Verification") < body.index("Hangar-Job:")
+
+
+async def test_a_secret_on_the_cut_is_not_half_kept(svc, world):  # noqa: F811
+    job = _job(svc, world)
+    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    rest_len = len(svc._pr_body(job)) - len("_The agent left no summary._")  # what follows the summary
+    for shift in (5, 20, 35):  # the cut falls inside the token
+        svc.fake.prs.clear()
+        room = MAX_PR_BODY - rest_len - 200  # about where the cut lands; then search around it
+        job.result.summary = "y" * (room - shift) + " " + token + " " + "z" * 90_000
+        await svc._ensure_pr(job, draft=True)
+        body = svc.fake.prs[-1]["body"]
+        assert token[:12] not in body and "summary was cut" in body
+
+
+async def test_a_cut_inside_a_code_block_closes_it(svc, world):  # noqa: F811
+    job = _job(svc, world)
+    job.result.summary = "log:\n```\n" + "line\n" * 30_000
+    await svc._ensure_pr(job, draft=True)
+    body = svc.fake.prs[0]["body"]
+    head = body[:body.index("summary was cut")]
+    assert head.count("```") % 2 == 0
+
+
+async def test_a_pr_into_another_base_is_not_adopted(svc, world):  # noqa: F811
+    svc.fake.refuse = (422, ALREADY)
+    svc.fake.listed = [{"number": 9, "html_url": "https://github.com/o/r/pull/9", "base": {"ref": "release"}}]
+    job = _job(svc, world)
+    job.base_branch = "main"
+    await svc._ensure_pr(job, draft=True)
+    assert job.result.pr_url is None and "already exists" in job.result.pr_error
+
+
+async def test_a_failed_lookup_keeps_githubs_reason(svc, world):  # noqa: F811
+    svc.fake.refuse = (422, ALREADY)
+    job = _job(svc, world)
+    job.base_branch = "main"
+    calls = {"n": 0}
+    real = GitHub.find_pr
+
+    async def flaky(self, repo, branch):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise GitHubError("GitHub GET /repos/o/r/pulls: 502 Bad gateway", 502)
+        return await real(self, repo, branch)
+
+    GitHub.find_pr = flaky
+    try:
+        await svc._ensure_pr(job, draft=True)
+    finally:
+        GitHub.find_pr = real
+    assert "already exists" in job.result.pr_error and "502" not in job.result.pr_error
+
+
+async def test_errors_are_capped():
+    def gh(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"message": "m", "errors": [{"message": "w" * 900}] * 50})
+
+    client = GitHub("t", transport=httpx.MockTransport(gh))
+    with pytest.raises(GitHubError) as e:
+        await client.open_pr("o/r", "b", "main", "t", "body", True)
+    await client.close()
+    assert len(e.value.errors) == 10 and all(len(x) <= 200 for x in e.value.errors)

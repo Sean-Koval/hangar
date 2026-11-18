@@ -1535,23 +1535,34 @@ class JobService:
             if pr is None:
                 base = job.base_branch or await gh.default_branch(repo)
                 if not base or base == job.branch:  # --- KAN-308: an empty repo's first branch is the job's own
+                    if not job.result.pr_url:  # --- KAN-339: on the job, not only in its events
+                        job.result.pr_error = "PR not opened: no base branch yet (the job's is the repo's first)"
+                        self._save(job)
                     self._event(job, f"pushed {job.branch} as the repository's first branch; no base branch to "
                                      "open a PR against yet (a follow-up opens one once the repo has a default "
                                      "branch)")
                     return
                 draft = aireview.hold(self, job, draft)  # --- KAN-228: held as a draft for the self-review
                 title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
+                body = secretscan.clean(self, job, self._pr_body(job), "the PR body")
+                if len(body) > GITHUB_PR_BODY_LIMIT:  # --- KAN-339: masks are longer than what they hide; rare
+                    body = body[:GITHUB_PR_BODY_LIMIT]
                 try:
                     pr = await gh.open_pr(repo, job.branch, base,
                                           secretscan.clean(self, job, title, "the PR title"),  # --- egress
-                                          secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
+                                          body, draft)
                     self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
                 except GitHubError as e:  # --- KAN-339: one opened meanwhile (a retry, a person) is adopted
                     if e.status != 422 or not any("already exists" in x.lower() for x in e.errors):
                         raise
-                    if (pr := await gh.find_pr(repo, job.branch)) is None:
-                        raise
-                    self._event(job, f"adopted PR #{pr.get('number')}, already open for {job.branch}")
+                    try:
+                        pr = await gh.find_pr(repo, job.branch)
+                    except (GitHubError, httpx.HTTPError):
+                        raise e from None  # GitHub's reason for the 422, not the lookup's
+                    if pr is None or (pr.get("base") or {}).get("ref", base) != base:
+                        raise  # nothing to adopt, or a PR into another base: not this job's
+                    self._event(job, f"adopted PR #{pr.get('number')}, already open for {job.branch}"
+                                     + ("" if pr.get("draft") or not draft else " (it is not a draft)"))
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
             job.result.pr_error = None
             self.landing.opened(job, pr)  # --- landing
@@ -1587,7 +1598,7 @@ class JobService:
 
     def _pr_body(self, job: Job) -> str:
         # `___`, not `---`: git reads a `---` line as the end of a message, and the trailers below must parse (#137)
-        lines = [job.result.summary or "_The agent left no summary._", "", "___"]
+        lines = ["", "___"]
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
@@ -1616,7 +1627,8 @@ class JobService:
             lines.append(f"Jira: {key}")
         from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
 
-        return _cap_body(job, "\n".join(lines), trailers.block(self, job))
+        return _cap_body(self, job, job.result.summary or "_The agent left no summary._", "\n".join(lines),
+                         trailers.block(self, job))
 
     async def _keep(self, job: Job, s) -> None:
         """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the
@@ -1742,17 +1754,26 @@ class JobService:
 
 # --- KAN-339: GitHub refuses a PR body over 65,536 characters (422); room is left for secretscan's masks
 MAX_PR_BODY = 60_000
+GITHUB_PR_BODY_LIMIT = 65_536
 
 
-def _cap_body(job: Job, body: str, trailers: str, cap: int = MAX_PR_BODY) -> str:
-    """The PR body within `cap` characters: an over-long one is cut, with a note pointing at the job's RESULT.md
-    and artifacts, and the trailers kept last."""
-    if len(body) + len(trailers) <= cap:
-        return body + trailers
-    note = (f"\n\n_This description was cut at {cap:,} characters to fit GitHub's limit. The full summary is the "
-            f"job's RESULT.md: see hangar job {job.id} (`hangar job get {job.id}`) and its artifacts._")
-    room = max(0, cap - len(trailers) - len(note))
-    return body[:room].rstrip() + note + trailers
+def _cap_body(svc: JobService, job: Job, summary: str, rest: str, trailers: str, cap: int = MAX_PR_BODY) -> str:
+    """The PR body within `cap` characters. Only the agent's summary is cut, so hangar's own lines (verification,
+    warnings, Jira, Closes) and the trailers stay; never inside a secret, which secretscan.clean masks later."""
+    if len(summary) + len(rest) + len(trailers) <= cap:
+        return summary + rest + trailers
+    from hangar import secretscan
+
+    note = (f"\n\n_The agent's summary was cut to fit GitHub's limit. The full summary is the job's RESULT.md: see "
+            f"hangar job {job.id} (`hangar job get {job.id}`) and its artifacts._")
+    room = max(0, cap - len(rest) - len(trailers) - len(note) - 4)  # 4: a closing fence, below
+    for start, end, _ in secretscan.find(summary, svc.broker):
+        if start < room < end:
+            room = start
+    kept = summary[:room].rstrip()
+    if kept.count("```") % 2:  # cut inside a code block: close it, so the note and the rest aren't code
+        kept += "\n```"
+    return kept + note + rest + trailers
 
 
 class _DeliveryError(RuntimeError):

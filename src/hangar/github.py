@@ -86,7 +86,7 @@ def _errors(r: httpx.Response) -> list[str]:
             out.append(" ".join(bits))
         elif e:
             out.append(str(e))
-    return [e for e in out if e]
+    return [e[:200] for e in out if e][:10]  # capped: the job keeps them
 
 
 def _error_text(method: str, path: str, r: httpx.Response, errs: list[str], cap: int = 500) -> str:
