@@ -372,6 +372,12 @@ OPERATE_LOOP = (
     ("Day to day", "Run", ["SLOs and alerts,", "runbooks, backups", "and drills"], "box", None),
     ("Each release", "Upgrade", ["Back up, prebuild,", "deploy; roll back", "if a check fails"], "box-ext", None),
 )
+SESSION_CYCLE = (
+    ("You send", "A turn", ["The agent works", "in a sandbox, on", "the session branch"], "box", None),
+    ("After every turn", "Checkpoint", ["The conversation,", "commits and", "uncommitted files"], "box-hub", "hangar"),
+    ("Idle", "Suspend", ["The sandbox is", "released; only", "storage is kept"], "box", None),
+    ("You send again", "Resume", ["A fresh sandbox,", "restored from", "the checkpoint"], "box-ext", None),
+)
 
 
 def start_path() -> str:
@@ -382,6 +388,11 @@ def start_path() -> str:
 def operate_loop() -> str:
     """Running hangar: deploy once, prove every deploy, run it day to day, upgrade each release."""
     return steps_row(OPERATE_LOOP, "Running hangar: deploy, prove, run, upgrade", "operate", back="every upgrade is proved again")
+
+
+def session_cycle() -> str:
+    """A session: a turn, a checkpoint, a suspend that releases the sandbox, a resume in a fresh one."""
+    return steps_row(SESSION_CYCLE, "A session: turn, checkpoint, suspend, resume", "session", back="its next turn is checkpointed too")
 
 
 # ------------------------------------------------------------------------- the stacked variants, for phones
@@ -504,6 +515,10 @@ def operate_loop_stacked() -> str:
     return steps_stacked(OPERATE_LOOP, "Running hangar: deploy, prove, run, upgrade", "operate-stacked", back="every upgrade is proved again")
 
 
+def session_cycle_stacked() -> str:
+    return steps_stacked(SESSION_CYCLE, "A session: turn, checkpoint, suspend, resume", "session-stacked", back="its next turn is checkpointed too")
+
+
 def main() -> None:
     OUT.write_text(hangar_suite())
     print("wrote", OUT)
@@ -519,6 +534,7 @@ def main() -> None:
         ("landing-states", landing_states),
         ("start-path", start_path),
         ("operate-loop", operate_loop),
+        ("session-cycle", session_cycle),
         ("concepts-map-stacked", concepts_map_stacked),
         ("control-plane-stacked", control_plane_stacked),
         ("jobs-flow-stacked", jobs_flow_stacked),
@@ -526,6 +542,7 @@ def main() -> None:
         ("landing-states-stacked", landing_states_stacked),
         ("start-path-stacked", start_path_stacked),
         ("operate-loop-stacked", operate_loop_stacked),
+        ("session-cycle-stacked", session_cycle_stacked),
     ):
         (DIAGRAMS / f"{name}.svg").write_text(fn())
         print("wrote", DIAGRAMS / f"{name}.svg")
