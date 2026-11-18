@@ -323,6 +323,202 @@ async def test_doctor_reports_the_chain_and_retention(settings, store):
     assert checks["audit retention"]["status"] == "warn"
 
 
+# ====================================================================== the bucket (KAN-541)
+VIEW = "projects/acme-ml/locations/global/buckets/hangar-audit/views/_AllLogs"
+
+
+def _bucket(monkeypatch, lines: list[str], code: int = 200, token: str | None = "ya29.t") -> list:
+    """Fake the bucket's read: its answer holds `lines` as the container log has them, newest first."""
+    calls: list = []
+
+    async def tok():
+        return token
+
+    async def entries(view, tk, days, page=None):
+        calls.append((view, tk, days))
+        return code, {"entries": [{"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.audit: {ln}"}
+                                  for ln in reversed(lines)]}
+
+    monkeypatch.setattr(datahandling, "_token", tok)
+    monkeypatch.setattr(datahandling, "_list_entries", entries)
+    return calls
+
+
+def _logged(store: Store, n: int, caplog) -> list[str]:
+    with caplog.at_level(logging.INFO, logger="hangar.audit"):
+        caplog.clear()
+        _events(store, n)
+    return [r.getMessage() for r in caplog.records if r.name == "hangar.audit"]
+
+
+async def _bucket_line(store, settings) -> dict:
+    return {c["name"]: c for c in await datahandling.doctor_checks(_H(store, settings))}["audit bucket"]
+
+
+async def test_the_bucket_check_passes_when_the_table_reaches_the_bucket(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 4, caplog)
+    settings.audit_bucket = VIEW
+    calls = _bucket(monkeypatch, lines)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "ok" and str(store.audit_max_id()) in line["detail"]
+    assert calls == [(VIEW, "ya29.t", 30)] and "ya29" not in line["detail"]
+    _logged(store, 2, caplog)  # the table ahead of the bucket (its lines are on their way) still passes
+    assert (await _bucket_line(store, settings))["status"] == "ok"
+
+
+async def test_rows_cut_from_the_end_fail_and_name_both_seqs(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 5, caplog)
+    newest = store.audit_max_id()
+    store._db.execute("DELETE FROM audit WHERE id > ?", (newest - 2,))  # the chain alone can't see this
+    assert datahandling.verify_chain(store)["ok"]
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "fail" and line["fix"]
+    assert f"newest entry is {newest - 2}, the bucket's is {newest}" in line["detail"]
+
+
+async def test_a_table_rolled_back_and_rewritten_fails(settings, store, monkeypatch, caplog, tmp_path):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 3, caplog)
+    # another table with as many rows, its own links: a reset or an older backup written on past the bucket
+    other = _store(tmp_path / "other.db")
+    _events(other, 6, actor="someone-else")
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+    line = await _bucket_line(other, settings)
+    assert line["status"] == "fail" and "link isn't the bucket's" in line["detail"]
+
+
+@pytest.mark.parametrize("setup", ["unset", "not-a-view", "no-token", "refused", "empty", "error"])
+async def test_a_bucket_not_read_is_not_run_never_a_pass(settings, store, monkeypatch, caplog, setup):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 2, caplog)
+    settings.audit_bucket = {"unset": None, "not-a-view": "hangar-audit"}.get(setup, VIEW)
+    calls = _bucket(monkeypatch, [] if setup == "empty" else lines, code=403 if setup == "refused" else 200,
+                    token=None if setup == "no-token" else "ya29.t")
+    if setup == "error":
+        async def boom(*_a, **_kw):
+            raise OSError("no route")
+
+        monkeypatch.setattr(datahandling, "_list_entries", boom)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "warn" and line["detail"].startswith("not run") and line["fix"]
+    if setup in ("unset", "not-a-view", "no-token"):
+        assert calls == []
+
+
+async def test_a_restore_written_past_the_bucket_fails(settings, store, monkeypatch, caplog, tmp_path):
+    """The bucket holds entries 2-6 twice, with different links: a table rolled back, then written past."""
+    store.set_audit_key(KEY)
+    before = _logged(store, 5, caplog)
+    other = _store(tmp_path / "restored.db")
+    after = _logged(other, 6, caplog)
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, before + after)
+    line = await _bucket_line(other, settings)
+    assert line["status"] == "fail" and "twice with different links" in line["detail"]
+
+
+async def test_an_older_line_that_differs_fails_even_when_the_newest_matches(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 4, caplog)
+    forged = json.loads(lines[1])
+    store._db.execute("UPDATE audit SET hash = 'x' WHERE id = ?", (forged["seq"],))
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "fail" and f"entry {forged['seq']}'s link isn't the bucket's" in line["detail"]
+
+
+async def test_rows_retention_deleted_and_lines_without_a_link_are_skipped(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 4, caplog)
+    store._db.execute("DELETE FROM audit WHERE id <= 2")  # as retention does, oldest first
+    newest = json.loads(lines[-1])
+    unlinked = json.dumps({**newest, "seq": newest["seq"], "hash": None})
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, [*lines, unlinked])
+    assert (await _bucket_line(store, settings))["status"] == "ok"
+
+
+def test_only_whole_audit_lines_count():
+    good = json.dumps({"ts": 1, "actor": "a", "action": "x", "seq": 7, "hash": "h"})
+    data = {"entries": [
+        {"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.audit: {good}"},
+        {"textPayload": f"hangar.audit: {good}\n"},
+        {"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.jobs: a title hangar.audit: {good}"},  # planted
+        {"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.audit: {good} and more"},
+        {"textPayload": "INFO hangar.audit: " + json.dumps({"seq": 9, "hash": "h"})},  # not an entry
+        {"textPayload": "2026-11-18 03:00:00,123 INFO hangar.audit: {not json"},
+        "not an entry",
+    ]}
+    assert datahandling._bucket_lines(data) == [(7, "h"), (7, "h")]
+
+
+async def test_an_empty_page_with_a_token_is_read_on(monkeypatch):
+    pages = {None: {"entries": [], "nextPageToken": "p2"},
+             "p2": {"entries": [{"textPayload": "hangar.audit: " + json.dumps(
+                 {"actor": "a", "action": "x", "seq": 3, "hash": "h"})}]}}
+    asked: list = []
+
+    async def entries(view, tk, days, page=None):
+        asked.append((days, page))
+        return 200, pages[page]
+
+    monkeypatch.setattr(datahandling, "_list_entries", entries)
+    assert await datahandling._read_bucket(VIEW, "t") == ([(3, "h")], None)
+    assert asked == [(30, None), (30, "p2")]
+
+
+async def test_a_comparison_that_breaks_is_not_run(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 2, caplog)
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+
+    def broken(*_a):
+        raise sqlite3.OperationalError("no such column: hash")
+
+    monkeypatch.setattr(datahandling, "compare_with_bucket", broken)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "warn" and "comparison failed (OperationalError)" in line["detail"]
+
+
+async def test_the_bucket_read_asks_for_the_newest_audit_lines_of_that_view(monkeypatch):
+    import httpx
+
+    seen: list = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((str(req.url), req.headers["authorization"], json.loads(req.content)))
+        return httpx.Response(200, json={"entries": []})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert await datahandling._list_entries(VIEW, "ya29.t", 30) == (200, {"entries": []})
+    await datahandling._list_entries(VIEW, "ya29.t", 30, "p2")
+    [(url, auth, body), (_, _, more)] = seen
+    assert url == "https://logging.googleapis.com/v2/entries:list" and auth == "Bearer ya29.t"
+    assert body["resourceNames"] == [VIEW] and body["orderBy"] == "timestamp desc" and body["pageSize"] == 500
+    since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
+    assert body["filter"].startswith(f'textPayload:"hangar.audit: {{" AND timestamp>="{since}T')
+    assert "pageToken" not in body and more["pageToken"] == "p2"
+
+
+def test_the_bucket_read_is_one_view_and_read_only():
+    for tf in (WORKLOAD / "audit.tf", ROOT / "deploy/terraform/gke/audit.tf"):
+        text = tf.read_text()
+        [block] = re.findall(r'resource "google_project_iam_member" "audit_reader" \{.*?\n\}', text, re.S)
+        assert 'role    = "roles/logging.viewAccessor"' in block
+        assert ('expression = "resource.name == \\"${google_logging_project_bucket_config.audit[0].id}'
+                '/views/_AllLogs\\""') in block, tf
+        assert re.search(r'output "audit_view"', text), tf
+        assert "logging.admin" not in text and "configWriter" not in text and "bucketWriter" not in text
+
+
 # ====================================================================== purge
 def test_the_redactor_replaces_names_only_in_the_fields_that_name_people():
     rw = datahandling.redactor(["alice", "ui:alice-laptop", "tok-123", "github:alice"], "person:x")

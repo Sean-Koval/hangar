@@ -2,7 +2,7 @@
 # The same locked audit sink as the owner's deploy/terraform/gke/audit.tf (KAN-182), for a company install. hangar
 # writes each audit entry to its database and to the container log as one `hangar.audit: {json}` line, with its
 # place in the database's hash chain (`seq`, `hash`). This routes those lines to a Cloud Logging bucket of their own,
-# kept for audit_retention_days. hangar's service account gets no logging role here: it can't change the bucket, the
+# kept for audit_retention_days. hangar's service account may only read the bucket's view (KAN-541): it can't change the bucket, the
 # sink or the retention. With audit_bucket_locked = true, nobody can shorten the retention or delete the bucket
 # early, and the lock can't be undone. docs/security/audit.md, docs/security/data-handling.md.
 #
@@ -86,12 +86,33 @@ resource "google_logging_project_sink" "audit" {
   unique_writer_identity = true
 }
 
+# --- KAN-541: hangar may read the bucket's _AllLogs view, and nothing else of Logging, so `hangar doctor` can compare
+# the table's newest entry with the bucket's (HANGAR_AUDIT_BUCKET = the output audit_log.view). viewAccessor can't
+# write to the bucket, change it, the sink or the retention; the condition keeps it to this one view.
+resource "google_project_iam_member" "audit_reader" {
+  count   = var.enable_audit_export ? 1 : 0
+  project = var.project_id
+  role    = "roles/logging.viewAccessor"
+  member  = "serviceAccount:${local.sa_email}"
+  condition {
+    title      = "hangar-audit-view"
+    expression = "resource.name == \"${google_logging_project_bucket_config.audit[0].id}/views/_AllLogs\""
+  }
+  depends_on = [google_logging_project_bucket_config.audit]
+}
+
 output "audit_log" {
   description = "Where hangar's audit entries are kept, and a query that reads them (docs/security/audit.md)."
   value = var.enable_audit_export ? {
     bucket         = google_logging_project_bucket_config.audit[0].id
     retention_days = var.audit_retention_days
     locked         = var.audit_bucket_locked
+    view           = "${google_logging_project_bucket_config.audit[0].id}/views/_AllLogs"
     read           = "gcloud logging read 'textPayload:\"hangar.audit: {\"' --project ${var.project_id} --bucket ${local.audit_bucket_id} --location global --view _AllLogs --freshness 30d"
   } : null
+}
+
+output "audit_view" {
+  description = "HANGAR_AUDIT_BUCKET for hangar-site: the audit bucket's view `hangar doctor` reads (KAN-541); null when off."
+  value       = var.enable_audit_export ? "${google_logging_project_bucket_config.audit[0].id}/views/_AllLogs" : null
 }
