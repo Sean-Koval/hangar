@@ -117,6 +117,48 @@ def test_a_redacted_row_edited_after_the_purge_is_a_break(tmp_path):
     assert not v["ok"] and v["broken_at"] == 3
 
 
+def test_a_redacted_row_copied_over_another_or_swapped_is_a_break(tmp_path):
+    """--- KAN-553: the purge's HMAC covered the new JSON alone, so a redacted row's data and HMAC could be copied
+    over any other row (erasing it) or swapped with another redacted one, and the chain still verified."""
+    store = _store(tmp_path / "hangar.db")
+    store.audit(AuditEvent(actor="alice", action="job.approve", target="job-1"))
+    store.audit(AuditEvent(actor="bob", action="credential.export", target="prod-key"))
+    store.audit(AuditEvent(actor="alice", action="job.approve", target="job-2"))
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    assert datahandling.verify_chain(store)["ok"]
+    rows = {r[0]: r for r in store.audit_rows()}
+    first, bobs, second = sorted(rows)[-3:]
+    store._db.execute("UPDATE audit SET data=?, redacted=1, rdigest=? WHERE id=?",
+                      (rows[first][2], rows[first][6], bobs))
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == bobs and "redacted" in v["reason"]
+    store._db.execute("UPDATE audit SET data=?, redacted=0, rdigest=NULL WHERE id=?", (rows[bobs][2], bobs))
+    assert datahandling.verify_chain(store)["ok"]
+    for a, b in ((first, second), (second, first)):
+        store._db.execute("UPDATE audit SET data=?, rdigest=? WHERE id=?", (rows[b][2], rows[b][6], a))
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == first
+
+
+def test_rows_redacted_under_the_first_form_are_rebound_on_start(tmp_path):
+    """--- KAN-553: a purge from before keeps verifying; a row that doesn't match the first form stays a break."""
+    from hangar.auditchain import REDACTION_V2, audit_redaction_v1
+
+    store = _store(tmp_path / "hangar.db")
+    _events(store, 3, actor="alice")
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    ids = sorted(r[0] for r in store.audit_rows() if r[5])
+    for rid in ids:  # what KAN-296 wrote
+        data = store._db.execute("SELECT data FROM audit WHERE id=?", (rid,)).fetchone()[0]
+        store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), rid))
+    store._db.execute("UPDATE audit SET rdigest='0' || substr(rdigest, 2) WHERE id=?", (ids[-1],))  # tampered
+    store = _store(tmp_path / "hangar.db")
+    got = dict(store._db.execute("SELECT id, rdigest FROM audit WHERE redacted=1").fetchall())
+    assert all(got[i].startswith(REDACTION_V2) for i in ids[:-1]) and not got[ids[-1]].startswith(REDACTION_V2)
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == ids[-1]
+
+
 def test_the_redacted_digest_is_no_oracle_for_the_name(tmp_path):
     """The kept digest is an HMAC: putting a guessed name back and hashing it confirms nothing."""
     import hashlib
@@ -430,6 +472,47 @@ def test_purge_takes_what_their_tokens_and_accounts_own_and_their_waiting_files(
     assert out["errors"] == []
     assert h.store.get(Job, gh.id) is None and h.store.get(Job, by_token.id) is None
     assert not waiting.exists() and h.store.kv_get("identity:env-owner:alice-env") is None
+
+
+def test_purge_never_takes_another_persons_records_or_hangars_own_owners(app_client):
+    """--- KAN-553: a job's session is owned by "jobs", and defaults are "admin" and "system". A person whose id or
+    alias matched one of those took every such record; a record whose person is someone else is never theirs."""
+    from hangar import branchowners
+
+    c, h, auth = app_client
+    _alice(h)
+    h.store.put(Person(id="jobs", name="Jobs"))  # made before ids like this were reserved
+    bobs = Session(name="bob-job-s", environment="default", person="bob", owner="jobs", state=SessionState.SUSPENDED)
+    nobodys = Session(name="gh-job-s", environment="default", owner="jobs", state=SessionState.SUSPENDED)
+    mixed = Job(title="m", instructions="x", environment="default", person="bob", requester="email:alice@example.com",
+                state=JobState.SUCCEEDED)
+    for r in (bobs, nobodys, mixed):
+        h.store.put(r)
+    plan = c.post("/api/admin/purge", json={"person": "jobs", "dry_run": True}, headers=auth).json()
+    assert plan["deleted"]["sessions"] == 0 and plan["deleted"]["jobs"] == 0, plan
+    c.post("/api/admin/purge", json={"person": "alice"}, headers=auth)
+    assert h.store.get(Session, bobs.id) and h.store.get(Session, nobodys.id) and h.store.get(Job, mixed.id)
+    assert branchowners.recorded_for(h.store, "bob") == []
+
+
+def test_purge_keeps_their_branches_foreign_without_their_name(app_client):
+    """--- KAN-553: the git gateway's branch-creator records named the person after a purge."""
+    from hangar import branchowners
+    from hangar.models import Sandbox
+
+    def _sb(sid: str, person: str) -> Sandbox:
+        return Sandbox(id=sid, name=sid, provider="docker", person=person, environment="default")
+
+    c, h, auth = app_client
+    _alice(h)
+    branchowners.record(h.store, "o/r", "feature/x", _sb("sb-a", "alice"), "push")
+    branchowners.record(h.store, "o/r", "feature/y", _sb("sb-b", "bob"), "push")
+    out = c.post("/api/admin/purge", json={"person": "alice"}, headers=auth).json()
+    assert out["errors"] == []
+    rec = branchowners.creator(h.store, "o/r", "feature/x")
+    assert rec is not None and rec["person"] is None and rec["sandbox"] is None
+    assert branchowners.foreign(rec, "alice") and branchowners.foreign(rec, "carol")  # nobody's, not free to take
+    assert branchowners.creator(h.store, "o/r", "feature/y")["person"] == "bob"
 
 
 def test_a_purge_that_fails_partway_keeps_the_person_and_can_run_again(app_client, monkeypatch):
