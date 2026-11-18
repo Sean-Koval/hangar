@@ -1,6 +1,6 @@
 # The operator console, flight records and run capture
 
-This page is part of [Observability: traces, metrics, cost](../observability.md).
+`hangar status`, flight records, run capture. Part of [observability](../observability.md).
 
 ## The operator console: `hangar status`
 

@@ -1,6 +1,6 @@
 # Is this repo ready?
 
-This page is part of [Repo policy: the defaults every front door applies](../repo-policy.md).
+`hangar repo check` says whether a repo is ready. Part of [repo policy](../repo-policy.md).
 
 ## Is this repo ready?
 

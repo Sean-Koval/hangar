@@ -1,6 +1,6 @@
 # When an acceptance check fails
 
-This page is part of [Acceptance: proving a deploy on the cluster](../acceptance.md).
+The likely cause behind each failing check. Part of [acceptance](../acceptance.md).
 
 Each line is the most likely cause first. Where to look is always hangar itself: `hangar doctor`,
 `hangar status` (where your hangar has it), `hangar power status`, `hangar job get|events`, `hangar env builds|build-show`, `hangar requests ls`, `hangar inbox`,

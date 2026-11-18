@@ -1,6 +1,6 @@
 # Thaw and drift
 
-This page is part of [Harness locks](../harness-lock.md).
+Run from a lock. Part of [harness locks](../harness-lock.md).
 
 A session or job can run *from* a lock: `hangar harness thaw team-default@r14 --env python "..."`, or
 `harness_lock: "team-default@r14"` on `POST /api/jobs`, `POST /api/sessions` or MCP `submit_job`. An experiment variant

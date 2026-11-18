@@ -1,6 +1,6 @@
 # Prompt caching in sessions
 
-This page is part of [Sessions: picking up where you left off](../sessions.md).
+How sessions keep prompt caching cheap. Part of [sessions](../sessions.md).
 
 Every model call in a turn re-sends the whole conversation. The provider's prompt cache bills the unchanged prefix at a tenth of the input price, or a twentieth on Opus 5.5 and Sonnet 5.5. A cache entry lives for a fixed time after its last use, 5 minutes by default. Sessions idle for up to 30 minutes, and agents wait on people (`needs_input`, `ask` approvals). Returning to a 150k-token conversation on Opus 5.5 costs $0.03 while the cache is warm and $0.75 once it has expired ([spec 0012 §6.5](../specs/0012-cutting-edge.md#65-prompt-caching-and-long-sessions)). hangar does three things about this:
 
