@@ -100,9 +100,11 @@ words in each `&&`, `||`, `;` or `|` segment, in order, deduplicated:
 | Op | Commands |
 | --- | --- |
 | `test` | `pytest`, `python -m pytest`/`unittest`, `tox`, `nox`, `jest`, `vitest`, `mocha`, `rspec`, `phpunit`, `ctest`, `gotestsum`, `playwright`; `go test`, `cargo test`/`nextest`, `npm`/`pnpm`/`yarn`/`bun test` and `run test*`, `mvn test`/`verify`, `gradle`/`./gradlew test`/`check`, `make test`/`check`, `dotnet test`, `bazel test`, `deno test`, `mix test`, `swift test`; behind `uv run`, `poetry run`, `npx`, `bundle exec`, `timeout`, `env`, `sudo` and `VAR=value` |
+| `test`, also | Inside `do`, `then`, `else`, `if`, `while`, `{` and `bash -c`. Past a flag's value (`uv run --project svc pytest`, `make -C svc test`). A test or CI script (`test.sh`, `run_tests.sh`, `unit-tests.sh`, `verify.sh`, `check.sh`, `ci.sh`) run by a shell or its path. Never a runner asked only for `--version`, `--help`, `--collect-only` or its test list |
 | `git.commit`, `git.push` | `git [-C dir] [-c k=v] commit` / `push` |
 | `pr.open` | `gh pr create` |
 | `delete` | `rm`, `rmdir`, `unlink`, `shred`, `git rm`, `find … -delete` |
+| None | Text in quotes, a here-document's body or a comment, even when it names a test |
 
 They are read from the whole command, not the clipped `hangar.tool.input`. A clipped input has `hangar.tool.input_clipped=true`.
 
