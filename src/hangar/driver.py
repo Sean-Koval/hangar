@@ -136,16 +136,74 @@ def shown(s: object) -> str:
 
 # ====================================================================== the run log
 class Out:
-    """stdout is the run log (the turn's script tees it): harness lines as they come, and hangar.* events."""
+    """stdout is the run log (the turn's script tees it): harness lines as they come, and hangar.* events.
+
+    --- KAN-556: with the run's key, each event carries `seq` (rising) and `mac` (signed like a command): hangar
+    trusts a tree only with them (events.Parser), so a line the agent got into the log some other way (a one-shot
+    run, a read through its container) can't pass for the driver's."""
+
+    def __init__(self, key: bytes = b""):
+        self.key, self.seq = key, 0
 
     def line(self, raw: str) -> None:
         sys.stdout.write(raw.rstrip("\r\n") + "\n")
         sys.stdout.flush()
 
     def event(self, kind: str, **data: object) -> str:
-        line = json.dumps({"type": "hangar." + kind, "ts": round(time.time(), 3), **data}, ensure_ascii=False)
+        doc: dict = {"type": "hangar." + kind, "ts": round(time.time(), 3), **data}
+        if self.key:
+            self.seq += 1
+            doc["seq"] = self.seq
+            doc["mac"] = sign(self.key, doc)
+        line = json.dumps(doc)  # ASCII: a lone surrogate from the stream (a forged "\\ud800") can't stop the write
         self.line(line)
         return line
+
+
+def read_as_event(text: str) -> bool:
+    """--- KAN-556: whether hangar's log parser (events.Parser._line) reads this line as one of the driver's hangar.*
+    events. It strips the line (every Unicode space, which json.loads alone doesn't allow) and parses a `{`. A line
+    nested past this Python's limit counts as one: hangar's Python may well parse deeper than the sandbox's."""
+    s = text.strip()
+    if not s.startswith("{"):
+        return False
+    try:
+        d = json.loads(s)
+    except RecursionError:
+        return True
+    except ValueError:
+        return False
+    return isinstance(d, dict) and str(d.get("type") or "").startswith("hangar.")
+
+
+class ErrLines:
+    """--- KAN-556: the harness's stderr into the run log, a whole line at a time through Out, from the driver's one
+    thread (so nothing splits a line). A line the parser would read as a hangar.* event is kept with a prefix, as
+    Harness._line does on stdout: only the driver speaks for hangar. A line longer than CAP is cut, each piece
+    checked the same way."""
+
+    CAP = 64 * 1024
+
+    def __init__(self, out: Out):
+        self.out, self.buf = out, b""
+
+    def feed(self, data: bytes) -> None:
+        self.buf += data
+        while (nl := self.buf.find(b"\n")) >= 0:
+            self._line(self.buf[:nl])
+            self.buf = self.buf[nl + 1:]
+        while len(self.buf) > self.CAP:
+            self._line(self.buf[:self.CAP])
+            self.buf = self.buf[self.CAP:]
+
+    def flush(self) -> None:
+        if self.buf:
+            self._line(self.buf)
+            self.buf = b""
+
+    def _line(self, raw: bytes) -> None:
+        text = raw.decode("utf-8", errors="replace")
+        self.out.line("[harness stderr] " + text if read_as_event(text) else text)
 
 
 # ====================================================================== trees (--- #165)
@@ -941,6 +999,7 @@ class RemoteProc:
         self.gone = False  # the relay closed `ctl`
         self.ran: dict = {}  # --- KAN-187: `run` replies by id
         self.runs = 0
+        self.err = ErrLines(Out())  # --- KAN-556: the harness's stderr, as Harness reads it locally
 
     def _read(self, timeout: float) -> bool:
         """Read what the relay said within `timeout`, and handle each whole line. False when nothing came."""
@@ -963,10 +1022,9 @@ class RemoteProc:
         while b"\n" in self.buf:
             line, self.buf = self.buf.split(b"\n", 1)
             word, _, rest = line.partition(b" ")
-            if word == b"err":
-                with contextlib.suppress(ValueError, OSError):
-                    sys.stderr.buffer.write(base64.b64decode(rest))
-                    sys.stderr.flush()
+            if word == b"err":  # --- KAN-556: never raw into the run log
+                with contextlib.suppress(ValueError):
+                    self.err.feed(base64.b64decode(rest))
             elif word == b"exit" and self.returncode is None:
                 try:
                     self.returncode = int(rest)
@@ -1118,8 +1176,10 @@ class Harness:
         else:
             if user := getattr(drv.args, "as_user", None):  # --- isolation
                 argv = as_agent(user, pwd.getpwnam(user).pw_dir, drv.args.run_env, drv.cwd(), argv)
-            with agent_env() as kw:  # --- harden
-                self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, **kw)
+            with agent_env() as kw:  # --- harden; KAN-556: stderr through ErrLines, not straight into the log
+                self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE, bufsize=0, **kw)
+        self.err = ErrLines(self.out)
         self.buf = b""
         self.stop_after_interrupt = False  # an interrupt without a new message: exit 130 once the turn stops
 
@@ -1127,20 +1187,42 @@ class Harness:
         """False when the harness has exited (the read loop then sees EOF)."""
         if self.proc.poll() is not None:
             return False
+        data = (json.dumps(obj, ensure_ascii=False) + "\n").encode()
         try:
             assert self.proc.stdin is not None
-            self.proc.stdin.write((json.dumps(obj, ensure_ascii=False) + "\n").encode())
-            self.proc.stdin.flush()
+            if self._errfd() is None:  # a relay, or stderr already closed: nothing to read meanwhile
+                self.proc.stdin.write(data)
+                self.proc.stdin.flush()
+            else:
+                self._write(data)
         except (OSError, ValueError):
             return False
         return True
+
+    def _write(self, data: bytes) -> None:
+        """--- KAN-556: write to the harness's stdin, reading its stderr meanwhile. A harness that writes a full pipe
+        of stderr (codex logs there) stops reading its stdin until someone drains it, so a long prompt or steer
+        written blocking would wait on it forever. Pieces of PIPE_BUF: select's "writable" promises that much."""
+        assert self.proc.stdin is not None
+        self.proc.stdin.flush()
+        fd, view = self.proc.stdin.fileno(), memoryview(data)  # type: ignore[attr-defined]  # a local Popen's
+        while view:
+            efd = self._errfd()
+            r, w, _ = select.select([efd] if efd is not None else [], [fd], [], 1.0)
+            if efd is not None and efd in r:
+                self._read_err()
+            if fd in w:
+                view = view[os.write(fd, view[:select.PIPE_BUF]):]
 
     def read(self, timeout: float) -> bool:
         """Read and handle what the harness wrote within `timeout`. False once its stdout is closed."""
         assert self.proc.stdout is not None
         fd = self.proc.stdout.fileno()
-        ready, _, _ = select.select([fd], [], [], timeout)
-        if not ready:
+        efd = self._errfd()
+        ready, _, _ = select.select([fd] + ([efd] if efd is not None else []), [], [], timeout)
+        if efd is not None and efd in ready:
+            self._read_err()
+        if fd not in ready:
             return True
         chunk = os.read(fd, 1 << 16)
         if not chunk:
@@ -1156,17 +1238,55 @@ class Harness:
             raw, self.buf = self.buf[:nl], self.buf[nl + 1:]
             self._line(raw)
 
+    def _errfd(self) -> int | None:
+        """--- KAN-556: the local harness's stderr pipe, while it is open (a relay's comes through RemoteProc)."""
+        err = getattr(self.proc, "stderr", None)
+        return err.fileno() if err is not None and not err.closed else None
+
+    def _read_err(self) -> None:
+        efd = self._errfd()
+        if efd is None:
+            return
+        try:
+            chunk = os.read(efd, 1 << 16)
+        except OSError:
+            chunk = b""
+        if chunk:
+            self.err.feed(chunk)
+            return
+        self.err.flush()
+        with contextlib.suppress(OSError):
+            self.proc.stderr.close()  # type: ignore[union-attr]
+
+    def _drain_err(self, seconds: float) -> None:
+        """What the harness wrote to stderr until it closes it, for at most `seconds` (something it started may keep
+        the pipe open), then the rest of a last line."""
+        end = time.monotonic() + seconds
+        while (efd := self._errfd()) is not None and (left := end - time.monotonic()) > 0:
+            ready, _, _ = select.select([efd], [], [], min(left, 0.5))
+            if ready:
+                self._read_err()
+        efd = self._errfd()
+        if efd is not None:
+            with contextlib.suppress(OSError):
+                self.proc.stderr.close()  # type: ignore[union-attr]
+        self.err.flush()
+        if isinstance(self.proc, RemoteProc):
+            self.proc.err.flush()
+
     def _line(self, raw: bytes) -> None:
         text = raw.decode("utf-8", errors="replace")
+        # --- harden; KAN-556: only the driver speaks for hangar, tested as the parser reads a line (it strips any
+        # Unicode space first, so `\x1c{"type": "hangar.tree"...}` is one of its events though json.loads refuses it)
+        if read_as_event(text):
+            self.out.line("[harness] " + text)  # kept, but no longer a line hangar's parser reads as an event
+            return
         try:
             d = json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):  # read_as_event took the deep ones; whatever is left is not protocol
             d = None
         if not isinstance(d, dict):
             self.out.line(text)  # not protocol: keep it in the log as it was
-            return
-        if str(d.get("type") or "").startswith("hangar."):  # --- harden: only the driver speaks for hangar
-            self.out.line("[harness] " + text)  # kept, but no longer a line hangar's parser reads as an event
             return
         self.on(d, text)
 
@@ -1177,15 +1297,31 @@ class Harness:
         except OSError:
             pass
         try:
-            self.proc.wait(timeout)
+            self._wait(timeout)
         except subprocess.TimeoutExpired:
             self.proc.terminate()
             try:
-                self.proc.wait(10)
+                self._wait(10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
+        self._drain_err(2)
         return self.proc.returncode
+
+    def _wait(self, timeout: float) -> None:
+        """proc.wait, reading its stderr meanwhile (--- KAN-556: a full pipe would stop the harness)."""
+        end = time.monotonic() + timeout
+        while self.proc.poll() is None:
+            left = end - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired("harness", timeout)
+            efd = self._errfd()
+            if efd is None:
+                self.proc.wait(left)
+                return
+            ready, _, _ = select.select([efd], [], [], min(left, 0.2))
+            if ready:
+                self._read_err()
 
     def kill(self) -> None:
         if self.proc.poll() is None:
@@ -1812,7 +1948,8 @@ def main(argv: list | None = None) -> int:
             return 1
     with open(os.environ["HANGAR_PROMPT_FILE"], encoding="utf-8", errors="replace") as f:
         prompt = f.read()
-    out, ctl = Out(), Control(args.ctl)
+    ctl = Control(args.ctl)
+    out = Out(ctl.key)  # --- KAN-556: its events signed with the run's key
     drv = Driver(args, out, ctl)
     if args.preclear:  # --- KAN-77: with the key in hand, before the harness can ask anything
         drv.preclear = load_preclear(args.ctl, ctl.key)
