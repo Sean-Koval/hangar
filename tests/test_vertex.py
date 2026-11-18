@@ -74,6 +74,31 @@ def test_a_sandbox_with_both_logins_is_warned(store, broker):
                                "automated") == []
 
 
+def test_adding_a_vertex_key_leaves_existing_team_jobs_where_they_were(store, broker):
+    """KAN-291 review: an environment that names no credential takes every team Claude Code login; a Vertex key
+    added beside an Anthropic key must not move those jobs (and their bill) to Google."""
+    broker.put("claude-api", "claude-code", CredentialKind.API_KEY, "sk-ant-api03-" + "k" * 40, team=True)
+    before = teamcreds.resolve(store, [], None, "claude-code", False, is_agent, purpose="automated")
+    broker.put("claude-vertex", "claude-code", CredentialKind.GENERIC, KEY, team=True)
+    after = teamcreds.resolve(store, [], None, "claude-code", False, is_agent, purpose="automated")
+    assert before.names == after.names == ["claude-api"] and after.warnings == []
+    # a person's own Vertex key beside their own Anthropic key doesn't move their work either
+    broker.put("ana-api", "claude-code", CredentialKind.API_KEY, "sk-ant-api03-" + "a" * 40, person="ana")
+    broker.put("ana-vertex", "claude-code", CredentialKind.GENERIC, KEY, person="ana")
+    assert teamcreds.resolve(store, [], "ana", "claude-code", False, is_agent, purpose="automated").names == ["ana-api"]
+
+
+def test_an_environment_chooses_vertex_by_naming_it(store, broker):
+    broker.put("claude-api", "claude-code", CredentialKind.API_KEY, "sk-ant-api03-" + "k" * 40, team=True)
+    broker.put("claude-vertex", "claude-code", CredentialKind.GENERIC, KEY, team=True)
+    got = teamcreds.resolve(store, ["claude-vertex"], None, "claude-code", False, is_agent, purpose="automated")
+    assert got.names == ["claude-vertex"] and got.warnings == []
+    # naming both keeps both, and the sandbox is told Claude Code uses Vertex
+    got = teamcreds.resolve(store, ["claude-api", "claude-vertex"], None, "claude-code", False, is_agent,
+                            purpose="automated")
+    assert sorted(got.names) == ["claude-api", "claude-vertex"] and got.warnings == [teamcreds.VERTEX_OVERLAP]
+
+
 def test_it_is_an_api_key_class_login_that_automated_jobs_take(store, broker):
     c = broker.put("claude-vertex", "claude-code", CredentialKind.GENERIC, KEY, team=True)
     assert not teamcreds.is_subscription(c)
@@ -186,7 +211,7 @@ async def test_a_key_without_the_permission_fails_and_says_what_to_grant(broker,
     c = broker.put("claude-vertex", "claude-code", CredentialKind.GENERIC, KEY, team=True)
     _iam(monkeypatch, 200, {})
     res = await credhealth.check(c, KEY.encode(), str(_fake_gcloud(gcloud_dir)))
-    assert res.status == "fail" and "roles/aiplatform.user" in res.detail
+    assert res.status == "fail" and "aiplatform.endpoints.predict" in res.detail
     _iam(monkeypatch, 403, {"error": {"status": "PERMISSION_DENIED"}})
     assert (await credhealth.check(c, KEY.encode(), str(_fake_gcloud(gcloud_dir)))).status == "fail"
     # a refused key fails before any Vertex call
@@ -227,7 +252,7 @@ async def test_doctor_has_a_claude_on_vertex_line(fleet, store, broker, gcloud_d
     c.health = {**c.health, "checked_at": 0}
     store.put(c)
     [line] = await credhealth.vertex_doctor_checks(h)
-    assert line["status"] == "fail" and "roles/aiplatform.user" in line["fix"]
+    assert line["status"] == "fail" and "aiplatform.endpoints.predict" in line["fix"]
 
 
 # ====================================================================== usage

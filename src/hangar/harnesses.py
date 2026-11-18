@@ -357,7 +357,7 @@ HARNESSES: dict[str, Harness] = {
             ),
             # Google Cloud project billing (Antigravity enterprise "ADC" mode), verified on GKE with agy 1.3.3:
             # AGY_ADC_AUTH=true + a service-account key; the project comes from GOOGLE_CLOUD_QUOTA_PROJECT.
-            # Needs aiplatform.googleapis.com enabled and Vertex access (roles/aiplatform.user) for the account.
+            # Needs aiplatform.googleapis.com enabled and Vertex access (aiplatform.endpoints.predict) for the account.
             _gcp_sa_slot("AGY_ADC_AUTH=true GOOGLE_CLOUD_QUOTA_PROJECT=%s"),
         ],
         # No login flow: agy's interactive Google sign-in lives in the OS keyring (Secret Service over D-Bus),

@@ -235,7 +235,8 @@ async def gcloud_key(c: Credential, value: bytes, gcloud: str | None = None) -> 
     return res
 
 
-# --- KAN-291: the permission a Claude request on Vertex AI needs (roles/aiplatform.user has it), tested without a model
+# --- KAN-291: the permission a Claude request on Vertex AI needs, tested without a model. A custom role with only
+# this one is the narrow grant; roles/aiplatform.user has it too, but can also start training and batch jobs.
 VERTEX_PERMISSION = "aiplatform.endpoints.predict"
 _TEST_IAM = "https://cloudresourcemanager.googleapis.com/v1/projects/{project}:testIamPermissions"
 
@@ -268,7 +269,7 @@ async def vertex_access(project: str, token: str) -> Result:
                                  "there", None, method)
     if code in (200, 403):
         return Result("fail", f"the service account may not call Vertex AI models in {project}: grant it "
-                              "roles/aiplatform.user there, and enable the Claude models in Model Garden "
+                              f"a role with {VERTEX_PERMISSION} there, and enable the Claude models in Model Garden "
                               "(docs/team/vertex.md)", None, method)
     return Result("unknown", f"Vertex AI access in {project} wasn't checked (HTTP {code})", None, method)
 
@@ -543,8 +544,9 @@ async def vertex_doctor_checks(h: Any) -> list[dict[str, Any]]:
         worst = st if rank.get(st, 1) > rank.get(worst, 1) else worst
     ok = True if worst == "ok" else (False if worst == "fail" else None)
     return [{**_check("claude on vertex", ok, "; ".join(parts),
-                      "grant the service account roles/aiplatform.user in the project, enable the Claude models in "
-                      "Model Garden, then `hangar cred check NAME` (docs/team/vertex.md)"), "deploy_gate": False}]
+                      f"grant the service account a role with {VERTEX_PERMISSION} in the project, enable the Claude "
+                      "models in Model Garden, then `hangar cred check NAME` (docs/team/vertex.md)"),
+             "deploy_gate": False}]
 
 
 def _model_credentials(store: Store) -> list[Credential]:

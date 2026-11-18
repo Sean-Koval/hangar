@@ -42,7 +42,7 @@ jobs:
       - id: paths
         run: |
           changed=$(git diff --name-only HEAD^1 HEAD)
-          if grep -Eq '^(src/hangar/harnesses\.py|src/hangar/harnesses\.lock\.yaml|src/hangar/driver\.py|src/hangar/harden\.py|src/hangar/isolation\.py|src/hangar/verifyloop\.py|src/hangar/steer\.py|src/hangar/govhook[^/]*\.py|src/hangar/cache\.py|src/hangar/events\.py|src/hangar/canary\.py|tests/test_[^/]*real_clis\.py|tests/test_cache\.py|tests/fixtures/live/.*|tests/fixtures/protocol/.*|\.github/workflows/harness\-contract\.yml)$' <<< "$changed"; then run=true; else run=false; fi
+          if grep -Eq '^(src/hangar/harnesses\.py|src/hangar/harnesses\.lock\.yaml|src/hangar/driver\.py|src/hangar/harden\.py|src/hangar/isolation\.py|src/hangar/verifyloop\.py|src/hangar/steer\.py|src/hangar/govhook[^/]*\.py|src/hangar/cache\.py|src/hangar/events\.py|src/hangar/canary\.py|src/hangar/modelgw\.py|tests/test_[^/]*real_clis\.py|tests/test_codex_plugins\.py|tests/test_modelgw\.py|tests/test_cache\.py|tests/fixtures/live/.*|tests/fixtures/protocol/.*|\.github/workflows/harness\-contract\.yml)$' <<< "$changed"; then run=true; else run=false; fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "harness contract needed: $run"
 

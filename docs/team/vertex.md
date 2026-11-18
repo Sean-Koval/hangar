@@ -15,8 +15,16 @@ An admin of the GCP project does this once:
 
 1. Enable the Vertex AI API (`aiplatform.googleapis.com`).
 2. Enable the Claude models you want in Model Garden, and accept their terms.
-3. Make a service account for hangar's jobs, and grant it `roles/aiplatform.user` on the project.
+3. Make a service account for hangar's jobs, and grant it a custom role that holds only
+   `aiplatform.endpoints.predict` on the project.
 4. Bind it to hangar's issuer (preferred), or make a key for it.
+
+```bash
+gcloud iam roles create hangarClaude --project PROJECT --permissions aiplatform.endpoints.predict
+```
+
+`roles/aiplatform.user` works too, but it is wider. It can also start training jobs, endpoints and batch
+predictions. The agent can read a stored key and reach Vertex AI, so that spend would be outside every hangar budget.
 
 Quota is per model and region. Check it before many jobs run at once.
 
@@ -27,7 +35,7 @@ credentials](../security/credentials.md#short-lived-cloud-credentials)). A key i
 long as the key does; the token dies within the hour.
 
 Set `CLAUDE_CODE_USE_VERTEX: "1"`, `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` in that environment's `env:`.
-Grant `roles/aiplatform.user` to the federated principal, or to the service account it impersonates. hangar stores
+Grant the narrow role to the federated principal, or to the service account it impersonates. hangar stores
 no credential then, so `hangar doctor` has no line for it.
 
 ## With a service-account key
@@ -51,8 +59,9 @@ A sandbox that gets it runs Claude Code with these set:
 To bill another project than the key's, set `ANTHROPIC_VERTEX_PROJECT_ID` in the environment's `env:`. To use a
 region, set `CLOUD_ML_REGION` there, for example `us-east5`.
 
-When a sandbox gets both an Anthropic login and a Vertex credential, Claude Code uses Vertex, and the sandbox says so
-in its warnings. Name one of the two in the environment's `credentials:`.
+Adding a Vertex key doesn't move existing work to Google. An environment that names no credential keeps the team's
+other Claude Code login, and gets the Vertex key only when it is the only one. To choose Vertex, name the key in the
+environment's `credentials:`. An environment that names both gets Vertex, and the sandbox says so in its warnings.
 
 ## Egress
 

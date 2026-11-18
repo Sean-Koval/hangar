@@ -245,6 +245,8 @@ def resolve(store: Store, names: list[str], person: str | None, harness: str | N
                 + (f"{person} has no {g} credential of their own (they add one with hangar cred add)" if person
                    else "this job runs for no one: link its sender to a person (hangar person link), or set "
                         "credentials: person_then_team"))
+        if g == "claude-code":
+            chosen = _off_vertex(chosen, set(names))
         chosen, why = _pick(chosen)
         if why:
             busy.append(why)
@@ -290,9 +292,22 @@ VERTEX_OVERLAP = ("this sandbox holds a Claude Code login and a Claude on Vertex
                   "credentials (docs/team/vertex.md)")
 
 
+def _is_vertex(c: Credential) -> bool:
+    return c.harness == "claude-code" and c.kind == CredentialKind.GENERIC
+
+
 def _vertex_overlap(creds: list[Credential]) -> bool:
     mine = [c for c in creds if c.harness == "claude-code"]
-    return any(c.kind == CredentialKind.GENERIC for c in mine) and any(c.kind != CredentialKind.GENERIC for c in mine)
+    return any(_is_vertex(c) for c in mine) and any(not _is_vertex(c) for c in mine)
+
+
+def _off_vertex(chosen: list[Credential], named: set[str]) -> list[Credential]:
+    """--- KAN-291 review: adding a Vertex key must not move existing work onto Vertex. In a pool that also holds
+    another Claude Code login, a Vertex key stays only where the environment named it; otherwise the other login
+    is used. Vertex alone (a GCP-only team) still runs on Vertex."""
+    if not any(not _is_vertex(c) for c in chosen):
+        return chosen
+    return [c for c in chosen if not _is_vertex(c) or c.name in named]
 
 
 def check_job(fleet: Fleet, environment: str, harness: str | None, person: str | None, repo: str | None,
