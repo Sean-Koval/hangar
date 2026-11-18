@@ -117,6 +117,27 @@ NO_IPV6 = ("--sysctl", "net.ipv6.conf.all.disable_ipv6=1", "--sysctl", "net.ipv6
            "--cap-drop", "NET_RAW")
 
 
+def no_ipv6() -> tuple[str, ...]:
+    """NO_IPV6, but a Linux host booted with ipv6.disable=1 has no such sysctl, and docker run would fail on it.
+    There the kernel has no IPv6 to turn off; the check's IPv6 look still runs."""
+    if sys.platform == "linux" and not Path("/proc/sys/net/ipv6").exists():
+        return NO_IPV6[-2:]
+    return NO_IPV6
+
+
+# --- KAN-555: Docker Desktop's address for the Mac or Windows host (192.168.65.254 now, 192.168.65.2 before 4.x). It
+# is no gateway Docker lists, so the host check tries it too, where the engine is Docker Desktop.
+DESKTOP_HOSTS = ("192.168.65.254", "192.168.65.2")
+
+
+def desktop_hosts() -> list[str]:
+    try:
+        r = docker("info", "-f", "{{.OperatingSystem}}", check=False)
+    except OSError:
+        return []
+    return list(DESKTOP_HOSTS) if b"Docker Desktop" in r.stdout else []
+
+
 def names(instance: str) -> SimpleNamespace:
     return SimpleNamespace(agent=f"hangar-local-{instance}", proxy=f"hangar-local-{instance}-egress",
                            net=f"hangar-local-{instance}-net")
@@ -133,7 +154,7 @@ def agent_args(dns: str, env_file: str, env: dict[str, str] | None = None) -> li
     name it doesn't own to `dns`, the sidecar, which refuses it: no lookup leaves, whatever the host's resolver is.
     `env` is non-secret (the harness's PATH and env); secrets go through `env_file` only."""
     proxy = f"http://egress:{PROXY_PORT}"
-    return ["--dns", dns, "--env-file", env_file, *NO_IPV6,
+    return ["--dns", dns, "--env-file", env_file, *no_ipv6(),
             *(x for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") for x in ("-e", f"{k}={proxy}")),
             "-e", "NO_PROXY=localhost,127.0.0.1", "-e", "no_proxy=localhost,127.0.0.1",
             *(x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}"))]
@@ -539,9 +560,9 @@ def gateways(*nets: str) -> list[str]:
 
 def host_failures(container: str, net: str) -> list[str]:
     """--- KAN-555: nothing on this computer is reachable from the agent. A listener on all of the host's addresses is
-    tried at each gateway address. Any answer, a refusal (whoever refused holds the address: where the listener
-    can't be seen, as from Docker Desktop's VM, that still shows the host is on the network), a connection the
-    listener sees or an IPv6 address in the agent fails the check."""
+    tried at each gateway address, and at Docker Desktop's host address. Any answer, a refusal (whoever refused
+    holds the address: where the listener can't be seen, as from Docker Desktop's VM, that still shows the host is
+    on the network), a connection the listener sees or an IPv6 address in the agent fails the check."""
     import socket
     import threading
 
@@ -551,7 +572,7 @@ def host_failures(container: str, net: str) -> list[str]:
         out.append("the agent has IPv6 addresses (link-local ones reach this computer)")
     if not gateways(net):
         return [*out, f"Docker lists no gateway address for {net}, so the host check proved nothing"]
-    gws = gateways(net, "bridge")
+    gws = list(dict.fromkeys([*gateways(net, "bridge"), *desktop_hosts()]))
     reached: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
         srv.bind(("0.0.0.0", 0))  # noqa: S104 - the point: what a careless dev server would do

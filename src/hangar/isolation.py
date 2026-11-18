@@ -321,8 +321,11 @@ for t in sh python3 env bash; do
 done
 py=$(command -v python3)
 # --- KAN-555: what the relay's python loads before it reads its token: its library directories, and each link to it
-for d in $("$py" -I -c 'import site, sys; print("\n".join([*sys.path, *site.getsitepackages()]))' 2>/dev/null); do
-  [ -z "$d" ] || ! changeable "$d" || {{ echo "the agent can change $d (python's path)"; exit 3; }}
+dirs=$("$py" -I -c 'import site, sys; print("\n".join([*sys.path, *site.getsitepackages()]))' 2>/dev/null) \
+&& [ -n "$dirs" ] || {{ echo "$py couldn't list its library directories"; exit 3; }}
+for d in $dirs; do
+  r=$(readlink -f "$d" 2>/dev/null); [ -n "$r" ] || r=$d
+  {{ ! changeable "$d" && ! changeable "$r"; }} || {{ echo "the agent can change $d (python's path)"; exit 3; }}
 done
 x=$py; while [ -L "$x" ]; do t=$(readlink "$x"); case $t in /*) x=$t;; *) x=$(dirname "$x")/$t;; esac
   ! changeable "$x" || {{ echo "the agent can change $x (a link to python3)"; exit 3; }}; done

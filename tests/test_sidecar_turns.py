@@ -118,6 +118,18 @@ async def test_the_probe_checks_what_pythons_loads_and_every_link_to_it():
     assert all(argv[0].startswith("/") for argv, _ in p.raw)  # never a program found through the agent's PATH
 
 
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("py", ["/bin/false", "/bin/true"])
+def test_the_probe_fails_closed_when_python_lists_no_library_directories(py):
+    # --- KAN-555: a python that errors or prints nothing leaves no directory checked: that is a refusal, not a pass
+    s = isolation.SIDECAR_AGENT
+    script = (s[s.index("changeable()"):s.index("u=$(id -u)")] + s[s.index("py=$(command -v python3)"):]
+              .split('echo "python $py"')[0]).replace("{{", "{").replace("}}", "}")
+    r = subprocess.run(["bash", "-c", script.replace("py=$(command -v python3)", f"py={py}")],
+                       capture_output=True, text=True, cwd="/")
+    assert r.returncode == 3 and "couldn't list its library directories" in r.stdout
+
+
 @pytest.mark.parametrize("prov,why", [
     (Scripted(why="the pod shares one PID namespace between its containers"), "shares one PID namespace"),
     (Scripted(driver="1000\n", agent="python /p\nharness ok\nreal /r\nagent 1000\n"), "runs as uid 1000"),

@@ -68,14 +68,14 @@ proxy, which resolves them itself. DNS can't carry data out, and nothing reaches
 - an off-list host, plain HTTP and a request that skips the proxy are refused;
 - `getent hosts` fails for an off-list host and for an allowed one;
 - a DNS query sent straight to `1.1.1.1:53`, over UDP or TCP, gets nothing back;
-- nothing listening on this computer answers at the gateway addresses;
+- nothing listening on this computer answers at the gateway addresses or Docker Desktop's host address;
 - the agent probe: `claude --version` is hangar's pin, and `claude -p "say ok" --output-format json` succeeds in the
   first instance. Without a Claude credential it fails and says which variables to set. `--no-agent-probe` skips it.
 
 ## On macOS
 
-Egress is enforced the same way on macOS. Docker Desktop runs every container in its Linux VM, and
-the internal network, the sidecar and the `--dns` setting all live inside it. Nothing depends on the Mac's own
+Egress is enforced the same way on macOS. Docker Desktop runs every container, the internal
+network, the sidecar and the `--dns` setting inside its Linux VM. Nothing depends on the Mac's own
 firewall or resolver.
 
 That is a design claim until it is measured. `hangar env local check` on a Mac is the qualification: its DNS checks
