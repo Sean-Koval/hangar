@@ -63,7 +63,7 @@ LONG_PAGES: dict[str, tuple[int, int, str]] = {
     "gke/power.md": (441, 8, MOVED.format("gke.md") + "split it by question"),
     "gke/infra-states.md": (1717, 34, MOVED.format("gke.md") + "split it by question"),
     "gke/backups.md": (439, 5, MOVED.format("gke.md") + "split it by question"),
-    "harness-lock.md": (1397, 29, LATER + "the lock, the team harness repo"),
+    "harness-lock.md": (1394, 28, LATER + "the lock, the team harness repo"),
     "harness-lock/thaw.md": (1135, 24, MOVED.format("harness-lock.md") + "split it by question"),
     "harnesses.md": (1030, 20, LATER + "packs, models, the canary"),
     "harnesses/canary.md": (1101, 10, MOVED.format("harnesses.md") + "split it by question"),
