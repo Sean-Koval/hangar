@@ -260,7 +260,7 @@ def local_checks(port: int, envs: list[str] | None = None) -> list[dict]:
             token = boot.read_text().strip() or None
         except OSError:
             token = None
-    return localdoctor.run(port, envs or ["claude-python"], token, _find_envs())
+    return localdoctor.run(port, envs or ["claude-python"], token, _find_envs(), _data_dir())
 
 
 def _pid_alive(pid: int) -> bool:

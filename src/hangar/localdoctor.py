@@ -3,21 +3,24 @@
 `hangar doctor` asks a running hangar. On a fresh or locked-down laptop there is none yet, so this checks what
 `hangar up` needs from the machine itself: python and uv, a container runtime, the port, a TLS-inspecting proxy,
 reachability of the model and GitHub hosts, and whether jobs would find an API key. Each line carries its fix, with
-the same marks and `--json` shape as `hangar doctor`. Only a ✗ stops `hangar up`: a check that can't run offline is a
-`!` with the reason.
+the same marks and `--json` shape as `hangar doctor`. Only a ✗ stops `hangar up`: a check that can't run (no network,
+an odd proxy setting) is a `!` with the reason, never a crash.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import re
 import shutil
 import socket
+import sqlite3
 import ssl
 import subprocess
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +29,17 @@ import httpx
 from hangar.doctor import _check
 
 GITHUB = "github.com"
-TLS_PROBE = "api.anthropic.com"
+TLS_HOSTS = ("api.anthropic.com", GITHUB)  # model calls and image builds: a proxy may inspect one and not the other
 CA_VAR = "HANGAR_EXTRA_CA_BUNDLE"
-TIMEOUT = 5.0
+TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+DEADLINE = 8.0  # every network probe together: `hangar up` never waits on a blackholed network for long
 _PEM = b"-----BEGIN CERTIFICATE-----"
+_PEM_MAX = 1 << 20
+_CREDS = re.compile(r"(://)[^/@\s]+@")
+
+# A probe's answer: (why the host can't be reached, or None; whether TLS verified against the public roots: True,
+# False when a certificate failed (the host still answered), None when it couldn't be tried; the certificate error)
+Probe = tuple[str | None, bool | None, str | None]
 
 
 # ---------------------------------------------------------------------------- probes (tests replace these)
@@ -38,9 +48,13 @@ def _docker_info() -> tuple[dict[str, Any] | None, str | None]:
     try:
         import docker
 
-        return docker.from_env(timeout=5).info(), None
+        client = docker.from_env(timeout=5)
+        try:
+            return client.info(), None
+        finally:
+            client.close()
     except Exception as e:  # noqa: BLE001 - any failure means "not usable"
-        return None, (str(e).splitlines()[0][:200] if str(e) else type(e).__name__)
+        return None, _redact(str(e).splitlines()[0][:200] if str(e) else type(e).__name__)
 
 
 def _uv_version() -> str | None:
@@ -54,6 +68,15 @@ def _uv_version() -> str | None:
 
 
 def _port_free(port: int) -> bool:
+    """Nothing answers on 127.0.0.1 or ::1 (a dev server may bind only `localhost`'s IPv6), and 127.0.0.1 binds."""
+    for family, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex((addr, port)) == 0:
+                    return False
+        except OSError:
+            continue  # no IPv6 here
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.bind(("127.0.0.1", port))
@@ -62,50 +85,82 @@ def _port_free(port: int) -> bool:
     return True
 
 
+def _local() -> httpx.Client:
+    """For 127.0.0.1 only: never through a proxy, so the token sent to the local hangar stays on this machine."""
+    return httpx.Client(trust_env=False, timeout=10)
+
+
 def _hangar_on(url: str) -> bool:
+    """A hangar answers: its /healthz says exactly {"ok": true} (a dev server's catch-all page doesn't)."""
     try:
-        return httpx.get(f"{url}/healthz", timeout=2).status_code == 200
-    except httpx.HTTPError:
+        with _local() as c:
+            r = c.get(f"{url}/healthz", timeout=2)
+        return r.status_code == 200 and r.json() == {"ok": True}
+    except Exception:  # noqa: BLE001 - not a hangar, whatever went wrong
         return False
 
 
-def _reach(host: str) -> str | None:
-    """None when https://host answers at all (any status), else why not. HEAD only, nothing sent but the request."""
-    try:
-        httpx.head(f"https://{host}/", timeout=TIMEOUT, follow_redirects=False)
-        return None
-    except httpx.HTTPError as e:
-        return _why(e)
-
-
-def _tls_verifies(host: str) -> bool | None:
-    """True when TLS to `host` verifies against the public roots (certifi), False when a certificate fails, None
-    when it couldn't be tried (no network). Not this machine's own trust (SSL_CERT_FILE and the like): a company CA
-    trusted here is still unknown inside hangar's images, which is what HANGAR_EXTRA_CA_BUNDLE fixes."""
+def _probe(host: str, verify: str | None = None) -> Probe:
+    """One HEAD to https://host, nothing sent but the request, verified against the public roots (certifi), or the
+    file `verify`. Not this machine's own trust (SSL_CERT_FILE and the like): a company CA trusted here is still
+    unknown inside hangar's images, which is what HANGAR_EXTRA_CA_BUNDLE fixes."""
     import certifi
 
     try:
-        httpx.head(f"https://{host}/", timeout=TIMEOUT, follow_redirects=False,
-                   verify=ssl.create_default_context(cafile=certifi.where()))
-        return True
-    except httpx.ConnectError as e:
-        return False if _cert_error(e) else None
-    except httpx.HTTPError:
-        return None
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        if verify:
+            ctx.load_verify_locations(cafile=verify)
+        with httpx.Client(verify=ctx, timeout=TIMEOUT, follow_redirects=False) as c:
+            c.head(f"https://{host}/")
+        return None, True, None
+    except Exception as e:  # noqa: BLE001 - a bad proxy URL or a missing SOCKS extra is a reason, not a crash
+        if why := _cert_error(e):
+            return None, False, why  # the host answered; its certificate didn't verify
+        return _why(e), None, None
 
 
-def _cert_error(e: BaseException) -> bool:
+def probe_all(hosts: list[str], probe: Callable[[str], Probe] | None = None,
+              deadline: float = DEADLINE) -> dict[str, Probe]:
+    """Every host at once, under one deadline."""
+    if not hosts:
+        return {}
+    pool = ThreadPoolExecutor(max_workers=min(8, len(hosts)))
+    futures = {pool.submit(probe or _probe, h): h for h in hosts}
+    done, _ = wait(futures, timeout=deadline)
+    pool.shutdown(wait=False, cancel_futures=True)
+    out: dict[str, Probe] = {}
+    for f, h in futures.items():
+        if f not in done:
+            out[h] = (f"no answer in {deadline:g} s", None, None)
+            continue
+        try:
+            out[h] = f.result()
+        except Exception as e:  # noqa: BLE001
+            out[h] = (_why(e), None, None)
+    return out
+
+
+def _cert_error(e: BaseException) -> str | None:
+    """The certificate failure behind `e`, if that's what it is."""
     seen: BaseException | None = e
     while seen is not None:
-        if isinstance(seen, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(seen):
-            return True
+        if isinstance(seen, ssl.SSLCertVerificationError):
+            return getattr(seen, "verify_message", None) or "certificate verify failed"
+        if "CERTIFICATE_VERIFY_FAILED" in str(seen):
+            return "certificate verify failed"
         seen = seen.__cause__ or seen.__context__
-    return False
+    return None
 
 
 def _why(e: BaseException) -> str:
+    if isinstance(e, ImportError) and "socks" in str(e).lower():
+        return "the SOCKS proxy in HTTPS_PROXY needs httpx's SOCKS support: pip install 'httpx[socks]'"
     text = str(e).splitlines()[0] if str(e) else ""
-    return (text or type(e).__name__)[:160]
+    return _redact((text or type(e).__name__)[:160])
+
+
+def _redact(text: str) -> str:
+    return _CREDS.sub(r"\1…@", text)
 
 
 # ---------------------------------------------------------------------------- checks
@@ -162,35 +217,77 @@ def check_port(port: int, free: Callable[[int], bool] | None = None,
 
 def _pem_readable(path: str) -> str | None:
     """None when `path` is a readable PEM certificate file, else why not."""
+    p = Path(path).expanduser()
     try:
-        data = Path(path).expanduser().read_bytes()
+        if not p.is_file():
+            return f"{path} isn't a file"
+        with p.open("rb") as f:
+            data = f.read(_PEM_MAX)
     except OSError as e:
         return f"can't read {path} ({e.strerror or type(e).__name__})"
     return None if _PEM in data else f"{path} holds no PEM certificate"
 
 
-def check_proxy(env: dict[str, str] | None = None, verifies: Callable[[str], bool | None] | None = None
-                ) -> dict[str, Any]:
-    """A TLS-inspecting proxy breaks every image build and model call unless hangar trusts its CA."""
-    env = dict(os.environ) if env is None else env
-    proxy = env.get("HTTPS_PROXY") or env.get("https_proxy")
-    bundle = env.get(CA_VAR)
+def ca_bundle(data_dir: Path | None = None) -> tuple[str | None, str]:
+    """HANGAR_EXTRA_CA_BUNDLE as the server `hangar up` starts would see it: the environment or ./.env first (as
+    Settings reads them), else stored with `hangar config set` in this machine's hangar database."""
+    try:
+        from hangar.config import Settings
+
+        if (v := Settings().extra_ca_bundle) is not None:
+            return str(v), CA_VAR
+    except Exception:  # noqa: BLE001 - another setting that doesn't parse is the server's problem, not this check's
+        if v := os.environ.get(CA_VAR):
+            return v, CA_VAR
+    db = (data_dir or Path.home() / ".hangar") / "hangar.db"
+    if db.is_file():
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2) as conn:
+                row = conn.execute("SELECT value FROM kv WHERE key=?", ("setting:extra_ca_bundle",)).fetchone()
+            if row and isinstance(v := json.loads(row[0] or "null"), str) and v:
+                return v, f"{CA_VAR} (stored with hangar config)"
+        except (sqlite3.Error, ValueError):
+            pass
+    return None, CA_VAR
+
+
+def check_proxy(proxy: str | None, bundle: str | None, probes: dict[str, Probe], source: str = CA_VAR,
+                reprobe: Callable[[str, str], Probe] | None = None) -> dict[str, Any]:
+    """A TLS-inspecting proxy breaks every image build and model call unless hangar trusts its CA.
+
+    ✗ when TLS to a host that answered fails the public roots and no bundle fixes it; a proxy that only tunnels
+    (TLS verifies through it) needs no CA. ! when TLS couldn't be tried."""
     fix = f"set {CA_VAR} to your company's root CA as a PEM file (ask IT for it), then run this again"
+    via = f" through {_host(proxy)}" if proxy else ""
+    failed = {h: probes[h][2] for h in TLS_HOSTS if h in probes and probes[h][1] is False}
     if bundle:
         if why := _pem_readable(bundle):
-            return _check("TLS proxy", False, f"{CA_VAR} is set, but {why}", fix)
-        return _check("TLS proxy", True, f"{CA_VAR} trusts {bundle}" + (f" (proxy {_host(proxy)})" if proxy else ""))
-    ok = (verifies or _tls_verifies)(TLS_PROBE)
-    if ok is False:
-        return _check("TLS proxy", False, f"TLS to {TLS_PROBE} fails certificate checks, so something on the "
-                      "network inspects it", fix)
-    if proxy and ok is None:
-        return _check("TLS proxy", None, f"HTTPS_PROXY is {_host(proxy)}, and TLS through it couldn't be tried "
-                      "(no network), so whether it inspects TLS is unknown", f"if it does: {fix}")
+            return _check("TLS proxy", False, f"{source} is set, but {why}", fix)
+        again = {h: (reprobe or _reprobe)(h, bundle) for h in failed}
+        still = {h: p[2] for h, p in again.items() if p[1] is False}
+        if still:
+            return _check("TLS proxy", False, f"TLS{via} to {', '.join(still)} fails even with {bundle} "
+                          f"({next(iter(still.values()))}), so it isn't the CA that signs what the proxy presents",
+                          fix)
+        return _check("TLS proxy", True, f"{source} trusts {bundle}" + (f" (proxy {_host(proxy)})" if proxy else ""))
+    if failed:
+        why = next(iter(failed.values()))
+        return _check("TLS proxy", False, f"TLS{via} to {', '.join(failed)} fails certificate checks ({why}), so "
+                      "something on the network inspects it (or this machine's clock is wrong)", fix)
+    untried = [h for h in TLS_HOSTS if not probes.get(h) or probes[h][1] is None]
+    if untried:
+        reason = (probes.get(untried[0]) or ("not tried", None, None))[0]
+        what = f"HTTPS_PROXY is {_host(proxy)}, and whether it inspects TLS" if proxy else "Whether TLS is inspected"
+        return _check("TLS proxy", None, f"{what} is unknown: TLS to {', '.join(untried)} couldn't be tried "
+                      f"({reason})", f"run this again with the network up; if a proxy inspects TLS: {fix}")
     if proxy:
         return _check("TLS proxy", True, f"HTTPS_PROXY is {_host(proxy)}; TLS through it verifies, so it doesn't "
                       "inspect")
-    return _check("TLS proxy", True, "none" if ok else "none set (TLS not tried: no network)")
+    return _check("TLS proxy", True, "none: TLS verifies")
+
+
+def _reprobe(host: str, bundle: str) -> Probe:
+    return _probe(host, verify=bundle)
 
 
 def _host(url: str | None) -> str:
@@ -217,16 +314,17 @@ def env_harnesses(envs: list[str], envs_dir: Path | None) -> list[str]:
     return list(dict.fromkeys(found)) or ["claude-code"]
 
 
-def check_reach(harnesses: list[str], reach: Callable[[str], str | None] | None = None) -> list[dict[str, Any]]:
+def reach_groups(harnesses: list[str]) -> list[tuple[str, list[str]]]:
     from hangar.egress import HARNESS_HOSTS
 
-    groups = [(GITHUB, [GITHUB])] + [(h, list(HARNESS_HOSTS[h])) for h in harnesses if h in HARNESS_HOSTS]
-    hosts = list(dict.fromkeys(x for _, hs in groups for x in hs))
-    with ThreadPoolExecutor(max_workers=min(8, len(hosts))) as pool:
-        why = dict(zip(hosts, pool.map(reach or _reach, hosts), strict=True))
+    return [(GITHUB, [GITHUB])] + [(h, list(HARNESS_HOSTS[h])) for h in harnesses if h in HARNESS_HOSTS]
+
+
+def check_reach(groups: list[tuple[str, list[str]]], probes: dict[str, Probe]) -> list[dict[str, Any]]:
+    """One line per group. A host whose certificate fails still answered: the TLS line reports that."""
     out = []
     for label, hs in groups:
-        bad = [f"{x} ({why[x]})" for x in hs if why[x]]
+        bad = [f"{x} ({why})" for x in hs if (why := (probes.get(x) or ("not tried", None, None))[0])]
         name = "reach github.com" if label == GITHUB else f"reach {label}"
         out.append(_check(name, None, "can't reach " + "; ".join(bad),
                           "check the network, VPN or proxy; ask IT to allow these hosts") if bad
@@ -241,16 +339,21 @@ def check_login(port: int, envs: list[str], token: str | None,
     url = f"http://127.0.0.1:{port}"
     key = "store an API key for each harness: hangar cred add --team (not `claude setup-token`: a subscription " \
           "login runs sessions, never jobs); docs/team/subscription-logins.md"
-    if not (hangar_on or _hangar_on)(url) or not token:
+    if not token or not (hangar_on or _hangar_on)(url):
         return _check("model login", None, "no hangar is running here yet, so this can't tell; jobs need an API key",
                       key)
     missing, unknown = [], []
     for env in envs:
         try:
-            r = (get or httpx.get)(f"{url}/api/credentials/login", params={"environment": env, "purpose": "automated"},
-                                   headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            if get is None:
+                with _local() as c:
+                    r = c.get(f"{url}/api/credentials/login", params={"environment": env, "purpose": "automated"},
+                              headers={"Authorization": f"Bearer {token}"})
+            else:
+                r = get(f"{url}/api/credentials/login", params={"environment": env, "purpose": "automated"},
+                        headers={"Authorization": f"Bearer {token}"})
             data = r.json() if r.status_code == 200 else None
-        except (httpx.HTTPError, ValueError):
+        except Exception:  # noqa: BLE001
             data = None
         if not isinstance(data, dict):
             unknown.append(env)
@@ -269,8 +372,13 @@ def check_offline() -> dict[str, Any]:
 
 
 def run(port: int = 8787, envs: list[str] | None = None, token: str | None = None,
-        envs_dir: Path | None = None) -> list[dict[str, Any]]:
+        envs_dir: Path | None = None, data_dir: Path | None = None) -> list[dict[str, Any]]:
     """Every check, in order. Runs with no server, no login and no network."""
     envs = envs or ["claude-python"]
-    return [*check_python(), check_runtime(), check_port(port), check_proxy(),
-            *check_reach(env_harnesses(envs, envs_dir)), check_login(port, envs, token), check_offline()]
+    groups = reach_groups(env_harnesses(envs, envs_dir))
+    hosts = list(dict.fromkeys([*TLS_HOSTS, *(x for _, hs in groups for x in hs)]))
+    probes = probe_all(hosts)
+    bundle, source = ca_bundle(data_dir)
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    return [*check_python(), check_runtime(), check_port(port), check_proxy(proxy, bundle, probes, source),
+            *check_reach(groups, probes), check_login(port, envs, token), check_offline()]

@@ -26,8 +26,7 @@ def local(tmp_path, monkeypatch):
     for v in ("HANGAR_URL", "HANGAR_TOKEN", "HANGAR_ADMIN_TOKEN", "HANGAR_PUBLIC_URL"):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setattr(localdoctor, "_docker_info", lambda: ({"OperatingSystem": "Ubuntu 24.04"}, None))
-    monkeypatch.setattr(localdoctor, "_reach", lambda host: None)  # no network in tests
-    monkeypatch.setattr(localdoctor, "_tls_verifies", lambda host: True)
+    monkeypatch.setattr(localdoctor, "_probe", lambda host: (None, True, None))  # no network in tests
     monkeypatch.delenv("HTTPS_PROXY", raising=False)
     monkeypatch.delenv("https_proxy", raising=False)
     monkeypatch.delenv("HANGAR_EXTRA_CA_BUNDLE", raising=False)
@@ -75,3 +74,18 @@ def test_up_without_docker_says_what_to_do(local, monkeypatch):
     r = runner.invoke(cli.app, ["up", "--no-build", "--port", str(_free_port())])
     assert r.exit_code == 1 and "start Docker Desktop" in r.output and "hangar up stopped" in r.output
     assert not (local / "server.pid").exists()  # nothing started
+
+
+def test_up_stops_on_an_inspecting_proxy_and_a_taken_port(local, monkeypatch):
+    import socket
+
+    monkeypatch.setattr(localdoctor, "_probe", lambda host: (None, False, "self-signed certificate in chain"))
+    r = runner.invoke(cli.app, ["up", "--no-build", "--port", str(_free_port())])
+    assert r.exit_code == 1 and "✗ TLS proxy" in r.output and "HANGAR_EXTRA_CA_BUNDLE" in r.output
+    assert not (local / "server.pid").exists()
+    monkeypatch.setattr(localdoctor, "_probe", lambda host: (None, True, None))
+    with socket.socket() as s:  # something that isn't hangar holds the port
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        r = runner.invoke(cli.app, ["up", "--no-build", "--port", str(s.getsockname()[1])])
+    assert r.exit_code == 1 and "✗ port" in r.output and not (local / "server.pid").exists()

@@ -1382,7 +1382,10 @@ def doctor_cmd(as_json: bool = typer.Option(False, "--json"),
                yes: bool = typer.Option(False, "--yes", "-y", help="With --fix: apply them without asking."),
                local: bool = typer.Option(False, "--local", help="Check this machine instead, before any server: "
                                           "no login, no network needed (`hangar up` runs it first)."),
-               port: int = typer.Option(8787, "--port", help="With --local: the port `hangar up` would use.")):
+               port: int | None = typer.Option(None, "--port", help="With --local: the port `hangar up` would use "
+                                               "(8787)."),
+               env: list[str] = typer.Option([], "--env", "-e", help="With --local: an environment `hangar up` "
+                                             "would build, for its harnesses' hosts (repeatable; claude-python).")):
     """Check this hangar for the things that break jobs and sessions, with the fix for each."""
     if local:  # --- KAN-351: no server, no login
         if fix:
@@ -1390,11 +1393,15 @@ def doctor_cmd(as_json: bool = typer.Option(False, "--json"),
             raise typer.Exit(2)
         from hangar.setup_cli import local_checks
 
-        checks = local_checks(port)
+        checks = local_checks(port or 8787, env or None)
+    elif port is not None or env:
+        typer.secho("--port and --env go with --local", fg="red", err=True)
+        raise typer.Exit(2)
     else:
         checks = _call("GET", "/api/doctor")
-    if as_json:
-        return _print(checks)
+    if as_json:  # --- KAN-351: --local exits 1 on a ✗ with --json too, so a setup script can stop on it
+        _print(checks)
+        raise typer.Exit(1 if local and any(c["status"] == "fail" for c in checks) else 0)
     marks = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "red")}
     for c in checks:
         mark, color = marks[c["status"]]
