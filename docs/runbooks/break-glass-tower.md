@@ -70,13 +70,18 @@ An admin starts it, and a **second admin** confirms it: another person, not anot
 hold each token: its person, plus whoever held the token that minted it. The two steps need tokens no one person could
 hold both of.
 
-So confirm with your own sign-in (the console or `hangar login --sso`) or a token minted on the server's host (`hangar token create
---person <you>`). A token an admin minted for you through the API counts as theirs too. A token minted before
-this was recorded can't take a step.
+So confirm with your own sign-in (the console or `hangar login --sso`) or a token minted on the server's host
+(`hangar token create --person <you>`). A token an admin minted for you through the API counts as theirs too.
 
-`--until` takes a duration
-or an RFC 3339 time, at most 24 hours ahead, and it ends by itself. Each step is audited `governance.break_glass`, and
-`hangar doctor` warns while it is started or active.
+**Do this now, not during an outage.** No token from before this release can take a step, admin tokens included.
+Each admin signs in once with `hangar login --sso`, or gets a host-minted token, and runs `hangar governance status`
+with it. Restart any break-glass started before the upgrade.
+
+Without single sign-on, own-person tokens come only from the host. Anyone with a shell there, or the server's admin
+token from the deploy secrets, can mint one for anyone. So two people then rest on host and secret access.
+
+`--until` takes a duration or an RFC 3339 time, at most 24 hours ahead, and it ends by itself. Each step is
+audited `governance.break_glass`, and `hangar doctor` warns while it is started or active.
 
 While it is active, hangar's own rules decide an admin's approval of a job release or a landing in `enforce`. That
 happens only when Tower can't answer. A Tower that answers still decides, and a member's approval still waits. Each such

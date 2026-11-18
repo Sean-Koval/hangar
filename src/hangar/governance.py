@@ -856,27 +856,28 @@ def active_break_glass(store: Any, t: float | None = None) -> BreakGlass | None:
     return bg if bg is not None and bg.active(t) else None
 
 
-def start_break_glass(store: Any, by: str, reason: str, until: float, t: float | None = None,
-                      holders: Sequence[str] | None = None) -> BreakGlass:
+def start_break_glass(store: Any, by: str, reason: str, until: float, t: float | None = None, *,
+                      holders: Sequence[str]) -> BreakGlass:
+    """An admin starts break-glass. `holders` is who could hold the token that asked (ApiToken.holders, KAN-554):
+    required, so no caller can skip the two-person check."""
     t = time.time() if t is None else t
     if load_break_glass(store, t) is not None:
         raise BreakGlassError("break-glass is already started; confirm it, or end it first")
-    if holders is not None and by not in holders:  # --- KAN-554: an empty or foreign holder list proves nothing
+    if by not in holders:  # --- KAN-554: an empty or foreign holder list proves nothing
         raise BreakGlassError("break-glass needs a token its own person holds")
     try:
         bg = BreakGlass(started_by=by, reason=reason.strip(), started_at=t, until=until,
-                        started_holders=sorted(set(holders)) if holders is not None else None)
+                        started_holders=sorted(set(holders)))
     except (ValidationError, ValueError) as e:
         raise BreakGlassError(str(e).splitlines()[-1] if isinstance(e, ValidationError) else str(e)) from None
     store.kv_set(BREAK_GLASS_KEY, bg.model_dump_json(), durable=True)
     return bg
 
 
-def confirm_break_glass(store: Any, by: str, t: float | None = None,
-                        holders: Sequence[str] | None = None) -> BreakGlass:
-    """A second admin confirms. With `holders` (the REST route always passes them, KAN-554), the confirming token
-    must be one nobody who could hold the starting token could also hold: an admin who minted a token for another
-    admin can't start with one and confirm with the other."""
+def confirm_break_glass(store: Any, by: str, t: float | None = None, *, holders: Sequence[str]) -> BreakGlass:
+    """A second admin confirms. `holders` (KAN-554, required) is who could hold the confirming token: it must be one
+    nobody who could hold the starting token could also hold, so an admin who minted a token for another admin can't
+    start with one and confirm with the other."""
     bg = load_break_glass(store, t)
     if bg is None:
         raise BreakGlassError("no break-glass is started (hangar governance local --until ... --reason ...)")
@@ -884,17 +885,17 @@ def confirm_break_glass(store: Any, by: str, t: float | None = None,
         raise BreakGlassError(f"break-glass is already confirmed by {bg.confirmed_by}")
     if by == bg.started_by:
         raise BreakGlassError("break-glass needs a second admin to confirm it, not the one who started it")
-    if holders is not None:  # --- KAN-554
-        if by not in holders:
-            raise BreakGlassError("break-glass needs a token its own person holds")
-        if bg.started_holders is None:
-            raise BreakGlassError("this break-glass was started before hangar recorded who holds each token; end it "
-                                  "and start it again")
-        if shared := sorted(set(holders) & set(bg.started_holders)):
-            raise BreakGlassError(f"break-glass needs a second admin's own token: {', '.join(shared)} could hold both "
-                                  "the starting token and this one (a token an admin minted for someone else counts "
-                                  "as theirs too); confirm with a token from your own sign-in (hangar login --sso) or "
-                                  "one minted on the server's host (hangar token create --person <you>)")
+    # --- KAN-554
+    if by not in holders:
+        raise BreakGlassError("break-glass needs a token its own person holds")
+    if bg.started_holders is None:
+        raise BreakGlassError("this break-glass was started before hangar recorded who holds each token; end it "
+                              "and start it again")
+    if shared := sorted(set(holders) & set(bg.started_holders)):
+        raise BreakGlassError(f"break-glass needs a second admin's own token: {', '.join(shared)} could hold both "
+                              "the starting token and this one (a token an admin minted for someone else counts "
+                              "as theirs too); confirm with a token from your own sign-in (hangar login --sso) or "
+                              "one minted on the server's host (hangar token create --person <you>)")
     bg = bg.model_copy(update={"confirmed_by": by})
     store.kv_set(BREAK_GLASS_KEY, bg.model_dump_json(), durable=True)
     return bg

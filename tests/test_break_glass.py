@@ -14,7 +14,9 @@ from fastapi.testclient import TestClient
 import tests.test_govrelease as tg
 from hangar import approvals, people
 from hangar.governance import (
+    BREAK_GLASS_KEY,
     BREAK_GLASS_LOG,
+    BreakGlass,
     BreakGlassError,
     Decision,
     active_break_glass,
@@ -33,8 +35,8 @@ world, intake, tower = tg.world, tg.intake, tg.tower  # fixtures
 
 def glass_on(store, t: float | None = None) -> None:
     t = time.time() if t is None else t
-    start_break_glass(store, "ada", "Tower down, INC-12", t + 3600, t)
-    confirm_break_glass(store, "owner", t)
+    start_break_glass(store, "ada", "Tower down, INC-12", t + 3600, t, holders=("ada",))
+    confirm_break_glass(store, "owner", t, holders=("owner",))
 
 
 def admin(store, pid: str = "ada") -> approvals.Approver:
@@ -53,21 +55,21 @@ def test_two_admins_at_most_a_day_and_it_ends_on_its_own(store):
         with pytest.raises(BreakGlassError):
             parse_until(bad, t)
     assert parse_until("2027-01-15T08:00:00Z", 1_800_000_000.0 - 3600 * 23) - (1_800_000_000.0 - 3600 * 23) < 86400
-    bg = start_break_glass(store, "ada", "Tower down", t + 7200, t)
+    bg = start_break_glass(store, "ada", "Tower down", t + 7200, t, holders=("ada",))
     assert not bg.active(t) and active_break_glass(store, t) is None  # not until a second admin confirms
     with pytest.raises(BreakGlassError, match="already started"):
-        start_break_glass(store, "bob", "again", t + 60, t)
+        start_break_glass(store, "bob", "again", t + 60, t, holders=("bob",))
     with pytest.raises(BreakGlassError, match="second admin"):
-        confirm_break_glass(store, "ada", t)
-    confirm_break_glass(store, "owner", t)
+        confirm_break_glass(store, "ada", t, holders=("ada",))
+    confirm_break_glass(store, "owner", t, holders=("owner",))
     assert active_break_glass(store, t + 10).confirmed_by == "owner"
     with pytest.raises(BreakGlassError, match="already confirmed"):
-        confirm_break_glass(store, "bob", t)
+        confirm_break_glass(store, "bob", t, holders=("bob",))
     assert active_break_glass(store, t + 7200) is None and load_break_glass(store, t + 7200) is None  # expired: gone
     assert load_break_glass(store, t) is None
     with pytest.raises(BreakGlassError):
-        start_break_glass(store, "ada", "", t + 60, t)
-    start_break_glass(store, "ada", "x", t + 60, t)
+        start_break_glass(store, "ada", "", t + 60, t, holders=("ada",))
+    start_break_glass(store, "ada", "x", t + 60, t, holders=("ada",))
     assert end_break_glass(store) is not None and load_break_glass(store, t) is None
 
 
@@ -111,7 +113,7 @@ async def test_only_an_admin_and_never_against_an_answer_from_tower(intake, towe
 
 async def test_break_glass_waiting_for_confirmation_decides_nothing(intake):
     mode(intake, "enforce")
-    start_break_glass(intake.store, "ada", "Tower down", time.time() + 3600)
+    start_break_glass(intake.store, "ada", "Tower down", time.time() + 3600, holders=("ada",))
     rel = Releases(intake, Receiver(unreachable()))
     job_id = await held(intake, 84)
     with pytest.raises(ApprovalPending):
@@ -229,7 +231,8 @@ def test_a_sign_in_or_a_host_minted_token_holds_only_its_person(store):
         assert auth._of(tok).holders is None
     # a break-glass started before holders were recorded is ended and started again, not confirmed
     t = time.time()
-    start_break_glass(store, "ada", "Tower down", t + 3600, t)
+    old = BreakGlass(started_by="ada", reason="Tower down", started_at=t, until=t + 3600)
+    store.kv_set(BREAK_GLASS_KEY, old.model_dump_json(), durable=True)
     with pytest.raises(BreakGlassError, match="start it again"):
         confirm_break_glass(store, "bob", t, holders=("bob",))
 
