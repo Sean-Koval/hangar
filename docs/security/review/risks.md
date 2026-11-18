@@ -16,6 +16,7 @@ next release. A row leaves this page when its fix lands, and its finding moves t
 | No dependency, image or secret scanning in CI | Not rated | KAN-179 | Locked, hashed dependencies; digest-pinned images; Dependabot for actions |
 | Five of six node pools run as the Compute Engine default service account (CIS 5.2.1) | Not rated | KAN-183 | gVisor stands between a sandbox and the node; the pools are replaced once, with Secure Boot |
 | The audit log lives on the same disk as the database it records | Not rated | KAN-182 | Only the pod's service account mounts the disk; backups copy it daily |
+| The agent can kill or stop the Tower hook, and the call runs without Tower ([second review](../review-delta-1.0.md)) | High | KAN-551 | The hook is off by default; the driver's own `deny-risky` rules still hold a flagged call |
 
 ## Accepted for 1.0
 
