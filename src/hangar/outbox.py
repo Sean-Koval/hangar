@@ -1166,7 +1166,7 @@ def _experiment(job: Job | None, store: Any = None) -> dict[str, Any] | None:
             from hangar.models import Job as JobModel
 
             parent = store.get(JobModel, exp)
-            graded = bool(parent is not None and (experiments.load(parent).spec or {}).get("grader"))
+            graded = bool(parent is not None and experiments.stored_graders(experiments.load(parent).spec or {}, task))
     return {"id": exp, "trial_key": key or None, "task": task or None,
             "variant": job.labels.get(experiments.VARIANT_LABEL) or variant or None,
             "trial": int(trial) if trial.isdigit() else None, "graded": graded}

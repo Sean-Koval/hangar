@@ -93,6 +93,9 @@ grader:
   # canary: HANGAR-CANARY-...           # generated per experiment if unset; never reuse one
 tasks:
   - {id: fix-retry, ..., reference_patch: "diff --git ..."}   # optional: a known fix the hidden tests must pass
+  - {id: fix-parse, ..., grader: {command: npm test, files: {...}}}   # optional (KAN-192): its own grader, in
+    # place of the one above, with its own 64 files and 1 MB (16 MB across all graders); one canary for them all.
+    # With no grader above, every task needs its own.
 ```
 
 The grader runs agent-written code beside the hidden tests, so its sandbox is sealed: no credential and no host at

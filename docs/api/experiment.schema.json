@@ -15,7 +15,7 @@
     "person": {"type": ["string", "null"]},
     "created_at": {"type": "number"},
     "finished_at": {"type": ["number", "null"]},
-    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {
+    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, and the same one in a task's own `tasks[].grader`, KAN-192; generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {
       "variants": {"type": "object", "description": "Each variant: `{harness_lock, environment}` (#135), or the deprecated overlay.", "additionalProperties": {
         "type": "object",
         "properties": {
