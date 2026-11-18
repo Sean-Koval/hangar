@@ -29,6 +29,23 @@ Each line becomes the stream-json line it stands for. hangar's own Claude Code p
 are the ones a hangar run of the same session records, with the same clipping. Shell calls carry `data.ops` from the
 whole command, and clipped calls carry `data.clipped`.
 
+## The team harness
+
+A session run with a team harness installed has `.claude/team-harness.json`, which team-harness writes. The import
+looks in the session's directory and its parents, then, for a directory inside your home, in `~/.claude`. If
+found, each turn carries the harness's name as `hangar.harness`, with `hangar.harness.revision`,
+`hangar.harness.channel` and `hangar.harness.digest`. flightdeck's specs for that harness then apply. `gen_ai.agent.name` stays `claude-code`.
+
+It looks only when the session's directory is on this computer. A cloud session or someone else's transcript gets
+no harness unless you name one. The manifest is read at import, so import before you upgrade the harness.
+
+`--manifest PATH` names the manifest instead, and `--no-manifest` stamps none. A manifest that can't be read, or
+has no harness name, stops the import.
+
+An MCP call's input puts the fields that name what it acts on first, such as a Jira issue's `summary`. A spec's
+`input` match then sees them, even when a long description fills the rest of the preview. hangar's own runs record
+MCP calls the same way.
+
 ## Turns and subagents
 
 A turn starts at each prompt: a top-level `user` line that answers no tool call. Meta lines, compact summaries and
