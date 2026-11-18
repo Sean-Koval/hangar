@@ -774,7 +774,7 @@ def _new_person_id(store, email: str) -> str:
     if not base[0].isalnum():
         base = "p" + base
     pid, n = base, 1
-    while people.get(store, pid) is not None:
+    while people.get(store, pid) is not None or pid in people.RESERVED_IDS:  # --- KAN-552
         n += 1
         pid = f"{base}-{n}"
     return pid
