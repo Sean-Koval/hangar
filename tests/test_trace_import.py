@@ -490,3 +490,112 @@ def test_flightdeck_reads_the_team_harness(transcript: Path, tmp_path: Path) -> 
     trace = trace_import.import_transcript(transcript, manifest=_manifest(tmp_path / "proj")).trace
     runs = mod.flatten_trace(trace)["runs"]
     assert {(r["harness"], r["harness_digest"]) for r in runs} == {("work-default", "sha256:" + "a" * 64)}
+
+
+# --- KAN-345: a whole projects folder, incrementally, each session tagged with its ticket
+
+
+def _project(projects: Path, sid: str, branch: str, cwd: str = "/work/hangar", sub: bool = False) -> Path:
+    objs = [o if o.get("type") == "queue-operation" else {**o, "sessionId": sid, "gitBranch": branch, "cwd": cwd}
+            for o in MAIN]
+    p = _jsonl(projects / cwd.replace("/", "-") / f"{sid}.jsonl", objs)
+    if sub:
+        d = p.with_suffix("") / "subagents"
+        _jsonl(d / "agent-sub1.jsonl", [{**o, "sessionId": sid} for o in SUB])
+        (d / "agent-sub1.meta.json").write_text(json.dumps({"agentType": "Explore", "toolUseId": "toolu_agent"}))
+    return p
+
+
+@pytest.mark.parametrize(("branch", "ticket"), [
+    ("KAN-35-apply-atomic", "KAN-35"), ("feature/PAY-412-refunds", "PAY-412"), ("main", None), ("HEAD", None),
+    ("fix-KAN-35", None), ("kan-35-lower", None), ("KAN-35", "KAN-35"), (None, None),
+])
+def test_a_branch_names_its_ticket(branch: str | None, ticket: str | None) -> None:
+    assert trace_import.ticket_of(branch) == ticket
+
+
+def test_the_ticket_branch_and_directory_go_on_the_session(tmp_path: Path) -> None:
+    p = _project(tmp_path / "projects", "s-ticket", "KAN-35-apply-atomic")
+    imp = trace_import.import_transcript(p, manifest=False)
+    root = next(_attrs(s) for s in _spans(imp.trace) if _attrs(s)["hangar.kind"] == "session")
+    assert root["hangar.ticket.key"] == "KAN-35" and root["hangar.git.branch"] == "KAN-35-apply-atomic"
+    assert root["hangar.repo.dir"] == "/work/hangar"
+    summary = trace_import.write(imp, tmp_path / "out")
+    assert (summary["ticket"], summary["branch"], summary["repo"]) == ("KAN-35", "KAN-35-apply-atomic",
+                                                                       "/work/hangar")
+    main = trace_import.import_transcript(_project(tmp_path / "projects", "s-main", "main"), manifest=False)
+    root = next(_attrs(s) for s in _spans(main.trace) if _attrs(s)["hangar.kind"] == "session")
+    assert "hangar.ticket.key" not in root and root["hangar.git.branch"] == "main"
+
+
+def _run_all(projects: Path, out: Path, *extra: str):
+    r = CliRunner().invoke(cli.app, ["trace", "import", "--all", "--projects", str(projects), "--out", str(out),
+                                     *extra])
+    return r, json.loads(r.stdout[: r.stdout.rindex("}") + 1])
+
+
+def test_import_all_is_incremental(tmp_path: Path) -> None:
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    a = _project(projects, "s-a", "KAN-35-apply-atomic", sub=True)
+    _project(projects, "s-b", "main", cwd="/work/other")
+    r, done = _run_all(projects, out)
+    assert r.exit_code == 0, r.output
+    assert sorted(e["session"] for e in done["imported"]) == ["s-a", "s-b"]
+    assert (out / "s-a" / "trace.json").exists() and (out / "s-b" / "events.jsonl").exists()
+    # the subagent stays with its parent: no session of its own, its steps under its call
+    assert not (out / "sub1").exists() and not (out / "agent-sub1").exists()
+    evs = [json.loads(ln) for ln in (out / "s-a" / "events.jsonl").read_text().splitlines()]
+    assert any(e["data"].get("agent_id") == "sub1" for e in evs)
+    index = json.loads((out / "index.json").read_text())
+    assert index["schema"] == "hangar.trace-import.index/v1"
+    assert {e["session"]: e.get("ticket") for e in index["sessions"].values()} == {"s-a": "KAN-35", "s-b": None}
+    # again: nothing written, and it says so
+    before = {f: f.stat().st_mtime_ns for f in out.rglob("*") if f.is_file()}
+    r, done = _run_all(projects, out)
+    assert r.exit_code == 0 and done["imported"] == [] and done["unchanged"] == 2
+    assert "nothing new" in r.stderr and "wrote nothing" in r.stderr
+    assert {f: f.stat().st_mtime_ns for f in out.rglob("*") if f.is_file()} == before
+    # a grown transcript is imported again; so is one whose subagent wrote more
+    with a.open("a") as f:
+        f.write(json.dumps({**_prompt("And the changelog.", "2026-11-01T10:02:00.000Z"), "sessionId": "s-a",
+                            "gitBranch": "KAN-35-apply-atomic", "cwd": "/work/hangar"}) + "\n")
+    r, done = _run_all(projects, out)
+    assert [e["session"] for e in done["imported"]] == ["s-a"] and done["imported"][0]["turns"] == 3
+    with (a.with_suffix("") / "subagents" / "agent-sub1.jsonl").open("a") as f:
+        f.write(json.dumps({**SUB[-1], "sessionId": "s-a"}) + "\n")
+    assert [e["session"] for e in _run_all(projects, out)[1]["imported"]] == ["s-a"]
+
+
+def test_import_all_filters_by_repo_and_age(tmp_path: Path) -> None:
+    import os
+
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    _project(projects, "s-a", "KAN-1-x", cwd="/work/hangar/src")
+    _project(projects, "s-b", "main", cwd="/work/other")
+    old = _project(projects, "s-old", "KAN-2-y", cwd="/work/hangar")
+    os.utime(old, (1, 1))
+    r, done = _run_all(projects, out, "--repo", "hangar", "--since", "7d")
+    assert r.exit_code == 0, r.output
+    assert [e["session"] for e in done["imported"]] == ["s-a"] and done["other_repo"] == 1 and done["older"] == 1
+    r, done = _run_all(projects, tmp_path / "out2", "--repo", "/work/other")
+    assert [e["session"] for e in done["imported"]] == ["s-b"]
+
+
+def test_import_all_refuses_mixed_arguments(tmp_path: Path, transcript: Path) -> None:
+    run = CliRunner().invoke
+    projects = transcript.parents[1]
+    assert run(cli.app, ["trace", "import", str(transcript), "--all", "--projects", str(projects), "--out",
+                         str(tmp_path / "o")]).exit_code == 2
+    assert run(cli.app, ["trace", "import", str(transcript), "--since", "7d", "--out",
+                         str(tmp_path / "o")]).exit_code == 2
+    assert run(cli.app, ["trace", "import", "--out", str(tmp_path / "o")]).exit_code == 2
+    r = run(cli.app, ["trace", "import", "--all", "--projects", str(projects), "--since", "a week",
+                      "--out", str(tmp_path / "o")])
+    assert r.exit_code == 2 and "--since" in r.output
+
+
+def test_import_all_reads_claude_code_s_folder_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    assert trace_import.projects_dir() == tmp_path / "cfg" / "projects"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert trace_import.projects_dir() == Path.home() / ".claude" / "projects"

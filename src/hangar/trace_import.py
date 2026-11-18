@@ -22,6 +22,9 @@ secretscan's patterns, as hangar's outgoing text does; there are no stored crede
 from __future__ import annotations
 
 import json
+import os
+import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -208,6 +211,7 @@ class Imported:
     events: list[RunEvent]
     turns: list[Turn]
     trace: dict[str, Any]
+    git: dict[str, Any] = field(default_factory=dict)  # --- KAN-345: ticket, branch and directory
 
 
 def find_manifest(cwd: str | None, home: Path | None = None) -> Path | None:
@@ -268,6 +272,7 @@ def import_transcript(path: Path, session_id: str | None = None, manifest: Path 
     tool_turn: dict[str, int] = {}  # tool call id -> its turn: a subagent's steps belong to its caller's turn
     events: list[RunEvent] = []
     model = version = cwd = None
+    branches: list[str] = []
     cost_so_far: float | None = None
     since: list[Turn] = []  # turns since the last `result`: one CLI run (one result) can span several prompts
     for ln in lines:
@@ -275,6 +280,8 @@ def import_transcript(path: Path, session_id: str | None = None, manifest: Path 
         m = (rec.get("message") or {}).get("model") if rec.get("type") == "assistant" else None
         model = model or (m if m != "<synthetic>" else None)
         version, cwd = version or rec.get("version"), cwd or rec.get("cwd")
+        if isinstance(rec.get("gitBranch"), str) and rec["gitBranch"] not in branches:
+            branches.append(rec["gitBranch"])
         text = None if ln.file else prompt_of(rec)
         if text is not None:
             turns.append(Turn(len(turns) + 1, text, ln.ts))
@@ -314,7 +321,27 @@ def import_transcript(path: Path, session_id: str | None = None, manifest: Path 
         t.end = max([ev.ts for ev in t.events] + [t.start or 0.0]) or None
     found = find_manifest(cwd) if manifest is True else manifest or None
     harness = harness_attrs(found) if found else {}
-    return Imported(sid, fmt, events, turns, _export(sid, fmt, turns, model, version, cwd, path, harness))
+    git = git_attrs(branches, cwd)
+    return Imported(sid, fmt, events, turns, _export(sid, fmt, turns, model, version, cwd, path, harness, git), git)
+
+
+# --- KAN-345: the ticket a session was for, from its branch, as KAN-320 tags hangar-run sessions
+_KEY_AT_START = re.compile(r"(?:^|/)([A-Z][A-Z0-9]+-\d+)(?![0-9])")
+
+
+def ticket_of(branch: str | None) -> str | None:
+    """The Jira key a branch starts with (`KAN-35-apply-atomic` -> `KAN-35`), also after a prefix such as
+    `feature/KAN-35-x`; None for `main`, `HEAD` or a key in the middle of a name."""
+    m = _KEY_AT_START.search(branch or "")
+    return m.group(1) if m else None
+
+
+def git_attrs(branches: list[str], cwd: str | None) -> dict[str, Any]:
+    """`hangar.ticket.key` from the first branch that names one (a session can change branch), the branch (that
+    one, else the first) and the session's directory. Empty when the transcript records none of them."""
+    branch = next((b for b in branches if ticket_of(b)), branches[0] if branches else None)
+    out = {"hangar.ticket.key": ticket_of(branch), "hangar.git.branch": branch or None, "hangar.repo.dir": cwd}
+    return {k: v for k, v in out.items() if v}
 
 
 def _stamp(ev: RunEvent, ln: Line, turn: Turn, sid: str) -> RunEvent:
@@ -346,7 +373,7 @@ def _turn_usage(t: Turn) -> tuple[Usage | None, str | None]:
 
 
 def _export(sid: str, fmt: str, turns: list[Turn], model: str | None, version: str | None, cwd: str | None,
-            path: Path, harness: dict[str, Any] | None = None) -> dict[str, Any]:
+            path: Path, harness: dict[str, Any] | None = None, git: dict[str, Any] | None = None) -> dict[str, Any]:
     s = Session(id=sid, name=f"import-{sid}"[:100], environment="import", harness=HARNESS, model=model)
     extras: list[dict[str, Any]] = []
     for t in turns:
@@ -361,7 +388,7 @@ def _export(sid: str, fmt: str, turns: list[Turn], model: str | None, version: s
         s.created_at = s.turns[0].started_at or s.created_at
         s.last_active_at = s.turns[-1].finished_at or s.last_active_at
     x = traces.Export(traces.trace_id(sid), redact)
-    root = traces.session_span(x, s, {"hangar.import.format": fmt, **(harness or {})})
+    root = traces.session_span(x, s, {"hangar.import.format": fmt, **(harness or {}), **(git or {})})
     for n, (t, turn) in enumerate(zip(s.turns, turns, strict=True), 1):
         traces._turn_span(x, root["id"] if root else None, s, n, t, turn.events, extras[n - 1], root=cwd)
     return x.request({"hangar.export.scope": "session", "hangar.session.id": sid, "hangar.session.name": s.name,
@@ -385,4 +412,126 @@ def write(imp: Imported, out: Path) -> dict[str, Any]:
             k = a.get("hangar.kind", {}).get("stringValue")
             label = a["hangar.tool.kind"]["stringValue"] if k == "tool.call" else k
             tools[label] = tools.get(label, 0) + 1
-    return {"session": imp.session_id, "format": imp.fmt, "turns": len(imp.turns), "events": kinds, "spans": tools}
+    return {"session": imp.session_id, "format": imp.fmt, "turns": len(imp.turns), "events": kinds, "spans": tools,
+            **{k: imp.git[a] for k, a in _GIT_KEYS.items() if a in imp.git}}
+
+
+_GIT_KEYS = {"ticket": "hangar.ticket.key", "branch": "hangar.git.branch", "repo": "hangar.repo.dir"}
+
+
+# --- KAN-345: a whole projects folder, incrementally
+INDEX = "index.json"
+INDEX_SCHEMA = "hangar.trace-import.index/v1"
+_UNITS = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def projects_dir() -> Path:
+    """Claude Code's transcripts: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (Path(base).expanduser() if base else Path.home() / ".claude") / "projects"
+
+
+def parse_since(text: str) -> float:
+    """`7d`, `12h`, `30m` or `2w` as seconds."""
+    m = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", text or "")
+    if not m:
+        raise ValueError(f"--since takes a number and m, h, d or w (7d, 12h), not {text!r}")
+    return int(m.group(1)) * _UNITS[m.group(2)]
+
+
+def fingerprint(path: Path) -> list[list[Any]]:
+    """What a re-import is decided on: the transcript's and its subagents' names, sizes and mtimes. A background
+    subagent can write after its parent's last line, so its own file counts too."""
+    files = [path, *(f for f, _, _ in subagents(path))]
+    out = []
+    for f in files:
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        out.append([f.name, st.st_size, st.st_mtime_ns])
+    return out
+
+
+def first_cwd(path: Path, limit: int = 200) -> str | None:
+    """The session's directory from its first lines, without importing it (for --repo)."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= limit:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and isinstance(rec.get("cwd"), str):
+                    return rec["cwd"]
+    except OSError:
+        return None
+    return None
+
+
+def repo_matches(cwd: str | None, repo: str) -> bool:
+    """`--repo`: a path matches the session's directory or one inside it; a bare name matches any directory on the
+    session's path with that name (`hangar` for /home/me/hangar/src)."""
+    if not cwd:
+        return False
+    if "/" in repo or repo.startswith("~") or repo.startswith("."):
+        want = Path(repo).expanduser().resolve()
+        here = Path(cwd)
+        return here == want or here.is_relative_to(want)
+    return repo in Path(cwd).parts
+
+
+def _safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "session"
+
+
+def _read_index(out: Path) -> dict[str, Any]:
+    try:
+        idx = json.loads((out / INDEX).read_text())
+    except (OSError, ValueError):
+        return {}
+    return idx.get("sessions") or {} if isinstance(idx, dict) and idx.get("schema") == INDEX_SCHEMA else {}
+
+
+def import_all(projects: Path, out: Path, since: float | None = None, repo: str | None = None,
+               manifest: Path | None | bool = True, now: float | None = None) -> dict[str, Any]:
+    """Every session transcript under `projects` (`<dir>/<session>.jsonl`; subagents come with their parent) into
+    `out/<session id>/`. One already imported with the same fingerprint is skipped; a grown one is imported again.
+    `out/index.json` records what was done. Returns what this run did."""
+    now = time.time() if now is None else now
+    out.mkdir(parents=True, exist_ok=True)
+    index = _read_index(out)
+    done: dict[str, Any] = {"imported": [], "unchanged": 0, "older": 0, "other_repo": 0, "failed": []}
+    for path in sorted(projects.glob("*/*.jsonl")):
+        key = str(path.resolve())
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if since is not None and mtime < now - since:
+            done["older"] += 1
+            continue
+        fp = fingerprint(path)
+        if (prev := index.get(key)) and prev.get("fingerprint") == fp:
+            done["unchanged"] += 1
+            continue
+        if repo and not repo_matches(first_cwd(path), repo):
+            done["other_repo"] += 1
+            continue
+        try:
+            imp = import_transcript(path, None, manifest)
+            summary = write(imp, out / _safe(imp.session_id))
+        except (ValueError, OSError) as e:
+            done["failed"].append({"transcript": key, "error": str(e)[:300]})
+            continue
+        entry = {"fingerprint": fp, "session": imp.session_id, "dir": _safe(imp.session_id),
+                 "turns": summary["turns"], **{k: summary[k] for k in _GIT_KEYS if k in summary}}
+        index[key] = entry
+        done["imported"].append(entry)
+    if done["imported"]:
+        tmp = out / (INDEX + ".tmp")
+        tmp.write_text(json.dumps({"schema": INDEX_SCHEMA, "sessions": index}, indent=1, sort_keys=True))
+        tmp.replace(out / INDEX)
+    return done
