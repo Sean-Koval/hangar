@@ -288,7 +288,8 @@ class ExperimentSpec(BaseModel):
         # --- KAN-192: a task's own grader replaces the experiment's; every task needs one or none does
         graders = [g for g in (self.grader, *(t.grader for t in self.tasks)) if g is not None]
         if self.grader is None and graders and (bare := [t.id for t in self.tasks if t.grader is None]):
-            raise ValueError(f"tasks {', '.join(bare[:5])} have no grader: give each one, or the experiment a "
+            raise ValueError(f"{'tasks' if len(bare) > 1 else 'task'} {', '.join(bare[:5])} "
+                             f"{'have' if len(bare) > 1 else 'has'} no grader: give each one, or the experiment a "
                              "`grader` for the rest")
         if sum(len(x.encode()) for g in graders for x in g.files.values()) > MAX_EXPERIMENT_GRADER_FILES:
             raise ValueError("the graders' files are limited to 16 MB in all, across the experiment's tasks")
@@ -668,7 +669,8 @@ def _pin_sets(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, varia
                                            f"{pinned.base_sha}")
         else:
             env = vp.get("environment") or spec.environment
-            p = pinsets.experiment_pin(jobs, job, vname, vp, tasks, env, spec.grader, overlays.get(vname))
+            p = pinsets.experiment_pin(jobs, job, vname, vp, tasks, env, spec.grader, overlays.get(vname),
+                                       {t.id: t.grader for t in spec.tasks if t.grader})
         vp["pin_set"] = p.id
 
 

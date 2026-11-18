@@ -85,7 +85,7 @@ def parts_for(pin: PinSet, task_id: str, digest: str) -> dict[str, str | None]:
     tp = pin.tasks.get(task_id)
     return {"harness_digest": pin.harness_digest, "environment": pin.environment_digest or pin.environment_spec_digest,
             "task_digest": digest, "model_id": pin.model_id, "base_sha": tp.base_sha if tp else None,
-            "grader_digest": pin.grader_digest}
+            "grader_digest": (tp.grader_digest if tp else None) or pin.grader_digest}
 
 
 def key_of(parts: dict[str, str | None]) -> str:

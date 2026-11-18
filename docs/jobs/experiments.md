@@ -10,8 +10,8 @@ compare them. It is a job of kind `experiment`; each trial is an ordinary job of
 its digest, the environment's digests, the concrete model, each task's base commit, the grader's digest and the egress
 policy, content-addressed (`pin-<hash>`) and never changed. `POST /api/trials {pin_set, task, n, budget}` runs n trials
 of one task against one pin set, and a trial whose turn 1 didn't run what was pinned ends as `infra_error` / `drift`
-(not retried). Flightdeck decides how many trials to run; the batch experiment below is a convenience on top,
-and it records a pin set per variant (`pins.variants.<name>.pin_set`,
+(not retried). Flightdeck decides how many trials to run; the batch experiment below is a convenience on top
+(`trials` and `parallel` are its wrapper fields), and it records a pin set per variant (`pins.variants.<name>.pin_set`,
 and on each trial). [api/trials.md](../api/trials.md) has the API.
 
 ```yaml
@@ -44,8 +44,9 @@ mounted read-only. `pins.variants.<name>.harness_digest` is the lock's digest, a
 overlay field (`harness`, `model`, `approvals`, `skills`, `skills_remove`, `instructions`, `instructions_append`):
 mixing them is a 422. The experiment's own `harness` and `model` defaults don't apply to it.
 
-**The overlay is deprecated.** Variants written as an overlay still run, with a note per variant in the experiment's
-`notes`; the fields are marked `deprecated` in
+**The overlay is deprecated.** Variants written as an overlay still run (`{}`, `{skills: []}`,
+`{skills_remove: [repo-conventions]}`, `{harness: codex, model: balanced}`, `instructions_append`, ...), with a note
+per variant in the experiment's `notes`; the fields are marked `deprecated` in
 [experiment.schema.json](../api/experiment.schema.json) and go in the release after flightdeck v0 ships its first
 report. Their `pins.variants.<name>.harness_digest` is the first finished trial's. To move an experiment over:
 
@@ -92,15 +93,14 @@ grader:
   # canary: HANGAR-CANARY-...           # generated per experiment if unset; never reuse one
 tasks:
   - {id: fix-retry, ..., reference_patch: "diff --git ..."}   # optional: a known fix the hidden tests must pass
-  - {id: fix-parse, ..., grader: {command: npm test, files: {...}}}   # optional: its own grader, in place of the one above
+  - {id: fix-parse, ..., grader: {command: npm test, files: {...}}}   # optional (KAN-192): its own grader, in
+    # place of the one above, with its own 64 files and 1 MB (16 MB across all graders); one canary for them all.
+    # With no grader above, every task needs its own.
 ```
 
 The grader runs agent-written code beside the hidden tests, so its sandbox is sealed: no credential and no host at
 all, not even the model API ([security](../security/graders.md#the-graders-sandbox)). A dependency that isn't in the
 image (the environment's, or its repo build's) can't be fetched: use `network: mirror` or a repo build.
-
-A task's own `grader` replaces the experiment's for its trials, with its own 64 files and 1 MB (16 MB in all).
-With no experiment grader, every task needs one.
 
 The command runs in the repo with the trial's patch applied, and gets `HANGAR_HIDDEN_TESTS` (the grader's `files`,
 outside the repo; on Docker root-owned, so the trial's code can read them and not change them), `HANGAR_REPO`,
@@ -113,13 +113,14 @@ bytecode, and the repo on `sys.path` only once pytest has started (a plugin the 
 `conftest.py` among the hidden tests still works (its fixtures and hooks; not options it adds). Its junit counts are
 stored as `grade.hidden_tests`.
 
-**The grader's test run** (#164). The junit `$HANGAR_GRADE_JUNIT` receives is recorded as a [test run](test-results.md) of kind `grader` on the trial's
+**The grader's test run** (#164). The junit `$HANGAR_GRADE_JUNIT` receives (what `hangar-grade` writes; another
+command can write JUnit XML there too) is recorded as a [test run](test-results.md) of kind `grader` on the trial's
 job, through the same parser and size caps as the check after a turn: it shows in `GET /api/jobs/{trial job}/tests`,
 the trial's stored trace (`GET /api/experiments/{id}/trials/{key}/trace`, rewritten once graded) and the outbox's
 `grade.json`, and `grade.test_run` names it. A grader that writes no report gets a run from its exit code alone,
 `complete: false`. It is `trusted` only when the grade is `trust: isolated`; below that the code under test could
 have written the report. Hidden test ids and messages pass the broker's redaction and the canary mask, and never
-reach the repo's flaky list.
+reach the repo's flaky list (which the agent reads in `TEST-RESULTS.json`).
 
 Other ecosystems get no safe runner yet; run them from a copy you control and treat the grade as best effort: `jest
 --config "$HANGAR_HIDDEN_TESTS/jest.config.js" --rootDir "$HANGAR_REPO"` with a config of your own, or copy the
