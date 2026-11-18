@@ -595,9 +595,13 @@ def _confluence(link: dict[str, Any]) -> str | None:
     if not url.startswith("https://"):
         return None
     app = str(((link.get("application") or {}).get("type")) or "") if isinstance(link.get("application"), dict) else ""
-    host = httpx.URL(url).host
+    try:  # --- KAN-293: a link Jira holds but httpx can't parse is skipped, never a job that doesn't start
+        u = httpx.URL(url)
+        host = u.host
+    except (httpx.InvalidURL, ValueError):
+        return None
     if "confluence" in app.lower() or "confluence" in host or (host.endswith(".atlassian.net") and
-                                                               httpx.URL(url).path.startswith("/wiki/")):
+                                                               u.path.startswith("/wiki/")):
         return url
     return None
 
@@ -670,8 +674,12 @@ def _line(b: dict[str, Any]) -> str:
 def trusted_comments(svc: JobService, cfg: JiraConfig, tc: TicketContext) -> list[dict[str, Any]]:
     """--- KAN-293: the comments whose author is linked to a hangar person."""
     cloud = cfg.deployment == "cloud"
-    return [c for c in tc.comments if intake.person_for(svc.store, "jira", _account(
-        c.get("author") or c.get("updateAuthor"), cloud))]
+    def linked(user: Any) -> bool:
+        return bool(intake.person_for(svc.store, "jira", _account(user, cloud)))
+
+    # written by a linked person and, if someone edited it since, edited by one too
+    return [c for c in tc.comments if linked(c.get("author")) and (not c.get("updateAuthor") or linked(
+        c.get("updateAuthor")))]
 
 
 def context_sections(svc: JobService, cfg: JiraConfig, tc: TicketContext,
@@ -1336,9 +1344,11 @@ class JiraFrontDoor:
         # --- KAN-293: what the job's context can still hold beside this file and acceptance.md (built from the
         # description), so the Confluence pages never push the job over its limit
         held = getattr(getattr(svc, "settings", None), "job_max_context_bytes", 2_000_000)
+        items = getattr(getattr(svc, "settings", None), "job_max_context_items", 50) - 3  # jira, acceptance, spare
         room = held - max(cfg.context_max_bytes, len(head.encode()) + 1_000) - len(description.encode()) - 20_000
         sections, pages = await self._ticket_sections(cfg, key, fields.get("description"), summary, account or "",
-                                                      budget=max(0, room))
+                                                      budget=max(0, room) if items > 0 else 0)
+        pages = pages[:max(0, items)]
         context = [ContextItem(name=f"jira-{key}.md", kind="issue", untrusted=True,
                                content=assemble(head, sections, cfg.context_max_bytes))]
         context += [ContextItem(name=p.name, kind="text", untrusted=True, content=p.content) for p in pages]
@@ -1444,7 +1454,7 @@ class JiraFrontDoor:
                 held = getattr(getattr(self.jobs, "settings", None), "job_max_context_bytes", 2_000_000)
                 budget = max(0, held - cfg.context_max_bytes - 20_000)
             if (urls or cfg.confluence.search_spaces) and budget < confluence.MIN_ROOM:
-                res = confluence.Result([], [f"- {u} (not read: no room left in the job's context)"
+                res = confluence.Result([], [f"- {confluence._show(u)} (not read: no room left in the job's context)"
                                              for u in dict.fromkeys(urls)])
             elif urls or cfg.confluence.search_spaces:
                 try:  # fetch keeps its own deadline and never raises; this is the backstop
@@ -1454,7 +1464,8 @@ class JiraFrontDoor:
                 except Exception as e:  # never a job that doesn't start: the links are listed instead
                     why = (f"Confluence took longer than {confluence.SECONDS:.0f} s" if isinstance(e, TimeoutError)
                            else f"hangar couldn't read Confluence ({type(e).__name__})")
-                    res = confluence.Result([], [f"- {u} (not read: {why})" for u in dict.fromkeys(urls)])
+                    res = confluence.Result([], [f"- {confluence._show(u)} (not read: {why})"
+                                                 for u in dict.fromkeys(urls)])
         except TimeoutError:
             return [("problems", f"## Not read\n\n- comments, links and attachments: Jira took longer than "
                                  f"{CONTEXT_SECONDS:.0f} s")], []

@@ -16,7 +16,9 @@ hangar reads a page only on the Jira site's own host, under `/wiki`. A remote li
 
 hangar reads a page only when the person who started the job can read it too: Confluence's permission check answers that first. So a link can't pull a restricted page into a job its starter couldn't open. What the starter can read may still reach the job's result, which hangar posts on the ticket.
 
-Checking what another person can read may need Confluence's administrator permission on hangar's account. Without it, every link says "hangar's token can't check who may read Confluence pages" and no page is read. Grant it, or leave the pages unread.
+Checking what another person can read may need Confluence's administrator permission on hangar's account. Without it, every link says "hangar's token can't check who may read Confluence pages" and no page is read.
+
+Granting it makes hangar's Jira token a Confluence administrator too, a far more powerful account. Weigh that before you grant it; leaving the pages unread is the safe default (KAN-564).
 
 ## What the agent gets
 
