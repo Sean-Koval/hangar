@@ -171,12 +171,19 @@ install -D -m 755 /tmp/antigravity "$PREFIX/bin/agy"
 rm -f /tmp/agy.tgz /tmp/antigravity
 """
 
+# --- KAN-291: what turns Claude Code to Vertex AI, written to ~/.hangar/env next to the key's exports (%s: the key's
+# project). The ${...} defaults expand when the file is sourced, so an environment's own values win.
+VERTEX_EXPORTS = ("CLAUDE_CODE_USE_VERTEX=1 ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-%s} "
+                  "CLOUD_ML_REGION=${CLOUD_ML_REGION:-global}")
+
+
 # A GCP service-account key, billed to the key's own project. The project comes from the key file;
-# GOOGLE_CLOUD_LOCATION expands when ~/.hangar/env is sourced. `extra` adds exports (with %s = project id).
+# GOOGLE_CLOUD_LOCATION expands when ~/.hangar/env is sourced. `extra` adds exports (with %s = project id). A project
+# id that isn't one (it is written into a sourced file) writes nothing.
 def _gcp_sa_slot(extra: str = "") -> CredentialSlot:
     script = (
-        "P=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser(\"~/.config/hangar/gcp-sa.json\")))"
-        "[\"project_id\"])') && "
+        "P=$(python3 -c 'import json,os,re;p=json.load(open(os.path.expanduser(\"~/.config/hangar/gcp-sa.json\")))"
+        "[\"project_id\"];assert re.fullmatch(\"[a-z][-a-z0-9.:]{4,62}\",p);print(p)') && "
         "printf 'export GOOGLE_APPLICATION_CREDENTIALS=%s GOOGLE_CLOUD_PROJECT=%s "
         "GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-global}\\n' "
         "\"$HOME/.config/hangar/gcp-sa.json\" \"$P\" >> ~/.hangar/env"
@@ -196,6 +203,10 @@ HARNESSES: dict[str, Harness] = {
             CredentialSlot(kind=CredentialKind.API_KEY, env_var="ANTHROPIC_API_KEY"),
             # Long-lived (1y) subscription token from `claude setup-token`. Model requests only.
             CredentialSlot(kind=CredentialKind.OAUTH_TOKEN, env_var="CLAUDE_CODE_OAUTH_TOKEN"),
+            # --- KAN-291: Claude on Vertex AI, billed to a GCP project: a service-account key (an API-key-class
+            # login, so automated jobs take it). The project is the key's unless the environment sets
+            # ANTHROPIC_VERTEX_PROJECT_ID; the region is CLOUD_ML_REGION, default global (docs/team/vertex.md).
+            _gcp_sa_slot(VERTEX_EXPORTS),
         ],
         logins=[
             LoginFlow(

@@ -111,7 +111,8 @@ def add_key_command(harness: str) -> str:
 
 def _hint(harness: str) -> str:
     what = API_KEYS.get(harness, ("an API key",))[0]
-    return (f"add {what}: {add_key_command(harness)} (your own; an admin adds --team for work no person owns)")
+    vertex = ", or Claude on Vertex AI (docs/team/vertex.md)" if harness == "claude-code" else ""  # --- KAN-291
+    return (f"add {what}: {add_key_command(harness)} (your own; an admin adds --team for work no person owns){vertex}")
 
 
 def refusal(harness: str) -> str:
@@ -277,9 +278,21 @@ def is_subscription_name(store: Store, name: str) -> bool:
 def _warnings(creds: dict[str, Credential], names: list[str], purpose: str) -> list[str]:
     """What a sandbox holding `names` is warned about: a subscription login in it at all (#125). Only an interactive
     one can hold one: an automated resolution refuses them."""
+    out = [VERTEX_OVERLAP] if _vertex_overlap([creds[n] for n in names if n in creds]) else []
     if purpose != "interactive" or not any(n in creds and is_subscription(creds[n]) for n in names):
-        return []
-    return [INTERACTIVE_WARNING]
+        return out
+    return [INTERACTIVE_WARNING, *out]
+
+
+# --- KAN-291: a Vertex key turns Claude Code to Vertex AI, so with an Anthropic login beside it that login goes unused
+VERTEX_OVERLAP = ("this sandbox holds a Claude Code login and a Claude on Vertex AI key; Claude Code uses Vertex AI "
+                  "(unless the environment records through the model gateway). Name one in the environment's "
+                  "credentials (docs/team/vertex.md)")
+
+
+def _vertex_overlap(creds: list[Credential]) -> bool:
+    mine = [c for c in creds if c.harness == "claude-code"]
+    return any(c.kind == CredentialKind.GENERIC for c in mine) and any(c.kind != CredentialKind.GENERIC for c in mine)
 
 
 def check_job(fleet: Fleet, environment: str, harness: str | None, person: str | None, repo: str | None,

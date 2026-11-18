@@ -105,6 +105,7 @@ nav:
           - Who is trusted: team/who-is-trusted.md
           - Subscription logins: team/subscription-logins.md
           - What the vendors allow: team/vendor-terms.md
+          - Claude Code on Vertex AI: team/vertex.md
           - "Check it: hangar doctor": team/doctor.md
       - Runbooks:
           - runbooks/README.md
