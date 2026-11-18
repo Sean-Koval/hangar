@@ -1379,9 +1379,20 @@ def session_pull(ref: str,
 @app.command("doctor")
 def doctor_cmd(as_json: bool = typer.Option(False, "--json"),
                fix: bool = typer.Option(False, "--fix", help="Offer to apply each safe automatic fix."),
-               yes: bool = typer.Option(False, "--yes", "-y", help="With --fix: apply them without asking.")):
+               yes: bool = typer.Option(False, "--yes", "-y", help="With --fix: apply them without asking."),
+               local: bool = typer.Option(False, "--local", help="Check this machine instead, before any server: "
+                                          "no login, no network needed (`hangar up` runs it first)."),
+               port: int = typer.Option(8787, "--port", help="With --local: the port `hangar up` would use.")):
     """Check this hangar for the things that break jobs and sessions, with the fix for each."""
-    checks = _call("GET", "/api/doctor")
+    if local:  # --- KAN-351: no server, no login
+        if fix:
+            typer.secho("--fix goes with a server's checks, not --local", fg="red", err=True)
+            raise typer.Exit(2)
+        from hangar.setup_cli import local_checks
+
+        checks = local_checks(port)
+    else:
+        checks = _call("GET", "/api/doctor")
     if as_json:
         return _print(checks)
     marks = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "red")}

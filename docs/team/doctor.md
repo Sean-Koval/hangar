@@ -1,7 +1,7 @@
 # Check it: `hangar doctor`
 
 What `hangar doctor` checks about people, credentials and inbox delivery on a team hangar, and what happens to a turn
-that would start with no login. The setup it checks is on [team setup](../team.md).
+that would start with no login. [`--local`](#before-a-server-hangar-doctor-local) checks a laptop before any server. The setup it checks is on [team setup](../team.md).
 
 ## The checks
 
@@ -22,6 +22,24 @@ that would start with no login. The setup it checks is on [team setup](../team.m
   linked Slack account: "inbox not delivered".
 - **unlinked senders**: GitHub, Slack and Jira accounts linked to nobody that started 3 or more jobs
   in the last 14 days. Each comes with its `hangar person link` command.
+
+## Before a server: `hangar doctor --local`
+
+`hangar doctor --local` checks this machine with no server, no login and no network. Run it first on a new or
+locked-down laptop. `hangar up` runs it before it starts anything, and stops on a ✗ with the same text.
+
+- **python, uv**: Python 3.12 or newer; uv is a `!` when it's missing.
+- **container runtime**: which one answers (Docker Desktop, Colima, OrbStack, Rancher Desktop or dockerd). Docker
+  Desktop is a `!`, because company use may need a paid licence. Kata sandboxes need Linux or WSL2.
+- **port**: 8787 (or `--port`) is free, or held by a running hangar.
+- **TLS proxy**: a ✗ when TLS to api.anthropic.com fails the public roots, which means a proxy inspects it. Set
+  `HANGAR_EXTRA_CA_BUNDLE` to your company's root CA as a PEM file to clear it.
+- **reach**: github.com and the hosts of the harnesses `hangar up` builds for. It sends a HEAD with no credentials.
+- **model login**: asks a hangar already running here whether jobs would find an API key. With none running, it
+  reminds you that jobs need one.
+- **offline tools**: `hangar trace import` needs none of the above.
+
+A check that can't run offline is a `!` with the reason. It exits 1 only on a ✗, and `--json` prints the same lines.
 
 ## A turn with no login
 
