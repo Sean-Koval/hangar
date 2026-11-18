@@ -167,6 +167,21 @@ async def test_a_person_allowing_in_hangar_is_a_signature_tower_judges(svc, live
     assert "A-8" in tower.withdrawn and not repo_file(svc, s, "tool-ran.txt").exists()
 
 
+
+async def test_a_requester_named_tower_is_still_a_signature_tower_judges(svc, live, gov, tower):  # noqa: F811
+    """--- KAN-552: a token's name is the requester, so a member's token named "tower" used to skip the signature."""
+    tower.answer = lambda req: (deny("you may not sign your own work")(req) if req.signer is not None else
+                                Decision(outcome="wait", approval_id="A-9", status="waiting"))
+    new(svc, live, "gv-named", "FORCEPUSH clean up history", approvals="governed")
+    s, a = await asked(svc, "gv-named")
+    with pytest.raises(steering.SteerError, match="Tower refused it"):
+        await steering.answer(svc, s, a.id, "allow", "tower")
+    assert tower.asked[-1].signer is not None and a.status == "pending"
+    await steering.answer(svc, s, a.id, "deny", "tower")
+    await gov.drain()
+    s = await settle(svc, "gv-named")
+    assert not repo_file(svc, s, "tool-ran.txt").exists()
+
 # ====================================================================== shadow, off, and Tower down
 async def test_shadow_records_both_answers_and_a_person_decides(svc, live, gov, tower, settings):  # noqa: F811
     settings.governance = "shadow"
