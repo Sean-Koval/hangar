@@ -100,8 +100,11 @@ def status(as_json: bool = typer.Option(False, "--json"),
     if m := v.get("models"):  # --- integ3 (review #105)
         bounds = [b for b in (f"${m['job_budget_usd']:g}/job" if m.get("job_budget_usd") else "",
                               f"${m['person_max_usd_per_day']:g}/person/day" if m.get("person_max_usd_per_day")
-                              else "") if b]
-        cap = ("NO job budget or daily cap (HANGAR_JOB_BUDGET_MAX_COST_USD, HANGAR_PERSON_MAX_USD_PER_DAY)"
+                              else "",
+                              f"${m['repo_max_usd_per_day']:g}/repo/day" if m.get("repo_max_usd_per_day") else "")
+                  if b]
+        cap = ("NO job budget or daily cap (HANGAR_JOB_BUDGET_MAX_COST_USD, HANGAR_PERSON_MAX_USD_PER_DAY, "
+               "HANGAR_REPO_MAX_USD_PER_DAY)"
                if m["uncapped"] else f"capped at {', '.join(bounds)}")
         typer.secho(f"models: jobs default to {m['job_default']} (Claude Code: {m['claude_code']}); {cap}"
                     + (f"; {len(m['repos_capped'])} repo(s) capped by policy" if m.get("repos_capped") else ""),

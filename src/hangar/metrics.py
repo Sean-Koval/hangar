@@ -76,6 +76,10 @@ class Metrics:
                                 registry=r)
         self.cache_turns = Counter("hangar_cache_ttl_turns", "Agent turns by the prompt-cache TTL they asked for "
                                    "(none: the harness has no setting)", ["ttl", "harness"], registry=r)
+        # --- KAN-290: a person's or a repo's daily cap reaching an alert share (spendalert.py); bounded labels only
+        self.spend_alerts = Counter("hangar_spend_cap_alerts", "Daily spend caps that reached an alert share "
+                                    "(HANGAR_SPEND_ALERT_AT), once a cap a share a day", ["scope", "level"],
+                                    registry=r)
         self.budget_stops = Counter("hangar_budget_stops", "Agent turns stopped over their budget",
                                     ["harness", "environment"], registry=r)
         self.ckpt_seconds = Histogram("hangar_checkpoint_seconds", "Checkpoint capture and restore duration",

@@ -524,16 +524,17 @@ def describe(model: str | None, policy: str | None, prices: dict[str, dict[str, 
     return f"`{model}` ({f'`{policy}`; ' if policy else ''}{price})"
 
 
-# --- integ3 (review #105): jobs are uncapped unless the owner sets a budget. Hangar sets no default cap, because what
-# the team may spend is the owner's call; it says so in `hangar doctor` and `hangar status` instead.
+# --- integ3 (review #105): jobs are uncapped unless the owner sets a budget. Hangar's code sets no default cap, because
+# what the team may spend is the owner's call. --- KAN-290: the deploys do (deploy/k8s/config.yaml, the kustomize base
+# and its example overlay), and `hangar doctor` fails a deploy that has none.
 def spend_guard(fleet: Fleet) -> dict[str, Any]:
-    """Whether jobs have a bound on what they spend: a default job budget (HANGAR_JOB_BUDGET_MAX_COST_USD) or a daily
-    cap per person (HANGAR_PERSON_MAX_USD_PER_DAY). Repo policies with their own `job_budget` or `max_usd_per_day` are
-    listed, but each covers only its repo.
+    """Whether jobs have a bound on what they spend: a default job budget (HANGAR_JOB_BUDGET_MAX_COST_USD), a daily
+    cap per person (HANGAR_PERSON_MAX_USD_PER_DAY) and a default daily cap per repo (HANGAR_REPO_MAX_USD_PER_DAY,
+    KAN-290). Repo policies with their own `job_budget` or `max_usd_per_day` are listed, but each covers only its repo.
 
     --- least-privilege: jobs default to `balanced` now, but an environment, repo policy or job can still ask for
-    `frontier` (several times the price), and any model spends without bound with neither cap set. So the warning is
-    about the missing cap, whatever the default."""
+    `frontier` (several times the price), and any model spends without bound with no cap set. So the check is
+    about the missing caps, whatever the default."""
     from hangar import pins
     from hangar.repopolicy import RepoPolicies
 
@@ -541,29 +542,51 @@ def spend_guard(fleet: Fleet) -> dict[str, Any]:
     capped = sorted(p.repo for p in RepoPolicies(fleet.store).list()
                     if p.max_usd_per_day or (p.job_budget and p.job_budget.max_cost_usd))
     job, day = s.job_budget_max_cost_usd or None, s.person_max_usd_per_day or None
+    repo_day = getattr(s, "repo_max_usd_per_day", None) or None
     default = pins.JOB_DEFAULT
-    uncapped = not job and not day
+    missing = [name for name, v in (("HANGAR_JOB_BUDGET_MAX_COST_USD", job), ("HANGAR_PERSON_MAX_USD_PER_DAY", day),
+                                    ("HANGAR_REPO_MAX_USD_PER_DAY", repo_day)) if not v]
     return {"job_default": default, "claude_code": of(fleet).view("claude-code", default)["about"],
-            "job_budget_usd": job, "person_max_usd_per_day": day, "repos_capped": capped, "uncapped": uncapped}
+            "job_budget_usd": job, "person_max_usd_per_day": day, "repo_max_usd_per_day": repo_day,
+            "repos_capped": capped, "missing": missing, "uncapped": not job and not day and not repo_day}
+
+
+def is_deploy(fleet: Fleet) -> bool:
+    """--- KAN-290: a team deploy (Kubernetes: GKE, a company's cluster), where `hangar doctor` fails without
+    budgets. A laptop on Docker gets a warning."""
+    s = fleet.settings
+    return s.default_provider == "kubernetes" or "kubernetes" in (s.enabled_providers or [])
 
 
 def doctor_checks(h: Any) -> list[dict[str, Any]]:
-    """--- integ3 (review #105): a warning while jobs have no job budget and no daily cap."""
+    """--- integ3 (review #105), KAN-290: whether jobs have a job budget and a daily cap. On a deploy, no job budget,
+    or no daily cap at all (per person or per repo), fails; elsewhere it warns. A cap still missing beside the
+    others warns."""
     from hangar.doctor import _check
 
     g = spend_guard(h.fleet)
+    deploy = is_deploy(h.fleet)
+    fix = ("set them, with the amounts in docs/team-scale.md#spend-guardrails: hangar config set "
+           + " <usd>; hangar config set ".join(g["missing"]) + " <usd>")
+    repos = f"; {len(g['repos_capped'])} repo policies set their own" if g["repos_capped"] else ""
     if g["uncapped"]:
-        repos = f"; {len(g['repos_capped'])} repo policies set their own" if g["repos_capped"] else ""
-        return [_check("model spend", None, f"jobs have no budget: they default to `{g['job_default']}` (Claude Code: "
-                       f"{g['claude_code']}), `frontier` where an environment, repo policy or job asks for it, and "
-                       "neither HANGAR_JOB_BUDGET_MAX_COST_USD nor HANGAR_PERSON_MAX_USD_PER_DAY is set, so a job's "
-                       f"spend is bounded only by the budget it brings{repos}",
-                       "pick the amounts (hangar sets none): hangar config set HANGAR_JOB_BUDGET_MAX_COST_USD <usd>, "
-                       "and/or HANGAR_PERSON_MAX_USD_PER_DAY <usd> (docs/upgrading.md, docs/harnesses.md)")]
+        return [_check("model spend", False if deploy else None,
+                       f"jobs have no budget: they default to `{g['job_default']}` (Claude Code: {g['claude_code']}), "
+                       "`frontier` where an environment, repo policy or job asks for it, and none of "
+                       "HANGAR_JOB_BUDGET_MAX_COST_USD, HANGAR_PERSON_MAX_USD_PER_DAY or HANGAR_REPO_MAX_USD_PER_DAY "
+                       f"is set, so a job's spend is bounded only by the budget it brings{repos}", fix)]
     bounds = [b for b in (f"${g['job_budget_usd']:g} a job" if g["job_budget_usd"] else "",
-                          f"${g['person_max_usd_per_day']:g} a person a day" if g["person_max_usd_per_day"] else "")
+                          f"${g['person_max_usd_per_day']:g} a person a day" if g["person_max_usd_per_day"] else "",
+                          f"${g['repo_max_usd_per_day']:g} a repo a day" if g["repo_max_usd_per_day"] else "")
               if b]
-    return [_check("model spend", True, f"jobs default to `{g['job_default']}`, bounded at {' and '.join(bounds)}")]
+    detail = f"jobs default to `{g['job_default']}`, bounded at {' and '.join(bounds)}"
+    if not g["missing"]:
+        return [_check("model spend", True, detail)]
+    no_job = not g["job_budget_usd"]
+    no_day = not g["person_max_usd_per_day"] and not g["repo_max_usd_per_day"]
+    return [_check("model spend", False if deploy and (no_job or no_day) else None,
+                   f"{detail}, but {', '.join(g['missing'])} {'is' if len(g['missing']) == 1 else 'are'} not set"
+                   f"{repos}", fix)]
 
 
 def of(fleet: Fleet) -> Resolver:

@@ -38,6 +38,8 @@ Every policy goes to the `hangar-oncall` channels. A page means act now; a ticke
 | `data-disk` | The `hangar-data` disk is over 85% full for 15 minutes | Ticket | [Disk or quota](runbooks/disk-and-quota.md) |
 | `node-disk` | A node's ephemeral storage is over 90% for 15 minutes | Ticket | [Disk or quota](runbooks/disk-and-quota.md) |
 | `deploy-lag` | Production is over 2 working days behind main while the infra is up | Ticket | [A deploy waiting too long](runbooks/deploy.md) |
+| `spend-cap-80` | A person's or a repo's daily spend cap reached 80% | Ticket | [Spend guardrails](team-scale.md#spend-guardrails) |
+| `spend-cap-100` | A person's or a repo's daily spend cap is spent; new jobs wait for approval | Ticket | [Spend guardrails](team-scale.md#spend-guardrails) |
 | `api-down` | `/healthz` fails from two regions for 10 minutes; needs `domain` | Page | [Bad deploy](runbooks/bad-deploy.md) |
 
 With `alert_escalation_email` set, `tower-fail-closed` and `sandbox-creates-failing` have an escalated copy. It tells the escalation contact when the alert is still open after an hour. Tower's own alerts, such as Tower down, come from `tower.sh up`.

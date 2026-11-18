@@ -307,6 +307,12 @@ class Settings(BaseSettings):
     person_max_usd_per_day: float | None = None
     # --- KAN-300: the same per calendar month (HANGAR_BUDGET_DAY_TIMEZONE's months), beside the daily cap
     person_max_usd_per_month: float | None = None
+    # --- KAN-290: the daily cap of every repo whose policy sets no `max_usd_per_day` of its own (a policy's own cap
+    # wins). Unset or 0 = only repos with a policy cap are capped.
+    repo_max_usd_per_day: float | None = None
+    # --- KAN-290: the shares of a person's or a repo's daily cap that alert (spendalert.py): a Slack DM, a
+    # `hangar.slo: event=spend_cap` line for Cloud Monitoring, and hangar_spend_cap_alerts_total. [] turns them off.
+    spend_alert_at: list[float] = Field(default_factory=lambda: [0.8, 1.0])
     events_max_mb: int = 20  # per-session event log size before it rotates (one rotated file is kept)
     # --- workstream A: triggers ----------------------------------------------
     # GitHub logins and "@org/team" entries whose /hangar comments and labels start jobs right away. Unset: the

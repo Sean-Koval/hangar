@@ -316,8 +316,10 @@ def _policy(h: Any, repo: str, policy: RepoPolicy | None, envs: list[str],
                       "CODEOWNERS file" if owners is None else
                       "land: auto_after_approval, but there are no approvers and no CODEOWNERS file, so no approval "
                       "can land a PR", f"{set_} --approver <login>   (or add a CODEOWNERS file)"))
-    out.append(_c("daily cap", "ok" if policy.max_usd_per_day else "warn",
+    default = getattr(h.settings, "repo_max_usd_per_day", None)  # --- KAN-290: the deploy's default repo cap
+    out.append(_c("daily cap", "ok" if policy.max_usd_per_day or default else "warn",
                   f"${policy.max_usd_per_day:g} a day" if policy.max_usd_per_day else
+                  f"${default:g} a day (HANGAR_REPO_MAX_USD_PER_DAY; the repo sets none of its own)" if default else
                   "no max_usd_per_day: a runaway intake loop spends without limit", f"{set_} --max-usd-per-day 50"))
     return out
 
