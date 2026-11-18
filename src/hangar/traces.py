@@ -108,26 +108,43 @@ _PROBE_FLAGS = {"--version", "--help", "-h", "--collect-only", "--co", "--listTe
                 "-list", "--dry-run"}
 _PROBE_BY_RUNNER = {"tox": {"-l", "-a", "--listenvs", "--listenvs-all"}, "nox": {"-l", "--list-sessions"}}
 _SEGMENT = re.compile(r"&&|\|\||[;|\n]")
-_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_\\][\w.\\-]*)\2")
+_LONG = 20_000  # characters: a longer segment (a script in `python -c`) is split on spaces, not by shlex, which is slow
 
 
 def _segments(command: str) -> list[str]:
-    """The command's `&&`, `||`, `;`, `|` and newline segments, read as a shell reads them: a separator inside
-    quotes is text, a here-document's body and a comment are skipped (a commit message saying "then pytest passes"
-    is not a test run). An unclosed quote runs to the end, as in a clipped command."""
+    """The command's `&&`, `||`, `;`, `|`, `&` and newline segments, read as a shell reads them: a separator inside
+    quotes or `$(...)` is text, a here-document's body and a comment are skipped (a commit message saying "then pytest
+    passes" is not a test run), and a backslash-newline joins lines. An unclosed quote runs to the end, as in a
+    clipped command."""
+    command = re.sub(r"\\\r?\n", "", command)
     out: list[str] = []
     cur: list[str] = []
     pending: list[tuple[str, bool]] = []  # here-documents whose bodies start after this line
-    quote = None
+    stack: list[str] = []  # open quotes ("'", '"', "$'"), substitutions ("(") and arithmetic ("A")
     i, n = 0, len(command)
     while i < n:
-        c = command[i]
-        if quote:
-            if c == "\\" and quote == '"' and i + 1 < n:
+        c, top = command[i], stack[-1] if stack else ""
+        if top in ("'", '"', "$'"):
+            if c == "\\" and top != "'" and i + 1 < n:
                 cur.append(command[i:i + 2])
                 i += 2
                 continue
-            quote = None if c == quote else quote
+            if c == top[-1]:
+                stack.pop()
+            elif top == '"' and command.startswith("$(", i):
+                stack.append("A" if command.startswith("$((", i) else "(")
+                cur.append(command[i:i + 2])
+                i += 2
+                continue
+            cur.append(c)
+            i += 1
+            continue
+        if top == "A":  # $(( 1 << y )): only parentheses count
+            if c == "(":
+                stack.append("A")
+            elif c == ")":
+                stack.pop()
             cur.append(c)
             i += 1
             continue
@@ -135,29 +152,60 @@ def _segments(command: str) -> list[str]:
             cur.append(command[i:i + 2])
             i += 2
             continue
-        if c in "'\"":
-            quote = c
-        elif c == "#" and (not cur or cur[-1][-1:].isspace()):
+        if command.startswith("$((", i):
+            stack += ["A", "A"]
+            cur.append("$((")
+            i += 3
+            continue
+        if command.startswith("$(", i) or (c == "(" and top == "("):
+            stack.append("(")
+        elif c == ")" and top == "(":
+            stack.pop()
+        elif command.startswith("$'", i):
+            stack.append("$'")
+            cur.append("$'")
+            i += 2
+            continue
+        elif c in "'\"":
+            stack.append(c)
+        elif c == "#" and (not cur or cur[-1] in (" ", "\t", "\n", "\r")):
             j = command.find("\n", i)
             i = n if j < 0 else j
             continue
-        elif command.startswith("<<", i) and not command.startswith("<<<", i) and (m := _HEREDOC.match(command, i)):
-            pending.append((m.group(3), m.group(1) == "-"))
+        elif command.startswith("<<<", i):
+            cur.append("<<<")
+            i += 3
+            continue
+        elif command.startswith("<<", i) and (m := _HEREDOC.match(command, i)):
+            pending.append((m.group(3).replace("\\", ""), m.group(1) == "-"))
             cur.append(m.group(0))
             i = m.end()
             continue
-        elif sep := next((x for x in ("&&", "||", ";;", ";", "|", "\n") if command.startswith(x, i)), None):
+        if c == "\n" and pending:  # the bodies follow this line, each up to its delimiter line
+            k = i
+            for delim, tabs in pending:
+                while k < n:
+                    j = command.find("\n", k + 1)
+                    line = command[k + 1:n if j < 0 else j].rstrip("\r")
+                    k = n if j < 0 else j
+                    if (line.lstrip("\t") if tabs else line) == delim:
+                        break
+            pending = []
+            if stack:
+                cur.append("\n")
+            else:
+                out.append("".join(cur))
+                cur = []
+            i = k + 1
+            continue
+        sep = None if stack else next((x for x in ("&&", "||", ";;", ";", "|", "\n") if command.startswith(x, i)),
+                                      None)
+        if not sep and not stack and c == "&" and command[i - 1:i] not in ("<", ">") and command[i + 1:i + 2] != ">":
+            sep = "&"  # sleep 1 & pytest; not 2>&1 or &>log
+        if sep:
             out.append("".join(cur))
             cur = []
             i += len(sep)
-            if sep == "\n":
-                for delim, tabs in pending:
-                    while i < n:
-                        j = command.find("\n", i)
-                        line, i = command[i:n if j < 0 else j], n if j < 0 else j + 1
-                        if (line.lstrip("\t") if tabs else line) == delim:
-                            break
-                pending = []
             continue
         cur.append(c)
         i += 1
@@ -169,6 +217,8 @@ def _words(segment: str) -> list[str]:
     import shlex
 
     try:
+        if len(segment) > _LONG:
+            raise ValueError("too long for shlex")
         words = shlex.split(segment)
     except ValueError:
         words = segment.split()
@@ -177,10 +227,11 @@ def _words(segment: str) -> list[str]:
     return words
 
 
-def _takes_value(flag: str, values: set[str]) -> bool:
+def _takes_value(flag: str, values: set[str], cluster: bool = True) -> bool:
     """Whether `flag` takes the next word as its value; in a cluster (`sudo -iu ci`, `bash -euo pipefail`) the
-    last letter decides."""
-    return flag in values or bool(re.fullmatch(r"-[A-Za-z]{2,}", flag)) and f"-{flag[-1]}" in values
+    last letter decides. A runner's own flags aren't read as clusters: mvn's `-ff` is one flag, and make's `-sj`
+    takes no value."""
+    return flag in values or cluster and bool(re.fullmatch(r"-[A-Za-z]{2,}", flag)) and f"-{flag[-1]}" in values
 
 
 def _skip_flags(words: list[str], takes_value: set[str]) -> list[str]:
@@ -199,7 +250,8 @@ def _positional(words: list[str], values: set[str]) -> list[str]:
         w = words[i]
         if not w.startswith("-") or w == "-":
             out.append(w)
-        elif _takes_value(w, values) and i + 1 < len(words) and not (w in _COUNTS and not words[i + 1].isdigit()):
+        elif (_takes_value(w, values, cluster=False) and i + 1 < len(words)
+              and not (w in _COUNTS and not words[i + 1].isdigit())):
             i += 1
         i += 1
     return out
@@ -241,8 +293,9 @@ def _op(words: list[str], depth: int = 0) -> list[str]:
     module = words[1:]
     if head == "coverage" and module[:1] == ["run"]:
         module = module[1:]  # coverage run -m pytest
-    while module and module[0].startswith("-") and module[0] != "-m":
-        module = module[2:] if module[0] in ("-W", "-X") else module[1:]  # python -u -m pytest
+    while module and module[0].startswith("-") and module[0] != "-m":  # python -u -m pytest
+        module = module[2:] if module[0] in ("-W", "-X", "--source", "--rcfile", "--omit", "--include",
+                                             "--data-file", "--context", "--concurrency") else module[1:]
     if head == "vitest" and args[:1] == ["list"]:
         return []
     if head in _TEST_PROGRAMS or (head.startswith("python") or head == "coverage") and module[:2] in (

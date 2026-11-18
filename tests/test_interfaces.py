@@ -378,6 +378,33 @@ def test_shell_ops_read_quotes_heredocs_and_flag_values_as_a_shell_does():
     assert ops('sh -c "npm test && git commit -m x"') == ["test", "git.commit"] and ops("bash -c 'echo hi'") == []
 
 
+def test_shell_ops_read_continuations_here_strings_and_nested_quotes():
+    """KAN-279 review, round 2: a backslash-newline joins lines, a here-string is not a here-document, a CRLF
+    delimiter still ends one, quotes nest inside `$( )`, and a runner's letters are not read as one cluster."""
+    ops = traces.shell_ops
+    assert ops("docker build . && \\\n  ./scripts/ci/verify.sh") == ["test"]
+    assert ops("pytest -q \\\n  && git commit -m x") == ["test", "git.commit"]
+    assert ops("make -sj test") == ["test"] and ops("mvn -ff test") == ["test"]
+    assert ops('grep x <<<"$out"\npytest') == ["test"] and ops("cat <<< hi && git push") == ["git.push"]
+    assert ops("cat <<EOF > a\r\nbody\r\nEOF\r\npytest\r\n") == ["test"]
+    assert ops("cat <<E\\OF\nbody\nEOF\npytest") == ["test"]
+    nested = """git commit -m "$(cat <<'EOF'\nit's 12" wide; pytest\nEOF\n)" && git push"""
+    assert ops(nested) == ["git.commit", "git.push"]
+    assert ops("echo $'it\\'s; pytest'") == [] and ops("echo $((1<<y)); pytest") == ["test"]
+    assert ops("sleep 1 & pytest") == ["test"] and ops("pytest 2>&1 | tee log") == ["test"]
+
+
+def test_shell_ops_stay_fast_on_huge_commands():
+    """A megabyte of quoted text or here-document is read in well under a second."""
+    import time
+
+    for cmd in ("echo '" + "a; " * 333_333 + "'", "<" * 1_000_000,
+                "cat > f <<'EOF'\n" + "x = 'it''s'\n" * 80_000 + "EOF\npytest"):
+        t0 = time.monotonic()
+        traces.shell_ops(cmd)
+        assert time.monotonic() - t0 < 2, cmd[:20]
+
+
 def test_shell_ops_come_from_the_whole_command_not_the_clipped_preview(settings, broker):
     """A long command (files written by heredoc, then tests and a commit) keeps its ops past the 200-char preview,
     while `hangar.tool.input` stays the preview and says it was clipped. An event recorded before the parser stored
