@@ -143,6 +143,7 @@ def test_a_redacted_row_copied_over_another_or_swapped_is_a_break(tmp_path):
 def test_rows_redacted_under_the_first_form_are_rebound_on_start(tmp_path):
     """--- KAN-553: a purge from before keeps verifying; a row that doesn't match the first form stays a break."""
     from hangar.auditchain import REDACTION_V2, audit_redaction_v1
+    from hangar.store import REDACTIONS_REBOUND
 
     store = _store(tmp_path / "hangar.db")
     _events(store, 3, actor="alice")
@@ -153,6 +154,7 @@ def test_rows_redacted_under_the_first_form_are_rebound_on_start(tmp_path):
         store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), rid))
     # tampered: 'x' isn't a hex digit, so the row always differs from what the purge wrote
     store._db.execute("UPDATE audit SET rdigest='x' || substr(rdigest, 2) WHERE id=?", (ids[-1],))
+    store._db.execute("DELETE FROM kv WHERE key=?", (REDACTIONS_REBOUND,))  # as a database from before the upgrade
     store = _store(tmp_path / "hangar.db")
     got = dict(store._db.execute("SELECT id, rdigest FROM audit WHERE redacted=1").fetchall())
     assert all(got[i].startswith(REDACTION_V2) for i in ids[:-1]) and not got[ids[-1]].startswith(REDACTION_V2)
@@ -174,6 +176,7 @@ def test_the_rebind_runs_once_so_a_first_form_pair_copied_in_later_stays_a_break
     first = min(r[0] for r in store.audit_rows() if r[5])
     data = store._db.execute("SELECT data FROM audit WHERE id=?", (first,)).fetchone()[0]
     store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), first))
+    store._db.execute("DELETE FROM kv WHERE key=?", (REDACTIONS_REBOUND,))  # as a database from before the upgrade
     store = _store(db)  # the upgrade: rebinds it, once, and says so in the chain
     assert datahandling.verify_chain(store)["ok"]
     assert [r for r in store.audit_rows() if REDACTIONS_REBOUND in (r[2] or "")]
@@ -183,6 +186,26 @@ def test_the_rebind_runs_once_so_a_first_form_pair_copied_in_later_stays_a_break
     store = _store(db)
     v = datahandling.verify_chain(store)
     assert not v["ok"] and v["broken_at"] == bobs and "redacted" in v["reason"]
+
+
+def test_the_rebind_stays_done_after_retention_deletes_its_entry(tmp_path):
+    """--- KAN-553 review: the entry ages out under retention; the kv flag keeps the rebind from running again."""
+    from hangar.auditchain import audit_redaction_v1
+    from hangar.store import REDACTIONS_REBOUND
+
+    db = tmp_path / "hangar.db"
+    store = _store(db)
+    _events(store, 1, actor="alice")
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    rid = max(r[0] for r in store.audit_rows() if r[5])
+    data = store._db.execute("SELECT data FROM audit WHERE id=?", (rid,)).fetchone()[0]
+    store = _store(db)  # nothing to rebind; the flag is set all the same
+    assert store.kv_get(REDACTIONS_REBOUND) is not None
+    store._db.execute("DELETE FROM audit WHERE json_extract(data, '$.action') = ?", (REDACTIONS_REBOUND,))
+    store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), rid))
+    store = _store(db)
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == rid
 
 
 def test_the_redacted_digest_is_no_oracle_for_the_name(tmp_path):

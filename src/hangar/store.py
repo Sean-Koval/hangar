@@ -488,8 +488,10 @@ class Store:
                 # can't be removed to run again, and a first-form pair copied in later (from an old backup) stays
                 # a break. One that doesn't match the first form stays a break too.
                 rebound: list[int] = []
-                done = self._db.execute("SELECT 1 FROM audit WHERE json_extract(data, '$.action') = ? LIMIT 1",
-                                        (REDACTIONS_REBOUND,)).fetchone()
+                # a durable flag beside the entry, so retention deleting the entry doesn't run it again
+                done = self._db.execute("SELECT 1 FROM kv WHERE key=?", (REDACTIONS_REBOUND,)).fetchone() or \
+                    self._db.execute("SELECT 1 FROM audit WHERE json_extract(data, '$.action') = ? LIMIT 1",
+                                     (REDACTIONS_REBOUND,)).fetchone()
                 for rid, data, digest, rdigest in [] if done else self._db.execute(
                         "SELECT id, data, digest, rdigest FROM audit WHERE redacted=1 AND rdigest IS NOT NULL "
                         "AND rdigest NOT LIKE ?", (REDACTION_V2 + "%",)).fetchall():
@@ -497,6 +499,9 @@ class Store:
                         self._db.execute("UPDATE audit SET rdigest=? WHERE id=?",
                                          (audit_redaction(key, rid, digest or "", data or ""), rid))
                         rebound.append(rid)
+                if not done:
+                    self._db.execute("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING",
+                                     (REDACTIONS_REBOUND, json.dumps({"rows": len(rebound)})))
                 if rebound:
                     logged.append(self._audit_write(AuditEvent(
                         actor="system", action=REDACTIONS_REBOUND, target=str(rebound[0]),
