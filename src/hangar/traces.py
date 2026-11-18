@@ -74,22 +74,95 @@ _WRAPPERS = {"uv": "run", "poetry": "run", "pipenv": "run", "hatch": "run", "pdm
 _WRAPPER_VALUE_FLAGS = {
     "uv": {"--project", "--directory", "--with", "--with-requirements", "--with-editable", "--python", "-p",
            "--package", "--extra", "--group", "--only-group", "--no-group", "--env-file", "--index", "--from",
-           "--config-file", "--cache-dir"},
+           "--config-file", "--cache-dir", "--index-url", "--extra-index-url", "--default-index", "--find-links",
+           "-P", "--upgrade-package", "--index-strategy", "--keyring-provider"},
     "poetry": {"-C", "--directory", "-P", "--project"}, "pdm": {"-p", "--project"}, "hatch": {"-e", "--env"},
     "pipenv": set(), "bundle": {"--gemfile"}, "pnpm": {"-C", "--dir", "-F", "--filter"},
     "npx": {"-p", "--package"}, "bunx": {"-p", "--package"}, "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
     "time": {"-f", "--format", "-o", "--output"}, "env": {"-u", "--unset", "-C", "--chdir"},
     "nice": {"-n", "--adjustment"}, "timeout": {"-s", "--signal", "-k", "--kill-after"},
     "xvfb-run": {"-n", "--server-num", "-s", "--server-args", "-e", "--error-file", "-f", "--auth-file", "-w",
-                 "--wait", "-p", "--xauth-protocol"}}
+                 "--wait", "-p", "--xauth-protocol"},
+    "sh": {"-o", "-O", "--rcfile", "--init-file"}}
+for _shell in ("bash", "zsh", "dash"):
+    _WRAPPER_VALUE_FLAGS[_shell] = _WRAPPER_VALUE_FLAGS["sh"]
+# A runner's flags that take a value before its subcommand (`make -C svc test`, `pnpm --filter web test`).
+_RUNNER_VALUE_FLAGS = {
+    "npm": {"--prefix", "-w", "--workspace"}, "pnpm": {"-C", "--dir", "-F", "--filter"}, "yarn": {"--cwd"},
+    "bun": {"--cwd", "--filter"}, "go": {"-C"}, "cargo": {"--manifest-path", "--config", "-Z"},
+    "make": {"-C", "--directory", "-f", "--file", "-j", "-l", "-I", "-o", "-W"},
+    "mvn": {"-pl", "--projects", "-f", "--file", "-P", "-s", "-gs", "-T", "-rf"},
+    "gradle": {"-p", "--project-dir", "-b", "-c", "-x", "--exclude-task"}}
+_RUNNER_VALUE_FLAGS["./gradlew"] = _RUNNER_VALUE_FLAGS["gradle"]
+_COUNTS = {"-j", "-l"}  # make's job and load counts are optional: `make -j test` runs the tests
 # Shell words that open a segment before its command: `for f in a; do pytest $f; done`, `if pytest; then ...`.
 _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{"}
 _SHELLS = {"sh", "bash", "zsh", "dash"}
-# A test or CI script, run by a shell or by its path: scripts/ci/verify.sh, ./run_tests.sh, check-all.sh.
-_TEST_SCRIPT = re.compile(r"(run[_-])?(tests?|verify|check|ci)([_.-][\w.-]*)?\.sh")
+# A test or CI script, run by a shell or by its path: scripts/ci/verify.sh, ./run_tests.sh, unit-tests.sh. A deploy
+# or release script named after CI (ci-deploy.sh, verify_signature.sh) is not one.
+_SCRIPT_KIND = r"(?:all|unit|units|e2e|integration|integ|smoke|local|suite|py|python|go|js)"
+_TEST_SCRIPT = re.compile(rf"(?:run[_-]?)?(?:{_SCRIPT_KIND}[_-])?(?:tests?|verify|checks?|ci)(?:[_-]{_SCRIPT_KIND})?"
+                          r"\.(?:sh|bash)")
 # A runner asked only to describe itself or list its tests runs none: pytest --version, jest --listTests.
-_PROBE_FLAGS = {"--version", "--help", "-h", "--collect-only", "--co", "--listTests", "--list"}
+_PROBE_FLAGS = {"--version", "--help", "-h", "--collect-only", "--co", "--listTests", "--list", "--list-tests",
+                "-list", "--dry-run"}
+_PROBE_BY_RUNNER = {"tox": {"-l", "-a", "--listenvs", "--listenvs-all"}, "nox": {"-l", "--list-sessions"}}
 _SEGMENT = re.compile(r"&&|\|\||[;|\n]")
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
+
+
+def _segments(command: str) -> list[str]:
+    """The command's `&&`, `||`, `;`, `|` and newline segments, read as a shell reads them: a separator inside
+    quotes is text, a here-document's body and a comment are skipped (a commit message saying "then pytest passes"
+    is not a test run). An unclosed quote runs to the end, as in a clipped command."""
+    out: list[str] = []
+    cur: list[str] = []
+    pending: list[tuple[str, bool]] = []  # here-documents whose bodies start after this line
+    quote = None
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if quote:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                cur.append(command[i:i + 2])
+                i += 2
+                continue
+            quote = None if c == quote else quote
+            cur.append(c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            cur.append(command[i:i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+        elif c == "#" and (not cur or cur[-1][-1:].isspace()):
+            j = command.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        elif command.startswith("<<", i) and not command.startswith("<<<", i) and (m := _HEREDOC.match(command, i)):
+            pending.append((m.group(3), m.group(1) == "-"))
+            cur.append(m.group(0))
+            i = m.end()
+            continue
+        elif sep := next((x for x in ("&&", "||", ";;", ";", "|", "\n") if command.startswith(x, i)), None):
+            out.append("".join(cur))
+            cur = []
+            i += len(sep)
+            if sep == "\n":
+                for delim, tabs in pending:
+                    while i < n:
+                        j = command.find("\n", i)
+                        line, i = command[i:n if j < 0 else j], n if j < 0 else j + 1
+                        if (line.lstrip("\t") if tabs else line) == delim:
+                            break
+                pending = []
+            continue
+        cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return out
 
 
 def _words(segment: str) -> list[str]:
@@ -104,20 +177,40 @@ def _words(segment: str) -> list[str]:
     return words
 
 
+def _takes_value(flag: str, values: set[str]) -> bool:
+    """Whether `flag` takes the next word as its value; in a cluster (`sudo -iu ci`, `bash -euo pipefail`) the
+    last letter decides."""
+    return flag in values or bool(re.fullmatch(r"-[A-Za-z]{2,}", flag)) and f"-{flag[-1]}" in values
+
+
 def _skip_flags(words: list[str], takes_value: set[str]) -> list[str]:
     """`words` past the leading flags, a flag's value with it when the flag takes one (`--project svc`), a timeout's
     duration and env's assignments."""
-    while words and (words[0].startswith("-") or re.fullmatch(r"\d+[smh]?|[A-Za-z_]\w*=.*", words[0])):
-        words = words[2:] if words[0] in takes_value else words[1:]
+    while words and (words[0].startswith("-") or re.fullmatch(r"\d+(\.\d+)?[smhd]?|[A-Za-z_]\w*=.*", words[0])):
+        words = words[2:] if _takes_value(words[0], takes_value) else words[1:]
     return words
 
 
-def _op(words: list[str]) -> str | None:
+def _positional(words: list[str], values: set[str]) -> list[str]:
+    """A runner's arguments that aren't flags or a flag's value (`make -C svc test` -> ["test"])."""
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if not w.startswith("-") or w == "-":
+            out.append(w)
+        elif _takes_value(w, values) and i + 1 < len(words) and not (w in _COUNTS and not words[i + 1].isdigit()):
+            i += 1
+        i += 1
+    return out
+
+
+def _op(words: list[str], depth: int = 0) -> list[str]:
     while words and words[0] in _KEYWORDS:
         words = words[1:]
     for _ in range(4):  # uv run pytest, sudo -E npx jest, timeout 60 make test
         if not words:
-            return None
+            return []
         head = words[0].rsplit("/", 1)[-1] if words[0] != "./gradlew" else words[0]
         if head in _WRAPPERS and len(words) > 1 and not (head == "pnpm" and words[1] in _TEST_SUBCOMMANDS["pnpm"]):
             sub, values = _WRAPPERS[head], _WRAPPER_VALUE_FLAGS.get(head, set())
@@ -131,29 +224,44 @@ def _op(words: list[str]) -> str | None:
             continue
         break
     if not words:
-        return None
+        return []
     head = words[0].rsplit("/", 1)[-1] if words[0] != "./gradlew" else words[0]
-    args = [w for w in words[1:] if not w.startswith("-")]
+    args = _positional(words[1:], _RUNNER_VALUE_FLAGS.get(head, set()))
     if head == "git":
         sub = next((w for i, w in enumerate(words[1:], 1) if not w.startswith("-")
                     and words[i - 1] not in ("-c", "-C")), None)
-        return {"commit": "git.commit", "push": "git.push", "rm": "delete"}.get(sub or "")
+        op = {"commit": "git.commit", "push": "git.push", "rm": "delete"}.get(sub or "")
+        return [op] if op else []
     if head == "gh" and args[:2] == ["pr", "create"]:
-        return "pr.open"
+        return ["pr.open"]
     if head in ("rm", "rmdir", "unlink", "shred") or (head == "find" and "-delete" in words):
-        return "delete"
-    probe = bool(_PROBE_FLAGS.intersection(words[1:]))
-    if head in _TEST_PROGRAMS or (head.startswith("python") and words[1:3] in (["-m", "pytest"], ["-m", "unittest"])):
-        return None if probe else "test"
+        return ["delete"]
+    probe = bool((_PROBE_FLAGS | _PROBE_BY_RUNNER.get(head, set())).intersection(words[1:]))
+    test: list[str] = [] if probe else ["test"]
+    module = words[1:]
+    if head == "coverage" and module[:1] == ["run"]:
+        module = module[1:]  # coverage run -m pytest
+    while module and module[0].startswith("-") and module[0] != "-m":
+        module = module[2:] if module[0] in ("-W", "-X") else module[1:]  # python -u -m pytest
+    if head == "vitest" and args[:1] == ["list"]:
+        return []
+    if head in _TEST_PROGRAMS or (head.startswith("python") or head == "coverage") and module[:2] in (
+            ["-m", "pytest"], ["-m", "unittest"]):
+        return test
     if head in _TEST_SUBCOMMANDS and args and (args[0] in _TEST_SUBCOMMANDS[head] or (
             head in ("npm", "pnpm", "yarn", "bun") and args[0] == "run" and len(args) > 1
             and args[1].split(":")[0] in ("test", "tests"))):
-        return None if probe else "test"
-    script = _skip_flags(words[1:], set())[:1] if head in _SHELLS and "-c" not in words[1:2] else (
-        words[:1] if "/" in words[0] else [])
+        return test
+    if head in _SHELLS:
+        rest = _skip_flags(words[1:], _WRAPPER_VALUE_FLAGS[head])
+        if any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", o) for o in words[1:len(words) - len(rest)]):
+            return shell_ops(rest[0], depth + 1) if rest and depth < 3 else []  # bash -ec './ci.sh'
+        script = rest[:1]
+    else:
+        script = words[:1] if "/" in words[0] else []
     if script and _TEST_SCRIPT.fullmatch(script[0].rsplit("/", 1)[-1]):
-        return "test"
-    return None
+        return test
+    return []
 
 
 def executable(command: str | None) -> str | None:
@@ -177,12 +285,13 @@ def _skill_name(inp: str | None) -> str | None:
     return name[:100] if name else None
 
 
-def shell_ops(command: str | None) -> list[str]:
+def shell_ops(command: str | None, depth: int = 0) -> list[str]:
     """What a shell command does, in order: `test`, `git.commit`, `git.push`, `pr.open`, `delete`."""
     out: list[str] = []
-    for seg in _SEGMENT.split(command or ""):
-        if (op := _op(_words(seg.strip().lstrip("(").rstrip(")")))) and op not in out:
-            out.append(op)
+    for seg in _segments(command or ""):
+        for op in _op(_words(seg.strip().lstrip("(").rstrip(")")), depth):
+            if op not in out:
+                out.append(op)
     return out
 
 
