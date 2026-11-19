@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 import hangar.identity as identity
 from hangar import people, teamcreds
+from hangar.auth import minted_holders  # --- KAN-554
 from hangar.models import ApiToken, Credential, CredentialKind
 
 
@@ -58,7 +59,8 @@ def _login_scopes(person: Any) -> list[str]:
 
 
 def _mint_login(h: Any, person: Any, name: str, who: str) -> dict[str, Any]:
-    raw, tok = h.auth.create(f"{name}-{person.id}"[:100], _login_scopes(person), person=person.id)
+    raw, tok = h.auth.create(f"{name}-{person.id}"[:100], _login_scopes(person), person=person.id,
+                             holders=minted_holders(identity.principal(), person.id))  # --- KAN-554
     h.fleet.audit(who, "token.create", tok.id, name=tok.name, scopes=tok.scopes, person=person.id)
     return {"token": raw, **tok.model_dump(mode="json", exclude={"token_hash"})}
 

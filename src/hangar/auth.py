@@ -69,6 +69,8 @@ class Principal(NamedTuple):
     reply_to: str | None = None
     may_approve: bool = False
     held: bool = False
+    # --- KAN-554: everyone who could hold the token (ApiToken.holders); None when unknown
+    holders: tuple[str, ...] | None = None
 
     @property
     def admin(self) -> bool:
@@ -123,12 +125,13 @@ class TokenAuth:
 
     def create(self, name: str, scopes: list[str] | None = None,
                callback_secret: str | None = None, max_budget: Budget | None = None,
-               person: str | None = None) -> tuple[str, ApiToken]:
+               person: str | None = None, holders: list[str] | None = None) -> tuple[str, ApiToken]:
         check_token_name(name)
         check_relay_scopes(scopes or ["admin"])  # --- relay
         raw = PREFIX + secrets.token_urlsafe(32)
         tok = ApiToken(name=name, token_hash=hash_token(raw), scopes=scopes or ["admin"],
-                       callback_secret=callback_secret, max_budget=max_budget, person=person)  # --- identity
+                       callback_secret=callback_secret, max_budget=max_budget, person=person,  # --- identity
+                       holders=sorted(set(holders)) if holders is not None else None)  # --- KAN-554
         self.store.put(tok)
         return raw, tok
 
@@ -174,9 +177,12 @@ class TokenAuth:
         if self.gate is not None and not self.gate(person.id, tok):  # --- KAN-294
             return None
         if tok is None:
-            return Principal("admin", "admin", ["admin"], person=person.id, role=person.role)
+            return Principal("admin", "admin", ["admin"], person=person.id, role=person.role, holders=(person.id,))
         scopes = list(tok.scopes) if person.role == "admin" else [s for s in tok.scopes if s in people.MEMBER_SCOPES]
-        return Principal(tok.name, tok.id, scopes, tok.callback_secret, tok.max_budget, person.id, person.role)
+        # --- KAN-554: holders that leave out the token's own person are as good as unknown
+        holders = tuple(tok.holders) if tok.holders and person.id in tok.holders else None
+        return Principal(tok.name, tok.id, scopes, tok.callback_secret, tok.max_budget, person.id, person.role,
+                         holders=holders)
 
     # --- front-door-auth
     def valid(self, raw: str | None) -> bool:
@@ -226,7 +232,9 @@ class TokenAuth:
         if self._admin_hash or self.store.list(ApiToken):
             break_glass_token_id(self.store)
             return None
-        raw, tok = self.create(BOOTSTRAP_NAME)
+        from hangar import people
+
+        raw, tok = self.create(BOOTSTRAP_NAME, holders=[people.OWNER])  # --- KAN-554: minted on the host
         self.store.kv_set(BOOTSTRAP_KV, tok.id, durable=True)  # --- KAN-294: break-glass is this id, not a name
         return raw
 
@@ -458,3 +466,11 @@ class PassportAuth:
 
 def is_passport(p: Principal | None) -> bool:
     return p is not None and p.id.startswith(PASSPORT_ID)
+
+
+def minted_holders(caller: Principal | None, person: str) -> list[str] | None:
+    """--- KAN-554: who could hold a token `caller` mints for `person`: the person, and whoever could hold the caller's
+    token (an admin who mints a token for bob could keep it). None when the caller's holders aren't known."""
+    if caller is None or caller.holders is None:
+        return None
+    return sorted({*caller.holders, person})

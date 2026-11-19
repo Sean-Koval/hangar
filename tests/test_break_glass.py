@@ -14,7 +14,9 @@ from fastapi.testclient import TestClient
 import tests.test_govrelease as tg
 from hangar import approvals, people
 from hangar.governance import (
+    BREAK_GLASS_KEY,
     BREAK_GLASS_LOG,
+    BreakGlass,
     BreakGlassError,
     Decision,
     active_break_glass,
@@ -25,7 +27,7 @@ from hangar.governance import (
     start_break_glass,
 )
 from hangar.govrelease import ApprovalPending, Releases, doctor_checks
-from hangar.models import JobState
+from hangar.models import ApiToken, JobState
 from tests.test_govrelease import Receiver, approved, audits, held, mode, unreachable
 
 world, intake, tower = tg.world, tg.intake, tg.tower  # fixtures
@@ -33,8 +35,8 @@ world, intake, tower = tg.world, tg.intake, tg.tower  # fixtures
 
 def glass_on(store, t: float | None = None) -> None:
     t = time.time() if t is None else t
-    start_break_glass(store, "ada", "Tower down, INC-12", t + 3600, t)
-    confirm_break_glass(store, "owner", t)
+    start_break_glass(store, "ada", "Tower down, INC-12", t + 3600, t, holders=("ada",))
+    confirm_break_glass(store, "owner", t, holders=("owner",))
 
 
 def admin(store, pid: str = "ada") -> approvals.Approver:
@@ -53,21 +55,21 @@ def test_two_admins_at_most_a_day_and_it_ends_on_its_own(store):
         with pytest.raises(BreakGlassError):
             parse_until(bad, t)
     assert parse_until("2027-01-15T08:00:00Z", 1_800_000_000.0 - 3600 * 23) - (1_800_000_000.0 - 3600 * 23) < 86400
-    bg = start_break_glass(store, "ada", "Tower down", t + 7200, t)
+    bg = start_break_glass(store, "ada", "Tower down", t + 7200, t, holders=("ada",))
     assert not bg.active(t) and active_break_glass(store, t) is None  # not until a second admin confirms
     with pytest.raises(BreakGlassError, match="already started"):
-        start_break_glass(store, "bob", "again", t + 60, t)
+        start_break_glass(store, "bob", "again", t + 60, t, holders=("bob",))
     with pytest.raises(BreakGlassError, match="second admin"):
-        confirm_break_glass(store, "ada", t)
-    confirm_break_glass(store, "owner", t)
+        confirm_break_glass(store, "ada", t, holders=("ada",))
+    confirm_break_glass(store, "owner", t, holders=("owner",))
     assert active_break_glass(store, t + 10).confirmed_by == "owner"
     with pytest.raises(BreakGlassError, match="already confirmed"):
-        confirm_break_glass(store, "bob", t)
+        confirm_break_glass(store, "bob", t, holders=("bob",))
     assert active_break_glass(store, t + 7200) is None and load_break_glass(store, t + 7200) is None  # expired: gone
     assert load_break_glass(store, t) is None
     with pytest.raises(BreakGlassError):
-        start_break_glass(store, "ada", "", t + 60, t)
-    start_break_glass(store, "ada", "x", t + 60, t)
+        start_break_glass(store, "ada", "", t + 60, t, holders=("ada",))
+    start_break_glass(store, "ada", "x", t + 60, t, holders=("ada",))
     assert end_break_glass(store) is not None and load_break_glass(store, t) is None
 
 
@@ -111,7 +113,7 @@ async def test_only_an_admin_and_never_against_an_answer_from_tower(intake, towe
 
 async def test_break_glass_waiting_for_confirmation_decides_nothing(intake):
     mode(intake, "enforce")
-    start_break_glass(intake.store, "ada", "Tower down", time.time() + 3600)
+    start_break_glass(intake.store, "ada", "Tower down", time.time() + 3600, holders=("ada",))
     rel = Releases(intake, Receiver(unreachable()))
     job_id = await held(intake, 84)
     with pytest.raises(ApprovalPending):
@@ -145,11 +147,16 @@ def app_world(settings):
     with TestClient(app, base_url="http://localhost:8787") as client:
         h = app.state.hangar
         tok = {}
-        for pid, role in (("ada", "admin"), ("mia", "member")):
+        for pid, role in (("ada", "admin"), ("mia", "member"), ("bob", "admin")):
             tok[pid] = client.post("/api/people", json={"id": pid, "role": role},
                                    headers={"Authorization": "Bearer t0ken"}).json()["login"]["token"]
-        ada2, _ = h.auth.create("ada-laptop", ["admin"], person="ada")
-        yield {"c": client, "h": h, "owner": "t0ken", "ada": tok["ada"], "ada2": ada2, "mia": tok["mia"]}
+        # ada's own tokens: minted on the host, as `hangar token create --person ada` does (KAN-554); bob's login
+        # token was minted by the owner, so the owner could hold it too
+        ada, _ = h.auth.create("ada-own", ["admin"], person="ada", holders=["ada"])
+        ada2, _ = h.auth.create("ada-laptop", ["admin"], person="ada", holders=["ada"])
+        legacy, _ = h.auth.create("ada-legacy", ["admin"], person="ada")  # minted before holders were recorded
+        yield {"c": client, "h": h, "owner": "t0ken", "ada": ada, "ada2": ada2, "legacy": legacy,
+               "ada-by-owner": tok["ada"], "bob": tok["bob"], "mia": tok["mia"]}
 
 
 def test_rest_needs_admins_two_people_and_is_audited(app_world):
@@ -175,6 +182,76 @@ def test_rest_needs_admins_two_people_and_is_audited(app_world):
     assert doctor_checks(h) == []
     steps = [e.detail["step"] for e in h.store.audit_tail(50) if e.action == "governance.break_glass"]
     assert sorted(steps) == ["confirm", "end", "start"]
+
+
+def test_one_admin_cant_start_and_confirm_with_a_token_they_minted_for_another(app_world):
+    # KAN-554: the owner mints bob an admin token, starts break-glass with their own, then confirms with bob's
+    c, h = app_world["c"], app_world["h"]
+
+    def call(token: str, path: str = "", **kw):
+        return c.post(f"/api/governance/break-glass{path}", headers={"Authorization": f"Bearer {token}"}, **kw)
+
+    def minted(by: str, **body):
+        r = c.post("/api/tokens", json={"name": "for-bob", "scopes": ["admin"], **body},
+                   headers={"Authorization": f"Bearer {by}"})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    assert call(app_world["owner"], json={"until": "2h", "reason": "Tower down"}).status_code == 200
+    r = call(app_world["bob"], "/confirm")
+    assert r.status_code == 400 and "owner could hold both" in r.json()["error"]
+    # bob's token can't launder itself: a token it mints is held by whoever could hold it, the owner included
+    laundered = minted(app_world["bob"])
+    assert laundered["person"] == "bob" and laundered["holders"] == ["bob", "owner"]
+    assert call(laundered["token"], "/confirm").status_code == 400
+    # nor can a token the owner mints straight for bob
+    assert minted(app_world["owner"], person="bob")["holders"] == ["bob", "owner"]
+    # a token from before holders were recorded can't take a step; ada's own token confirms
+    r = call(app_world["legacy"], "/confirm")
+    assert r.status_code == 400 and "knows the holders of" in r.json()["error"]
+    assert call(app_world["ada-by-owner"], "/confirm").status_code == 400
+    r = call(app_world["ada"], "/confirm")
+    assert r.status_code == 200 and r.json()["confirmed_by"] == "ada"
+    assert h.store.get(ApiToken, laundered["id"]).holders == ["bob", "owner"]
+
+
+def test_a_sign_in_or_a_host_minted_token_holds_only_its_person(store):
+    from hangar.auth import Principal, TokenAuth, minted_holders
+
+    auth = TokenAuth(store)
+    people.add(store, "ada", role="admin")
+    _, host = auth.create("ada-host", ["admin"], person="ada", holders=["ada"])
+    assert host.holders == ["ada"]
+    own = Principal("ada", host.id, ["admin"], person="ada", role="admin", holders=("ada",))
+    assert minted_holders(own, "ada") == ["ada"] and minted_holders(own, "bob") == ["ada", "bob"]
+    assert minted_holders(own._replace(holders=None), "ada") is None and minted_holders(None, "ada") is None
+    # holders that leave out the token's own person, or say nobody, count as unknown
+    for odd in ([], ["bob"]):
+        _, tok = auth.create(f"odd-{len(odd)}", ["admin"], person="ada", holders=odd)
+        assert auth._of(tok).holders is None
+    # a break-glass started before holders were recorded is ended and started again, not confirmed
+    t = time.time()
+    old = BreakGlass(started_by="ada", reason="Tower down", started_at=t, until=t + 3600)
+    store.kv_set(BREAK_GLASS_KEY, old.model_dump_json(), durable=True)
+    with pytest.raises(BreakGlassError, match="start it again"):
+        confirm_break_glass(store, "bob", t, holders=("bob",))
+
+
+def test_the_bootstrap_token_is_held_by_the_owner_alone(store):
+    from hangar.auth import TokenAuth
+
+    auth = TokenAuth(store)
+    assert auth.ensure_bootstrap()
+    (boot,) = store.list(ApiToken)
+    assert boot.holders == ["owner"]
+    # and a break-glass step refuses holders that leave out the token's own person
+    t = time.time()
+    with pytest.raises(BreakGlassError, match="its own person holds"):
+        start_break_glass(store, "ada", "Tower down", t + 3600, t, holders=())
+    start_break_glass(store, "ada", "Tower down", t + 3600, t, holders=("ada",))
+    with pytest.raises(BreakGlassError, match="its own person holds"):
+        confirm_break_glass(store, "bob", t, holders=("carol",))
+    assert confirm_break_glass(store, "bob", t, holders=("bob",)).confirmed_by == "bob"
 
 
 def test_the_cli(monkeypatch):

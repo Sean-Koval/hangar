@@ -58,8 +58,11 @@ def test_local_when_url_unset(monkeypatch):
     monkeypatch.delenv("HANGAR_URL", raising=False)
     calls = _record(monkeypatch, None)
 
+    made = {}
+
     class FakeAuth:
-        def create(self, name, scopes=None, callback_secret=None):
+        def create(self, name, scopes=None, callback_secret=None, holders=None):
+            made["holders"] = holders
             return "raw-secret", SimpleNamespace(id="loc1")
 
     monkeypatch.setattr(hangar.app, "Hangar", lambda: SimpleNamespace(auth=FakeAuth()))
@@ -67,6 +70,7 @@ def test_local_when_url_unset(monkeypatch):
     assert r.exit_code == 0, r.output
     assert "loc1" in r.output and "raw-secret" in r.output
     assert calls == []
+    assert made["holders"] == ["owner"]  # --- KAN-554: a token minted on the host is held by its person alone
 
 
 def test_login_saves_config_and_commands_use_it(monkeypatch, tmp_path):

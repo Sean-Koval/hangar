@@ -35,7 +35,7 @@ from hangar import prsync as prsync  # --- KAN-246: PR state from GitHub when we
 from hangar import redeliver as redeliver  # --- reconciler
 from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar import weekly as weekly  # --- #168: weekly adoption metrics and the standup line
-from hangar.auth import SCOPES, TokenAuth, bearer_from_headers
+from hangar.auth import SCOPES, TokenAuth, bearer_from_headers, minted_holders
 from hangar.broker import Broker, CredentialError
 from hangar.config import Settings, get_settings
 from hangar.envspec import EnvCatalog
@@ -1026,7 +1026,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(400, f"callback_secret '{body.callback_secret}' must name a 'webhook' credential")
         try:
             raw, tok = h.auth.create(body.name, body.scopes, callback_secret=body.callback_secret,
-                                     max_budget=body.max_budget, person=person)  # --- identity
+                                     max_budget=body.max_budget, person=person,  # --- identity
+                                     holders=minted_holders(identity.principal(), person))  # --- KAN-554
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         fleet.audit(who, "token.create", tok.id, name=body.name, scopes=body.scopes)
