@@ -57,6 +57,7 @@
   "fast_mode_state",
   "is_error",
   "modelUsage",
+  "model_usage_since_last_result",
   "num_turns",
   "permission_denials",
   "queued_turn_count",
@@ -106,6 +107,7 @@
   "first_request_input_tokens",
   "is_error",
   "modelUsage",
+  "model_usage_since_last_result",
   "num_turns",
   "permission_denials",
   "queued_turn_count",
@@ -151,6 +153,7 @@
   "uuid"
  ],
  "system/init": [
+  "additional_directories",
   "agents",
   "analytics_disabled",
   "apiKeySource",
@@ -164,6 +167,7 @@
   "memory_paths.auto",
   "messaging_socket_path",
   "model",
+  "original_cwd",
   "output_style",
   "per_turn_effort_active",
   "permissionMode",
@@ -176,6 +180,7 @@
   "terminal_slash_commands",
   "tools",
   "type",
+  "user_message_uuids",
   "uuid",
   "view_mode"
  ],
