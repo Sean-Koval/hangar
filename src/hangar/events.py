@@ -41,6 +41,7 @@ KINDS: tuple[str, ...] = ("message", "tool_call", "tool_result", "command", "fil
 MAX_LINE = 1024 * 1024  # longer log lines (huge tool outputs) are skipped, and counted
 CHUNK = 128 * 1024  # raw bytes per read: base64 of it stays under the providers' 256 KiB exec output cap
 READS_PER_POLL = 8
+ENDED_READS = 16  # KAN-557: a turn's end reads up to 16 x 4 MiB of log it hadn't read yet
 TEXT_MAX = 500
 MESSAGE_MAX = 2000
 
@@ -1142,6 +1143,24 @@ class TurnWatcher:
             self._follow.cancel()
             await asyncio.gather(self._follow, return_exceptions=True)
             self._save_fed()
+
+    async def ended(self) -> str | None:
+        """--- KAN-557: the run ended on its own: read what it wrote since the last poll and say why its usage is
+        over the budget, or None. A poll may never have seen its last spending. Time isn't counted here: a turn
+        that ended by itself wasn't stopped late. finish() still reads whatever is left after this."""
+        await self._stop_follow()  # --- stream
+        p = self.parser
+        if self.turn.run_id and self.s.sandbox_id:
+            try:
+                for _ in range(ENDED_READS):  # to the log's end, so the usage it ends on counts (review)
+                    at = p.next
+                    await self._read(final=True)
+                    if p.next == at:
+                        break
+            except Exception:  # noqa: BLE001 - activity is best effort; it must never break the turn
+                log.exception("session %s: collecting events failed", self.s.id)
+        self.turn.usage = p.view() if (p.usage.tokens + p.usage.cache_read_tokens or p.final) else self.turn.usage
+        return over_budget(self.s.budget, self.turn.usage, None)
 
     async def finish(self, alive: bool = True) -> None:
         """The turn is over: read the rest of the log (if the sandbox is still there) and close the cursor."""

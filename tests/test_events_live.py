@@ -95,9 +95,9 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"all done"
     assert not (_home(jobs.fleet, s) / "finished").exists()  # the agent was killed, not left spending
     # what it had done is delivered, as a draft
     assert job.result.pushed and any("partial work" in c for c in job.result.commits) and drafts == [True]
-    assert any("stopped over budget" in e.message for e in job.events)
+    assert any(e.message.startswith("over budget: ") for e in job.events)
     comment = jobs.hooks.comments()[-1]
-    assert "(over_budget)" in comment and "Stopped over budget (spent $" in comment and "Usage:" in comment
+    assert "(over_budget)" in comment and "Over budget (spent $" in comment and "Usage:" in comment
     # usage and the event stream are visible through the job
     v = jobs.view(job)
     assert v["usage"]["cost_usd"] == pytest.approx(turn.usage.cost_usd) and v["budget"]["max_cost_usd"] == 1.0
@@ -109,6 +109,39 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"all done"
     assert jobs.events(job.id, tail=1) == evs[-1:]
     with pytest.raises(KeyError):
         jobs.events(job.id, owner="someone-else")
+
+
+async def test_a_turn_that_overspends_and_exits_between_polls_is_over_budget(jobs, world, broker, monkeypatch,
+                                                                                settings):
+    """KAN-557: the agent spends past its budget and exits before the next poll looks at its usage. The turn is
+    still over budget, as if a poll had caught it, and its work is delivered as a draft."""
+    settings.session_poll_seconds = 5  # the second look waits in the sandbox; the agent ends long before it
+    steps = "\n".join(f"echo '{claude_step(i)}'" for i in range(1, 11))
+    agent(world["root"], monkeypatch, f"""
+echo '{{"type":"system","subtype":"init","model":"claude-sonnet-4-5","session_id":"s-1"}}'
+sleep 1
+echo done > done.txt && git add done.txt && git commit -qm "all the work"
+{steps}
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"all done","total_cost_usd":3.15}}'
+""")
+    _gh_settings(jobs, broker)
+    drafts: list[bool] = []
+
+    async def ensure_pr(job, draft):
+        drafts.append(draft)
+
+    monkeypatch.setattr(jobs, "_ensure_pr", ensure_pr)
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="jobenv", deliver="pr",
+                                budget=Budget(max_cost_usd=1.0)),
+                      Caller("github:sean", "github:sean"), source="github", source_ref="github:o/r#12")
+    job = await _until(jobs, job.id, DONE, timeout=30)
+    turn = job.turns[0]
+    assert turn.exit_code == 0 and turn.usage.cost_usd > 1.0, [e.message for e in job.events]
+    assert turn.outcome == "over_budget" and "the budget is $1.00" in turn.outcome_reason
+    assert job.state == JobState.FAILED and job.reason == "over_budget"
+    assert job.result.pushed and drafts == [True]
+    assert jobs.sessions.get(job.session_id).turns[0].summary == "all done"  # it finished: its own word stands
+    assert any(e["kind"] == "error" and e["text"].startswith("finished over budget") for e in jobs.events(job.id))
 
 
 async def test_token_budget_caps_restricted_callers(fleet, world, settings):
