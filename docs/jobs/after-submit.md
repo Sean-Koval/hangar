@@ -22,7 +22,8 @@ for review capacity.
 
 Poll `GET /api/jobs/{id}`, or wait for the [callback](README.md#4-verify-callbacks). The job view carries `state`, the
 `events` timeline, `usage` (tokens and USD), `sandbox_id` and `terminal_session`. Its `result` has the commits,
-diffstat, `pr_url`, the verification exit code and output tail, and the agent's summary.
+diffstat, `pr_url`, the verification exit code and output tail, and the agent's summary. A pushed branch
+with no PR has `pr_error`, with GitHub's reason.
 
 `GET /api/jobs/{id}/events?since=` streams what the agent is doing (messages, commands, file changes, errors). It has
 the same shape for every harness.

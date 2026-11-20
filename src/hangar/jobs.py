@@ -1524,6 +1524,9 @@ class JobService:
         repo = parse_repo(job.repo)
         gh = await self.landing.client(repo, job) if repo else None  # --- landing: as the GitHub App, when set
         if gh is None:
+            if not job.result.pr_url:  # --- KAN-339
+                job.result.pr_error = "PR not opened: not a GitHub repo, or HANGAR_GITHUB_TOKEN_CREDENTIAL is not set"
+                self._save(job)
             self._event(job, "branch pushed; PR not opened (not a GitHub repo, or HANGAR_GITHUB_TOKEN_CREDENTIAL "
                              "is not set)")
             return
@@ -1532,17 +1535,38 @@ class JobService:
             if pr is None:
                 base = job.base_branch or await gh.default_branch(repo)
                 if not base or base == job.branch:  # --- KAN-308: an empty repo's first branch is the job's own
+                    if not job.result.pr_url:  # --- KAN-339: on the job, not only in its events
+                        job.result.pr_error = "PR not opened: no base branch yet (the job's is the repo's first)"
+                        self._save(job)
                     self._event(job, f"pushed {job.branch} as the repository's first branch; no base branch to "
                                      "open a PR against yet (a follow-up opens one once the repo has a default "
                                      "branch)")
                     return
                 draft = aireview.hold(self, job, draft)  # --- KAN-228: held as a draft for the self-review
                 title = changesets.title_for(self.policies.get(job.repo), job)  # --- change sets (G7)
-                pr = await gh.open_pr(repo, job.branch, base,
-                                      secretscan.clean(self, job, title, "the PR title"),  # --- egress
-                                      secretscan.clean(self, job, self._pr_body(job), "the PR body"), draft)
-                self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
+                body = secretscan.clean(self, job, self._pr_body(job), "the PR body")
+                if (over := len(body) - GITHUB_PR_BODY_LIMIT) > 0:  # --- KAN-339: masks outgrow what they hide; rare
+                    # cut that much more of the summary, so hangar's lines and the trailers stay (already reported)
+                    body = secretscan.mask(self._pr_body(job, MAX_PR_BODY - over), self.broker)[0]
+                    body = body[:GITHUB_PR_BODY_LIMIT]  # can't be over now; a bound, not a cut
+                try:
+                    pr = await gh.open_pr(repo, job.branch, base,
+                                          secretscan.clean(self, job, title, "the PR title"),  # --- egress
+                                          body, draft)
+                    self._event(job, f"opened {'draft ' if pr.get('draft') else ''}PR #{pr['number']}")
+                except GitHubError as e:  # --- KAN-339: one opened meanwhile (a retry, a person) is adopted
+                    if e.status != 422 or not any("already exists" in x.lower() for x in e.errors):
+                        raise
+                    try:
+                        pr = await gh.find_pr(repo, job.branch)
+                    except (GitHubError, httpx.HTTPError):
+                        raise e from None  # GitHub's reason for the 422, not the lookup's
+                    if pr is None or (pr.get("base") or {}).get("ref", base) != base:
+                        raise  # nothing to adopt, or a PR into another base: not this job's
+                    self._event(job, f"adopted PR #{pr.get('number')}, already open for {job.branch}"
+                                     + ("" if pr.get("draft") or not draft else " (it is not a draft)"))
             job.result.pr_url, job.result.pr_number = pr.get("html_url"), pr.get("number")
+            job.result.pr_error = None
             self.landing.opened(job, pr)  # --- landing
             self._save(job)
             if taint.tainted(job) and pr.get("number"):  # --- taint (#130): reviewers see it in the PR list
@@ -1553,6 +1577,9 @@ class JobService:
             if adr.is_adr(job) and pr.get("number"):  # --- #170: agent-drafted, adr
                 await adr.label_pr(self, gh, repo, int(pr["number"]), job)
         except (GitHubError, httpx.HTTPError) as e:
+            if not job.result.pr_url:  # --- KAN-339: on the job, not only in its events
+                job.result.pr_error = f"opening the PR failed: {e}"[:600]
+                self._save(job)
             self._event(job, f"branch pushed; opening the PR failed: {e}")
         finally:
             await gh.close()
@@ -1571,9 +1598,9 @@ class JobService:
                                 verify_exit_code=job.result.verify_exit_code, verify_ran=ran)
         return self.broker.redact(out)[:8000] if out else None
 
-    def _pr_body(self, job: Job) -> str:
+    def _pr_body(self, job: Job, cap: int | None = None) -> str:
         # `___`, not `---`: git reads a `---` line as the end of a message, and the trailers below must parse (#137)
-        lines = [job.result.summary or "_The agent left no summary._", "", "___"]
+        lines = ["", "___"]
         if job.verify:
             ok = "passed" if job.result.verify_exit_code == 0 else f"failed (exit {job.result.verify_exit_code})"
             lines.append(f"Verification `{job.verify}`: **{ok}**")
@@ -1602,7 +1629,8 @@ class JobService:
             lines.append(f"Jira: {key}")
         from hangar import trailers  # --- #137: Hangar-Job, Harness-Digest, ... as git trailers, last
 
-        return "\n".join(lines) + trailers.block(self, job)
+        return _cap_body(self, job, job.result.summary or "_The agent left no summary._", "\n".join(lines),
+                         trailers.block(self, job), MAX_PR_BODY if cap is None else cap)
 
     async def _keep(self, job: Job, s) -> None:
         """Keep the sandbox for follow-ups and take-over while it's in use, and at least `keep_minutes`; then the
@@ -1724,6 +1752,37 @@ class JobService:
                     err = type(e).__name__
                 await asyncio.sleep(0 if self.transport else 2 ** attempt)
         self._event(job, f"callback {event} failed after 3 attempts: {err}")
+
+
+# --- KAN-339: GitHub refuses a PR body over 65,536 characters (422); room is left for secretscan's masks
+MAX_PR_BODY = 60_000
+GITHUB_PR_BODY_LIMIT = 65_536
+
+
+def _cap_body(svc: JobService, job: Job, summary: str, rest: str, trailers: str, cap: int = MAX_PR_BODY) -> str:
+    """The PR body within `cap` characters. Only the agent's summary is cut, so hangar's own lines (verification,
+    warnings, Jira, Closes) and the trailers stay; never inside a secret, which secretscan.clean masks later."""
+    if len(summary) + len(rest) + len(trailers) <= cap:
+        return summary + rest + trailers
+    from hangar import secretscan
+
+    note = (f"\n\n_The agent's summary was cut to fit GitHub's limit. The full summary is the job's RESULT.md: see "
+            f"hangar job {job.id} (`hangar job get {job.id}`) and its artifacts._")
+    room = max(0, cap - len(rest) - len(trailers) - len(note) - 21)  # 21: a closing fence, below
+    for start, end, _ in secretscan.find(summary, svc.broker):
+        if start < room < end:
+            room = start
+    kept = summary[:room].rstrip()
+    fence = ""  # cut inside a code block (``` or ~~~, three or more): close it, so the note and the rest aren't code
+    for line in kept.splitlines():
+        if m := re.match(r" {0,3}(`{3,}|~{3,})", line):
+            if not fence:
+                fence = m.group(1)
+            elif m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line.strip(" `~"):
+                fence = ""
+    if fence:
+        kept += "\n" + fence
+    return kept + note + rest + trailers
 
 
 class _DeliveryError(RuntimeError):
