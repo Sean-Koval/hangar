@@ -5,12 +5,12 @@ ARG BASE_IMAGE=python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed
 
 # --- envd: hangar-envd, the in-sandbox daemon (envd/, docs/envd.md), static for both CPU types: hangar copies it
 # into sandboxes at start, and they needn't match the control plane's CPU.
-FROM rust:1.98-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f AS envd
+FROM rust:1.99-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383 AS envd
 WORKDIR /src
 COPY envd ./
 RUN CARGO_TARGET_DIR=/tmp/target ARCHES="x86_64 aarch64" sh build.sh
 
-FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
 
 FROM ${BASE_IMAGE}
 
