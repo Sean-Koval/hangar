@@ -374,8 +374,9 @@ def pseudonym(h: Any, person_id: str) -> str:
     return "person:" + hashlib.sha256(f"{salt}\n{person_id}".encode()).hexdigest()[:16]
 
 
-# --- KAN-553: owner and requester values hangar itself writes (sessions.py, models.py defaults): nobody's names
-FIXED_OWNERS = frozenset({"admin", "system", "jobs", "tower", "hangar"})
+# --- KAN-553: owner and requester values hangar itself writes (sessions.py, models.py defaults): nobody's names.
+# The same list people.py refuses as person ids (KAN-552), so the two can't drift.
+FIXED_OWNERS = people.RESERVED_IDS
 
 
 def aliases(store: Store, person_id: str) -> tuple[list[str], list[str]]:
