@@ -25,8 +25,8 @@ that would start with no login. [`--local`](#before-a-server-hangar-doctor-local
 
 ## Before a server: `hangar doctor --local`
 
-`hangar doctor --local` checks this machine with no server, no login and no network. Run it first on a new or
-locked-down laptop. `hangar up` runs it before it starts anything, and stops on a ✗ with the same text.
+`hangar doctor --local` checks this machine with no server and no login. Its only network calls are one HTTPS
+request to each host it checks. Run it first on a new or locked-down laptop. `hangar up` runs it before it starts anything, and stops on a ✗ with the same text.
 
 - **python, uv**: Python 3.12 or newer; uv is a `!` when it's missing.
 - **container runtime**: which one answers (Docker Desktop, Colima, OrbStack, Rancher Desktop or dockerd). Docker

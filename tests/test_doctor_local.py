@@ -1,6 +1,7 @@
 """`hangar doctor --local` (KAN-351): each condition faked, no server, no login, no network."""
 
 import json
+import os
 import socket
 import ssl
 from pathlib import Path
@@ -65,6 +66,34 @@ def test_port_probe_sees_a_listener():
         assert not ld._port_free(s.getsockname()[1])
 
 
+def test_port_free_past_time_wait():
+    """A hangar that stopped with clients connected leaves TIME_WAIT on its port; uvicorn binds past it, so must we."""
+    if os.name == "nt":
+        pytest.skip("SO_REUSEADDR means something else on Windows")
+    with socket.socket() as srv:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as uvicorn's listener does (Linux needs both)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        port = srv.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        conn, _ = srv.accept()
+        conn.close()  # the server side closes first, so its end of the connection goes to TIME_WAIT
+        client.recv(1)
+        client.close()
+    assert ld._port_free(port)
+
+
+def test_a_bundle_under_home_is_expanded(tmp_path, monkeypatch):
+    import certifi
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "corp.pem").write_bytes(Path(certifi.where()).read_bytes())
+    seen = []
+    monkeypatch.setattr(ld, "_probe", lambda h, verify=None: seen.append(verify) or OK)
+    c = ld.check_proxy(None, "~/corp.pem", _probes(BAD))
+    assert _status(c) == "ok" and seen == [str(tmp_path / "corp.pem")] * len(ld.TLS_HOSTS)
+
+
 OK = (None, True, None)
 BAD = (None, False, "self-signed certificate in certificate chain")
 OFF = ("[Errno -2] Name or service not known", None, None)
@@ -75,8 +104,10 @@ def _probes(state):
 
 
 def test_proxy(tmp_path):
+    import certifi
+
     pem = tmp_path / "corp.pem"
-    pem.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+    pem.write_bytes(Path(certifi.where()).read_bytes())  # real certificates, so ssl loads them
     var, proxy = ld.CA_VAR, "http://user:secret@proxy.corp:3128"
     # an inspecting proxy, no bundle: ✗ naming the variable, with the certificate's reason
     c = ld.check_proxy(proxy, None, _probes(BAD))
@@ -99,6 +130,14 @@ def test_proxy(tmp_path):
     # a proxy that only tunnels, and no proxy at all: ✓
     assert _status(ld.check_proxy("http://p:8080", None, _probes(OK))) == "ok"
     assert _status(ld.check_proxy(None, None, _probes(OK))) == "ok"
+    # a PEM header over a body ssl can't load: ✗, never "trusts"
+    broken = tmp_path / "broken.pem"
+    broken.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+    c = ld.check_proxy(proxy, str(broken), _probes(BAD), reprobe=lambda h, b: OK)
+    assert _status(c) == "fail" and "doesn't load as a CA certificate" in c["detail"]
+    # a re-probe with the bundle that couldn't run: !, not ✓
+    c = ld.check_proxy(proxy, str(pem), _probes(BAD), reprobe=lambda h, b: OFF)
+    assert _status(c) == "warn" and "couldn't run" in c["detail"] and var in c["fix"]
     # no network to tell, with or without a proxy: a ! with the reason
     for p in ("http://p:8080", None):
         c = ld.check_proxy(p, None, _probes(OFF))

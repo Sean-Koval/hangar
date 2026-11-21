@@ -3,8 +3,9 @@
 `hangar doctor` asks a running hangar. On a fresh or locked-down laptop there is none yet, so this checks what
 `hangar up` needs from the machine itself: python and uv, a container runtime, the port, a TLS-inspecting proxy,
 reachability of the model and GitHub hosts, and whether jobs would find an API key. Each line carries its fix, with
-the same marks and `--json` shape as `hangar doctor`. Only a ✗ stops `hangar up`: a check that can't run (no network,
-an odd proxy setting) is a `!` with the reason, never a crash.
+the same marks and `--json` shape as `hangar doctor`. Its only network calls are one HTTPS request per host. Only
+a ✗ stops `hangar up`: a check that can't run (no network, an odd proxy setting) is a `!` with the reason, never a
+crash.
 """
 
 from __future__ import annotations
@@ -78,6 +79,8 @@ def _port_free(port: int) -> bool:
         except OSError:
             continue  # no IPv6 here
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if os.name != "nt":  # as uvicorn does: a stopped hangar's TIME_WAIT connections don't hold the port
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", port))
         except OSError:
@@ -109,7 +112,7 @@ def _probe(host: str, verify: str | None = None) -> Probe:
     try:
         ctx = ssl.create_default_context(cafile=certifi.where())
         if verify:
-            ctx.load_verify_locations(cafile=verify)
+            ctx.load_verify_locations(cafile=os.path.expanduser(verify))
         with httpx.Client(verify=ctx, timeout=TIMEOUT, follow_redirects=False) as c:
             c.head(f"https://{host}/")
         return None, True, None
@@ -228,6 +231,15 @@ def _pem_readable(path: str) -> str | None:
     return None if _PEM in data else f"{path} holds no PEM certificate"
 
 
+def _bundle_loads(path: str) -> str | None:
+    """None when ssl loads `path` as CA certificates (a PEM header over a broken body doesn't), else why not."""
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cafile=os.path.expanduser(path))
+    except (ssl.SSLError, OSError, ValueError) as e:
+        return f"{path} doesn't load as a CA certificate ({_why(e)})"
+    return None
+
+
 def ca_bundle(data_dir: Path | None = None) -> tuple[str | None, str]:
     """HANGAR_EXTRA_CA_BUNDLE as the server `hangar up` starts would see it: the environment or ./.env first (as
     Settings reads them), else stored with `hangar config set` in this machine's hangar database."""
@@ -261,7 +273,7 @@ def check_proxy(proxy: str | None, bundle: str | None, probes: dict[str, Probe],
     via = f" through {_host(proxy)}" if proxy else ""
     failed = {h: probes[h][2] for h in TLS_HOSTS if h in probes and probes[h][1] is False}
     if bundle:
-        if why := _pem_readable(bundle):
+        if why := _pem_readable(bundle) or _bundle_loads(bundle):
             return _check("TLS proxy", False, f"{source} is set, but {why}", fix)
         again = {h: (reprobe or _reprobe)(h, bundle) for h in failed}
         still = {h: p[2] for h, p in again.items() if p[1] is False}
@@ -269,6 +281,10 @@ def check_proxy(proxy: str | None, bundle: str | None, probes: dict[str, Probe],
             return _check("TLS proxy", False, f"TLS{via} to {', '.join(still)} fails even with {bundle} "
                           f"({next(iter(still.values()))}), so it isn't the CA that signs what the proxy presents",
                           fix)
+        if untried := {h: p[0] for h, p in again.items() if p[1] is None}:
+            return _check("TLS proxy", None, f"TLS{via} to {', '.join(untried)} fails the public roots, and trying "
+                          f"it again with {bundle} couldn't run ({next(iter(untried.values()))})",
+                          f"run this again with the network up; if it still fails: {fix}")
         return _check("TLS proxy", True, f"{source} trusts {bundle}" + (f" (proxy {_host(proxy)})" if proxy else ""))
     if failed:
         why = next(iter(failed.values()))
@@ -287,7 +303,7 @@ def check_proxy(proxy: str | None, bundle: str | None, probes: dict[str, Probe],
 
 
 def _reprobe(host: str, bundle: str) -> Probe:
-    return _probe(host, verify=bundle)
+    return _probe(host, verify=os.path.expanduser(bundle))
 
 
 def _host(url: str | None) -> str:
@@ -373,7 +389,7 @@ def check_offline() -> dict[str, Any]:
 
 def run(port: int = 8787, envs: list[str] | None = None, token: str | None = None,
         envs_dir: Path | None = None, data_dir: Path | None = None) -> list[dict[str, Any]]:
-    """Every check, in order. Runs with no server, no login and no network."""
+    """Every check, in order. Runs with no server and no login; the network is used only for the host probes."""
     envs = envs or ["claude-python"]
     groups = reach_groups(env_harnesses(envs, envs_dir))
     hosts = list(dict.fromkeys([*TLS_HOSTS, *(x for _, hs in groups for x in hs)]))
