@@ -210,6 +210,7 @@ nav:
           - The Fleet API: api/fleet.md
           - hangar-envd: envd.md
           - Trace export (hangar.trace/v1): api/traces.md
+          - What a command wrote and ran: api/shell-facts.md
           - Importing a Claude Code session: api/trace-import.md
           - Run capture (hangar.run/v1): api/outbox.md
           - "Outcome labels on a merged PR": api/outcome-labels.md
