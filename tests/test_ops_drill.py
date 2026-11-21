@@ -63,7 +63,7 @@ def test_restore_drill_passes_on_a_seeded_database(tmp_path: Path):
     assert drill.main(["restore", "--out", str(out)]) == 0
     rep = json.loads(out.read_text())
     assert rep["ok"] and rep["restore_seconds"] > 0
-    # two secrets: the seeded one, and the audit chain's key hangar keeps in the vault (KAN-296)
+    # secrets: the seeded one and the audit chain's key, which hangar keeps in the vault (KAN-296)
     assert rep["rows"]["jobs"] == 3 and rep["rows"]["sessions"] == 2 and rep["rows"]["secrets"] == 2
     assert rep["loaded"]["pin_sets_checked"] == 1  # a seeded pin set still matches its id
     assert {c["check"] for c in rep["checks"]} >= {"SQLite integrity check", "the restore was applied at start"}

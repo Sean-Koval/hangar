@@ -76,6 +76,8 @@
 # Data handling (KAN-296): the audit hash chain, and purging a person or exporting a job.
 /src/hangar/datahandling.py        @Sean-Koval
 /src/hangar/auditchain.py          @Sean-Koval
+# KAN-553: store.py writes, redacts and rebinds the audit chain.
+/src/hangar/store.py               @Sean-Koval
 
 # Approvals and governance: who may release, approve, steer or land an agent's work, and the verdicts they rely on
 # (AI review, test results, grades, trusted senders, review-triggered fix rounds, the MCP front door).
@@ -128,4 +130,5 @@
 /src/hangar/github.py              @Sean-Koval
 /src/hangar/slack.py               @Sean-Koval
 /src/hangar/jira.py                @Sean-Koval
+/src/hangar/confluence.py          @Sean-Koval
 /src/hangar/setup_api.py           @Sean-Koval

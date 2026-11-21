@@ -1,6 +1,6 @@
 # Kata, the heavy tier and Pod snapshots on GKE
 
-This page is part of [Running hangar on GKE](../gke.md).
+Three optional install steps. Part of [running on GKE](../gke.md).
 
 ## 4. Kata microVMs (optional)
 

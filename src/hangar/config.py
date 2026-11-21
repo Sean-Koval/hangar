@@ -617,6 +617,10 @@ class Settings(BaseSettings):
     # --- KAN-296: audit entries older than this are deleted from the database, oldest first, keeping the audit chain
     # whole (datahandling.py, docs/security/data-handling.md). Separate from job and session retention. 0 = kept.
     audit_retention_days: float = Field(400, ge=0)
+    # --- KAN-541: the locked audit bucket's log view, projects/P/locations/global/buckets/B/views/_AllLogs (the
+    # Terraform output audit_log.view). Set: `hangar doctor` compares the table's newest entry with the bucket's,
+    # reading with a role scoped to that view. Unset: that check doesn't run (docs/security/data-handling.md).
+    audit_bucket: str | None = None
     # --- observe: traces, metrics and the cost view (docs/observability.md). Traces are configured with the
     # standard OTEL_* variables and are off unless they name an exporter.
     metrics_enabled: bool = True  # GET /metrics (admin or `metrics` tokens); off: no prometheus_client import

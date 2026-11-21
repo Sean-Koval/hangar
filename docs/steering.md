@@ -1,6 +1,6 @@
 # Steering a running agent
 
-A session turn used to run the agent one-shot and wait for it to exit. A message sent while it ran was refused, the only way to stop it was to kill it, and the agent ran with its permission checks off. Claude Code and Codex turns now run **live**. While a turn runs you can:
+Claude Code and Codex turns run **live**: you can talk to the agent while it works. They used to run one-shot with permission checks off; a message was refused, and stopping one meant killing it. While a turn runs you can:
 
 - **steer** it: add a message to the running turn, and the agent reads it at its next step;
 - **interrupt** it: stop the turn, or stop and carry on with a new message;

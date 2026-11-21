@@ -1,6 +1,6 @@
 # The review packet and the inbox
 
-This page is part of [Landing: an approval lands the PR](../landing.md).
+The review packet, the AI review, the inbox. Part of [landing](../landing.md).
 
 ## 6. The review packet
 

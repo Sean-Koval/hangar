@@ -1,6 +1,6 @@
 # Models: the latest strong model per provider
 
-This page is part of [Harnesses: versions, the contract, the canary and models](../harnesses.md).
+How a model policy resolves to a concrete id. Part of [harnesses](../harnesses.md).
 
 A `model:` value is either a pinned id (`claude-opus-5-5`, `gpt-6.1-sol`), passed through as it is, or a **policy**:
 

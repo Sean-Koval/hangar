@@ -1,6 +1,6 @@
 # Forks and best-of-N
 
-This page is part of [Sessions: picking up where you left off](../sessions.md).
+Try several directions from one point in a session. Part of [sessions](../sessions.md).
 
 Fork a session to try several directions from the same point:
 

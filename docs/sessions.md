@@ -2,6 +2,15 @@
 
 A session is a stream of work you can come back to, like a cloud Claude session: the agent's conversation and the repo state are kept; the sandbox is not. Design: [spec 0010](specs/0010-sessions.md).
 
+<figure class="af-figure af-figure--wide">
+--8<-- "session-cycle.svg"
+<figcaption>A session outlives its sandbox: every turn is checkpointed, an idle sandbox is released, and the next message resumes in a fresh one.</figcaption>
+</figure>
+<figure class="af-figure af-figure--stacked">
+--8<-- "session-cycle-stacked.svg"
+<figcaption>A session outlives its sandbox: every turn is checkpointed, an idle sandbox is released, and the next message resumes in a fresh one.</figcaption>
+</figure>
+
 ```bash
 # Monday
 hangar session new onboarding "build the onboarding flow; start with the signup form" -e early-signal -w

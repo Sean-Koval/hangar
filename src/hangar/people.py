@@ -34,6 +34,9 @@ OWNER = "owner"  # the admin person legacy tokens, the server's admin token and 
 ROLES = ("admin", "member")
 MEMBER_SCOPES = ("user", "mcp", "jobs")  # what a member's tokens may hold: never admin, metrics or sandboxes
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
+# --- KAN-552: strings hangar itself writes where a person id goes (Session.owner "jobs" or "admin", Job.requester
+# "system", actors "tower" and "hangar"), so a person by that name would be matched to records that aren't theirs
+RESERVED_IDS = frozenset({"admin", "system", "jobs", "tower", "hangar"})
 
 
 class PeopleError(ValueError):
@@ -64,6 +67,8 @@ def list_people(store: Store) -> list[Person]:
 
 def add(store: Store, person_id: str, name: str = "", role: str = "member") -> Person:
     check_id(person_id)
+    if person_id in RESERVED_IDS:
+        raise PeopleError(f"person id '{person_id}' is one hangar uses itself ({', '.join(sorted(RESERVED_IDS))})")
     if role not in ROLES:
         raise PeopleError(f"role must be one of {', '.join(ROLES)}")
     if person_id == OWNER or store.get(Person, person_id) is not None:
@@ -101,6 +106,9 @@ def remove(store: Store, person_id: str) -> list[str]:
         if s.person == person_id and s.enabled:
             s.enabled, s.last_error = False, f"paused: {person_id} was removed"
             store.put(s)
+    # --- KAN-552: their SSO binding goes too. Left behind, it would let their provider account sign in as whoever is
+    # added under this id later (sso.bound_to matches it; bind revives it for the same subject)
+    store.kv_delete(SSO_BINDING_KV + person_id, durable=True)
     store.delete(Person, person_id)
     return revoked
 
@@ -419,3 +427,21 @@ def check_secrets(store: Store, secrets: dict[str, str], person: str | None) -> 
         if c is not None and c.person is not None and c.person != person:
             raise CredentialError(f"secrets: {var}: credential '{name}' is {c.person}'s own and goes only into "
                                   "their sandboxes")
+
+
+def doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """--- KAN-552: a person or token that took one of hangar's own names before they were reserved keeps it, and
+    still matches records hangar writes under that string. Warn, naming them; nothing when none is held."""
+    from hangar.auth import _RESERVED_NAMES
+    from hangar.doctor import _check
+
+    ids = sorted(p.id for p in h.store.list(Person) if p.id in RESERVED_IDS)
+    toks = sorted(t.name for t in h.store.list(ApiToken) if (t.name or "").lower() in _RESERVED_NAMES)
+    if not ids and not toks:
+        return []
+    held = ([f"person {i}" for i in ids] + [f"token {n}" for n in toks])[:10]
+    return [_check("reserved names", None,
+                   f"{', '.join(held)} holds a name hangar writes itself as an owner or requester, so it can match "
+                   "records that aren't theirs",
+                   "move their work to a new id and remove them (hangar person add, then hangar person remove), and "
+                   "revoke such tokens (hangar token revoke)")]

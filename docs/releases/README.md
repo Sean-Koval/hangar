@@ -5,6 +5,8 @@ it starts, what you configure, the ordered steps and how to roll back. The proce
 and when to deploy, is on [upgrading.md](../upgrading.md). What each PR added is in
 [CHANGELOG.md](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md).
 
+<div class="hg-stack" markdown>
+
 | Release | Tag | Pages |
 | --- | --- | --- |
 | **Enforced intake and API keys**<br>KAN-74 (#223) | next, unreleased | [What breaks, the steps before you deploy and rollback](enforce.md) |
@@ -12,6 +14,8 @@ and when to deploy, is on [upgrading.md](../upgrading.md). What each PR added is
 | **The safe release**<br>#120–#132 | v0.2.0 | [What it adds, the procedure and rollback](safe-release.md) · [the `extends` merge rules](safe-release-merge.md) |
 | **The team release**<br>#75–#117 | v0.2.0 | [What it adds](team-release.md) · [changed defaults](team-release-changes.md) · [steps 1–8](team-release-procedure.md) · [steps 9–11](team-release-sandboxes.md) · [steps 12–14 and rollback](team-release-operations.md) |
 | **The overnight stack**<br>#48–#69 | none | [Back up and what happens to your data](overnight-stack.md) · [the defaults that change](overnight-stack-defaults.md) · [upgrade, prove it, roll back](overnight-stack-procedure.md) |
+
+</div>
 
 Releases stack. A hangar that runs the overnight stack does the team release, then the safe release, then adopt &
 capture. It follows each page's steps in order, with `hangar doctor` at the end of each.

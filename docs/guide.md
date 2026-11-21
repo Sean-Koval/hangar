@@ -1,9 +1,7 @@
-# Getting started
+# Getting started: a first task in five minutes
 
-Run hangar on a laptop in five minutes and give it a first task. This is the one Quickstart; the
-[README](https://github.com/Sean-Koval/hangar/blob/main/README.md) repeats its five commands.
-[Concepts](concepts.md) explains the words (environment, harness, sandbox, session, job) and what hangar gives you.
-The [changelog](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) says what each release added.
+Run hangar on a laptop with five commands, then hand an agent its first task and watch it work. New to the words
+(environment, harness, sandbox, session, job)? [Concepts](concepts.md) explains them.
 
 ## Quickstart
 
@@ -33,6 +31,12 @@ stops the server.
 Open the **console at [localhost:8787](http://localhost:8787)** to see your fleet, credentials, environments and live
 terminals ([the web console](console.md)). Local state is in `~/.hangar`. If a doctor check fails, follow its fix;
 `uv run hangar doctor --fix` applies the supported repairs.
+
+<figure class="af-figure af-figure--lead">
+<a href="assets/front/ui-fleet.png"><img src="assets/front/ui-fleet.png#only-dark" alt="The console's Fleet page: a headline that counts the agents and how many need you, the decision deck as a band, and one row per agent with its status, work, owner, model, stage rail and spend"></a>
+<a href="assets/front/ui-fleet-light.png"><img src="assets/front/ui-fleet-light.png#only-light" alt="The console's Fleet page: a headline that counts the agents and how many need you, the decision deck as a band, and one row per agent with its status, work, owner, model, stage rail and spend"></a>
+<figcaption>The console on a busy team's hangar: the Fleet, one row per agent. Yours starts empty, and your first sandbox appears here.</figcaption>
+</figure>
 
 To look around first without Docker or a key, run the demo hangar the front page's recording uses:
 `uv run python docs/assets/front/demo.py`. It serves the console on :8787 and prints its token. Then run
@@ -95,6 +99,8 @@ Open the sandbox in the console to follow the work in its live terminal. When yo
 
 ## Next steps
 
+<div class="hg-stack" markdown>
+
 | To | Read |
 | --- | --- |
 | Delegate from your client with the skill, run parallel attempts, write your own environment | [After the first task](guide/after-the-first-task.md) |
@@ -111,10 +117,15 @@ Open the sandbox in the console to follow the work in its live terminal. When yo
 | Upgrade a running hangar | [Upgrading](upgrading.md) |
 | Run it day to day, and when something breaks | [Runbooks](runbooks/README.md) · [Troubleshooting](troubleshooting.md) |
 
+</div>
+
 ## What's new
 
 Newest first, up to `main` today. Each release's page says what changes for a running hangar
-([release notes](releases/README.md)); the changelog lists every PR.
+([release notes](releases/README.md)); the
+[changelog](https://github.com/Sean-Koval/hangar/blob/main/CHANGELOG.md) lists every PR.
+
+<div class="hg-stack" markdown>
 
 | Release | What it brings |
 | --- | --- |
@@ -123,6 +134,8 @@ Newest first, up to `main` today. Each release's page says what changes for a ru
 | v0.2.0: the safe release (#120–#132) | Secure intake by default: the git gateway and egress proxy for jobs from trackers, and API keys for automated work. |
 | v0.2.0: the team release (#75–#117) | One hangar for six: people and their tokens, repo policies, budgets, Jira intake, approvals that land the PR, environments that live in the repo. |
 | The overnight stack (#48–#69) | Live turns with steering and approvals, durable sessions, the uid split, the git gateway and `hangar up`. |
+
+</div>
 
 ## Moved from this page
 

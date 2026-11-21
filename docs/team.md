@@ -55,6 +55,8 @@ hangar cred owner gh-jobs team                     # or make an existing API key
 hangar cred ls                                     # owner=team | owner=<person> | owner=control-plane
 ```
 
+Claude bought through Google Cloud is a team credential too: a Vertex AI service-account key, or an environment's `cloud:` binding ([Claude Code on Vertex AI](team/vertex.md)).
+
 Without `--team`, a credential an admin adds is **their own**, so an admin's personal login never becomes the team's
 by accident. Control-plane credentials belong to neither: they never reach a sandbox. Those are webhook signing keys,
 bot tokens, GitHub App keys and hangar's own GitHub token. Members can't add team credentials.

@@ -1,6 +1,6 @@
 # The harness canary
 
-This page is part of [Harnesses: versions, the contract, the canary and models](../harnesses.md).
+The nightly check that moves each harness version forward. Part of [harnesses](../harnesses.md).
 
 Every night `harness-canary.yml`:
 

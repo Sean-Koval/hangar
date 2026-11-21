@@ -1,6 +1,6 @@
 # hangar-owned harness settings
 
-This page is part of [Steering a running agent](../steering.md).
+Harness settings the agent can't change. Part of [steering](../steering.md).
 
 The split keeps the driver, its key and your answers out of the agent's reach. The harness itself used to start from what the agent owns:
 

@@ -1,6 +1,6 @@
 # The uid split
 
-This page is part of [Steering a running agent](../steering.md).
+Each turn runs as two users. Part of [steering](../steering.md).
 
 The driver holds the run's key and answers for whoever approves. In a single user, code the agent runs (a test suite you allowed, say) can reach it, so where the sandbox allows it hangar runs each turn as two users (`src/hangar/isolation.py`):
 

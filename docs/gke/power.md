@@ -1,6 +1,6 @@
 # Sandbox nodes off at night
 
-This page is part of [Running hangar on GKE](../gke.md).
+Sandbox pools scale to zero overnight. Part of [GKE](../gke.md).
 
 `deploy/gke/power.sh` scales the sandbox node pools (gVisor, Kata and microVM: every pool whose name starts with `sandboxes-`) to zero at night and back in the morning. **hangar and the `system` pool stay up**, so the URL keeps answering overnight. Nothing is deleted: disks, images, session checkpoints and the IP stay.
 

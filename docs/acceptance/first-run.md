@@ -1,6 +1,6 @@
 # The first run: fixtures and the live run
 
-This page is part of [Acceptance: proving a deploy on the cluster](../acceptance.md).
+A first run's fixtures, then the live run. Part of [acceptance](../acceptance.md).
 
 ## Before the first run: fixtures
 

@@ -1,6 +1,6 @@
 # How a PR lands
 
-This page is part of [Landing: an approval lands the PR](../landing.md).
+Open, approved, armed, merged, and what disarms. Part of [landing](../landing.md).
 
 <figure class="af-figure af-figure--wide">
 --8<-- "landing-states.svg"
