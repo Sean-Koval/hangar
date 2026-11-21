@@ -223,3 +223,25 @@ def test_events_routes_and_token_budget_cap(client):
     svc = {"Authorization": f"Bearer {tok['token']}"}
     assert client.get(f"/api/sessions/{s.id}/events", headers=svc).status_code == 403  # admin route
     assert client.get("/api/jobs/job-nope/events", headers=svc).status_code == 404
+
+
+def test_a_shipped_environment_saved_through_the_api_still_renders(client, settings):
+    """KAN-304: found live: `claude-python` saved with warm_pool 0 failed every render ("skill path not found")."""
+    import yaml
+
+    from tests.conftest import ENVS
+
+    shipped = yaml.safe_load((ENVS / "agent.yaml").read_text())
+    assert any(sk.get("path") for sk in shipped.get("skills") or [])  # what broke: a relative skill path
+    r = client.put("/api/environments/agent", content=yaml.safe_dump({**shipped, "warm_pool": 0}))
+    assert r.status_code == 200, r.text
+    assert (settings.saved_env_dir / "agent.yaml").exists()
+    assert client.get("/api/environments/agent/context").status_code == 200
+    # validate stages the spec where a save would write it, so it agrees with the save
+    v = client.post("/api/environments/validate", content=yaml.safe_dump({**shipped, "description": "v"})).json()
+    assert v["valid"], v
+    v = client.post("/api/environments/validate", content="name: mine\nskills:\n  - path: skills/nope\n").json()
+    assert not v["valid"] and "skills/nope" in v["errors"][0]
+    bad = client.put("/api/environments/mine", content="extends: plain\nskills:\n  - path: skills/nope\n")
+    assert bad.status_code == 400 and "skills/nope" in bad.text and str(settings.saved_env_dir) not in bad.text
+    assert not (settings.saved_env_dir / "mine.yaml").exists()

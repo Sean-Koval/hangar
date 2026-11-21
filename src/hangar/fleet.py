@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import copy  # --- review(identity)
 import json
 import logging
 import re
@@ -50,7 +49,7 @@ from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.egress_proxy import EgressProxy  # --- egress
-from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, render, repo_dirname, warm_pool_now
+from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, check_paths, render, repo_dirname, warm_pool_now
 from hangar.gateway import Gateway
 from hangar.harnesses import (
     HARNESSES,
@@ -306,10 +305,10 @@ class Fleet:
         problems: list[str] = []
         # --- review(identity): on a copy of the catalog. Swapping the spec into the shared one (from a sync tool's
         # worker thread) let sandboxes starting meanwhile, anyone's, use the caller's spec.
-        scratch = copy.copy(self.catalog)
-        scratch._raw = {**self.catalog._raw, name: (data, self.catalog.dirs[0] if self.catalog.dirs else None)}
         try:
+            scratch = self.catalog.staged(name, data)  # --- KAN-304: resolved as a save would resolve it
             spec = scratch.get(name)
+            check_paths(spec)
             if waiting := plugins.pending(spec):  # --- #222: fetched when the image is built, not here
                 problems.append(f"plugins {', '.join(waiting)}: fetched through the git gateway when the image is "
                                 "built; the Dockerfile is shown once they are")
