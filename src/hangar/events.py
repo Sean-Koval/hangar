@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from hangar import isolation  # --- harden
+from hangar import cmdfacts, isolation  # --- harden; --- KAN-287
 from hangar.models import Budget, Session, SessionTurn, Usage, now
 
 log = logging.getLogger("hangar.events")
@@ -41,6 +41,7 @@ KINDS: tuple[str, ...] = ("message", "tool_call", "tool_result", "command", "fil
 MAX_LINE = 1024 * 1024  # longer log lines (huge tool outputs) are skipped, and counted
 CHUNK = 128 * 1024  # raw bytes per read: base64 of it stays under the providers' 256 KiB exec output cap
 READS_PER_POLL = 8
+ENDED_READS = 16  # KAN-557: a turn's end reads up to 16 x 4 MiB of log it hadn't read yet
 TEXT_MAX = 500
 MESSAGE_MAX = 2000
 
@@ -241,13 +242,20 @@ def _clip(s: Any, n: int = TEXT_MAX) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+# --- KAN-287: a command's facts are lists stored as text, bounded by `cmdfacts.join` (items, length and bytes)
+_FACT_KEYS = {"writes", "runs"}
+
+
 def _small(d: dict[str, Any]) -> dict[str, Any]:
     """Keep event data small: scalars only, strings clipped."""
     out: dict[str, Any] = {}
     for k, v in d.items():
         if v is None:
             continue
-        if isinstance(v, str):
+        if isinstance(v, str) and k in _FACT_KEYS:
+            if facts := cmdfacts.join(cmdfacts.split(v)):  # bounded again, whoever set them
+                out[k] = facts
+        elif isinstance(v, str):
             out[k] = _clip(v, 300)
         elif isinstance(v, bool | int | float):
             out[k] = v
@@ -470,6 +478,8 @@ class Parser:
         self.tools[tid] = [name, path]
         mcp = name.startswith("mcp__")
         full = _mcp_source(args) if mcp else _brief_source(args)
+        if name in _SHELL_TOOLS:  # --- KAN-287: the part of a command read for its ops and facts
+            full = full[: cmdfacts.MAX_INPUT]  # (so a huge one can't stall the parser)
         clipped = True if len(full) > BRIEF_MAX else None  # the event text (and the trace's input) is a preview
         if name in _SHELL_TOOLS:
             # The trace's `hangar.shell.ops` come from the whole command: a test run or commit after the preview's
@@ -477,11 +487,16 @@ class Parser:
             from hangar.traces import shell_ops  # traces imports this module
 
             return self._ev("command", _brief(args), id=tid, tool=name, ops=",".join(shell_ops(full)),
-                            clipped=clipped)
+                            clipped=clipped, **cmdfacts.facts(full))  # --- KAN-287: writes, runs, probe
+        # --- KAN-287: a file tool's write is its path, whatever the preview keeps
+        writes = None
+        if name in _FILE_TOOLS or name == "apply_patch":
+            paths = args.get("paths") if isinstance(args, dict) else None
+            writes = cmdfacts.join(paths if isinstance(paths, list) else [path] if path else [])
         # --- interfaces: which subagent a Claude Code Task/Agent call starts (the trace's `subagent` span)
         sub = args.get("subagent_type") if name in ("Task", "Agent") and isinstance(args, dict) else None
         return self._ev("tool_call", f"{name} {_clip(full, BRIEF_MAX)}".strip(), id=tid, tool=name, subagent=sub,
-                        clipped=clipped)
+                        clipped=clipped, writes=writes)
 
     def _tool_end(self, tid: str, ok: bool | None, output: Any, path: str | None = None, **data: Any) -> list[RunEvent]:
         name, opath = self.tools.pop(tid, [data.pop("tool", None), None])
@@ -584,7 +599,7 @@ class Parser:
                 out.append(self._tool_start(iid, "shell", {"command": item.get("command", "")}))
             elif it == "file_change":
                 paths = [c.get("path", "") for c in item.get("changes") or []]
-                out.append(self._tool_start(iid, "apply_patch", {"path": ", ".join(paths)}))
+                out.append(self._tool_start(iid, "apply_patch", {"path": ", ".join(paths), "paths": paths}))
             elif it == "mcp_tool_call":
                 out.append(self._tool_start(iid, f"{item.get('server', 'mcp')}.{item.get('tool', '?')}",
                                             item.get("arguments")))
@@ -1142,6 +1157,24 @@ class TurnWatcher:
             self._follow.cancel()
             await asyncio.gather(self._follow, return_exceptions=True)
             self._save_fed()
+
+    async def ended(self) -> str | None:
+        """--- KAN-557: the run ended on its own: read what it wrote since the last poll and say why its usage is
+        over the budget, or None. A poll may never have seen its last spending. Time isn't counted here: a turn
+        that ended by itself wasn't stopped late. finish() still reads whatever is left after this."""
+        await self._stop_follow()  # --- stream
+        p = self.parser
+        if self.turn.run_id and self.s.sandbox_id:
+            try:
+                for _ in range(ENDED_READS):  # to the log's end, so the usage it ends on counts (review)
+                    at = p.next
+                    await self._read(final=True)
+                    if p.next == at:
+                        break
+            except Exception:  # noqa: BLE001 - activity is best effort; it must never break the turn
+                log.exception("session %s: collecting events failed", self.s.id)
+        self.turn.usage = p.view() if (p.usage.tokens + p.usage.cache_read_tokens or p.final) else self.turn.usage
+        return over_budget(self.s.budget, self.turn.usage, None)
 
     async def finish(self, alive: bool = True) -> None:
         """The turn is over: read the rest of the log (if the sandbox is still there) and close the cursor."""

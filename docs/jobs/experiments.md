@@ -21,6 +21,11 @@ environment: hangar
 tasks:
   - {id: fix-retry, instructions: "Make the reaper retry a failed destroy.",
      repo: https://github.com/Sean-Koval/hangar.git, verify: "uv run pytest -q tests/test_fleet.py"}
+  - {id: csv-check, instructions: "Make the validator reject ragged rows.",
+     workspace: {"csvcheck/validate.py": "...", "tests/test_validate.py": "..."}}
+    # KAN-192: a task's own files in place of a repo (no repo, issue or base_branch with it; 500 files, 1 MB; 16 MB
+    # across the tasks). hangar commits them (the same files, the same commit), pins that commit as the task's base,
+    # and each trial and grader clones it with no remote. It is part of the task's trial-cache identity.
 variants:
   team: {harness_lock: "team-default@sha256:5f0c…"}     # a harness lock, by digest (#135)
   team-codex: {harness_lock: "team-codex@sha256:9a41…", environment: hangar-codex}

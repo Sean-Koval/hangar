@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import copy  # --- review(identity)
 import json
 import logging
 import re
@@ -50,7 +49,7 @@ from hangar import teamcreds as teamcreds  # --- teamcreds
 from hangar.broker import AUTH_FILE_LIMIT, Broker, CredentialError
 from hangar.config import Settings
 from hangar.egress_proxy import EgressProxy  # --- egress
-from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, render, repo_dirname, warm_pool_now
+from hangar.envspec import BuildContext, EnvCatalog, EnvSpec, check_paths, render, repo_dirname, warm_pool_now
 from hangar.gateway import Gateway
 from hangar.harnesses import (
     HARNESSES,
@@ -306,10 +305,10 @@ class Fleet:
         problems: list[str] = []
         # --- review(identity): on a copy of the catalog. Swapping the spec into the shared one (from a sync tool's
         # worker thread) let sandboxes starting meanwhile, anyone's, use the caller's spec.
-        scratch = copy.copy(self.catalog)
-        scratch._raw = {**self.catalog._raw, name: (data, self.catalog.dirs[0] if self.catalog.dirs else None)}
         try:
+            scratch = self.catalog.staged(name, data)  # --- KAN-304: resolved as a save would resolve it
             spec = scratch.get(name)
+            check_paths(spec)
             if waiting := plugins.pending(spec):  # --- #222: fetched when the image is built, not here
                 problems.append(f"plugins {', '.join(waiting)}: fetched through the git gateway when the image is "
                                 "built; the Dockerfile is shown once they are")
@@ -688,6 +687,7 @@ class Fleet:
         person: str | None = None,  # --- identity: the owning person (people.py); picks their own credentials
         purpose: str | None = None,  # --- #125: automated | interactive (teamcreds.resolve); None: from the labels
         harness_lock: dict[str, Any] | None = None,  # --- #221: a claimed lock (harness_thaw.pin) the files come from
+        workspace: str | None = None,  # --- KAN-192: a workspace commit (workspaces.py), not a repo
     ) -> Sandbox:
         """`progress` gets short plain-language updates while the sandbox starts (image build, waiting for a
         node, cloning...), so callers can show where the time goes. `push_branch` (default: `work_branch`) is
@@ -734,10 +734,15 @@ class Fleet:
         # --- #125: a job's, a trial's or a grader's sandbox (or a fork of one) is automated: no subscription login
         use, strict = teamcreds.purpose_of(purpose, labels)
         resolved = await teamcreds.for_sandbox(self, cred_names, person, hname, credentials is not None,
-                                               repo or (spec.repo.url if spec.repo else None), progress,
-                                               purpose=use, strict=strict)
+                                               None if workspace else repo or (spec.repo.url if spec.repo else None),
+                                               progress, purpose=use, strict=strict)
         cred_names = resolved.names
         cred_names = delivery.clone_credentials(self, cred_names, labels or {})  # --- least-privilege: builds
+        if workspace:  # --- KAN-192: a workspace has no repo, so no git credential goes in
+            from hangar.gateway import GIT_KINDS
+
+            cred_names = [n for n in cred_names if (c := self.store.get(Credential, n)) is None
+                          or c.kind not in GIT_KINDS]
         for c in [*cred_names, *spec.secrets.values()]:
             self.broker.get(c)  # fail fast on typos
         for c in spec.secrets.values():  # --- identity: and on control-plane credentials mapped in (B4)
@@ -751,8 +756,8 @@ class Fleet:
             name=unique,
             environment=environment,
             provider=pname,
-            repo=None if _skip_repo else repo or (spec.repo.url if spec.repo else None),
-            branch=None if _skip_repo else branch or (spec.repo.branch if spec.repo else None),
+            repo=None if _skip_repo or workspace else repo or (spec.repo.url if spec.repo else None),
+            branch=None if _skip_repo or workspace else branch or (spec.repo.branch if spec.repo else None),
             credentials=cred_names,
             labels=labels or {},
             resources=resources or spec.resources,
@@ -795,7 +800,8 @@ class Fleet:
             sb.state = SandboxState.STARTING
             self.store.put(sb)
             # --- envbuilds: the repo's last good build of this environment, when it has one (envbuilds.py)
-            build = None if _image or _skip_repo else await envbuilds.of(self).pick(spec, pname, hname, sb, stage)
+            build = None if _image or _skip_repo or workspace else await envbuilds.of(self).pick(spec, pname, hname, sb,
+                                                                                                    stage)
             image = _image or (build.image if build else None) or \
                 await self._ensure_image(spec, pname, actor, hname, stage=stage)
             # --- envbuilds: the services it starts with (Kubernetes sidecars, Docker containers); --- sealed (#126):
@@ -844,6 +850,9 @@ class Fleet:
             if _restore_workspace:
                 await self._restore_workspace(prov, sb, _restore_workspace)
                 await buildcache.of(self).restore(prov, sb, stage)  # --- caches: in the background
+            elif workspace and not _skip_repo:  # --- KAN-192
+                stage("cloning the task's workspace")
+                await self._setup_workspace(prov, sb, workspace, work_branch)
             elif sb.repo:
                 stage(f"cloning {repo_dirname(sb.repo)}")
                 await self._setup_repo(prov, sb, spec, work_branch, stage=stage)
@@ -1123,6 +1132,29 @@ class Fleet:
             sb.info["work_branch"] = work_branch
         if cs is not None:  # --- change sets: the other roles, beside the primary
             await changesets.setup_checkouts(self, prov, sb, stage)
+
+    async def _setup_workspace(self, prov: Provider, sb: Sandbox, sha: str, work_branch: str | None) -> None:
+        """--- KAN-192: a task's workspace commit, cloned from the bundle hangar keeps (workspaces.py): no remote, so
+        nothing to fetch from or push to, and HEAD at exactly that commit."""
+        from hangar import workspaces
+
+        try:
+            data = await asyncio.to_thread(workspaces.bundle, self.settings, sha)
+        except workspaces.WorkspaceError as e:
+            raise FleetError(str(e)) from e
+        dest, tmp, q = f"{self.settings.workspace_dir}/task", f"/tmp/hangar-workspace-{sha[:12]}.bundle", \
+            shlex.quote
+        await prov.write_file(sb, tmp, data, mode=0o644)
+        script = (f"git clone -q -- {q(tmp)} {q(dest)}; rc=$?; rm -f {q(tmp)}; [ $rc = 0 ] && cd {q(dest)} && "
+                  f"git remote remove origin && [ \"$(git rev-parse HEAD)\" = {q(sha)} ]")
+        if work_branch:
+            script += f" && git checkout -q -b {q(work_branch)}"
+        res = await prov.exec(sb, script, timeout=300)
+        if res.exit_code != 0:
+            raise FleetError(f"workspace setup failed: {(res.stderr or res.stdout)[-800:]}")
+        sb.info["repo_path"], sb.info["workspace"] = dest, sha
+        if work_branch:
+            sb.info["work_branch"] = work_branch
 
     @observe.traced("sandbox.destroy")  # --- observe
     async def destroy(self, ref: str, actor: str = "system") -> Sandbox:

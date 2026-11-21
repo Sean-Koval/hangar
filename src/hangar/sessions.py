@@ -665,7 +665,8 @@ class SessionService:
             push_branch=s.branch,  # workstream F: the one branch a gateway-mode sandbox may push
             person=s.person,  # --- identity: the session's person's sandbox, with their credentials
             purpose="automated" if s.job_id else "interactive",  # --- #125: a job's session is automated
-            harness_lock=s.harness_lock)  # --- #221: its prefix layer mounted from the lock it was thawed from
+            harness_lock=s.harness_lock,  # --- #221: its prefix layer mounted from the lock it was thawed from
+            workspace=trialiso.workspace(self.fleet, s))  # --- KAN-192: a workspace task's commit
         self._credential_warnings(s, sb)
         if s.checkpoints and sb.info.get("repo_path"):
             stage("restoring the last checkpoint")
@@ -1210,12 +1211,16 @@ class SessionService:
         turn.finished_at = now()
         if outcome == "exited" and turn.exit_code == 130:  # --- workstream steer: stopped by an interrupt
             outcome = "interrupted"
+        ended_over = False
+        if outcome == "exited" and s.budget is not None and (over := await watch.ended()):
+            outcome, ended_over = "over_budget", True  # --- KAN-557: it spent past its budget after the last poll
         steering.forget(self, turn.run_id if turn.live else None)
         turn.outcome, turn.outcome_reason = outcome, over  # workstream C
         if outcome == "failed":  # --- harness locks (#134): until part B's infra_error outcome
             turn.outcome_reason = harness_thaw.DRIFT_REASON
         if over:
-            watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
+            what = "finished over budget" if ended_over else "stopped: over budget"
+            watch.note("error", f"{what} ({over})", reason="over_budget")
         if outcome == "gone":
             await watch.finish(alive=False)
             gone_sb = self.fleet.store.get(Sandbox, s.sandbox_id) if s.sandbox_id else None  # --- #166: why it went
@@ -1231,7 +1236,7 @@ class SessionService:
             await self._close_tape(s, turn)  # --- #177
             outbox.of(self.fleet).session_turn(self, s, turn)  # --- outbox (#163): off the turn's path
             return outcome, ""
-        if outcome in ("cancelled", "timed_out", "error", "over_budget", "failed"):
+        if outcome in ("cancelled", "timed_out", "error", "over_budget", "failed") and not ended_over:
             # Never leave an agent running that nobody is watching (it would keep working, and spending).
             with contextlib.suppress(Exception):
                 ksb, kprov = self.fleet._running(s.sandbox_id or "")
@@ -1249,15 +1254,16 @@ class SessionService:
             await (isolation.sh(prov, sb, tail) if split else self._sh(sb, tail))
             raw = (await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000) or b"")[-2_000_000:].decode(
                 errors="replace")
+            said = "exited" if ended_over else outcome  # --- KAN-557: a turn that ended on its own said its piece
             turn.summary = self.fleet.broker.redact(extract_summary(
-                turn.harness, raw, outcome=outcome, reason=turn.outcome_reason, started_at=turn.started_at,
+                turn.harness, raw, outcome=said, reason=turn.outcome_reason, started_at=turn.started_at,
                 finished_at=turn.finished_at) or "") or None  # KAN-137: a stopped turn's is built from its events
             await self._record_conversation(s, sb, turn, raw)
         except Exception as e:  # noqa: BLE001 - the work is in the sandbox; don't lose the turn over its log
             log.warning("session %s: could not read turn %s output: %s", s.id, turn.run_id, e)
         await watch.finish()  # workstream C: whatever the last polls missed
         # workstream E: result, question (-> needs_input), artifacts; before the checkpoint so it has them all
-        outcome = await exchange.after_turn(self, s, turn, outcome)
+        outcome = await exchange.after_turn(self, s, turn, outcome, ended=ended_over)
         outcomes.mark(turn, *outcomes.classify_turn(outcome, turn.exit_code, raw=raw, harness=turn.harness))  # #166
         if turn.infra_reason == "login_rejected":  # --- KAN-178: the vendor refused the login; mark it, say what to do
             self._login_rejected(s, turn)

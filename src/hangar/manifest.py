@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from hangar import people, plugins
+from hangar.envspec import skill_dir
 from hangar.harnesses import HARNESSES, McpServer, pack_tag
 from hangar.models import Session, SessionTurn, now
 
@@ -227,10 +228,10 @@ def declared_skills(spec: EnvSpec, harness: str | None) -> list[dict[str, Any]]:
         d: dict[str, Any] = {"name": sk.name, "source": None, "digest": None}
         if sk.path:
             d["source"] = f"path:{sk.path}"
-            p = (spec.source_dir or Path(".")) / sk.path
-            with contextlib.suppress(OSError):
-                d["name"] = d["name"] or p.name
-                d["digest"], d["files"] = _dir_digest(str(p.resolve()), p.stat().st_mtime_ns)
+            d["name"] = d["name"] or ((spec.source_dir or Path(".")) / sk.path).name
+            with contextlib.suppress(OSError, ValueError):  # KAN-304: where render finds it (an inherited skill too)
+                p = skill_dir(spec, sk.path)
+                d["digest"], d["files"] = _dir_digest(str(p), p.stat().st_mtime_ns)
         elif sk.git:
             d["source"] = f"git:{sk.git}"
             d["name"] = d["name"] or sk.git.partition("#")[2].partition("@")[0].rstrip("/").rsplit("/", 1)[-1] \
