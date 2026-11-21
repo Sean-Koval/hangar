@@ -124,15 +124,16 @@ can still overshoot them and who raises them.
   not a sandbox: 24 best-of-4 jobs could hold all 120 sandboxes. With the [spend guardrails](#spend-guardrails) set,
   `HANGAR_JOB_CONCURRENCY=24` gives the measured 24.
 - **The reconciler** reads only live and unfinished sandboxes, from the state index (`reconciler.sandboxes_in`), once
-  per pass on its own task. `hangar gc` still lists every record; it is an admin's occasional command.
+  per pass on its own task. `hangar gc` still lists every record, as an admin's occasional command.
 - **Jobs and sessions in memory** are the live ones and the last hour's ([the load test](team-scale/load-test.md#months-of-job-and-session-history)).
-  The archive keeps finished ones forever: nothing deletes them yet. At 100 jobs a day that is ~1 GB of SQLite a year,
-  read only by id, by index and a page at a time.
+  The archive keeps finished ones forever. At 100 jobs a day that is ~1 GB of SQLite a year,
+  read only by id, by index or by page.
 - **Token lookups** decode every API token on every request (`auth.principal`), ~1 ms at a handful of tokens. An index
-  on the token hash, with the constant-time compare kept, removes it.
+  on the token hash, keeping the constant-time compare, removes it.
 - **Snapshots on the pods/exec fallback** still read the whole archive as base64 text. The budget bounds it; reading it
-  in pieces (or through envd, which streams) removes it.
+  in pieces (or envd's stream) removes it.
 - **One replica.** SQLite and in-memory queues; a second replica needs a lease (hardening's H5) first.
+- **Claude on Vertex AI** quota is per model and region ([setup](team/vertex.md)).
 
 [sandbox]: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods
 [smt]: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-smt

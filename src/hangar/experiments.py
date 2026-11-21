@@ -94,7 +94,10 @@ KV_BASE = "experiment-base:"  # + <experiment>:<task>: the pinned base commit
 KV_TRIAL = "experiment-trial:"  # + <trial job id> -> <experiment>: labels anyone can set; this only the runner
 NAME = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
 MAX_SKILL_BYTES = 1024 * 1024  # a variant's skills, all files together
-MAX_GRADER_FILES = 1024 * 1024
+MAX_GRADER_FILES = 1024 * 1024  # one grader's files, all together
+MAX_EXPERIMENT_GRADER_FILES = 16 * 1024 * 1024  # --- KAN-192: every grader of an experiment (it lives in its state)
+MAX_WORKSPACE_FILES, MAX_WORKSPACE = 500, 1024 * 1024  # --- KAN-192: one task's workspace (16 MB in all, as above)
+KV_WORKSPACE = "experiment-workspace:"  # + <experiment>:<task>: the task's workspace commit (workspaces.py)
 GRADE_OUT = "/tmp/hangar-grade/out.json"
 GRADE_WORK = "/tmp/hangar-grade"
 # --- sealed (#126): where a grader's hidden tests and `hangar-grade` go, outside the repo: root-owned on Docker (whose
@@ -170,31 +173,6 @@ class Variant(BaseModel):
         return [f for f in OVERLAY_FIELDS if getattr(self, f) is not None]
 
 
-class Task(BaseModel):
-    """A prompt with its repo, or a GitHub issue (`owner/repo#N`, whose text goes to the agent as untrusted
-    context)."""
-
-    model_config = ConfigDict(extra="forbid")
-    id: str = Field(pattern=NAME)
-    instructions: str | None = Field(None, max_length=64_000)
-    issue: str | None = Field(None, pattern=r"^[\w.-]+/[\w.-]+#\d+$")
-    repo: str | None = Field(None, max_length=500)
-    base_branch: str | None = Field(None, max_length=200)
-    base_sha: str | None = Field(None, pattern=r"^[0-9a-f]{40}$")
-    verify: str | None = Field(None, max_length=2000)
-    title: str | None = Field(None, max_length=200)
-    # --- anti-forgery (#127): a known-good patch for the base check: the hidden tests must pass with it
-    reference_patch: str | None = Field(None, max_length=MAX_REFERENCE_PATCH)
-    # --- #183: context items the agent gets with the task (a shadow's: the real job's, untrusted ones fenced)
-    context: list[ContextItem] | None = Field(None, max_length=20)
-
-    @model_validator(mode="after")
-    def _what(self) -> Task:
-        if not self.instructions and not self.issue:
-            raise ValueError(f"task {self.id}: give `instructions` or an `issue`")
-        return self
-
-
 class Grader(BaseModel):
     """A command run outside the agent's sandbox after each trial: in a clean, sealed sandbox, on the trial's
     patch. `files` (the hidden tests) go to `$HANGAR_HIDDEN_TESTS`, outside the repo (`files_mode: pristine`), or
@@ -220,6 +198,56 @@ class Grader(BaseModel):
             if p.startswith("/") or any(x in ("..", ".", "") for x in p.split("/")) or "\0" in p or not p.strip():
                 raise ValueError(f"grader file '{p[:60]}' must be a relative path, without '..'")
         return v
+
+
+class Task(BaseModel):
+    """A prompt with its repo, or a GitHub issue (`owner/repo#N`, whose text goes to the agent as untrusted
+    context)."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=NAME)
+    instructions: str | None = Field(None, max_length=64_000)
+    issue: str | None = Field(None, pattern=r"^[\w.-]+/[\w.-]+#\d+$")
+    repo: str | None = Field(None, max_length=500)
+    base_branch: str | None = Field(None, max_length=200)
+    base_sha: str | None = Field(None, pattern=r"^[0-9a-f]{40}$")
+    verify: str | None = Field(None, max_length=2000)
+    title: str | None = Field(None, max_length=200)
+    # --- anti-forgery (#127): a known-good patch for the base check: the hidden tests must pass with it
+    reference_patch: str | None = Field(None, max_length=MAX_REFERENCE_PATCH)
+    # --- #183: context items the agent gets with the task (a shadow's: the real job's, untrusted ones fenced)
+    context: list[ContextItem] | None = Field(None, max_length=20)
+    # --- KAN-192: the task's own grader, in place of the experiment's: its own command, and its own 64 files and 1 MB
+    grader: Grader | None = None
+    # --- KAN-192: the task's files, in place of a repo: hangar commits them and clones that commit (workspaces.py)
+    workspace: dict[str, str] | None = Field(None, max_length=MAX_WORKSPACE_FILES)
+
+    @field_validator("workspace")
+    @classmethod
+    def _workspace(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("a workspace needs at least one file")
+        from hangar import workspaces
+
+        for p in v:
+            if why := workspaces.path_error(p):
+                raise ValueError(f"workspace file '{p[:60]}' {why}")
+        if d := workspaces.clash(list(v)):
+            raise ValueError(f"workspace path '{d[:60]}' is both a file and a folder")
+        if sum(len(x.encode()) for x in v.values()) > MAX_WORKSPACE:
+            raise ValueError("a task's workspace is limited to 1 MB")
+        return v
+
+    @model_validator(mode="after")
+    def _what(self) -> Task:
+        if not self.instructions and not self.issue:
+            raise ValueError(f"task {self.id}: give `instructions` or an `issue`")
+        if self.workspace is not None and (self.repo or self.issue or self.base_branch):
+            raise ValueError(f"task {self.id}: a `workspace` is the task's repo: give no `repo`, `issue` or "
+                             "`base_branch` with it")
+        return self
 
 
 class ForkSpec(BaseModel):
@@ -282,6 +310,19 @@ class ExperimentSpec(BaseModel):
         ids = [t.id for t in self.tasks]
         if dup := sorted({i for i in ids if ids.count(i) > 1}):
             raise ValueError(f"task ids must be unique: {', '.join(dup)}")
+        # --- KAN-192: a task's own grader replaces the experiment's; every task needs one or none does
+        graders = [g for g in (self.grader, *(t.grader for t in self.tasks)) if g is not None]
+        if self.grader is None and graders and (bare := [t.id for t in self.tasks if t.grader is None]):
+            raise ValueError(f"{'tasks' if len(bare) > 1 else 'task'} {', '.join(bare[:5])} "
+                             f"{'have' if len(bare) > 1 else 'has'} no grader: give each one, or the experiment a "
+                             "`grader` for the rest")
+        if sum(len(x.encode()) for g in graders for x in g.files.values()) > MAX_EXPERIMENT_GRADER_FILES:
+            raise ValueError("the graders' files are limited to 16 MB in all, across the experiment's tasks")
+        if sum(len(x.encode()) for t in self.tasks for x in (t.workspace or {}).values()) > \
+                MAX_EXPERIMENT_GRADER_FILES:
+            raise ValueError("the tasks' workspaces are limited to 16 MB in all")
+        if len({g.canary for g in graders if g.canary}) > 1:
+            raise ValueError("an experiment has one canary: give the same one to every grader, or none")
         return self
 
 
@@ -533,9 +574,7 @@ async def _run(jobs: JobService, job_id: str) -> None:
             raise _Stop("error", "an experiment job needs its spec: submit it with POST /api/experiments or "
                                  "`hangar experiment run`")
         spec = ExperimentSpec.model_validate(st.spec)
-        if spec.grader is not None and not spec.grader.canary:  # --- anti-forgery (#127): one per experiment
-            spec.grader.canary = new_canary()
-            st.spec.setdefault("grader", {})["canary"] = spec.grader.canary
+        if give_canary(spec, st.spec):  # --- anti-forgery (#127): one per experiment
             _save(jobs, job, st)
         if st.stage == "start":
             await _begin(jobs, job, st, spec)
@@ -601,18 +640,21 @@ async def _begin(jobs: JobService, job: Job, st: State, spec: ExperimentSpec) ->
     tasks: dict[str, Any] = {}
     for t in spec.tasks:
         env = fleet.catalog.get(spec.environment)
-        repo = t.repo or (f"https://github.com/{t.issue.split('#')[0]}.git" if t.issue else None) or (
-            env.repo.url if env.repo else None)
-        pinned = t.base_sha or await _github_sha(jobs, repo, t.base_branch)
+        ws = await workspace_commit(jobs, job.id, t) if t.workspace is not None else None  # --- KAN-192
+        if ws and t.base_sha and t.base_sha != ws:
+            raise _Stop("pin_set", f"task {t.id}: base_sha {t.base_sha} isn't its workspace's commit {ws}")
+        repo = None if ws else t.repo or (f"https://github.com/{t.issue.split('#')[0]}.git" if t.issue else None) \
+            or (env.repo.url if env.repo else None)
+        pinned = ws or t.base_sha or await _github_sha(jobs, repo, t.base_branch)
         if pinned:
             fleet.store.kv_set(f"{KV_BASE}{job.id}:{t.id}", pinned)
         issue_text = await _issue_text(jobs, t.issue) if t.issue else None
         from hangar import trialcache  # --- #180: the task's identity for the trial cache
 
         tasks[t.id] = {"repo": repo, "base_branch": t.base_branch, "base_sha": pinned,
-                       "issue": t.issue, "issue_text": issue_text,
+                       "issue": t.issue, "issue_text": issue_text, **({"workspace": ws} if ws else {}),
                        "task_digest": (spec.task_digests or {}).get(t.id)
-                       or trialcache.task_digest(t, spec.environment, spec.grader)}
+                       or trialcache.task_digest(t, spec.environment, grader_for(spec, t.id))}
     # --- review(#114): egress too: an approved egress request widens an environment mid-experiment
     _pin_sets(jobs, job, st, spec, variants, tasks, overlays)  # --- #178
     st.pins = {"variants": variants, "tasks": tasks, "egress": _egress(fleet, spec), "pinned_at": now()}
@@ -658,14 +700,15 @@ def _pin_sets(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, varia
                                            f"{pinned.base_sha}")
         else:
             env = vp.get("environment") or spec.environment
-            p = pinsets.experiment_pin(jobs, job, vname, vp, tasks, env, spec.grader, overlays.get(vname))
+            p = pinsets.experiment_pin(jobs, job, vname, vp, tasks, env, spec.grader, overlays.get(vname),
+                                       {t.id: t.grader for t in spec.tasks if t.grader})
         vp["pin_set"] = p.id
 
 
 def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
     """What a variant's sandboxes get on top of the environment's image: skills (their files, read now, so the
     experiment keeps the version it started with) and instructions."""
-    from hangar.envspec import _contained_path, remove_skills, skill_name
+    from hangar.envspec import _contained_path, remove_skills, skill_name, spec_dir
     from hangar.jobs import JobError
     from hangar.manifest import _dir_digest
 
@@ -690,7 +733,7 @@ def _overlay(env: EnvSpec, v: Variant) -> dict[str, Any]:
                 skills.append({"name": ref.name, "source": "environment"})
                 continue
             try:
-                src = _contained_path(env.source_dir or Path("."), ref.path or "")
+                src = _contained_path(spec_dir(env, ref.path or ""), ref.path or "")  # --- KAN-304
             except (ValueError, FileNotFoundError) as e:
                 raise JobError(f"skill {ref.path}: {e}") from e
             files: dict[str, str] = {}
@@ -782,7 +825,7 @@ async def _loop(jobs: JobService, job: Job, st: State, spec: ExperimentSpec,
                     jobs.cancel(child.id, f"experiment:{job.id}")
             if child.state in JOB_TERMINAL and child.id not in jobs._active:
                 await _finish_trial(jobs, job, st, spec, t, child)
-                if spec.grader and t.state == "grading":
+                if grader_for(spec, t.task) and t.state == "grading":
                     graders[t.ref] = asyncio.create_task(_grade(jobs, job, st, spec, t))
                 changed = True
         for key, task in list(graders.items()):
@@ -964,7 +1007,7 @@ async def _finish_trial(jobs: JobService, job: Job, st: State, spec: ExperimentS
         from hangar import forks
 
         forks.finish_trial(jobs, job, st, t, child)
-    t.state = "grading" if spec.grader and child.state != JobState.CANCELLED and s is not None else "done"
+    t.state = "grading" if grader_for(spec, t.task) and child.state != JobState.CANCELLED and s is not None else "done"
     retry = None
     _cache(jobs, job, st, spec, t)  # --- #180: a counted trial of a pinned key fills the cache
     if t.outcome_class == "infra_error" and t.infra_reason == "drift":  # --- #178: not what was pinned; not again
@@ -1362,6 +1405,50 @@ def new_canary() -> str:
     return f"{CANARY_PREFIX}{uuid.uuid4()}"
 
 
+async def workspace_commit(jobs: JobService, exp: str, task: Task) -> str:
+    """--- KAN-192: the commit of a task's workspace (workspaces.py), made again if hangar lost its bundle, and recorded
+    for the experiment's trials (KV_WORKSPACE: only the runner writes it; a trial's session reads it)."""
+    from hangar import workspaces
+
+    try:
+        sha = await asyncio.to_thread(workspaces.commit, jobs.fleet.settings, task.workspace or {})
+    except workspaces.WorkspaceError as e:
+        raise _Stop("error", f"task {task.id}: could not commit its workspace: {e}") from e
+    jobs.fleet.store.kv_set(f"{KV_WORKSPACE}{exp}:{task.id}", sha)
+    return sha
+
+
+def grader_for(spec: ExperimentSpec, task: str) -> Grader | None:
+    """--- KAN-192: the grader a task's trials get: its own, else the experiment's."""
+    own = next((t.grader for t in spec.tasks if t.id == task), None)
+    return own or spec.grader
+
+
+def stored_graders(spec: dict[str, Any], task: str | None = None) -> list[dict[str, Any]]:
+    """--- KAN-192: the graders in a spec as stored: the experiment's, then the tasks' own (only `task`'s, if given)."""
+    tasks = [t for t in spec.get("tasks") or [] if isinstance(t, dict) and (task is None or t.get("id") == task)]
+    return [g for g in (spec.get("grader"), *(t.get("grader") for t in tasks)) if isinstance(g, dict)]
+
+
+def give_canary(spec: ExperimentSpec, stored: dict[str, Any]) -> bool:
+    """--- anti-forgery (#127): the experiment's canary, generated when it starts if unset, in every grader (KAN-192:
+    a task's own grader too) and in the spec as stored. Whether anything changed."""
+    own = [g for g in (spec.grader, *(t.grader for t in spec.tasks)) if g is not None]
+    if all(g.canary for g in own):
+        return False
+    canary = spec_canary(stored) or new_canary()
+    for g in own:
+        g.canary = canary
+    for d in stored_graders(stored):
+        d["canary"] = canary
+    return True
+
+
+def spec_canary(spec: dict[str, Any]) -> str | None:
+    """--- anti-forgery (#127): the experiment's canary, from its spec as stored: every grader in it carries it."""
+    return next((g["canary"] for g in stored_graders(spec) if g.get("canary")), None)
+
+
 def mask_canary(value: Any, canary: str | None) -> Any:
     """The value with the canary replaced (case-insensitively) wherever it occurs: never in an export."""
     if not canary:
@@ -1417,7 +1504,7 @@ async def _grade(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, t:
     what the trial produced for the grader's canary (#127)."""
     from hangar import exchange
 
-    g = spec.grader
+    g = grader_for(spec, t.task)
     assert g is not None
     grade: dict[str, Any] = {"command": g.command, "at": now()}
     try:
@@ -1486,7 +1573,7 @@ async def _canary_scan(jobs: JobService, job: Job, st: State, spec: ExperimentSp
     turn's summary), its trace export, and the egress proxy's records of its sandbox. A hit means the agent had the
     hidden tests (a leaked copy in its context, say): the trial is `contaminated`, the experiment gets a note, and the
     audit log a `grade.canary_seen` entry. The canary itself is never written anywhere."""
-    g = spec.grader
+    g = grader_for(spec, t.task)
     canary = g.canary if g else None
     if not canary:
         return
@@ -1563,7 +1650,7 @@ async def _task_check(jobs: JobService, job: Job, st: State, spec: ExperimentSpe
 
 async def _run_task_check(jobs: JobService, job: Job, st: State, spec: ExperimentSpec, task: str, variant: str,
                           base: str | None) -> dict[str, Any]:
-    g = spec.grader
+    g = grader_for(spec, task)
     assert g is not None
     out: dict[str, Any] = {"state": "done", "base_sha": base, "at": now(), "invalid": False}
     keep = ("exit_code", "hidden_tests", "error", "trust", "seconds", "applied", "apply_error")
@@ -1611,7 +1698,7 @@ async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSp
     from hangar.autoinstall import validation_credentials
 
     fleet = jobs.fleet
-    g = spec.grader
+    g = grader_for(spec, task)
     assert g is not None
     t0 = now()
     grade = grade if grade is not None else {"command": g.command, "at": t0}
@@ -1624,8 +1711,9 @@ async def _grade_patch(jobs: JobService, job: Job, st: State, spec: ExperimentSp
         labels = {GRADER_LABEL: job.id, TRIAL_LABEL: key}
         if g.network == "mirror":
             labels[delivery.NETWORK_LABEL] = "mirror"
-        sb = await fleet.create(env_name, repo=tp.get("repo"), branch=next(
-            (x.base_branch for x in spec.tasks if x.id == task), None),
+        own = next((x for x in spec.tasks if x.id == task), None)
+        ws = await workspace_commit(jobs, job.id, own) if own and own.workspace is not None else None  # KAN-192
+        sb = await fleet.create(env_name, repo=tp.get("repo"), branch=own.base_branch if own else None, workspace=ws,
             credentials=validation_credentials(fleet, env), provider=spec.provider,
             ttl_minutes=max(10, g.timeout_seconds // 60 + 15), person=job.person, actor=f"experiment:{job.id}",
             labels=labels, purpose="automated")  # --- #125: and strict
@@ -1979,7 +2067,7 @@ async def _pin_trial_base(jobs: JobService, job: Job, s: Session, exp: str, task
 def view(jobs: JobService, job: Job) -> dict[str, Any]:
     """The index: what was pinned, and per trial its job, manifests, verification, grade and stored files."""
     st = load(job)
-    canary = (st.spec.get("grader") or {}).get("canary")
+    canary = spec_canary(st.spec)
     trials = []
     for t in st.trials:
         d = t.model_dump(mode="json")
@@ -2029,8 +2117,8 @@ def locked_spec(spec: dict[str, Any], locks: dict[str, str]) -> dict[str, Any]:
     if all((v or {}).get("harness_lock") for v in out.get("variants", {}).values()):
         out.pop("harness", None)
         out.pop("model", None)
-    if isinstance(out.get("grader"), dict):
-        out["grader"].pop("canary", None)
+    for g in stored_graders(out):
+        g.pop("canary", None)
     return out
 
 
@@ -2047,7 +2135,7 @@ def trial_file(jobs: JobService, job: Job, key: str, name: str, attempt: int | N
     # --- review(#114): redacted again on the way out (a secret stored since the trial ended is masked too)
     # --- anti-forgery (#127): and the grader's canary, which a contaminated trial's trace holds
     return mask_canary(jobs.broker.redact(json.loads((_dir(jobs.settings, job.id, t.ref) / name).read_text())),
-                       (st.spec.get("grader") or {}).get("canary"))
+                       spec_canary(st.spec))
 
 
 def experiment(jobs: JobService, exp_id: str, owner: str | None = None) -> Job:

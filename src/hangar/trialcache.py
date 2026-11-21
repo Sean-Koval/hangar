@@ -68,6 +68,7 @@ def task_digest(task: Any, environment: str, grader: Any = None) -> str:
     """A task's identity for the cache: what decides its result, not its name."""
     t = task.model_dump(mode="json") if hasattr(task, "model_dump") else dict(task)
     hidden = {}
+    grader = t.get("grader") or grader  # --- KAN-192: a task's own grader is the one it's graded by
     if grader is not None:
         files = grader.files if hasattr(grader, "files") else (grader.get("files") or {})
         hidden = {p: "sha256:" + hashlib.sha256(c.encode()).hexdigest() for p, c in sorted(files.items())}
@@ -75,6 +76,10 @@ def task_digest(task: Any, environment: str, grader: Any = None) -> str:
             "repo": t.get("repo"), "base_branch": t.get("base_branch"),
             "reference_patch": "sha256:" + hashlib.sha256(t["reference_patch"].encode()).hexdigest()
             if t.get("reference_patch") else None, "hidden_tests": hidden, "environment": environment}
+    if own := t.get("grader"):  # --- KAN-192: a task's own grader (its files are hidden_tests); absent, digests stay
+        body["grader"] = {k: v for k, v in own.items() if k not in ("files", "canary")}
+    if (ws := t.get("workspace")) is not None:  # --- KAN-192: a workspace task's files are its repo; absent, as before
+        body["workspace"] = {p: "sha256:" + hashlib.sha256(c.encode()).hexdigest() for p, c in sorted(ws.items())}
     return "sha256:" + hashlib.sha256(_canon(body).encode()).hexdigest()
 
 
@@ -82,7 +87,7 @@ def parts_for(pin: PinSet, task_id: str, digest: str) -> dict[str, str | None]:
     tp = pin.tasks.get(task_id)
     return {"harness_digest": pin.harness_digest, "environment": pin.environment_digest or pin.environment_spec_digest,
             "task_digest": digest, "model_id": pin.model_id, "base_sha": tp.base_sha if tp else None,
-            "grader_digest": pin.grader_digest}
+            "grader_digest": (tp.grader_digest if tp else None) or pin.grader_digest}
 
 
 def key_of(parts: dict[str, str | None]) -> str:

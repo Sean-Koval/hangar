@@ -202,7 +202,7 @@ async def grading(fleet, tmp_path, monkeypatch):
         st = experiments.State(spec=spec.model_dump(mode="json"), pins={"tasks": {"t": {"repo": f"file://{remote}"}}})
         return spec, st, Job(title="e", instructions="x", environment="genv")
 
-    yield {"jobs": Jobs(), "trial": trial, "experiment": experiment, "base": base}
+    yield {"jobs": Jobs(), "trial": trial, "experiment": experiment, "base": base, "remote": remote}
 
 
 CMD = f"HANGAR_GRADE_PYTHON={sys.executable} hangar-grade pytest -q"

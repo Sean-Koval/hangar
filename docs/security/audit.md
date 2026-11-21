@@ -20,8 +20,9 @@ Set `enable_audit_export = true` in `deploy/terraform/gke/`, or in the `hangar-w
 cluster, and apply. A log sink then routes the audit lines to a
 Cloud Logging bucket of their own, `hangar-audit`, kept for `audit_retention_days` (400 by default).
 
-Nobody can delete an entry from a log bucket before its retention ends. hangar's service account only writes logs, so
-it can't change the bucket, the sink or the retention. Set `audit_bucket_locked = true` once the retention is right.
+Nobody can delete an entry from a log bucket before its retention ends. hangar's service account only writes logs
+and reads this bucket, so it can't change the bucket, the sink or the retention. Set `audit_bucket_locked = true`
+once the retention is right.
 After that, nobody can shorten it or delete the bucket early. The lock is permanent.
 
 ## Reading it
@@ -33,6 +34,19 @@ gcloud logging read 'textPayload=~"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}
 
 The Terraform output `audit_log` prints this query for your project. The Logs Explorer reads the same bucket under
 "Refine scope". Lines written before the sink existed stay in the `_Default` bucket, for its 30 days.
+
+## Doctor's comparison
+
+`hangar doctor` compares the table's newest entry with the bucket's ([what doctor proves](data-handling.md#what-doctor-proves)).
+Set `HANGAR_AUDIT_BUCKET` to the Terraform output `audit_view`. `deploy/gke/up.sh` sets it; on a company cluster,
+put the `hangar-workload` module's output in your `hangar-site`. The same apply grants hangar's service account
+`roles/logging.viewAccessor` on that view alone, so it can read the bucket but still can't change it.
+
+Doctor reads the bucket's lines of the last 30 days. Suppose a table is restored from an older backup, then written
+past. Doctor sees it while the overwritten lines are among those 30 days: the bucket then holds one entry twice.
+
+The read stops after 20 pages, or 30 seconds in all, so doctor never waits on Logging. A read that times out, or
+finds no line, says "not run".
 
 ## What it doesn't cover
 

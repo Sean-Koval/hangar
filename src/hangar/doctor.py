@@ -249,6 +249,7 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import credhealth  # --- clouddoctor: logins that stopped working or expire soon
 
     out += credhealth.doctor_checks(h)
+    out += await credhealth.vertex_doctor_checks(h)  # --- KAN-291: Claude on Vertex AI, one cheap call each
     from hangar import modelpolicy  # --- integ3 (review #105): jobs with no budget and no daily cap
 
     out += modelpolicy.doctor_checks(h)

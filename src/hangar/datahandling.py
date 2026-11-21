@@ -99,7 +99,8 @@ def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
     link, or that is marked redacted but doesn't match what the purge wrote. It is False too when the chain starts
     from an anchor the newest `audit.pruned` entry doesn't carry (rows cut from the front). `restarts` lists chain
     starts after the first. What this can't see: rows cut from the end, or a table reset to before the chain. The
-    copy off the pod is the record for those (docs/security/data-handling.md#what-doctor-proves)."""
+    copy off the pod is the record for those, and bucket_check compares with it (KAN-541,
+    docs/security/data-handling.md#what-doctor-proves)."""
     key = store.audit_key
     anchor = json.loads(store.kv_get(AUDIT_ANCHOR) or "null")
     prev = anchor["hash"] if anchor else ""
@@ -200,7 +201,166 @@ async def doctor_checks(h: Any) -> list[dict[str, Any]]:
     else:
         out.append(_check("audit retention", True, f"{days:g} days, then deleted oldest first"
                           + (f" ({anchor['pruned']} so far)" if anchor else "")))
+    out.append(await bucket_check(h))  # --- KAN-541: the end of the table, against the copy off the pod
     return out
+
+
+# ---------------------------------------------------------------------------- the bucket (KAN-541)
+# What the chain can't show (rows cut from the end, a table reset or restored from an older backup) shows against the
+# locked audit bucket: its newest `hangar.audit:` line carries a `seq` the table must reach and a `hash` the table's
+# row must still have. hangar reads the bucket's view with roles/logging.viewAccessor on that view alone; it can't
+# write to the bucket or change the sink.
+_VIEW = re.compile(r"projects/[a-z][-a-z0-9]{4,28}[a-z0-9]/locations/[a-z0-9-]{1,40}/buckets/[A-Za-z0-9_-]{1,100}"
+                   r"/views/[A-Za-z0-9_-]{1,100}")
+_ENTRIES = "https://logging.googleapis.com/v2/entries:list"
+_LINE = "hangar.audit: "
+# the line as `hangar serve` logs it: "<date> <time> INFO hangar.audit: {...}" (cli.py), or bare. Text that merely
+# contains it, inside another logger's message, isn't an audit line.
+_LINE_RE = re.compile(r"^(?:\S+ \S+ [A-Z]+ )?hangar\.audit: (?=\{)")
+_PAGE = 500
+_WINDOW_DAYS = 30  # every line of the last 30 days, up to _MAX_LINES: a restore written past shows as two links
+_MAX_LINES = 5000
+_MAX_PAGES = 20  # per window: empty pages with a token can go on, and each call may take up to 20 s
+_READ_SECONDS = 30.0  # the whole read; past it the line is not run, so doctor never hangs on Logging
+_FIX_BEHIND = ("treat the bucket as the record: find out who had the database, and what was restored "
+               "(docs/security/data-handling.md#if-the-chain-breaks)")
+
+
+async def _token() -> str | None:
+    from hangar.doctor import _metadata_token
+
+    return await _metadata_token()
+
+
+async def _list_entries(view: str, token: str, days: float, page_token: str | None = None,
+                        page_size: int = _PAGE) -> tuple[int, dict[str, Any]]:
+    """One page of the bucket's audit lines of the last `days`, newest first."""
+    import httpx
+
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now() - days * 86400))
+    body: dict[str, Any] = {"resourceNames": [view], "filter": f'textPayload:"{_LINE}{{" AND timestamp>="{since}"',
+                            "orderBy": "timestamp desc", "pageSize": page_size}
+    if page_token:
+        body["pageToken"] = page_token
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(_ENTRIES, json=body, headers={"Authorization": f"Bearer {token}"})
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return r.status_code, data if isinstance(data, dict) else {}
+
+
+async def _read_bucket(view: str, token: str) -> tuple[list[tuple[int, str | None]], str | None]:
+    """The audit lines of the last 30 days (up to _MAX_LINES), else the newest one ever: (lines, why not read)."""
+    gave_up = False
+    for days, cap in ((_WINDOW_DAYS, _MAX_LINES), (3650, 1)):
+        lines: list[tuple[int, str | None]] = []
+        page: str | None = None
+        for _ in range(_MAX_PAGES):  # a page may come back empty with a token when the search ran out of time
+            code, data = await _list_entries(view, token, days, page)
+            if code != 200:
+                return [], f"HTTP {code}"
+            lines += _bucket_lines(data)
+            page = data.get("nextPageToken") or None
+            if not page or len(lines) >= cap:
+                break
+        else:
+            gave_up = bool(page)
+        if lines:
+            return lines, None
+    return [], (f"no audit line in {_MAX_PAGES} pages" if gave_up else None)
+
+
+def _bucket_lines(data: dict[str, Any]) -> list[tuple[int, str | None]]:
+    """(seq, hash) of each audit line in an entries:list answer."""
+    out = []
+    for e in data.get("entries") or []:
+        text = str(e.get("textPayload") or "").strip() if isinstance(e, dict) else ""
+        m = _LINE_RE.match(text)
+        if not m:
+            continue
+        try:
+            row, end = json.JSONDecoder().raw_decode(text, m.end())
+            seq = row["seq"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if text[end:].strip() or not {"actor", "action"} <= row.keys():
+            continue
+        if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0:
+            link = row.get("hash")
+            out.append((seq, link if isinstance(link, str) else None))
+    return out
+
+
+def compare_with_bucket(store: Store, lines: list[tuple[int, str | None]]) -> tuple[bool, str]:
+    """Whether the table reaches the bucket's newest entry and holds every entry the bucket read shows as the
+    bucket has it. Entries retention deleted from the table since are skipped."""
+    seq = max(s for s, _ in lines)
+    newest = store.audit_max_id()
+    if newest < seq:
+        return False, (f"the table's newest entry is {newest}, the bucket's is {seq}: entries were cut from the end, "
+                       "or the table was reset or restored from an older backup")
+    links: dict[int, str] = {}
+    for s, h in lines:
+        if h is None:
+            continue
+        if links.setdefault(s, h) != h:
+            return False, (f"the bucket holds entry {s} twice with different links: the table was restored or reset, "
+                           "then written past")
+    first = store.audit_rows(0, 1)
+    kept = sorted(s for s in links if first and s >= first[0][0])
+    table: dict[int, str | None] = {}
+    after = kept[0] - 1 if kept else newest
+    while kept and after < kept[-1]:
+        rows = store.audit_rows(after, 5000)
+        if not rows:
+            break
+        table.update((r[0], r[4]) for r in rows)
+        after = rows[-1][0]
+    for s in kept:
+        if s not in table:
+            return False, f"entry {s}, which the bucket holds, isn't in the table"
+        if table[s] != links[s]:
+            return False, (f"entry {s}'s link isn't the bucket's: the table was restored, reset or relinked, then "
+                           "written past")
+    return True, (f"the table reaches the bucket's newest entry, {seq}"
+                  + (f", and the {len(kept)} entries read from the bucket match it" if kept else
+                     " (no line read carries a link to compare)"))
+
+
+async def bucket_check(h: Any) -> dict[str, Any]:
+    from hangar.doctor import _check
+
+    view = (h.settings.audit_bucket or "").strip()
+    if not view:
+        return _check("audit bucket", None, "not run: no audit bucket is set (HANGAR_AUDIT_BUCKET), so rows cut from "
+                      "the end of the table or a restored table go unseen",
+                      "set enable_audit_export, then HANGAR_AUDIT_BUCKET to the Terraform output audit_view "
+                      "(docs/security/audit.md#doctors-comparison)")
+    fix = ("grant hangar's service account roles/logging.viewAccessor on that view (the Terraform audit export does), "
+           "and check HANGAR_AUDIT_BUCKET")
+    if not _VIEW.fullmatch(view):
+        return _check("audit bucket", None, "not run: HANGAR_AUDIT_BUCKET isn't a log view "
+                      "(projects/P/locations/global/buckets/B/views/V)", fix)
+    token = await _token()
+    if not token:
+        return _check("audit bucket", None, "not run: hangar has no Google credentials to read the bucket with", fix)
+    try:
+        lines, why = await asyncio.wait_for(_read_bucket(view, token), _READ_SECONDS)
+    except TimeoutError:
+        return _check("audit bucket", None, "not run: the bucket read timed out", fix)
+    except Exception as e:  # noqa: BLE001 - not read is not run, never a pass
+        return _check("audit bucket", None, f"not run: the bucket wasn't read ({type(e).__name__})", fix)
+    if why:
+        return _check("audit bucket", None, f"not run: the bucket wasn't read ({why})", fix)
+    if not lines:
+        return _check("audit bucket", None, "not run: no audit line was found in the bucket", fix)
+    try:
+        ok, detail = await asyncio.to_thread(compare_with_bucket, h.store, lines)
+    except Exception as e:  # noqa: BLE001 - a comparison that breaks says so; it never takes doctor down
+        return _check("audit bucket", None, f"not run: the comparison failed ({type(e).__name__})", fix)
+    return _check("audit bucket", ok, detail, _FIX_BEHIND)
 
 
 # ---------------------------------------------------------------------------- purge
@@ -214,8 +374,9 @@ def pseudonym(h: Any, person_id: str) -> str:
     return "person:" + hashlib.sha256(f"{salt}\n{person_id}".encode()).hexdigest()[:16]
 
 
-# --- KAN-553: owner and requester values hangar itself writes (sessions.py, models.py defaults): nobody's names
-FIXED_OWNERS = frozenset({"admin", "system", "jobs", "tower", "hangar"})
+# --- KAN-553: owner and requester values hangar itself writes (sessions.py, models.py defaults): nobody's names.
+# The same list people.py refuses as person ids (KAN-552), so the two can't drift.
+FIXED_OWNERS = people.RESERVED_IDS
 
 
 def aliases(store: Store, person_id: str) -> tuple[list[str], list[str]]:

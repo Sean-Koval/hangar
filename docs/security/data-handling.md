@@ -33,21 +33,19 @@ The chain assumes a single hangar process writes the database.
 
 ### What doctor proves
 
-`hangar doctor` walks the chain and names the first broken row. The audit bucket remains the record. It catches someone holding only the database who:
+`hangar doctor` walks the chain and names the first broken row. The audit bucket remains the record. The chain catches someone holding only the database who:
 
 - edits, inserts, reorders or removes a row anywhere but at the end;
 - deletes the oldest rows and writes a new anchor;
 - clears the links and restarts hangar.
 
-Doctor can't see:
+Doctor's `audit bucket` line covers the end. It fails when the table stops short of the bucket's newest `seq`, or
+holds it with another `hash`. That shows cut rows, a reset table or an older backup.
 
-- rows cut from the end of the table;
-- a table reset to before the chain: its columns dropped and its start entry deleted;
-- a database restored from a backup, which rolls the table back with a valid chain;
-- changes by someone holding both the database and the vault key.
+Without a readable bucket the line says "not run" ([setting it up](audit.md#doctors-comparison)).
 
-For those, compare the newest `seq` and `hash` with the bucket. A Docker or single-VM install has no bucket, so
-someone with its database file can rewrite the table undetected.
+Doctor can't see changes by someone holding both the database and the vault key. A Docker or single-VM install has
+no bucket, so someone with its database file can rewrite the table undetected.
 
 ### If the chain breaks
 
