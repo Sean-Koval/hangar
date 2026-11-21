@@ -78,6 +78,8 @@ def task_digest(task: Any, environment: str, grader: Any = None) -> str:
             if t.get("reference_patch") else None, "hidden_tests": hidden, "environment": environment}
     if own := t.get("grader"):  # --- KAN-192: a task's own grader (its files are hidden_tests); absent, digests stay
         body["grader"] = {k: v for k, v in own.items() if k not in ("files", "canary")}
+    if (ws := t.get("workspace")) is not None:  # --- KAN-192: a workspace task's files are its repo; absent, as before
+        body["workspace"] = {p: "sha256:" + hashlib.sha256(c.encode()).hexdigest() for p, c in sorted(ws.items())}
     return "sha256:" + hashlib.sha256(_canon(body).encode()).hexdigest()
 
 
