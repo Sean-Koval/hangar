@@ -779,8 +779,8 @@ class Fleet:
         self.reconciler.own(sb.id, "create")  # --- reconciler: this task owns the row until it settles
         self.store.put(sb)
         self.audit(actor, "sandbox.create", sb.id, environment=environment, provider=pname, name=sb.name)
-        if resolved.warnings:
-            self.audit(actor, "sandbox.subscription_login", sb.id, purpose=use, warning=resolved.warnings[0],
+        if teamcreds.INTERACTIVE_WARNING in resolved.warnings:  # --- KAN-291: not for a Vertex overlap warning
+            self.audit(actor, "sandbox.subscription_login", sb.id, purpose=use, warning=teamcreds.INTERACTIVE_WARNING,
                        credentials=[c for c in cred_names if teamcreds.is_subscription_name(self.store, c)])
         def stage(msg: str) -> None:
             sb.info["stage"] = msg
