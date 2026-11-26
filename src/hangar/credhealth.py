@@ -16,6 +16,10 @@ session that just stops. So each credential an agent uses gets a check that cost
   directory of its own: `gcloud auth activate-service-account --key-file`, then `gcloud auth print-access-token`
   (Google refuses a deleted or disabled key; the token is thrown away), then, where the key may see it,
   `gcloud iam service-accounts keys list` for the key's `validBeforeTime`.
+* **Claude Code on Vertex AI** (--- KAN-291: a claude-code service-account key): the same, then one cheap call with
+  the token, Resource Manager's `testIamPermissions` on the key's project for `aiplatform.endpoints.predict`, the
+  permission a Claude request on Vertex needs. It calls no model and costs nothing. A key without the permission
+  fails; a call that doesn't answer leaves the key's own result standing, with a note.
 
 --- KAN-178: a turn the vendor refused the login of (outcomes.login_rejected: Codex couldn't refresh, a 401) marks
 the sandbox's login for that harness failed, with how to log in again (`login_rejected`). No file check turns that
@@ -201,10 +205,14 @@ async def gcloud_key(c: Credential, value: bytes, gcloud: str | None = None) -> 
                                 env)
         if rc:
             return Result("fail", f"gcloud couldn't activate the key: {_last_line(err)}", None, "gcloud")
-        rc, _, err = await _run([gcloud, "auth", "print-access-token", email, "--quiet"], env)  # the token is dropped
+        rc, token, err = await _run([gcloud, "auth", "print-access-token", email, "--quiet"], env)
         if rc:
             return Result("fail", f"Google refused the key (deleted or disabled, or the service account is): "
                                   f"{_last_line(err)}", None, "gcloud auth print-access-token")
+        vertex = None
+        if c.harness == "claude-code":  # --- KAN-291: can it call Claude on Vertex? (the token is dropped after)
+            vertex = await vertex_access(str(info.get("project_id") or ""), token.strip())
+        token = ""
         expires = None
         rc, out, _ = await _run([gcloud, "iam", "service-accounts", "keys", "list", f"--iam-account={email}",
                                  "--managed-by=user", "--format=json", "--quiet"], env)
@@ -218,7 +226,52 @@ async def gcloud_key(c: Credential, value: bytes, gcloud: str | None = None) -> 
                         expires = datetime.fromisoformat(before.replace("Z", "+00:00")).timestamp()
     renew = (f"Make a new key for {email} and store it: hangar cred add {c.name} --harness {c.harness} --kind "
              "generic --file key.json")
-    return _by_expiry(f"Google issues tokens for {email}", expires, renew, "gcloud auth print-access-token")
+    if vertex is not None and vertex.status == "fail":
+        return vertex
+    res = _by_expiry(f"Google issues tokens for {email}", expires, renew, "gcloud auth print-access-token")
+    if vertex is not None:  # unchecked Vertex access is a warn, never an ok
+        status = "warn" if vertex.status == "unknown" and res.status == "ok" else res.status
+        return res._replace(status=status, detail=f"{res.detail}; {vertex.detail}", method=vertex.method)
+    return res
+
+
+# --- KAN-291: the permission a Claude request on Vertex AI needs, tested without a model. A custom role with only
+# this one is the narrow grant; roles/aiplatform.user has it too, but can also start training and batch jobs.
+VERTEX_PERMISSION = "aiplatform.endpoints.predict"
+_TEST_IAM = "https://cloudresourcemanager.googleapis.com/v1/projects/{project}:testIamPermissions"
+
+
+async def _post_json(url: str, token: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        r = await client.post(url, json=body, headers={"Authorization": f"Bearer {token}"})
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return r.status_code, data if isinstance(data, dict) else {}
+
+
+async def vertex_access(project: str, token: str) -> Result:
+    """One call that calls no model: may this token's account call Claude on Vertex AI in `project`?"""
+    method = "testIamPermissions aiplatform.endpoints.predict"
+    if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project):
+        return Result("unknown", "the key names no project, so Vertex AI access wasn't checked", None, method)
+    try:
+        code, data = await _post_json(_TEST_IAM.format(project=project), token, {"permissions": [VERTEX_PERMISSION]})
+    except Exception as e:  # noqa: BLE001 - the network or Google didn't answer: the key's own check stands
+        return Result("unknown", f"Vertex AI access in {project} wasn't checked ({type(e).__name__})", None, method)
+    if code == 200 and VERTEX_PERMISSION in (data.get("permissions") or []):
+        return Result("ok", f"it may call Claude on Vertex AI in {project} (the key's own project)", None, method)
+    if code == 403 and "SERVICE_DISABLED" in json.dumps(data):  # the key's project hasn't Resource Manager's API on
+        return Result("unknown", f"Vertex AI access in {project} wasn't checked: the Cloud Resource Manager API is off "
+                                 "there", None, method)
+    if code in (200, 403):
+        return Result("fail", f"the service account may not call Vertex AI models in {project}: grant it "
+                              f"a role with {VERTEX_PERMISSION} there, and enable the Claude models in Model Garden "
+                              "(docs/team/vertex.md)", None, method)
+    return Result("unknown", f"Vertex AI access in {project} wasn't checked (HTTP {code})", None, method)
 
 
 async def check(c: Credential, value: bytes | None, gcloud: str | None = None) -> Result | None:
@@ -229,6 +282,8 @@ async def check(c: Credential, value: bytes | None, gcloud: str | None = None) -
         return Result("fail", "no stored value in the vault: store it again", None, "vault")
     try:
         text = value.decode(errors="replace").strip()
+        if c.kind == CredentialKind.GENERIC:  # a service-account key, whichever harness (--- KAN-291: claude-code too)
+            return await gcloud_key(c, value, gcloud)
         if c.harness == "claude-code":
             if c.kind == CredentialKind.OAUTH_TOKEN:
                 return claude_token(c, text)
@@ -463,6 +518,35 @@ def _doctor_checks(h: Any) -> list[dict[str, Any]]:
                           if n else f"{len(models)} model credential(s) stored; none is of a kind hangar can check "
                           "without calling a model"))
     return out
+
+
+def vertex_credentials(store: Store) -> list[Credential]:
+    """--- KAN-291: Claude-on-Vertex credentials: claude-code service-account keys."""
+    return [c for c in store.list(Credential) if c.harness == "claude-code" and c.kind == CredentialKind.GENERIC]
+
+
+async def vertex_doctor_checks(h: Any) -> list[dict[str, Any]]:
+    """--- KAN-291: `claude on vertex`: each Claude-on-Vertex credential checked with one cheap call (gcloud's token,
+    then testIamPermissions; no model), rechecked when its result is older than STATUS_MAX_AGE. Not a deploy gate."""
+    from hangar.doctor import _check
+
+    creds = vertex_credentials(h.store)
+    if not creds:
+        return []
+    fleet = getattr(h, "fleet", None)
+    if fleet is not None:
+        await check_all(fleet, "doctor", max_age=STATUS_MAX_AGE, names=[c.name for c in creds], budget=STATUS_BUDGET)
+    parts, worst = [], "ok"
+    rank = {"ok": 0, "unknown": 1, "warn": 1, "unchecked": 1, "fail": 2}
+    for c in vertex_credentials(h.store):
+        st = str((c.health or {}).get("status") or "unchecked")
+        parts.append(f"{c.name} ({_owner(c)}): " + ((c.health or {}).get("detail") or "not checked yet"))
+        worst = st if rank.get(st, 1) > rank.get(worst, 1) else worst
+    ok = True if worst == "ok" else (False if worst == "fail" else None)
+    return [{**_check("claude on vertex", ok, "; ".join(parts),
+                      f"grant the service account a role with {VERTEX_PERMISSION} in the project, enable the Claude "
+                      "models in Model Garden, then `hangar cred check NAME` (docs/team/vertex.md)"),
+             "deploy_gate": False}]
 
 
 def _model_credentials(store: Store) -> list[Credential]:

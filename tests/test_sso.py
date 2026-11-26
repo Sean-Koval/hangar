@@ -768,6 +768,12 @@ def test_small_checks(settings):
     assert not sso._local_url("http://localhost.evil.com") and sso._local_url("http://localhost:8080/x")
     s = _settings(settings, sso_mode="iap", sso_iap_audience="/projects/123/apps/my-proj")
     assert not any("IAP_AUDIENCE" in p for p in sso.problems(s))
+    # KAN-556: IAP's header carries no email_verified, so only a Workspace domain stops a Google account claiming
+    # a person's email at their first sign-in
+    s = _settings(settings, sso_mode="iap", sso_iap_audience=AUD, sso_allowed_domains="")
+    assert any("iap needs HANGAR_SSO_ALLOWED_DOMAINS" in p for p in sso.problems(s))
+    s.sso_allowed_domains = "corp.example"
+    assert not any("ALLOWED_DOMAINS" in p for p in sso.problems(s))
     s = _settings(settings, sso_mode="iap", sso_iap_audience="/projects/123/anything")
     assert any("IAP_AUDIENCE" in p for p in sso.problems(s))
     with pytest.raises(sso.Refused):
@@ -818,8 +824,9 @@ def test_iap_cant_check_a_group():
 
 # ====================================================================== IAP
 class FakeIAP:
-    def __init__(self):
+    def __init__(self, **claims):
         self.key = ec.generate_private_key(ec.SECP256R1())
+        self.claims = claims  # sent in every assertion, e.g. the Workspace domain (hd)
 
     def jwks(self, req: httpx.Request) -> httpx.Response:
         n = self.key.public_key().public_numbers()
@@ -828,12 +835,13 @@ class FakeIAP:
 
     def assertion(self, email: str, aud: str = AUD, **over) -> str:
         return jwt_es(self.key, {"iss": sso.IAP_ISSUER, "aud": aud, "sub": "accounts.google.com:" + email,
-                                 "email": email, "iat": int(time.time()), "exp": int(time.time()) + 600, **over})
+                                 "email": email, "iat": int(time.time()), "exp": int(time.time()) + 600,
+                                 **self.claims, **over})
 
 
 def test_iap_mode(make):
-    iap = FakeIAP()
-    c, h = make(sso_mode="iap", sso_iap_audience=AUD)
+    iap = FakeIAP(hd="corp.example")
+    c, h = make(sso_mode="iap", sso_iap_audience=AUD, sso_allowed_domains="corp.example")
     h.sso.transport = httpx.MockTransport(iap.jwks)
     assert c.get("/auth/sso/login").status_code == 403  # not through IAP
     hdr = {sso.IAP_HEADER: iap.assertion("alice@corp.example")}
@@ -846,6 +854,18 @@ def test_iap_mode(make):
     people.add(h.store, "bob", role="member")
     people.link(h.store, "bob", "email", "bob@corp.example")
     assert c.get("/api/me", headers={sso.IAP_HEADER: iap.assertion("bob@corp.example")}).status_code == 401
+    # --- KAN-556: the session's IAP account itself, each request: the same email from another account (sub), or
+    # from outside the Workspace domain (a session bound before sign-in checked hd), is refused
+    assert c.get("/api/me", headers={sso.IAP_HEADER: iap.assertion("alice@corp.example", sub="accounts.google.com:9")}
+                 ).status_code == 401
+    assert c.get("/api/me", headers={sso.IAP_HEADER: iap.assertion("alice@corp.example", hd="gmail.com")}
+                 ).status_code == 401
+    assert c.get("/api/me", headers={sso.IAP_HEADER: iap.assertion("alice@corp.example", hd=None)}).status_code == 401
+    h.settings.sso_allowed_domains = "other.example"  # the domains changed after the session was bound
+    assert c.get("/api/me", headers={sso.IAP_HEADER: iap.assertion("alice@corp.example", hd="other.example")}
+                 ).status_code == 401
+    h.settings.sso_allowed_domains = "corp.example"
+    assert c.get("/api/me", headers=hdr).status_code == 200
     # the CLI's bearer routes stay outside IAP: a token works with no assertion
     raw, _ = h.auth.create("alice-cli", ["user"], person="alice")
     c.cookies.clear()

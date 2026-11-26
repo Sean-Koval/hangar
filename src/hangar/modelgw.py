@@ -371,6 +371,15 @@ class ModelGateway:
                 "recorded")
             return creds
         mine = [c for c in creds if c.harness == harness]
+        if harness == "claude-code":  # --- KAN-291: Claude on Vertex AI would skip the gateway's base URL
+            from hangar.egress import vertex_on
+
+            if vertex_on(spec, harness):
+                raise ModelGatewayError(
+                    f"environment {spec.name} records model traffic (model_gateway: record) but sets "
+                    "CLAUDE_CODE_USE_VERTEX, which sends Claude Code's calls to Vertex AI past the gateway. Unset it, "
+                    "or set model_gateway: off")
+        vertex = [c.name for c in mine if harness == "claude-code" and c.kind == CredentialKind.GENERIC]
         if subs := [c.name for c in mine if teamcreds.is_subscription(c)]:
             raise ModelGatewayError(
                 f"environment {spec.name} records model traffic (model_gateway: record), which needs an API key; "
@@ -397,7 +406,11 @@ class ModelGateway:
             if p is not None:
                 sb.info["model_gateway"].update({"mode": p["mode"], "replay": p["id"], "run": p["run"]})
         self.fleet.audit(sb.created_by or "system", "modelgw.grant", sb.id, provider=provider, credential=key.name)
-        return [c for c in creds if c.name != key.name]
+        if vertex:  # --- KAN-291: a Vertex key would turn Claude Code away from the gateway, so it isn't written
+            sb.info.setdefault("warnings", []).append(
+                f"model_gateway: record sends Claude Code through the gateway with {key.name}; "
+                f"{', '.join(vertex)} (Claude on Vertex AI) isn't written into the sandbox")
+        return [c for c in creds if c.name != key.name and c.name not in vertex]
 
     def sandbox_env(self, sb: Sandbox) -> dict[str, str]:
         """The base URL and bearer `attach` minted (once: the token is never stored in clear)."""

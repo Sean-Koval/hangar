@@ -197,5 +197,5 @@ async def test_a_slow_jira_is_cut_off_and_the_job_still_gets_its_file(linked, mo
     door.jobs = linked
     nothing = httpx.MockTransport(lambda r: httpx.Response(404))
     monkeypatch.setattr(jira, "client_for", lambda svc, cfg=None: jira.JiraAPI(cfg, "tok", transport=nothing))
-    [(what, text)] = await door._ticket_sections(cfg, "ABC-12")
+    [(what, text)], pages = await door._ticket_sections(cfg, "ABC-12")
     assert what == "problems" and "longer than" in text

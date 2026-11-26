@@ -510,10 +510,11 @@ async def _apply_patch(svc: SessionService, turn: SessionTurn, sb: Sandbox, repo
 
 
 # ====================================================================== after a turn
-async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome: str) -> str:
+async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome: str, ended: bool = False) -> str:
     """Read what the agent handed back, give it one repair turn if a required result is missing or invalid,
     collect artifacts. Returns the turn's outcome: `needs_input` when the agent asked a question. Never raises:
-    the work is in the sandbox and the checkpoint; a read error must not lose the turn."""
+    the work is in the sandbox and the checkpoint; a read error must not lose the turn. `ended`: the turn ended
+    on its own after going over budget (KAN-557), so a question it asked still waits for an answer."""
     turn.outcome = outcome
     try:
         if s.sandbox_id and svc._alive(s.sandbox_id):
@@ -533,7 +534,7 @@ async def after_turn(svc: SessionService, s: Session, turn: SessionTurn, outcome
     except Exception as e:  # noqa: BLE001
         log.warning("session %s: could not read turn output: %s", s.id, e)
         turn.warnings.append(f"could not read what the agent handed back: {e}")
-    if turn.question and outcome == "exited":
+    if turn.question and (outcome == "exited" or ended):  # --- KAN-557: it finished and asked; nothing spends now
         turn.outcome = "needs_input"
     s.needs_input = turn.question if turn.outcome == "needs_input" else None  # a stopped turn's waits on nobody
     s.question_options = list(turn.question_options) if s.needs_input else []
@@ -708,6 +709,11 @@ async def _wait_repair(svc: SessionService, s: Session, turn: SessionTurn, sb: S
                 watch.note("error", f"stopped: over budget ({over})", reason="over_budget")
             break
         await asyncio.sleep(settings.session_poll_seconds)
+    if turn.outcome == "exited" and svc._alive(sb.id):  # --- KAN-557: what it spent after the last poll
+        await watch.ended()
+        if over := over_budget(s.budget, add_usage(turn.usage, run.usage), None):
+            turn.outcome, turn.outcome_reason = "over_budget", over
+            watch.note("error", f"finished over budget ({over})", reason="over_budget")
     # Not on shutdown (CancelledError): a restart re-attaches and reads the whole log again.
     await watch.finish(alive=svc._alive(sb.id))
     turn.repair_usage = run.usage or turn.repair_usage

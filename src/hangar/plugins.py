@@ -276,7 +276,9 @@ def _root(spec: EnvSpec, p: Plugin) -> Path:
             tree = fetch(p)
         base = tree.resolve()
     else:
-        base = (spec.source_dir or Path(".")).resolve()
+        from hangar.envspec import spec_dir
+
+        base = spec_dir(spec, p.path or ".").resolve()  # --- KAN-304: a saved override falls back to the shipped dir
     rel = p.path or "."
     if Path(rel).is_absolute():
         raise ValueError(f"plugin {p.name}: path must be relative to the spec directory: {p.path}")
