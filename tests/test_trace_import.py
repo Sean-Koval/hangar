@@ -659,6 +659,19 @@ def test_import_all_imports_again_when_its_output_is_gone_or_older(tmp_path: Pat
     assert [e["dir"] for e in done["imported"]] == ["s-a"]
 
 
+def test_import_all_never_takes_a_folder_name_from_an_edited_index(tmp_path: Path) -> None:
+    projects, out = tmp_path / "projects", tmp_path / "out"
+    _project(projects, "s-a", "KAN-1-a")
+    _run_all(projects, out)
+    idx = json.loads((out / "index.json").read_text())
+    for e in idx["sessions"].values():
+        e.update(dir="../escaped", fingerprint=[])
+    (out / "index.json").write_text(json.dumps(idx))
+    r, done = _run_all(projects, out)
+    assert r.exit_code == 0 and [e["dir"] for e in done["imported"]] == ["s-a"]
+    assert not (tmp_path / "escaped").exists()
+
+
 def test_import_all_refuses_an_out_folder_inside_the_projects_folder(tmp_path: Path) -> None:
     projects = tmp_path / "projects"
     _project(projects, "s-a", "main")

@@ -573,7 +573,8 @@ def import_all(projects: Path, out: Path, since: float | None = None, repo: str 
     if out == projects or out.is_relative_to(projects):
         raise ValueError(f"--out {out} is inside the projects folder; the next run would read it as transcripts")
     index = _read_index(out)
-    taken = {e["dir"]: k for k, e in index.items() if isinstance(e, dict) and e.get("dir")}
+    # the index is a file anyone can edit, so a folder name from it counts only when it is a plain name
+    taken = {e["dir"]: k for k, e in index.items() if isinstance(e, dict) and _DIR.fullmatch(str(e.get("dir", "")))}
     done: dict[str, Any] = {"imported": [], "unchanged": 0, "older": 0, "other_repo": 0, "failed": []}
     seen: set[Path] = set()
     changed = 0
@@ -594,13 +595,13 @@ def import_all(projects: Path, out: Path, since: float | None = None, repo: str 
                 done["other_repo"] += 1
                 continue
             prev = index.get(key)
-            if prev and prev.get("fingerprint") == fp and (out / prev.get("dir", "")).is_dir():
+            if prev and taken.get(prev.get("dir")) == key and prev.get("fingerprint") == fp \
+                    and (out / prev["dir"]).is_dir():
                 done["unchanged"] += 1
                 continue
             try:
                 imp = import_transcript(path, path.stem, manifest)
-                d = prev["dir"] if prev and prev.get("dir") and taken.get(prev["dir"]) == key \
-                    else _dir_for(imp.session_id, key, taken)
+                d = prev["dir"] if prev and taken.get(prev.get("dir")) == key else _dir_for(imp.session_id, key, taken)
                 summary = write(imp, out / d)
             except Exception as e:  # noqa: BLE001 - one bad transcript never stops the folder
                 done["failed"].append({"transcript": key, "error": f"{type(e).__name__}: {e}"[:300]})
