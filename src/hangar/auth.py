@@ -49,7 +49,7 @@ RELAY_HEADER = "x-hangar-on-behalf-of"
 RELAY_UNLINKED = ("refuse", "approve")  # HANGAR_RELAY_UNLINKED: what an account linked to nobody gets
 _MAX_CLAIM = 1024
 _REPLY_TO_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}(:[A-Za-z0-9_=+/.-]{1,128}){1,3}$")
-_RESERVED_NAMES = {"admin", "system"}
+_RESERVED_NAMES = {"admin", "system", "tower", "jobs", "hangar"}  # --- KAN-552: names hangar writes as an actor
 log = logging.getLogger("hangar.auth")
 
 
@@ -84,7 +84,8 @@ class Principal(NamedTuple):
 
 def check_token_name(name: str) -> None:
     if not name or ":" in name or name.lower() in _RESERVED_NAMES or len(name) > 100:
-        raise ValueError(f"token name '{name}' is not allowed (no ':', not 'admin' or 'system', ≤100 chars)")
+        raise ValueError(f"token name '{name}' is not allowed (no ':', not one hangar uses itself: "
+                         f"{', '.join(sorted(_RESERVED_NAMES))}; ≤100 chars)")
 
 
 def check_relay_scopes(scopes: list[str]) -> None:

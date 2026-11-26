@@ -229,7 +229,9 @@ async def test_the_agent_cant_tamper_with_hangars_side_of_a_split_sandbox(tmp_pa
         assert st["state"] == "running", st
         assert [x.id for x in steering.pending(svc.get("hard"))] == [a.id]
         log = (await fleet.provider("docker").exec(sb, f"cat {isolation.RUNS}/{run}.log", user="root")).stdout
-        assert f"\n{forged}\n" in log and f"\n[harness] {forged}\n" in log  # stderr as is, stdout defused
+        # --- KAN-556: both defused, stderr as much as stdout
+        assert f"\n{forged}\n" not in log and f"\n[harness] {forged}\n" in log, log
+        assert f"\n[harness stderr] {forged}\n" in log, log
 
         assert (await steering.answer(svc, svc.get("hard"), a.id, "allow", "ana")).status == "allowed"
         t = (await settle(svc, "hard")).turns[-1]

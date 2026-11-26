@@ -7,7 +7,7 @@ anyone, and how each one gets "the latest strong model" without a stale default.
 | | Where | When |
 | --- | --- | --- |
 | The pinned CLI versions | `src/hangar/harnesses.lock.yaml` | changed only by a reviewed PR |
-| The contract tests | `.github/workflows/harness-contract.yml` | PRs that touch harness, driver or isolation code; every push to main |
+| The contract tests | `.github/workflows/harness-contract.yml` | PRs that touch harness, driver or isolation code; every push to main; nightly, 06:41 UTC |
 | The canary | `.github/workflows/harness-canary.yml` | nightly, 03:17 ET (07:17 UTC), and by hand |
 | Landing the canary's PR | `.github/workflows/harness-canary-land.yml` | on an approval of it |
 | Model policies | an environment's or repo policy's `model:` (`balanced`, which jobs and `envs/bare.yaml` default to, or `frontier`) | when a sandbox or session is created |

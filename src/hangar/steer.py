@@ -275,6 +275,18 @@ def reseal(store: Any, ring: Any) -> int:
     return n
 
 
+def run_key(svc: SessionService, run_id: str | None) -> bytes | None:
+    """--- KAN-556: a live run's key, which its driver signs its events with (driver.Out); None once it's forgotten
+    or the run takes no commands. Never raises: without it, the run's trees are just not trusted."""
+    if not run_id:
+        return None
+    try:
+        raw = svc.store.kv_get(KV + run_id)
+        return svc.vault.decrypt(raw.encode()) if raw else None
+    except Exception:  # noqa: BLE001 - a key that won't open signs nothing
+        return None
+
+
 def forget(svc: SessionService, run_id: str | None) -> None:
     """The run is over (or never started): its key is of no more use."""
     if run_id:
@@ -613,7 +625,7 @@ def view(s: Session) -> dict[str, Any]:
 
 
 async def answer(svc: SessionService, s: Session, approval_id: str, decision: str, requester: str,
-                 message: str | None = None) -> Approval:
+                 message: str | None = None, *, via_tower: bool = False) -> Approval:
     """Allow or deny a tool call the agent is waiting on. `allow_always` also allows calls like it for the
     rest of this turn (never written to any settings; the next turn asks again)."""
     if decision not in DECISIONS:
@@ -629,7 +641,9 @@ async def answer(svc: SessionService, s: Session, approval_id: str, decision: st
     if a.status != "pending":
         raise SteerError(f"approval {a.id} was already answered ({a.status} by {a.by})")
     gov = getattr(svc, "governed", None)  # --- KAN-79: under governed + enforce, Tower judges a person's allow
-    if gov is not None and requester != "tower":
+    # --- KAN-552: only hangar's own Tower paths (governed, govevents) pass via_tower; a requester string is a token's
+    # name and could read "tower"
+    if gov is not None and not via_tower:
         await gov.sign_tool(s, t, a, requester, decision)
     ack = await command(svc, s, t, "approve", request=a.id, decision=decision, message=message or "", by=requester)
     if not ack.get("ok"):

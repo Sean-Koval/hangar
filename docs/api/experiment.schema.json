@@ -15,7 +15,7 @@
     "person": {"type": ["string", "null"]},
     "created_at": {"type": "number"},
     "finished_at": {"type": ["number", "null"]},
-    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {
+    "spec": {"type": "object", "description": "The experiment as submitted (redacted). Its grader's canary (`grader.canary`, and the same one in a task's own `tasks[].grader`, KAN-192; generated as HANGAR-CANARY-<uuid4> when the experiment starts if unset; #127) is masked as HANGAR-CANARY-[hidden] here and in every export.", "properties": {
       "variants": {"type": "object", "description": "Each variant: `{harness_lock, environment}` (#135), or the deprecated overlay.", "additionalProperties": {
         "type": "object",
         "properties": {
@@ -66,6 +66,7 @@
             "base_branch": {"type": ["string", "null"]},
             "base_sha": {"type": ["string", "null"], "description": "Pinned at the start from GitHub, else by the first trial's clone (then every trial checks it out)."},
             "issue": {"type": ["string", "null"]},
+            "workspace": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "A task given as files (its spec's workspace), with no repo: the commit hangar made of them, which is also its base_sha. Added within v1 (KAN-192)."},
             "task_digest": {"type": ["string", "null"], "description": "The task's identity for the trial cache: sha256 of its canonical definition (instructions or issue, verify, repo, reference patch, hidden tests by digest, environment), or flightdeck's own. Added within v1 (#180)."}
           }
         }},

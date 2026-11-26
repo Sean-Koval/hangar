@@ -246,14 +246,21 @@ def _find_envs() -> Path | None:
     return None
 
 
-def _docker_ok() -> str | None:
-    try:
-        import docker
+def local_checks(port: int, envs: list[str] | None = None) -> list[dict]:
+    """`hangar doctor --local` (KAN-351). The model-login line asks a hangar already running on `port`, with the
+    saved login for it or this machine's bootstrap token."""
+    from hangar import localdoctor
 
-        docker.from_env(timeout=5).ping()
-        return None
-    except Exception as e:  # noqa: BLE001 - any failure means "not usable"
-        return str(e).splitlines()[0][:200] if str(e) else type(e).__name__
+    url = f"http://127.0.0.1:{port}"
+    saved = _cli()._saved()
+    boot = _data_dir() / "bootstrap-token"
+    token = saved.get("token") if saved.get("url") in (url, f"http://localhost:{port}") else None
+    if not token and boot.exists():
+        try:
+            token = boot.read_text().strip() or None
+        except OSError:
+            token = None
+    return localdoctor.run(port, envs or ["claude-python"], token, _find_envs(), _data_dir())
 
 
 def _pid_alive(pid: int) -> bool:
@@ -382,10 +389,15 @@ def up(
         return up_gke(dry_run, yes, allow_destroy, domain, data_dir)
     if dry_run or allow_destroy or domain:
         raise _fail("--dry-run, --allow-destroy and --domain go with --gke", 2)
-    if why := _docker_ok():
-        raise _fail(f"Docker isn't reachable ({why}). Start Docker Desktop, OrbStack or Colima (macOS), or the "
-                    "docker service (Linux: sudo systemctl start docker), then run `hangar up` again.")
-    typer.secho("✓ docker is running", fg="green")
+    checks = local_checks(port, env)  # --- KAN-351: `hangar doctor --local` first; a ✗ stops here
+    for c in checks:
+        mark, color = _MARKS[c["status"]]
+        typer.secho(f"{mark} {c['name']}: {c['detail']}", fg=color)
+        if c.get("fix"):
+            typer.echo(f"    fix: {c['fix']}")
+    if any(c["status"] == "fail" for c in checks):
+        raise _fail("hangar up stopped: fix each ✗ above, then run `hangar up` again (`hangar doctor --local` checks "
+                    "without starting anything).")
     url = f"http://127.0.0.1:{port}"
     pid_file = data_dir / "server.pid"
     if _healthy(url):
