@@ -381,6 +381,24 @@ async def test_record_refuses_subscription_logins_and_needs_the_gateway(gw, flee
         await fleet.create("rec", credentials=["anthropic-key"])
 
 
+async def test_record_keeps_claude_code_off_vertex(gw, fleet, broker, tmp_path):
+    """KAN-291: a Vertex key would send Claude Code past the gateway, so it isn't written; nor is Vertex egress."""
+    from hangar import egress
+    from tests.test_vertex import KEY
+
+    _record_env(fleet, tmp_path)
+    broker.put("claude-vertex", "claude-code", CredentialKind.GENERIC, KEY, team=True)
+    sb = await fleet.create("rec", credentials=["anthropic-key", "claude-vertex"])
+    env = (await fleet.read_file(sb.id, "/home/agent/.hangar/env")).decode()
+    assert "ANTHROPIC_BASE_URL=" in env and "CLAUDE_CODE_USE_VERTEX" not in env
+    assert any("claude-vertex (Claude on Vertex AI) isn't written" in w for w in sb.info["warnings"])
+    assert not any(r.source == "harness:vertex" for r in egress.for_sandbox(fleet, sb).rules)
+    fleet.catalog.add({"name": "rec-vertex", "harnesses": ["claude-code"], "model_gateway": "record",
+                       "env": {"CLAUDE_CODE_USE_VERTEX": "1"}})
+    with pytest.raises(FleetError, match="sets CLAUDE_CODE_USE_VERTEX"):
+        await fleet.create("rec-vertex", credentials=["anthropic-key"])
+
+
 # ====================================================================== benches on a real listener
 def _free_port() -> int:
     with socket.socket() as s:

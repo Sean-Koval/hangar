@@ -23,6 +23,8 @@ data:
   # Run capture for flightdeck's compactor (docs/api/outbox.md). deploy/gke/up.sh sets it from
   # `terraform output run_bucket` (enable_run_bucket, on by default).
   # HANGAR_OUTBOX_URL: "gs://PROJECT_ID-hangar-runs"
+  # KAN-541: the locked audit bucket's view; `hangar doctor` compares the table's newest entry with it
+  # HANGAR_AUDIT_BUCKET: "projects/PROJECT_ID/locations/global/buckets/hangar-audit/views/_AllLogs"
   # `hangar power up` runs this Cloud Run job (docs/gke.md section 6). deploy/gke/up.sh sets it from
   # `terraform output power_up_job` when the power schedule is on.
   # HANGAR_POWER_UP_JOB: "projects/PROJECT_ID/locations/REGION/jobs/hangar-power-up"

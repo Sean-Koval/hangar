@@ -21,8 +21,14 @@ HANGAR_SSO_IAP_AUDIENCE=/projects/<project number>/global/backendServices/<backe
 HANGAR_SSO_ALLOWED_DOMAINS=example.com
 ```
 
-On App Engine the audience is `/projects/<project number>/apps/<project id>`. With allowed domains set, the
-assertion's Workspace domain (`hd`) must be one of them.
+On App Engine the audience is `/projects/<project number>/apps/<project id>`.
+
+IAP mode needs allowed domains, or hangar won't start. IAP's header doesn't say whether Google checked the email.
+So the assertion's Workspace domain (`hd`) must be an allowed one. A personal Google account made with a work
+address has none, and neither has a gmail.com account: IAP mode serves Workspace accounts only.
+
+The console checks this on every request, not only at sign-in. A request's assertion must also come from the same
+Google account (`sub`) the person signed in with.
 
 ## Paths that stay outside IAP
 

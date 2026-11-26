@@ -249,12 +249,16 @@ async def run(h, transport: httpx.AsyncBaseTransport | None = None) -> list[dict
     from hangar import credhealth  # --- clouddoctor: logins that stopped working or expire soon
 
     out += credhealth.doctor_checks(h)
+    out += await credhealth.vertex_doctor_checks(h)  # --- KAN-291: Claude on Vertex AI, one cheap call each
     from hangar import modelpolicy  # --- integ3 (review #105): jobs with no budget and no daily cap
 
     out += modelpolicy.doctor_checks(h)
     from hangar import isolation  # --- KAN-189: E2B's uid split default
 
     out += isolation.doctor_checks(h)
+    from hangar import people  # --- KAN-552: a person or token that holds one of hangar's own names
+
+    out += people.doctor_checks(h)
     from hangar import approvals  # --- approvals (#121): a lone person can't approve their own held jobs
 
     out += approvals.doctor_checks(h)

@@ -19,7 +19,7 @@ refuses to update or delete a row (SQLite triggers), and there is no `PUT` or `D
 | `environment_digest` | Optional: a turn manifest's `environment_digest` (image, build, effective egress, resources, isolation), for a stricter pin |
 | `model_id` | The concrete model id (#167); null when the harness runs its own default |
 | `approvals` | The approval policy the lock binds |
-| `tasks` | `{task_id: {repo, base_branch, base_sha}}`: each task's base commit |
+| `tasks` | `{task_id: {repo, base_branch, base_sha, grader_digest}}`: each task's base commit and own grader's digest |
 | `grader_digest` | The grader's identity: command, files, mode, network and timeout (not the per-experiment canary) |
 | `egress_digest` | The environment's egress policy |
 | `knowledge_snapshot` | Optional: a retrieval snapshot id, once a retrieval tool exists |
@@ -61,12 +61,12 @@ curl -s $HANGAR/api/trials/job-1a2b3c4d.2 -H "Authorization: Bearer $TOKEN"
 | Request field | Meaning |
 | --- | --- |
 | `pin_set` | The pin set to run against |
-| `task` | The task, as an experiment's task. Its `id` must be one of the pin set's tasks; `repo`, `base_branch` and `base_sha` default to, and must equal, the pin set's |
+| `task` | The task, as an experiment's task. Its `id` must be one of the pin set's tasks; `repo`, `base_branch` and `base_sha` default to, and must equal, the pin set's. It may carry its own `grader` |
 | `n` | Trials (1-20) |
 | `source` | `experiment` (the default) or `shadow` (#183) |
 | `budget` | Required: each trial's job budget (`max_cost_usd`, `max_tokens`, `max_turns`). The team's monthly eval budget is #182 |
 | `turn_budget`, `timeout_minutes` | Optional: each agent turn's budget, and its timeout |
-| `grader` | Optional, as an experiment's grader. Its digest must be the pin set's `grader_digest` |
+| `grader` | Optional, as an experiment's grader. The task's own grader, else this, must match the task's pinned `grader_digest`, else the pin set's |
 | `variant`, `name` | Labels: the variant's name in the index (default: the pin set's id), the experiment's name |
 | `reuse` | `{min_trials: k}`: use cached trials of the same key when it has at least k ([the cache](#the-cache)) |
 | `task_digest` | Flightdeck's own task digest for the cache key (default: computed from the task) |
@@ -86,8 +86,8 @@ curl -s $HANGAR/api/trials/job-1a2b3c4d.2 -H "Authorization: Bearer $TOKEN"
 what was pinned either. Resolve a new pin set on what hangar runs now.
 
 **Re-running an old pin set.** The pinned base commit is checked out even after the branch moved on, and the lock is
-claimed by digest from the registry's history. If hangar no longer runs the lock's CLI version (its
-`harnesses.lock.yaml` moved on and the old pack can't be claimed), the request is refused with that reason.
+claimed by digest from the registry's history. If hangar no longer runs the lock's CLI version, the request is refused
+with that reason.
 
 `GET /api/trials/{id}` returns the trial that counts (the last attempt under its key):
 
@@ -111,7 +111,8 @@ key = sha256(harness_digest, environment, task_digest, model_id, base_sha, grade
 
 `environment` is the pin set's `environment_digest`, else its `environment_spec_digest`. `task_digest` is the sha256 of
 the task's canonical definition: instructions or issue, verify command, repo and branch, reference patch, the grader's
-hidden tests by digest, and the environment. Its id doesn't count, and flightdeck may pass its own `task_digest`.
+hidden tests by digest, its own grader, and the environment. `grader_digest` is the task's, else the pin set's.
+Its id doesn't count, and flightdeck may pass its own `task_digest`.
 
 Every counted trial (`outcome_class: agent`, success or failure) of a fully pinned key is added when it finishes. Infra
 errors, cancelled trials and drift never count, and an overlay experiment's trials don't either, because their pin set

@@ -251,25 +251,52 @@ async def test_a_spent_job_budget_starts_no_judge(jobs, world):  # noqa: F811
 
 async def test_monthly_caps_hold_new_work_beside_the_daily_ones(jobs, world):  # noqa: F811
     """KAN-300: a repo's `max_usd_per_month` and HANGAR_PERSON_MAX_USD_PER_MONTH count since the first of the month
-    and hold new work like the daily caps; no daily cap needs to be set."""
+    and hold new work like the daily caps; no daily cap needs to be set.
+    KAN-543: each first job is admitted before its cap is set, as the daily-cap tests do. Admitted under a $0.002
+    cap, its job budget is lowered to $0.002 (KAN-290), and whether the over-budget stop or the agent's exit came
+    first after its $0.003 was a race the test lost under load."""
+    first = _submit(jobs, world)  # admitted before the cap, so its job budget isn't lowered to the cap
     update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=0.002), "admin")
-    first = await until(jobs, _submit(jobs, world).id, DONE)
-    assert first.state == JobState.SUCCEEDED
+    first = await until(jobs, first.id, DONE)
+    assert first.state == JobState.SUCCEEDED, first.reason  # it spent $0.003
     key = first.repo.removesuffix(".git")
     assert jobbudget.repo_spent_this_month(jobs, key) == pytest.approx(0.003)
+    assert jobbudget.headroom(jobs, world["url"]) == pytest.approx(-0.001)  # new work would get nothing
     held = _submit(jobs, world)
     assert held.state == JobState.AWAITING_APPROVAL
     assert held.approval.reason.endswith("monthly cap is spent: $0.0030 of $0.0020 this month (UTC)")
     jobs.cancel(held.id, "t")
     update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=None), "admin")
-    jobs.settings.person_max_usd_per_month = 0.001
     mine = jobs.submit(SubmitJob(instructions="go", repo=world["url"], environment="seamenv"),
-                       Caller("@ana:laptop", "tok-a", person="ana"))
+                       Caller("@ana:laptop", "tok-a", person="ana"))  # before the cap: budget not lowered
+    jobs.settings.person_max_usd_per_month = 0.001
     mine = await until(jobs, mine.id, DONE)
+    assert mine.state == JobState.SUCCEEDED, mine.reason
+    assert jobbudget.person_spent_this_month(jobs, "ana") == pytest.approx(0.003)
     again = jobs.submit(SubmitJob(instructions="again", repo=world["url"], environment="seamenv"),
                         Caller("@ana:laptop", "tok-a", person="ana"))
     assert again.state == JobState.AWAITING_APPROVAL and "ana's monthly cap is spent" in again.approval.reason
     jobs.cancel(again.id, "t")
+    jobs.settings.person_max_usd_per_month = None
+
+
+async def test_a_new_job_can_spend_only_what_is_left_of_its_monthly_caps(jobs, world):  # noqa: F811
+    """KAN-543: what the monthly test used to show only through a race, checked directly. A job admitted under a
+    monthly cap gets a job budget of what the cap leaves, the least of the repo's and the person's."""
+    made = []
+    try:
+        update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=0.5), "admin")
+        made.append(j := _submit(jobs, world, deliver="none"))
+        assert j.job_budget.max_cost_usd == pytest.approx(0.5)
+        jobs.settings.person_max_usd_per_month = 0.2
+        made.append(j := jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                               deliver="none"), Caller("@ana:laptop", "tok-a", person="ana")))
+        assert j.job_budget.max_cost_usd == pytest.approx(0.2)
+    finally:
+        jobs.settings.person_max_usd_per_month = None
+        update(jobs, PolicyUpdate(repo=world["url"], max_usd_per_month=None), "admin")
+        for j in made:
+            jobs.cancel(j.id, "t")
 
 
 def test_month_start_is_the_first_of_the_month_in_the_zone():

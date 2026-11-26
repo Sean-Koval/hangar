@@ -110,6 +110,13 @@ OUTBOX=${OUTBOX_WAS:-$RUNS}
 if [[ "$OUTBOX" == gs://* ]]; then
   sed -i "s|^  # HANGAR_OUTBOX_URL: .*|  HANGAR_OUTBOX_URL: \"$OUTBOX\"|" "$OUT/config.yaml"
 fi
+# --- KAN-541: `hangar doctor` compares the audit table with the locked audit bucket's view (null when the export is off).
+# A value already in the `hangar` config map is kept, and hangar-site still wins.
+AUDIT_WAS=$(kubectl -n hangar get configmap hangar -o jsonpath='{.data.HANGAR_AUDIT_BUCKET}' 2>/dev/null || true)
+AUDIT_VIEW=${AUDIT_WAS:-$(tfo audit_view 2>/dev/null || true)}
+if [[ "$AUDIT_VIEW" == projects/* ]]; then
+  sed -i "s|^  # HANGAR_AUDIT_BUCKET: .*|  HANGAR_AUDIT_BUCKET: \"$AUDIT_VIEW\"|" "$OUT/config.yaml"
+fi
 # --- KAN-172: Cloud Build stages sources in hangar's own bucket; without it, builds need a project-wide storage role
 # hangar no longer has. A value already in the `hangar` config map is kept, and hangar-site still wins.
 STAGING_WAS=$(kubectl -n hangar get configmap hangar -o jsonpath='{.data.HANGAR_BUILD_STAGING}' 2>/dev/null || true)

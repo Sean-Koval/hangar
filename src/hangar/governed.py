@@ -211,7 +211,8 @@ class Governed:
 
     async def _answer(self, s: Session, a: Approval, decision: str, message: str, **extra: Any) -> None:
         try:
-            done = await steering.answer(self.sessions, s, a.id, decision, "tower", message[:2000] or None)
+            done = await steering.answer(self.sessions, s, a.id, decision, "tower", message[:2000] or None,
+                                         via_tower=True)
         except (steering.SteerError, KeyError) as e:  # the driver's deadline, or the turn, ended first
             log.info("session %s: could not answer %s: %s", s.id, a.id, e)
             return
