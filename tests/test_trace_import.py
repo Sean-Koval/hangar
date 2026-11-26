@@ -592,7 +592,8 @@ def test_import_all_refuses_mixed_arguments(tmp_path: Path, transcript: Path) ->
     assert run(cli.app, ["trace", "import", "--out", str(tmp_path / "o")]).exit_code == 2
     r = run(cli.app, ["trace", "import", "--all", "--projects", str(projects), "--since", "a week",
                       "--out", str(tmp_path / "o")])
-    assert r.exit_code == 2 and "--since" in r.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", r.output)  # CI's terminal colours split the flag's name
+    assert r.exit_code == 2 and "--since" in plain
 
 
 def test_import_all_reads_claude_code_s_folder_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
