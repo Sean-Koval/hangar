@@ -108,6 +108,7 @@ nav:
           - Who is trusted: team/who-is-trusted.md
           - Subscription logins: team/subscription-logins.md
           - What the vendors allow: team/vendor-terms.md
+          - Claude Code on Vertex AI: team/vertex.md
           - "Check it: hangar doctor": team/doctor.md
   - Guides:
       - Overview: guides.md
@@ -157,6 +158,7 @@ nav:
               - intake.md
               - Jira intake: intake/jira.md
               - Who releases a ticket to agents: intake/agent-release.md
+              - Confluence pages a ticket links to: intake/confluence.md
           - Slack: slack.md
           - Triggers and schedules: triggers.md
           - Plugins and events out: plugins.md
@@ -208,6 +210,7 @@ nav:
           - The Fleet API: api/fleet.md
           - hangar-envd: envd.md
           - Trace export (hangar.trace/v1): api/traces.md
+          - What a command wrote and ran: api/shell-facts.md
           - Importing a Claude Code session: api/trace-import.md
           - Run capture (hangar.run/v1): api/outbox.md
           - "Outcome labels on a merged PR": api/outcome-labels.md
@@ -222,6 +225,7 @@ nav:
           - "The threat model": security/threat-model.md
           - What is not covered: security/not-covered.md
           - Gaps found in the 1.0 review: security/review-1.0.md
+          - Gaps found in the second 1.0 review: security/review-delta-1.0.md
           - Reviewing hangar for production:
               - security/review/index.md
               - Controls and evidence: security/review/controls.md
@@ -326,6 +330,7 @@ nav:
           - Recovery:
               - Backups and recovery objectives: runbooks/recovery.md
               - Recovery drills: runbooks/drills.md
+              - The live intake check: runbooks/intake-check.md
           - Team scale:
               - team-scale.md
               - The team load test: team-scale/load-test.md

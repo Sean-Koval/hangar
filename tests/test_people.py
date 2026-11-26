@@ -325,7 +325,47 @@ def test_person_ids(store):
         people.add(store, "alice")
     with pytest.raises(people.PeopleError, match="already exists"):
         people.add(store, "owner")
+    for reserved in ("admin", "system", "jobs", "tower", "hangar"):  # --- KAN-552: hangar writes these as owners
+        with pytest.raises(people.PeopleError, match="hangar uses itself"):
+            people.add(store, reserved)
     assert isinstance(store.get(Person, "alice"), Person)
+
+
+def test_reserved_token_names():
+    """--- KAN-552: a token's name becomes the requester; "tower" skipped Tower's signature on an approval."""
+    from hangar.auth import check_token_name
+
+    for name in ("admin", "system", "tower", "Tower", "jobs", "hangar"):
+        with pytest.raises(ValueError):
+            check_token_name(name)
+    check_token_name("laptop")
+
+
+def test_removing_someone_drops_their_sso_binding(store):
+    """--- KAN-552: a binding left behind let the removed person's provider account sign in as whoever was added
+    under the same id later."""
+    import json
+
+    from hangar import sso
+
+    people.add(store, "alice")
+    store.kv_set(people.SSO_BINDING_KV + "alice", json.dumps(
+        {"person": "alice", "issuer": "https://idp.test", "sub": "s-1", "email": "alice@corp.test"}), durable=True)
+    store.kv_set(people.SSO_BINDING_KV + "bob", json.dumps(
+        {"person": "bob", "issuer": "https://idp.test", "sub": "s-2", "email": "bob@corp.test"}), durable=True)
+    assert sso.bound_to(store, "https://idp.test", "s-1") == "alice"
+    people.remove(store, "alice")
+    people.add(store, "alice", role="admin")  # a different human, given the freed id
+    assert sso.bound_to(store, "https://idp.test", "s-1") is None and sso.binding(store, "alice") is None
+    assert sso.bound_to(store, "https://idp.test", "s-2") == "bob"  # nobody else's binding moves
+
+
+def test_sso_never_provisions_a_reserved_id(store):
+    from hangar.sso import _new_person_id
+
+    assert _new_person_id(store, "admin@corp.test") == "admin-2"
+    assert _new_person_id(store, "jobs@corp.test") == "jobs-2"
+    assert _new_person_id(store, "carol@corp.test") == "carol"
 
 
 async def test_member_sessions_named_by_another_person_answer_not_found(fleet, svc, world):
@@ -513,3 +553,18 @@ async def test_caps_count_identitys_person_not_the_token(fleet, settings):
     assert fairness.person_of("laptop", "owner") == "owner"
     assert fairness.person_of("job:job-1", "alice") is None
     assert fairness.person_of("github:octocat") == "github:octocat"  # triggered jobs: no person yet
+
+
+def test_doctor_names_whoever_holds_a_reserved_name(store):
+    """--- KAN-552 review: a person or token named before the names were reserved keeps the name; doctor says so."""
+    from types import SimpleNamespace
+
+    from hangar.models import ApiToken
+
+    h = SimpleNamespace(store=store)
+    people.add(store, "alice")
+    assert people.doctor_checks(h) == []
+    store.put(Person(id="jobs", name="Jobs"))  # added before the reservation
+    store.put(ApiToken(name="tower", token_hash="x" * 64, scopes=["jobs"], person="alice"))
+    [c] = people.doctor_checks(h)
+    assert c["status"] == "warn" and "person jobs" in c["detail"] and "token tower" in c["detail"]

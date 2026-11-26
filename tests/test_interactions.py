@@ -46,7 +46,7 @@ spend() {
 if [ -n "$HANGAR_JUDGE_DIR" ]; then spend 7000; echo 3 > "$HANGAR_JUDGE_DIR/RANKING"; exit 0; fi
 case "$msg" in
   *"did not leave a usable structured result"*)
-    spend 300; sleep "$(cat "$REPAIR_SLEEP" 2>/dev/null || echo 0)"
+    sleep "$(cat "$REPAIR_PRE" 2>/dev/null || echo 0)"; spend 300; sleep "$(cat "$REPAIR_SLEEP" 2>/dev/null || echo 0)"
     hangar-agent result "{\"attempt\": $a}"; exit 0 ;;
   *TASK-ANSWER*)
     echo B >> choice.txt && git add choice.txt && git commit -qm "choose B"; spend 500
@@ -59,6 +59,7 @@ case "$mode:$a" in
   ask:*) echo "half $a" > "half-$a.txt" && git add . && git commit -qm "half $a"; spend 1000
          hangar-agent ask "A or B? (attempt $a)"; exit 0 ;;
   askandburn:*) hangar-agent ask "May I spend more?"; spend 900000; sleep 30; exit 0 ;;
+  asklate:*) sleep 0.5; hangar-agent ask "A or B? (attempt $a)"; spend 900000; exit 0 ;;
   slowask:*) sleep 3; echo "half $a" > "half-$a.txt" && git add . && git commit -qm "half $a"; spend 1000
              hangar-agent ask "A or B? (attempt $a)"; exit 0 ;;
   sleep:*) sleep 30; exit 0 ;;
@@ -88,15 +89,15 @@ def world(monkeypatch):
     subprocess.run([*GIT, "-C", str(seed), "commit", "-qm", "init"], check=True)
     subprocess.run([*GIT, "-C", str(seed), "push", "-q", str(remote), "HEAD:refs/heads/main"], check=True)
     subprocess.run(["git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
-    agent, mode, repair = root / "agent.sh", root / "mode", root / "repair-sleep"
+    agent, mode, repair, pre = root / "agent.sh", root / "mode", root / "repair-sleep", root / "repair-pre"
     agent.write_text(AGENT)
     monkeypatch.setitem(HARNESSES, "seam", Harness(
-        name="seam", title="Seams", run=f"MODE_FILE={mode} REPAIR_SLEEP={repair} bash {agent}",
+        name="seam", title="Seams", run=f"MODE_FILE={mode} REPAIR_SLEEP={repair} REPAIR_PRE={pre} bash {agent}",
         session_dirs=[".fake/sessions"], resume="preset"))
     envs = root / "envs"
     envs.mkdir()
     (envs / "seamenv.yaml").write_text("name: seamenv\nharnesses: [seam]\n")
-    yield {"root": root, "remote": remote, "mode": mode, "repair": repair, "envs": envs, "url": f"file://{remote}"}
+    yield {"root": root, "remote": remote, "mode": mode, "repair": repair, "repair_pre": pre, "envs": envs, "url": f"file://{remote}"}
     shutil.rmtree(root, ignore_errors=True)
 
 
@@ -197,7 +198,7 @@ async def test_a_best_of_n_winner_stopped_over_budget_is_a_draft_that_says_why(j
     assert job.state == JobState.FAILED and job.reason == "over_budget" and job.result.pushed
     assert job.turns[0].outcome_reason.startswith("used 900,000 tokens")
     await asyncio.sleep(0.1)
-    assert any("Stopped over budget (used 900,000 tokens" in c for c in jobs.hooks.comments())
+    assert any("Over budget (used 900,000 tokens" in c for c in jobs.hooks.comments())
 
 
 async def test_an_over_budget_turns_summary_and_pr_body_are_built_from_its_events(jobs, world):
@@ -643,6 +644,34 @@ async def test_a_job_whose_repair_run_goes_over_budget_is_stopped_over_budget(jo
     assert job.state == JobState.FAILED and job.reason == "over_budget", [e.message for e in job.events]
     assert job.turns[0].outcome == "over_budget" and "1,300 tokens" in (job.turns[0].outcome_reason or "")
     assert job.result.pushed and jobs.view(job)["usage"]["input_tokens"] == 1300
+
+
+async def test_a_repair_run_that_overspends_and_ends_before_a_poll_is_over_budget(jobs, world):
+    """KAN-557: the repair run spends the turn past its budget and ends before a poll looks."""
+    world["mode"].write_text("noresult")
+    world["repair_pre"].write_text("0.5")  # it spends only at its very end
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv", output_schema=SCHEMA,
+                                verify="grep -q good fix.txt", budget=Budget(max_tokens=1200)), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED, timeout=15)
+    st = jobs.sessions.get(job.session_id).turns[-1]
+    assert st.repair_run_id and st.repair_usage.input_tokens == 300
+    assert job.state == JobState.FAILED and job.reason == "over_budget", [e.message for e in job.events]
+    assert job.turns[0].outcome == "over_budget" and "1,300 tokens" in (job.turns[0].outcome_reason or "")
+
+
+async def test_a_turn_that_asks_and_then_overspends_as_it_ends_still_waits_for_an_answer(jobs, world, settings):
+    """KAN-557: the turn asked its question, spent past its budget and ended before a poll looked. It ended on its
+    own, so the question isn't lost: the job waits for an answer, and the overspend is in its events."""
+    settings.session_poll_seconds = 5  # the second look waits in the sandbox; the agent ends long before it
+    world["mode"].write_text("asklate")
+    job = jobs.submit(SubmitJob(instructions="x", repo=world["url"], environment="seamenv",
+                                budget=Budget(max_tokens=100_000)), Caller("svc", "svc"))
+    job = await until(jobs, job.id, SETTLED, timeout=15)
+    assert job.state == JobState.NEEDS_INPUT, [e.message for e in job.events]
+    s = jobs.sessions.get(job.session_id)
+    assert s.needs_input == "A or B? (attempt 0)"
+    assert s.turns[-1].outcome == "needs_input" and "900,000 tokens" in (s.turns[-1].outcome_reason or "")
+    assert any(e["text"].startswith("finished over budget") for e in jobs.events(job.id))
 
 
 async def test_a_best_of_n_attempt_whose_repair_goes_over_budget_ranks_as_over_budget(jobs, world):

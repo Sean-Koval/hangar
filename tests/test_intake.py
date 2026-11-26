@@ -47,6 +47,7 @@ class FakeAPIs:
     def __init__(self):
         self.calls: list[httpx.Request] = []
         self.jira_fail: int | None = None
+        self.issue_labels: list[str] | None = ["backend"]
         self.ratelimit = 0
         self.statuses = ["In Progress", "Blocked", "In Review", "Done"]
         # --- review: the issue's history (Cloud's changelog, oldest first): who moved it where
@@ -90,6 +91,10 @@ class FakeAPIs:
             return httpx.Response(200, json={"accountId": "hangar-bot", "displayName": "Hangar"})
         if p.startswith("/rest/api/3/issue/"):
             issue = fixture("jira_issue_updated.json")["issue"]
+            if self.issue_labels is None:
+                del issue["fields"]["labels"]
+            else:
+                issue["fields"]["labels"] = self.issue_labels
             issue["fields"]["description"] = {"type": "doc", "version": 1, "content": [
                 {"type": "paragraph", "content": [{"type": "text", "text": "From the API, in ADF."}]}]}
             return httpx.Response(200, json=issue)
@@ -339,6 +344,171 @@ async def test_jira_status_change_queues_a_job_for_the_linked_person(door):
     assert r2.status_code == 200 and "already" in r2.json()["ignored"] and len(svc._jobs) == 1
 
 
+STANDARDS_BODY = "---\nname: implement-standard\n---\n\nRead the standard.\nApply all requirements.\nRecord evidence.\n"
+STANDARDS_DIGEST = hashlib.sha256(STANDARDS_BODY.encode()).hexdigest()
+
+
+def configure_standards(settings, **overrides):
+    cfg = copy.deepcopy(settings.jira)
+    cfg["projects"]["ABC"]["standards_intake"] = {
+        "skill": "implement-standard", "label": "standards-change", "sha256": STANDARDS_DIGEST,
+        "content": STANDARDS_BODY, **overrides,
+    }
+    settings.jira = cfg
+
+
+async def test_jira_standards_body_is_in_the_durable_job_prompt(door):
+    svc, client, fake = door["svc"], door["client"], door["fake"]
+    configure_standards(svc.settings)
+    payload = fixture("jira_issue_updated.json")
+    payload["issue"]["fields"]["labels"] = ["backend", "standards-change", "standards-change"]
+    r = await post(client, payload)
+    assert r.status_code == 200 and r.json().get("ok"), r.json()
+    job = svc.store.get(Job, r.json()["job"])
+    assert job.labels["intake.skill"] == "implement-standard"
+    assert job.labels["intake.skill_sha256"] == STANDARDS_DIGEST
+    assert job.context[0].untrusted
+    assert not any("labels" in c.url.params.get("fields", "").split(",") for c in fake.calls)
+    new_body = "Updated workflow"
+    configure_standards(svc.settings, content=new_body, sha256=hashlib.sha256(new_body.encode()).hexdigest())
+    prompt = svc._prompt(job, job.turns[0], "/repo")
+    assert prompt.count(STANDARDS_BODY) == 1 and new_body not in prompt
+    assert (f"## Standards intake skill: implement-standard\n\nJira issue `ABC-12`\n"
+            f"SHA-256 `{STANDARDS_DIGEST}`\n\n{STANDARDS_BODY}") in prompt
+    repeated = await post(client, payload)
+    assert repeated.json() == {"ignored": "duplicate delivery"}
+    later = await post(client, {**payload, "timestamp": payload["timestamp"] + 1})
+    assert "already" in later.json()["ignored"] and len(svc._jobs) == 1
+
+
+@pytest.mark.parametrize("labels", [[], ["Standards-change", "standards-change-other", "xstandards-change"]])
+async def test_jira_standards_matches_only_the_exact_issue_label(door, labels):
+    svc, client = door["svc"], door["client"]
+    configure_standards(svc.settings)
+    payload = fixture("jira_issue_updated.json")
+    payload["issue"]["fields"].update(description="This issue says standards-change", labels=labels)
+    payload["issue"]["fields"]["comment"] = {"comments": [{"body": "standards-change"}]}
+    r = await post(client, payload)
+    job = svc.get(r.json()["job"])
+    assert "intake.skill" not in job.labels and STANDARDS_BODY not in job.instructions
+
+
+async def test_jira_standards_marker_does_not_trigger_a_job_by_itself(door):
+    configure_standards(door["svc"].settings)
+    payload = fixture("jira_issue_updated.json")
+    payload["issue"]["fields"]["labels"] = ["standards-change"]
+    payload["changelog"]["items"] = [{"field": "labels", "toString": "standards-change"}]
+    r = await post(door["client"], payload)
+    assert r.json() == {"ignored": "not the trigger status or label"} and not door["svc"]._jobs
+
+
+async def test_jira_standards_marker_does_not_override_a_release_refusal(door):
+    svc, fake = door["svc"], door["fake"]
+    configure_standards(svc.settings)
+    payload = fixture("jira_issue_updated.json")
+    labels = ["standards-change", "lane:agent"]
+    payload["issue"]["fields"]["labels"] = fake.issue_labels = labels
+    r = await post(door["client"], payload)
+    assert "allow-list" in r.json()["refused"] and not svc._jobs
+
+
+@pytest.mark.parametrize("labels", [None, "standards-change", [False]])
+async def test_jira_standards_recovers_missing_or_invalid_labels_via_the_api(door, labels):
+    svc, client, fake = door["svc"], door["client"], door["fake"]
+    configure_standards(svc.settings)
+    payload = fixture("jira_issue_updated.json")
+    fields = payload["issue"]["fields"]
+    if labels is None:
+        del fields["labels"]
+    else:
+        fields["labels"] = labels
+    fake.issue_labels = None
+    first = await post(client, payload)
+    assert first.status_code == 503 and not svc._jobs
+    fake.issue_labels = ["standards-change"]
+    retry = await post(client, payload)
+    assert retry.status_code == 200 and retry.json().get("ok")
+    assert svc.get(retry.json()["job"]).labels["intake.skill_sha256"] == STANDARDS_DIGEST
+
+
+@pytest.mark.parametrize(
+    ("delivered_labels", "current_labels", "starts"),
+    [(None, ["hangar", "standards-change"], True), ("hangar-other", ["standards-change"], False)],
+)
+async def test_jira_standards_checks_current_labels_before_a_label_only_creation_trigger(
+    door, delivered_labels, current_labels, starts,
+):
+    svc, fake, client = door["svc"], door["fake"], door["client"]
+    configure_standards(svc.settings)
+    svc.settings.jira = {**svc.settings.jira, "trigger": {"label": "hangar"}}
+    payload = fixture("jira_issue_updated.json")
+    payload["webhookEvent"] = "jira:issue_created"
+    fields = payload["issue"]["fields"]
+    if delivered_labels is None:
+        del fields["labels"]
+    else:
+        fields["labels"] = delivered_labels
+    fake.issue_labels = None
+    r = await post(client, payload)
+    assert r.status_code == 503 and not svc._jobs
+    fake.issue_labels = current_labels
+    r = await post(client, payload)
+    assert r.status_code == 200 and bool(r.json().get("ok")) == starts, r.json()
+    if starts:
+        assert svc.get(r.json()["job"]).labels["intake.skill_sha256"] == STANDARDS_DIGEST
+    else:
+        assert r.json() == {"ignored": "not the trigger status or label"} and not svc._jobs
+
+
+async def test_jira_standards_uses_current_labels_when_checking_a_release(door):
+    svc, fake = door["svc"], door["fake"]
+    configure_standards(svc.settings)
+    svc.settings.jira = {**svc.settings.jira, "agent_release": {"people": [DANA]}}
+    payload = fixture("jira_issue_updated.json")
+    payload["issue"]["fields"]["labels"] = ["standards-change", "lane:agent"]
+    fake.issue_labels = ["lane:agent"]
+    fake.history[0]["items"].append({"field": "labels", "toString": "lane:agent"})
+    r = await post(door["client"], payload)
+    assert r.status_code == 200 and r.json().get("ok"), r.json()
+    job = svc.get(r.json()["job"])
+    assert "intake.skill" not in job.labels and STANDARDS_BODY not in job.instructions
+
+
+async def test_jira_standards_job_keeps_the_full_skill_when_instructions_can_fit(door):
+    svc = door["svc"]
+    content = "x" * 32_000
+    configure_standards(svc.settings, content=content, sha256=hashlib.sha256(content.encode()).hexdigest())
+    payload = fixture("jira_comment_created.json")
+    payload["issue"]["fields"]["labels"] = ["standards-change"]
+    payload["timestamp"] = fixture("jira_issue_updated.json")["timestamp"]
+    payload["comment"]["body"] = "/hangar " + "y" * 32_000
+    r = await post(door["client"], payload)
+    assert "exceed" in r.json()["error"] and not svc._jobs
+    payload["comment"]["body"] = "/hangar " + "y" * 31_000
+    r = await post(door["client"], payload)
+    job = svc.get(r.json()["job"])
+    assert content in job.instructions and "y" * 31_000 in job.instructions
+
+
+@pytest.mark.parametrize("overrides", [
+    {"content": ""},
+    {"content": "   "},
+    {"content": STANDARDS_BODY[:-1]},
+    {"content": "𐀀" * 8001, "sha256": hashlib.sha256(("𐀀" * 8001).encode()).hexdigest()},
+    {"sha256": "sha256:" + STANDARDS_DIGEST},
+    {"skill": "../implement-standard"},
+    {"label": "standards-change "},
+    {"label": "hangar"},
+    {"label": "lane:agent"},
+    {"path": "skills/implement-standard/SKILL.md"},
+])
+def test_jira_standards_rejects_invalid_or_incomplete_config(settings, overrides):
+    settings.jira = copy.deepcopy(JIRA)
+    configure_standards(settings, **overrides)
+    with pytest.raises(jira.JiraConfigError):
+        jira.load(settings)
+
+
 async def test_jira_refuses_bad_signatures_stale_and_untriggered(door):
     svc, client = door["svc"], door["client"]
     payload = fixture("jira_issue_updated.json")
@@ -461,6 +631,25 @@ async def test_jira_automation_web_request(door):
     assert job.person == "dana" and "From the API, in ADF." in job.context[0].content
     assert [c.url.path for c in door["fake"].calls if c.url.path.endswith("/changelog")] == [
         "/rest/api/3/issue/ABC-12/changelog"] * 2  # the total, then the last page
+
+
+@pytest.mark.parametrize("issue_labels", [[], ["standards-change"]])
+async def test_jira_automation_standards_uses_jira_labels_only(door, issue_labels):
+    svc, fake = door["svc"], door["fake"]
+    configure_standards(svc.settings)
+    fake.issue_labels = issue_labels
+    ts = fixture("jira_issue_updated.json")["timestamp"] / 1000
+    body = json.dumps({"webhookEvent": "hangar:automation", "timestamp": ts, "issue": {
+        "key": "ABC-12", "fields": {"labels": [] if issue_labels else ["standards-change"]},
+    }}).encode()
+    fake.jira_fail = 404
+    unavailable = await post(door["client"], {}, raw=body, headers=AUTO)
+    assert unavailable.status_code == 503 and not svc._jobs
+    fake.jira_fail = None
+    r = await post(door["client"], {}, raw=body, headers=AUTO)
+    assert r.status_code == 200 and r.json().get("ok"), r.json()
+    job = svc.get(r.json()["job"])
+    assert (STANDARDS_BODY in job.instructions) == bool(issue_labels)
 
 
 async def test_jira_automation_body_cant_say_who_acted(door):

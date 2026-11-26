@@ -59,10 +59,14 @@ Alternatively, a label starts jobs: `"trigger": {"label": "hangar"}`, or `{"stat
 | `webhook_secret_credential` | The webhook's secret |
 | `automation_token_credential` | The token an Automation rule sends instead (below) |
 | `projects` | Jira project key to repo (`owner/repo`, or a git URL as in `HANGAR_GITHUB_REPOS`); `components` sends an issue with that component to another repo (first match wins); `environment` picks one of the repo's allowed environments |
+| `projects.<KEY>.standards_intake` | Optional, operator-owned skill snapshot. Set `skill`, `label`, `sha256` and `content`. The exact issue label selects the snapshot after the usual trigger and release checks. Use a label distinct from trigger and release labels. |
+| `standards_intake.skill`, `label` | For example, `implement-standard` and `standards-change`. Skill names use lowercase ASCII letters and digits with hyphen or underscore separators, up to 64 characters. Labels can contain up to 255 characters without whitespace. |
+| `standards_intake.sha256`, `content` | Supply the complete skill text, up to 32,000 UTF-8 bytes, and its 64-digit hex SHA-256 digest. The job's instructions store the full text with the issue key, skill name and digest. Job labels also record the skill name and digest. |
+| Missing Jira labels | For configured projects, Hangar reads Jira's current labels if the delivery lacks a valid list. Jira receives HTTP 503 if Hangar cannot determine the labels. |
 | `trigger.status`, `trigger.label` | An issue moved to this status, or given this label (or created with either), starts a job |
 | `statuses` | The status to move the issue to at each stage, by name. Leave out any you don't want. The transition into it must exist from where the issue is; if it doesn't, hangar notes that on the job and leaves the status alone |
 | `max_age_minutes` | How old a delivery's `timestamp` may be (120) |
-| `context_comments`, `context_max_bytes` | What `jira-<key>.md` holds besides the description: the newest comments (30), marked trusted for linked people; the parent or epic, subtasks, links, text attachments (1 MB each) and Confluence links; at most 200,000 bytes, with a note on what was cut |
+| `context_comments`, `context_max_bytes` | What `jira-<key>.md` holds besides the description: the newest comments (30), marked trusted for linked people; the parent or epic, subtasks, links, text attachments (1 MB each) and [Confluence pages](confluence.md); at most 200,000 bytes, with a note on what was cut |
 | `agent_release` | Who may release a ticket to agents: `people` (account ids, no default) and `labels` (`exec:agent`, `lane:agent`). Without it, a ticket with a release label is refused. See [Who releases a ticket to agents](agent-release.md) |
 | `automation_max_transition_age_minutes`, `automation_max_starts_per_issue_per_day` | The [Automation fallback](#fallback-an-automation-rule) only: how recent the issue's trigger transition must be (10), and how many jobs one issue may start a day (3) |
 
