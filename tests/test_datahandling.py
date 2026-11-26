@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hangar import datahandling
+from hangar import datahandling, logfmt
 from hangar.models import ApiToken, AuditEvent, CredentialKind, Job, JobState, Person, Session, SessionState
 from hangar.retention import Retention
 from hangar.store import AUDIT_ANCHOR, Store
@@ -921,6 +921,8 @@ def test_the_workload_module_offers_the_locked_audit_sink():
     assert re.search(r"locked\s*=\s*var\.audit_bucket_locked", tf)
     assert re.search(r"retention_days\s*=\s*var\.audit_retention_days", tf)
     assert re.search(r'resource "google_logging_project_sink" "audit"', tf) and "unique_writer_identity" in tf
-    assert 'textPayload:\\"hangar.audit: {\\"' in tf
+    from tests.test_audit_export import sink_regex
+
+    assert sink_regex(tf) == logfmt.AUDIT_LINE.pattern  # --- KAN-556: anchored, as the owner's sink is
     assert "roles/logging.admin" not in tf and "roles/logging.configWriter" not in tf
     assert re.search(r'output "audit_log"', tf)

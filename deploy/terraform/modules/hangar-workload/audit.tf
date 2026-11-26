@@ -49,7 +49,9 @@ locals {
     "resource.type=\"k8s_container\"",
     "AND resource.labels.namespace_name=\"${var.namespace}\"",
     "AND resource.labels.container_name=\"${var.audit_container_name}\"",
-    "AND textPayload:\"hangar.audit: {\"",
+    # KAN-556: anchored at the start of the line, as hangar's log format writes an audit record (logfmt.py): a
+    # sandbox's text quoted inside another record can't start a line there
+    "AND textPayload=~\"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} INFO hangar[.]audit: [{]\"",
   ])
 }
 
@@ -108,7 +110,7 @@ output "audit_log" {
     retention_days = var.audit_retention_days
     locked         = var.audit_bucket_locked
     view           = "${google_logging_project_bucket_config.audit[0].id}/views/_AllLogs"
-    read           = "gcloud logging read 'textPayload:\"hangar.audit: {\"' --project ${var.project_id} --bucket ${local.audit_bucket_id} --location global --view _AllLogs --freshness 30d"
+    read           = "gcloud logging read 'textPayload=~\"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3} INFO hangar[.]audit: [{]\"' --project ${var.project_id} --bucket ${local.audit_bucket_id} --location global --view _AllLogs --freshness 30d"
   } : null
 }
 

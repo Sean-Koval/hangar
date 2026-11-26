@@ -86,8 +86,13 @@ def _port(w: dict) -> int:
     return int(w["port"].read_text())
 
 
+def _json_lines(stdout: str) -> list[dict]:
+    """The log's JSON lines (the harness's stderr is in it too, as plain lines: KAN-556)."""
+    return [json.loads(ln) for ln in stdout.splitlines() if ln.startswith("{")]
+
+
 def _result(stdout: str) -> dict:
-    return next(d for d in map(json.loads, filter(None, stdout.splitlines())) if d.get("type") == "result")
+    return next(d for d in _json_lines(stdout) if d.get("type") == "result")
 
 
 def test_a_turn_runs_through_the_relay_and_its_approvals_stay_the_drivers(tmp_path):
@@ -105,7 +110,7 @@ def test_a_turn_runs_through_the_relay_and_its_approvals_stay_the_drivers(tmp_pa
     resolved = [e for e in events if e["type"] == "hangar.approval_resolved"]
     assert [(e["decision"], e["by"]) for e in resolved] == [("deny", "policy")], out
     assert (tmp_path / "ctl" / "approvals").exists()  # the driver's own copy, in its control directory
-    assert "fake: on stderr" in err  # the harness's stderr came back on ctl
+    assert "\nfake: on stderr\n" in out  # the harness's stderr came back on ctl, into the log a line at a time
     assert any(e["type"] == "hangar.verify" and e["passed"] for e in events)  # the gate ran, in the agent's place
     assert not (tmp_path / "ctl" / "relay-token").exists()  # read and deleted, like the key
     assert not w["port"].exists()  # stopped listening once the relay was in
@@ -162,7 +167,7 @@ def test_the_verify_gate_runs_in_the_agents_container_through_the_relay(tmp_path
     assert drv.returncode == 0, err
     verify = [e for e in _events(out) if e["type"] == "hangar.verify"]
     assert [(e["exit_code"], e["passed"]) for e in verify] == [(3, False)]
-    again = [d["result"] for d in map(json.loads, filter(None, out.splitlines())) if d.get("type") == "result"][-1]
+    again = [d["result"] for d in _json_lines(out) if d.get("type") == "result"][-1]
     assert again.startswith("again: hangar: the job's check") and "exit 3" in again
     assert f"where=relay cwd={tmp_path / 'work'}" in again  # run by the relay, as the agent, from the checkout
     assert (tmp_path / "home" / ".hangar" / "runs" / "r1.verify").read_text() == "fail 3\n"  # the agent's file
@@ -178,7 +183,7 @@ def test_a_run_that_outlives_its_timeout_is_killed_and_says_so(tmp_path):
     out, err = drv.communicate(timeout=60)
     assert drv.returncode == 0, err
     assert [e["exit_code"] for e in _events(out) if e["type"] == "hangar.verify"] == [124]
-    again = [d["result"] for d in map(json.loads, filter(None, out.splitlines())) if d.get("type") == "result"][-1]
+    again = [d["result"] for d in _json_lines(out) if d.get("type") == "result"][-1]
     assert "started" in again and "timed out after 1 s" in again
     assert time.time() - t0 < 30
 

@@ -17,6 +17,7 @@ import asyncio  # --- stream
 import base64
 import collections
 import contextlib
+import hmac
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from hangar import cmdfacts, isolation  # --- harden; --- KAN-287
+from hangar.driver import sign  # --- KAN-556: the driver's events, signed with the run's key
 from hangar.models import Budget, Session, SessionTurn, Usage, now
 
 log = logging.getLogger("hangar.events")
@@ -331,6 +333,9 @@ class Parser:
         self.tools: dict[str, list[Any]] = {}  # open tool calls: id -> [name, path]
         self.seen: list[str] = []  # claude message ids already counted / agy steps done
         self.texts: dict[str, str] = {}  # agy: text deltas per step
+        # --- KAN-556: the run's key (a live turn's, TurnWatcher), and the last `seq` of a driver event it signed
+        self.key: bytes | None = None  # --- KAN-556: a keyed run's (b"": keyed, but the key won't open)
+        self.signed_seq = 0
 
     # ------------------------------------------------------------------ state
     @property
@@ -342,7 +347,7 @@ class Parser:
         return {"offset": self.offset if not self.skipping else self.next, "skip": self.skipping, "fmt": self.fmt,
                 "model": self.model, "usage": self.usage.model_dump(), "unpriced": self.unpriced,
                 "final": self.final, "tools": dict(list(self.tools.items())[-50:]), "seen": self.seen[-50:],
-                "dropped": self.dropped}
+                "dropped": self.dropped, "signed_seq": self.signed_seq}
 
     def load(self, st: dict[str, Any]) -> None:
         self.next = int(st.get("offset") or 0)
@@ -356,6 +361,7 @@ class Parser:
         self.tools = dict(st.get("tools") or {})
         self.seen = list(st.get("seen") or [])
         self.dropped = int(st.get("dropped") or 0)
+        self.signed_seq = int(st.get("signed_seq") or 0)
 
     def view(self) -> Usage:
         u = self.usage.model_copy()
@@ -388,20 +394,40 @@ class Parser:
         rest, self.carry = self.carry, b""
         return self._line(rest, self.next - len(rest)) if rest and not self.skipping else []
 
+    def _signed(self, e: dict[str, Any]) -> bool:
+        """--- KAN-556: the driver wrote this event (driver.Out): its `mac` checks with the run's key, and its `seq`
+        is past the last one seen, so no line of the driver's can be repeated later in the log."""
+        seq, mac = e.get("seq"), e.get("mac")
+        if not self.key or not isinstance(mac, str) or not isinstance(seq, int) or isinstance(seq, bool) \
+                or seq <= self.signed_seq:
+            return False
+        try:
+            ok = hmac.compare_digest(mac, sign(self.key, e))
+        except (TypeError, ValueError):
+            return False
+        if ok:
+            self.signed_seq = seq
+        return ok
+
     def _line(self, raw: bytes, off: int) -> list[RunEvent]:
         line = raw.decode("utf-8", errors="replace").strip()
         if not line.startswith("{"):
             return []  # stderr and other plain text share the log
         try:
             e = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # nested too deep for this Python: no event of the driver's
             return []
         if not isinstance(e, dict):
             return []
         if str(e.get("type") or "").startswith("hangar."):  # workstream steer: the turn driver's own events
+            signed = self._signed(e)
+            if self.key is not None and not signed:
+                return []  # --- KAN-556: keyed, the driver signs every event: this one is forged or replayed
             evs = _driver_event(e)
             for ev in evs:
                 ev.off = off
+                if signed and ev.kind == "progress" and ev.data.get("action") == "tree":
+                    ev.data["signed"] = True  # TurnWatcher._record takes it off, into `trusted`
             return evs
         if self.fmt is None:
             self.fmt = _detect(e)
@@ -780,6 +806,15 @@ def _driver_event(e: dict[str, Any]) -> list[RunEvent]:
 _TREE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
+def trust_trees(evs: list[RunEvent], split: bool) -> None:
+    """--- #165: stamp each tree's `trusted`. Only a split run's log is out of the agent's reach; KAN-187: never a
+    tree the agent's container hashed; KAN-556: only one the driver signed with the run's key (Parser._signed)."""
+    for ev in evs:
+        if ev.kind == "progress" and ev.data.get("action") == "tree":
+            signed = ev.data.pop("signed", False) is True
+            ev.data["trusted"] = split and signed and ev.data.get("by") != "agent"
+
+
 def tree_events(tree: Any, *, tool_id: Any = None, phase: Any = None, ms: Any = None, skipped: Any = None,
                 source: str = "hangar", by: Any = None) -> list[RunEvent]:
     """--- #165: a `progress` event with action `tree`: {tree, id (the tool call), phase (start | end), ms} or
@@ -980,15 +1015,17 @@ class Activity:
                              tail=max(1, min(tail, 1000)) if tail else None)
 
     def watch(self, fleet: Any, s: Session, turn: SessionTurn, save: Callable[[], None],
-              taint_files: set[str] | None = None, on_taint: Callable[[str], None] | None = None) -> TurnWatcher:
-        return TurnWatcher(self, fleet, s, turn, save, taint_files, on_taint)
+              taint_files: set[str] | None = None, on_taint: Callable[[str], None] | None = None,
+              key: bytes | None = None) -> TurnWatcher:
+        return TurnWatcher(self, fleet, s, turn, save, taint_files, on_taint, key)
 
 
 class TurnWatcher:
     """Follows one running turn's log: events into the session's log, usage onto the turn, budget checks."""
 
     def __init__(self, activity: Activity, fleet: Any, s: Session, turn: SessionTurn, save: Callable[[], None],
-                 taint_files: set[str] | None = None, on_taint: Callable[[str], None] | None = None):
+                 taint_files: set[str] | None = None, on_taint: Callable[[str], None] | None = None,
+                 key: bytes | None = None):
         self.a, self.fleet, self.s, self.turn, self.save = activity, fleet, s, turn, save
         # --- taint (#129): which MCP servers are untrusted, and the untrusted context files, for taint.observe
         from hangar import taint  # import cycle
@@ -999,6 +1036,7 @@ class TurnWatcher:
         self._pending: list[tuple[RunEvent, dict[str, Any]]] = []
         self.parser = Parser(FORMATS.get(turn.harness or s.harness or ""), s.model, activity.prices)
         self.errors = 0
+        self.parser.key = key  # --- KAN-556: a live turn's run key (steer.run_key): its trees can be trusted
         if turn.event_cursor:  # re-attached after a restart: continue from the saved read position
             self.parser.load(turn.event_cursor)
         # Events recorded after the cursor was last saved (a restart in between) are not recorded twice. The usage
@@ -1024,9 +1062,7 @@ class TurnWatcher:
     def _record(self, evs: list[RunEvent], from_log: bool = True) -> None:
         if self.split and from_log:  # --- harden: anything in the log may be the agent's; see _approvals
             evs = [ev for ev in evs if ev.kind != "approval_request"]
-        for ev in evs:  # --- #165: only a split run's log is out of the agent's reach (and hangar's own exec's trees)
-            if ev.kind == "progress" and ev.data.get("action") == "tree":
-                ev.data["trusted"] = self.split and ev.data.get("by") != "agent"  # --- KAN-187
+        trust_trees(evs, self.split)
         keep = []
         for ev in evs:
             if ev.off is not None and ev.off <= self.floor:
@@ -1258,7 +1294,7 @@ class TurnWatcher:
             for line in data[:end].splitlines():
                 try:
                     e = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
                 if isinstance(e, dict) and str(e.get("type") or "").startswith("hangar.approval_"):
                     fresh += [ev for ev in _driver_event(e) if track(self.turn, [ev])]

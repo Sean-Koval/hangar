@@ -1167,9 +1167,13 @@ class SessionService:
         errors = 0
         outcome = "exited"
         # --- workstream C: collect events and usage from the run log as it grows; stop the turn over budget.
+        # --- KAN-556: the run's key checks its driver's signed events. A live turn is always keyed: if its key won't
+        # open (or is gone, after a restart), b"" still marks it keyed, so no unsigned hangar.* line is read at all.
+        key = steering.run_key(self, turn.run_id)
         watch = self.activity.watch(self.fleet, s, turn, lambda: self._save(s),
                                     taint_files=self._untrusted_files(s, turn),
-                                    on_taint=lambda ref: self._tainted(s, turn, ref))  # --- taint (#129)
+                                    on_taint=lambda ref: self._tainted(s, turn, ref),  # --- taint (#129)
+                                    key=b"" if key is None and turn.live else key)
         over: str | None = None
         wait = 0.0  # the first look is immediate; later ones wait in the sandbox for the turn to end (perf)
         while True:
@@ -1252,8 +1256,10 @@ class SessionService:
             # The log's end, never all of it: the agent decides how big it gets.
             tail = f"tail -c 2000000 {shlex.quote(rlog)} > {shlex.quote(rlog)}.tail"
             await (isolation.sh(prov, sb, tail) if split else self._sh(sb, tail))
-            raw = (await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000) or b"")[-2_000_000:].decode(
-                errors="replace")
+            # --- KAN-556: a split run's as hangar's user, not through the agent's container (prov.read_file)
+            got = (await isolation.read_tail(prov, sb, f"{rlog}.tail", 2_000_000) if split
+                   else await prov.read_file(sb, f"{rlog}.tail", limit=2_000_000))
+            raw = (got or b"")[-2_000_000:].decode(errors="replace")
             said = "exited" if ended_over else outcome  # --- KAN-557: a turn that ended on its own said its piece
             turn.summary = self.fleet.broker.redact(extract_summary(
                 turn.harness, raw, outcome=said, reason=turn.outcome_reason, started_at=turn.started_at,

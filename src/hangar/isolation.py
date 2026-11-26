@@ -457,6 +457,34 @@ async def sh(prov: Provider, sb: Sandbox, command: str, timeout: int = 60) -> Ex
     return await prov.exec(sb, command, timeout=timeout, user=USER, cwd=HOME)
 
 
+READ_CHUNK = 128 * 1024  # raw bytes per exec: their base64 stays under the providers' 256 KiB output cap
+
+
+async def read_tail(prov: Provider, sb: Sandbox, path: str, limit: int) -> bytes:
+    """--- KAN-556: the last `limit` bytes of a file of hangar's user's (a split run's log), read as that user: in the
+    driver sidecar's container under KAN-186, never through the agent's container or its envd, which the agent can
+    make answer anything. A chunk at a time, each one's length checked; a short read stops at what came."""
+    import base64
+
+    q = shlex.quote(path)
+    res = await sh(prov, sb, f"stat -c %s {q}", timeout=30)
+    if res.exit_code != 0 or not res.stdout.strip().isdigit():
+        raise RuntimeError(f"can't read {path} in sandbox {sb.id}: {(res.stderr or res.stdout).strip()[-200:]}")
+    size = int(res.stdout.strip())
+    start, out = max(0, size - limit), bytearray()
+    while (off := start + len(out)) < size:
+        n = min(READ_CHUNK, size - off)
+        res = await sh(prov, sb, f"tail -c +{off + 1} {q} | head -c {n} | base64 -w0", timeout=60)
+        try:
+            data = base64.b64decode(res.stdout.strip(), validate=True) if res.exit_code == 0 else b""
+        except ValueError:
+            data = b""
+        if not data or len(data) > n:
+            break
+        out += data
+    return bytes(out)
+
+
 def agent_command(settings: Settings, run_id: str, wd: str, command: str) -> str:
     """A shell command for the turn's script that runs `command` (shell) as the agent: a one-shot harness."""
     argv = as_agent(settings.sandbox_user, f"/home/{settings.sandbox_user}", f"{RUNS}/{run_id}.env", wd,

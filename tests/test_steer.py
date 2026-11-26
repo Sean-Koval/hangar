@@ -154,6 +154,18 @@ async def test_steer_mid_turn(svc, live, harness):
     assert s.turns[1].mode == "resume" and s.turns[1].summary == "did: now the docs" and s.turns[1].live
 
 
+async def test_a_live_turn_whose_key_wont_open_reads_no_driver_line(svc, live, monkeypatch):
+    """--- KAN-556: a live turn is keyed. If its key won't open (a vault error, or gone after a restart), hangar
+    still reads no unsigned hangar.* line, rather than falling back to reading anyone's."""
+    monkeypatch.setattr(steering, "run_key", lambda svc, run_id: None)
+    new(svc, live, "nokey", "SLOW build the thing")
+    await running(svc, "nokey")
+    svc.send("nokey", "also add a test", requester="ana")
+    s = await settle(svc, "nokey")
+    assert s.turns[0].outcome == "exited" and s.turns[0].steers[0].status == "delivered"
+    assert "steered: also add a test" not in [e["text"] for e in svc.events("nokey")]
+
+
 async def test_steer_api_and_a_late_steer_starts_the_next_turn(svc, live):
     new(svc, live, "late", "SLOW work")
     s = await running(svc, "late")
