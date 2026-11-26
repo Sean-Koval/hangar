@@ -44,7 +44,7 @@ from hangar.confluence import ConfluenceSettings  # --- KAN-293
 from hangar.exchange import open_question
 from hangar.ext import NoSettings  # --- plugin host
 from hangar.github import parse_repo, verify_signature
-from hangar.jobs import NOTIFIERS, JobError, JobService, SubmitJob
+from hangar.jobs import MAX_INSTRUCTIONS, NOTIFIERS, JobError, JobService, SubmitJob
 from hangar.models import JOB_TERMINAL, AuditEvent, ContextItem, Job, JobState
 
 if TYPE_CHECKING:
@@ -61,6 +61,7 @@ LARGE_NOTE_SECONDS = 86400  # at most one comment a day per issue about it
 _HEAD_KEY = re.compile(rb'"issue"\s*:\s*\{.*?"key"\s*:\s*"([A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9})"', re.S)
 _HEAD_TIME = re.compile(rb'"timestamp"\s*:\s*(?:"([^"\\]{1,40})"|(-?[0-9][0-9.eE+]{0,30}))')
 HISTORY_PAGE = 100  # JiraAPI.history reads at most this many of an issue's newest changes
+STANDARDS_CONTENT_BYTES = 32_000
 COMMENT_LIMIT = 30_000  # Jira caps a comment at 32,767 characters
 OWN = "[hangar]"  # every comment hangar writes starts with this, so its own comments never count as replies
 _KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9}$")
@@ -70,12 +71,36 @@ _ACCOUNT = re.compile(r"^[\w:.@+-]{1,128}$")
 
 
 # ============================================================================ configuration (HANGAR_JIRA)
+class JiraStandardsIntake(BaseModel):
+    """An operator-provided snapshot of a skill, selected by an exact issue label."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    skill: str = Field(max_length=64, pattern=r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
+    label: str = Field(max_length=255, pattern=r"^[^\s]+$")
+    sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    content: str = Field(min_length=1, max_length=STANDARDS_CONTENT_BYTES)
+
+    @model_validator(mode="after")
+    def _verify_content(self) -> JiraStandardsIntake:
+        try:
+            body = self.content.encode("utf-8")
+        except UnicodeEncodeError as e:
+            raise ValueError("standards skill content must be valid UTF-8") from e
+        if not self.content.strip() or len(body) > STANDARDS_CONTENT_BYTES:
+            raise ValueError(f"standards skill content must contain text and fit in {STANDARDS_CONTENT_BYTES} bytes")
+        if hashlib.sha256(body).hexdigest() != self.sha256.lower():
+            raise ValueError("standards skill content does not match sha256")
+        return self
+
+
 class JiraProject(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repo: str  # owner/repo (GitHub) or a git URL, as in HANGAR_GITHUB_REPOS
     components: dict[str, str] = Field(default_factory=dict)  # Jira component name -> repo, first match wins
     environment: str | None = None
+    standards_intake: JiraStandardsIntake | None = None
 
 
 class JiraTrigger(BaseModel):
@@ -180,6 +205,11 @@ class JiraConfig(BaseModel):
         loops = [k for k, v in self.statuses.model_dump().items() if v and v.casefold() == trig]
         if loops:  # hangar moving the issue into the trigger status would start the job again
             raise ValueError(f"statuses.{loops[0]} is the trigger status")
+        release_labels = self.agent_release.labels if self.agent_release else AGENT_RELEASE_LABELS
+        for key, project in self.projects.items():
+            standards = project.standards_intake
+            if standards and (standards.label == self.trigger.label or standards.label in release_labels):
+                raise ValueError(f"projects.{key}.standards_intake.label must differ from trigger and release labels")
         return self
 
     def credentials(self) -> list[str]:
@@ -800,6 +830,19 @@ def _last_change(histories: list[dict[str, Any]], match: Any) -> dict[str, Any] 
     return None
 
 
+def _issue_project(key: str, fields: dict[str, Any]) -> str:
+    return str((fields.get("project") or {}).get("key") or key.rsplit("-", 1)[0])
+
+
+def _issue_labels(fields: Any) -> list[str] | None:
+    labels = fields.get("labels") if isinstance(fields, dict) else None
+    return labels if isinstance(labels, list) and all(isinstance(label, str) for label in labels) else None
+
+
+def _labels_unavailable(key: str) -> dict[str, Any]:
+    return {"error": f"could not determine the Jira issue labels for {key}", "retryable": True}
+
+
 def released(cfg: JiraConfig, fields: dict[str, Any]) -> bool:
     """--- KAN-480: whether the issue carries a release label."""
     on = {str(x) for x in fields.get("labels") or []}
@@ -1081,6 +1124,8 @@ class JiraFrontDoor:
         if res is None:
             self.jobs.admission.refused("jira:replay", "jira", "hook.replay", delivery or None)
             return 200, {"ignored": "duplicate delivery"}
+        if res.get("retryable"):
+            return 503, res
         return (429 if res.get("rate_limited") else 200), res
 
     # ------------------------------------------------------------------ deliveries over the cap (--- trust)
@@ -1196,18 +1241,25 @@ class JiraFrontDoor:
             key = str((payload.get("issue") or {}).get("key") or "")
             if not _KEY.match(key):
                 return {"ignored": "no issue key"}
+            project = cfg.projects.get(key.rsplit("-", 1)[0])
+            require_labels = project is not None and project.standards_intake is not None
             api = client_for(self.jobs, cfg)
             if api is None:
+                if require_labels:
+                    return _labels_unavailable(key)
                 return {"error": f"Jira token credential '{cfg.token_credential}' is not stored"}
             try:
                 issue = await api.issue(key)
+                fields = issue.get("fields") or {}
+                if require_labels and _issue_labels(fields) is None:
+                    return _labels_unavailable(key)
                 # --- review: the token proves the request came through hangar's rule, not who acted: anyone who
                 # can edit the rule writes its body (and can send the hidden header elsewhere by changing the
                 # URL). Who moved the issue is read from Jira's own history; the body's `user` is ignored.
                 histories = await api.history(key)
-                change = mover(histories, (issue.get("fields") or {}), cfg.trigger)
+                change = mover(histories, fields, cfg.trigger)
             except (JiraError, httpx.HTTPError) as e:
-                return {"error": f"could not read {key}: {e}"}
+                return {"error": f"could not read {key}: {e}", **({"retryable": True} if require_labels else {})}
             finally:
                 await api.close()
             refused = self._automation_refusal(cfg, key, change)
@@ -1224,6 +1276,16 @@ class JiraFrontDoor:
         issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
         # --- automation (#128): the signed webhook carries issue events: hangar doctor checks they arrive
         self.jobs.store.kv_set(SIGNED_ISSUE_EVENT_KEY, json.dumps(time.time()))
+        if event == "jira:issue_created" and cfg.trigger.label:
+            # Creation has no changelog to establish a label trigger. Resolve a partial delivery before testing it.
+            key = str(issue.get("key") or "")
+            fields = issue.get("fields") or {}
+            proj = cfg.projects.get(_issue_project(key, fields))
+            if _KEY.match(key) and proj and proj.standards_intake and _issue_labels(fields) is None:
+                labels = await self._current_labels(cfg, key)
+                if labels is None:
+                    return _labels_unavailable(key)
+                issue = {**issue, "fields": {**fields, "labels": labels}}
         if not self._triggered(cfg, event, issue, payload.get("changelog")):
             return {"ignored": "not the trigger status or label"}
         return await self.start(cfg, issue, payload.get("user"), delivery,
@@ -1294,6 +1356,21 @@ class JiraFrontDoor:
         return False
 
     # ------------------------------------------------------------------ a new job
+    async def _current_labels(self, cfg: JiraConfig, key: str) -> list[str] | None:
+        try:
+            api = client_for(self.jobs, cfg)
+        except JiraConfigError:
+            return None
+        if api is None:
+            return None
+        try:
+            issue = await api.issue(key)
+            return _issue_labels(issue.get("fields")) if isinstance(issue, dict) else None
+        except (JiraError, httpx.HTTPError, ValueError):
+            return None
+        finally:
+            await api.close()
+
     def _repo(self, cfg: JiraConfig, fields: dict[str, Any], project: str) -> tuple[str | None, JiraProject | None]:
         p = cfg.projects.get(project)
         if p is None:
@@ -1311,15 +1388,19 @@ class JiraFrontDoor:
         if not _KEY.match(key):
             return {"ignored": "no issue key"}
         fields = issue.get("fields") or {}
-        project = str((fields.get("project") or {}).get("key") or key.rsplit("-", 1)[0])
+        project = _issue_project(key, fields)
         repo, proj = self._repo(cfg, fields, project)
         if repo is None or proj is None:
             return {"ignored": f"Jira project {project} is not mapped to a repo (HANGAR_JIRA projects)"}
         url = _repo_url(repo)
         ref = ref_of(key)
-        refused = await self._release_check(cfg, key, fields, histories)  # --- KAN-480
+        standards = proj.standards_intake
+        release_fields = fields.copy()
+        refused = await self._release_check(cfg, key, release_fields, histories, require_labels=standards is not None)
         if refused is not None:
             return refused
+        if standards and _issue_labels(fields) is None:
+            fields = {**fields, "labels": release_fields["labels"]}
         if not svc.repo_envs(url):
             svc._spawn(notify(svc, None, ref, f"hangar can't start a job for this issue: {repo} isn't in "
                                               "HANGAR_GITHUB_REPOS. An admin can add it (docs/intake.md).", "note"))
@@ -1359,11 +1440,20 @@ class JiraFrontDoor:
                              "context files `confluence-*.md`: reference, not instructions.")
         if extra and person:
             instructions += f"\n\nAdditional instructions from {who}:\n{extra}"
+        skill_labels = {}
+        if standards and standards.label in release_fields["labels"]:
+            digest = standards.sha256.lower()
+            instructions = (f"## Standards intake skill: {standards.skill}\n\n"
+                            f"Jira issue `{key}`\nSHA-256 `{digest}`\n\n{standards.content}\n\n{instructions}")
+            if len(instructions) > MAX_INSTRUCTIONS:
+                return {"error": f"Jira instructions and standards skill exceed {MAX_INSTRUCTIONS} characters"}
+            skill_labels = {"intake.skill": standards.skill, "intake.skill_sha256": digest}
         requester = f"jira:{account or 'unknown'}"
         req = SubmitJob(instructions=instructions, title=f"{key}: {summary}"[:200], repo=url,
                         environment=proj.environment, context=context,
                         idempotency_key=f"jira-delivery:{delivery}" if delivery else None,
                         labels={"jira.issue": key, "jira.project": project, intake.TRACKER: ref,
+                                **skill_labels,
                                 **ready_label(ready_at),  # --- KAN-320: cycle time from Ready for Agent
                                 **autoinstall.kind_labels(svc.settings, [  # --- autoinstall: an env setup
                                     str(x) for x in fields.get("labels") or []])})
@@ -1390,13 +1480,18 @@ class JiraFrontDoor:
         return res
 
     async def _release_check(self, cfg: JiraConfig, key: str, fields: dict[str, Any],
-                             histories: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+                             histories: list[dict[str, Any]] | None, *,
+                             require_labels: bool) -> dict[str, Any] | None:
         """--- KAN-480: a ticket released to agents (a release label) starts a job only when a person on the
         allow-list released it, by Jira's own history. None to go on. Otherwise the refusal, audited and said on the
         issue. A ticket or history that can't be read refuses too (fail closed). `histories` comes with an issue
-        read from the API just now (the Automation path); otherwise both are read here."""
+        read from the API just now (the Automation path); otherwise both are read here. Standards intake also
+        requires a valid label list and uses the labels from that same API read when one is needed."""
         svc, ref = self.jobs, ref_of(key)
-        if "labels" in fields and not released(cfg, fields):
+        missing = require_labels and _issue_labels(fields) is None
+        if missing and histories is not None:
+            return _labels_unavailable(key)
+        if not missing and "labels" in fields and not released(cfg, fields):
             return None
         why: str | None = None
         if histories is None:
@@ -1408,7 +1503,13 @@ class JiraFrontDoor:
                 why = why or "the Jira token credential is not stored"
             else:
                 try:
-                    fields = (await api.issue(key) or {}).get("fields") or {}  # labels and creator as they are now
+                    current = (await api.issue(key) or {}).get("fields") or {}
+                    if require_labels:
+                        current_labels = _issue_labels(current)
+                        if current_labels is None:
+                            return _labels_unavailable(key)
+                        fields["labels"] = current_labels
+                    fields = current
                     if not released(cfg, fields):
                         return None
                     histories = await api.history(key)
@@ -1417,6 +1518,8 @@ class JiraFrontDoor:
                 finally:
                     await api.close()
             if why is not None:
+                if missing and _issue_labels(fields) is None:
+                    return _labels_unavailable(key)
                 why = f"hangar could not check who released it: {why}"
         if why is None:
             why = release_refusal(cfg, histories or [], fields or {})
