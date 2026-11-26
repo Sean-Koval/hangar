@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -32,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hangar import people
+from hangar import branchowners, people
 from hangar.auditchain import audit_digest, audit_link, audit_redaction
 from hangar.envrequests import EnvRequest
 from hangar.flightrec import FlightRecord
@@ -98,7 +99,8 @@ def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
     link, or that is marked redacted but doesn't match what the purge wrote. It is False too when the chain starts
     from an anchor the newest `audit.pruned` entry doesn't carry (rows cut from the front). `restarts` lists chain
     starts after the first. What this can't see: rows cut from the end, or a table reset to before the chain. The
-    copy off the pod is the record for those (docs/security/data-handling.md#what-doctor-proves)."""
+    copy off the pod is the record for those, and bucket_check compares with it (KAN-541,
+    docs/security/data-handling.md#what-doctor-proves)."""
     key = store.audit_key
     anchor = json.loads(store.kv_get(AUDIT_ANCHOR) or "null")
     prev = anchor["hash"] if anchor else ""
@@ -124,7 +126,8 @@ def verify_chain(store: Store, batch: int = 5000) -> dict[str, Any]:
                 reason = None
                 if not link or not digest:
                     reason = "a row without a link (written outside hangar, or its link was cleared)"
-                elif redacted and (not rdigest or audit_redaction(key, data) != rdigest):
+                elif redacted and (not rdigest
+                                   or not hmac.compare_digest(audit_redaction(key, rid, digest, data), rdigest)):
                     reason = "a row marked redacted doesn't match what the purge wrote (edited since)"
                 elif not redacted and audit_digest(key, data) != digest:
                     reason = "the row was edited after it was written"
@@ -198,7 +201,166 @@ async def doctor_checks(h: Any) -> list[dict[str, Any]]:
     else:
         out.append(_check("audit retention", True, f"{days:g} days, then deleted oldest first"
                           + (f" ({anchor['pruned']} so far)" if anchor else "")))
+    out.append(await bucket_check(h))  # --- KAN-541: the end of the table, against the copy off the pod
     return out
+
+
+# ---------------------------------------------------------------------------- the bucket (KAN-541)
+# What the chain can't show (rows cut from the end, a table reset or restored from an older backup) shows against the
+# locked audit bucket: its newest `hangar.audit:` line carries a `seq` the table must reach and a `hash` the table's
+# row must still have. hangar reads the bucket's view with roles/logging.viewAccessor on that view alone; it can't
+# write to the bucket or change the sink.
+_VIEW = re.compile(r"projects/[a-z][-a-z0-9]{4,28}[a-z0-9]/locations/[a-z0-9-]{1,40}/buckets/[A-Za-z0-9_-]{1,100}"
+                   r"/views/[A-Za-z0-9_-]{1,100}")
+_ENTRIES = "https://logging.googleapis.com/v2/entries:list"
+_LINE = "hangar.audit: "
+# the line as `hangar serve` logs it: "<date> <time> INFO hangar.audit: {...}" (cli.py), or bare. Text that merely
+# contains it, inside another logger's message, isn't an audit line.
+_LINE_RE = re.compile(r"^(?:\S+ \S+ [A-Z]+ )?hangar\.audit: (?=\{)")
+_PAGE = 500
+_WINDOW_DAYS = 30  # every line of the last 30 days, up to _MAX_LINES: a restore written past shows as two links
+_MAX_LINES = 5000
+_MAX_PAGES = 20  # per window: empty pages with a token can go on, and each call may take up to 20 s
+_READ_SECONDS = 30.0  # the whole read; past it the line is not run, so doctor never hangs on Logging
+_FIX_BEHIND = ("treat the bucket as the record: find out who had the database, and what was restored "
+               "(docs/security/data-handling.md#if-the-chain-breaks)")
+
+
+async def _token() -> str | None:
+    from hangar.doctor import _metadata_token
+
+    return await _metadata_token()
+
+
+async def _list_entries(view: str, token: str, days: float, page_token: str | None = None,
+                        page_size: int = _PAGE) -> tuple[int, dict[str, Any]]:
+    """One page of the bucket's audit lines of the last `days`, newest first."""
+    import httpx
+
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now() - days * 86400))
+    body: dict[str, Any] = {"resourceNames": [view], "filter": f'textPayload:"{_LINE}{{" AND timestamp>="{since}"',
+                            "orderBy": "timestamp desc", "pageSize": page_size}
+    if page_token:
+        body["pageToken"] = page_token
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(_ENTRIES, json=body, headers={"Authorization": f"Bearer {token}"})
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return r.status_code, data if isinstance(data, dict) else {}
+
+
+async def _read_bucket(view: str, token: str) -> tuple[list[tuple[int, str | None]], str | None]:
+    """The audit lines of the last 30 days (up to _MAX_LINES), else the newest one ever: (lines, why not read)."""
+    gave_up = False
+    for days, cap in ((_WINDOW_DAYS, _MAX_LINES), (3650, 1)):
+        lines: list[tuple[int, str | None]] = []
+        page: str | None = None
+        for _ in range(_MAX_PAGES):  # a page may come back empty with a token when the search ran out of time
+            code, data = await _list_entries(view, token, days, page)
+            if code != 200:
+                return [], f"HTTP {code}"
+            lines += _bucket_lines(data)
+            page = data.get("nextPageToken") or None
+            if not page or len(lines) >= cap:
+                break
+        else:
+            gave_up = bool(page)
+        if lines:
+            return lines, None
+    return [], (f"no audit line in {_MAX_PAGES} pages" if gave_up else None)
+
+
+def _bucket_lines(data: dict[str, Any]) -> list[tuple[int, str | None]]:
+    """(seq, hash) of each audit line in an entries:list answer."""
+    out = []
+    for e in data.get("entries") or []:
+        text = str(e.get("textPayload") or "").strip() if isinstance(e, dict) else ""
+        m = _LINE_RE.match(text)
+        if not m:
+            continue
+        try:
+            row, end = json.JSONDecoder().raw_decode(text, m.end())
+            seq = row["seq"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if text[end:].strip() or not {"actor", "action"} <= row.keys():
+            continue
+        if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0:
+            link = row.get("hash")
+            out.append((seq, link if isinstance(link, str) else None))
+    return out
+
+
+def compare_with_bucket(store: Store, lines: list[tuple[int, str | None]]) -> tuple[bool, str]:
+    """Whether the table reaches the bucket's newest entry and holds every entry the bucket read shows as the
+    bucket has it. Entries retention deleted from the table since are skipped."""
+    seq = max(s for s, _ in lines)
+    newest = store.audit_max_id()
+    if newest < seq:
+        return False, (f"the table's newest entry is {newest}, the bucket's is {seq}: entries were cut from the end, "
+                       "or the table was reset or restored from an older backup")
+    links: dict[int, str] = {}
+    for s, h in lines:
+        if h is None:
+            continue
+        if links.setdefault(s, h) != h:
+            return False, (f"the bucket holds entry {s} twice with different links: the table was restored or reset, "
+                           "then written past")
+    first = store.audit_rows(0, 1)
+    kept = sorted(s for s in links if first and s >= first[0][0])
+    table: dict[int, str | None] = {}
+    after = kept[0] - 1 if kept else newest
+    while kept and after < kept[-1]:
+        rows = store.audit_rows(after, 5000)
+        if not rows:
+            break
+        table.update((r[0], r[4]) for r in rows)
+        after = rows[-1][0]
+    for s in kept:
+        if s not in table:
+            return False, f"entry {s}, which the bucket holds, isn't in the table"
+        if table[s] != links[s]:
+            return False, (f"entry {s}'s link isn't the bucket's: the table was restored, reset or relinked, then "
+                           "written past")
+    return True, (f"the table reaches the bucket's newest entry, {seq}"
+                  + (f", and the {len(kept)} entries read from the bucket match it" if kept else
+                     " (no line read carries a link to compare)"))
+
+
+async def bucket_check(h: Any) -> dict[str, Any]:
+    from hangar.doctor import _check
+
+    view = (h.settings.audit_bucket or "").strip()
+    if not view:
+        return _check("audit bucket", None, "not run: no audit bucket is set (HANGAR_AUDIT_BUCKET), so rows cut from "
+                      "the end of the table or a restored table go unseen",
+                      "set enable_audit_export, then HANGAR_AUDIT_BUCKET to the Terraform output audit_view "
+                      "(docs/security/audit.md#doctors-comparison)")
+    fix = ("grant hangar's service account roles/logging.viewAccessor on that view (the Terraform audit export does), "
+           "and check HANGAR_AUDIT_BUCKET")
+    if not _VIEW.fullmatch(view):
+        return _check("audit bucket", None, "not run: HANGAR_AUDIT_BUCKET isn't a log view "
+                      "(projects/P/locations/global/buckets/B/views/V)", fix)
+    token = await _token()
+    if not token:
+        return _check("audit bucket", None, "not run: hangar has no Google credentials to read the bucket with", fix)
+    try:
+        lines, why = await asyncio.wait_for(_read_bucket(view, token), _READ_SECONDS)
+    except TimeoutError:
+        return _check("audit bucket", None, "not run: the bucket read timed out", fix)
+    except Exception as e:  # noqa: BLE001 - not read is not run, never a pass
+        return _check("audit bucket", None, f"not run: the bucket wasn't read ({type(e).__name__})", fix)
+    if why:
+        return _check("audit bucket", None, f"not run: the bucket wasn't read ({why})", fix)
+    if not lines:
+        return _check("audit bucket", None, "not run: no audit line was found in the bucket", fix)
+    try:
+        ok, detail = await asyncio.to_thread(compare_with_bucket, h.store, lines)
+    except Exception as e:  # noqa: BLE001 - a comparison that breaks says so; it never takes doctor down
+        return _check("audit bucket", None, f"not run: the comparison failed ({type(e).__name__})", fix)
+    return _check("audit bucket", ok, detail, _FIX_BEHIND)
 
 
 # ---------------------------------------------------------------------------- purge
@@ -210,6 +372,11 @@ def pseudonym(h: Any, person_id: str) -> str:
         salt = secrets.token_hex(32)
         h.vault.put(SALT_NAME, salt)
     return "person:" + hashlib.sha256(f"{salt}\n{person_id}".encode()).hexdigest()[:16]
+
+
+# --- KAN-553: owner and requester values hangar itself writes (sessions.py, models.py defaults): nobody's names.
+# The same list people.py refuses as person ids (KAN-552), so the two can't drift.
+FIXED_OWNERS = people.RESERVED_IDS
 
 
 def aliases(store: Store, person_id: str) -> tuple[list[str], list[str]]:
@@ -308,22 +475,30 @@ def _found(h: Any, person_id: str, names: list[str]) -> dict[str, list[Any]]:
     """What hangar holds about the person: by `person`, and by an `owner` or requester that is one of their names
     (a token id, a linked account), as GitHub, Slack and older jobs and sessions record it."""
     st = h.store
-    mine = set(names)
+    # --- KAN-553: hangar writes fixed strings as owner and requester (a job's session is owned by "jobs", defaults are
+    # "admin" and "system"), so a person by such an id must not match them; and a record whose `person` names someone
+    # else is never theirs, whatever its owner says
+    mine = set(names) - FIXED_OWNERS
+
+    def unclaimed(rec: Any) -> bool:
+        return getattr(rec, "person", None) in (None, person_id)
 
     def theirs(rec: Any, *fields: str) -> bool:
-        return any(getattr(rec, f, None) in mine for f in fields)
+        return unclaimed(rec) and any(getattr(rec, f, None) in mine for f in fields)
+
+    def by(cls: type, field: str) -> list[Any]:
+        return [r for r in st.list_where(cls, archived=True, **{field: sorted(mine)}) if unclaimed(r)] if mine else []
 
     sessions = {s.id: s for s in st.list_where(Session, archived=True, person=person_id)}
-    sessions.update({s.id: s for s in st.list_where(Session, archived=True, owner=list(mine))})
+    sessions.update({s.id: s for s in by(Session, "owner")})
     jobs = {j.id: j for j in st.list_where(Job, archived=True, person=person_id)}
-    jobs.update({j.id: j for j in st.list_where(Job, archived=True, owner=list(mine))})
-    jobs.update({j.id: j for j in st.list_where(Job, archived=True, requester=list(mine))})
+    jobs.update({j.id: j for j in by(Job, "owner") + by(Job, "requester")})
     schedules = {sc.id: sc for sc in st.list(ScheduledJob) if sc.person == person_id or theirs(sc, "owner")}
     sids = set(sessions) | {a.session_id for j in jobs.values() for a in j.attempts if a.session_id} \
         | {j.session_id for j in jobs.values() if j.session_id}
     jids = set(jobs)
     sandboxes = {sb.id: sb for sb in st.list_where(Sandbox, archived=True, person=person_id)}
-    sandboxes.update({sb.id: sb for sb in st.list_where(Sandbox, archived=True, created_by=list(mine))})
+    sandboxes.update({sb.id: sb for sb in by(Sandbox, "created_by")})
     sbids = set(sandboxes)
     outbox = [i for i in st.list(OutboxItem) if i.session_id in sids or i.job_id in jids]
     return {
@@ -341,6 +516,7 @@ def _found(h: Any, person_id: str, names: list[str]) -> dict[str, list[Any]]:
         "outbox": outbox,
         "environment_claims": [k for k in st.kv_keys("identity:env-owner:") if st.kv_get(k) == person_id],
         "kv": _their_kv(st, person_id),
+        "branch_creators": branchowners.recorded_for(st, person_id),
         "pending_deletes": _pending_deletes(h, sids, mine),
     }
 
@@ -496,6 +672,8 @@ async def purge(h: Any, person_id: str, requester: str, dry_run: bool = False) -
             await step(f"{kind} {rec.id}", st.delete, cls, rec.id)
     for k in found["environment_claims"] + found["kv"]:
         await step(k, st.kv_delete, k)
+    for k in found["branch_creators"]:  # --- KAN-553: kept, as nobody's, so the branch stays foreign to everyone
+        await step(k, branchowners.forget_person, st, k)
     # anything of theirs that appeared while this ran (a job a door let in before it shut) keeps the person for a
     # rerun: the person goes only once nothing is left
     if not errors and (left := {k: len(v) for k, v in

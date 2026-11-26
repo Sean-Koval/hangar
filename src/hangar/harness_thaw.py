@@ -361,8 +361,10 @@ def effective_spec(fleet: Fleet, sb: Sandbox | None, spec: EnvSpec) -> EnvSpec:
     pl = [Plugin(path=f"plugins/{ref['marketplace']}", name=ref["name"], marketplace=ref["marketplace"],
                  enabled=c.get("enabled", True))
           for c in comps if c["id"].startswith("plugin:") and (ref := harness_lock.plugin_ref(c["id"]))]
-    return spec.model_copy(update={"source_dir": d, "skills": skills, "plugins": pl,
-                                   "agent_config": spec.agent_config.model_copy(update={"instructions": text})})
+    out = spec.model_copy(update={"source_dir": d, "skills": skills, "plugins": pl,
+                                  "agent_config": spec.agent_config.model_copy(update={"instructions": text})})
+    out._shipped_dir = None  # --- KAN-304: a lock's components come from the lock dir, never the shipped one
+    return out
 
 
 async def mount_files(fleet: Fleet, prov: Any, sb: Sandbox, harness: str | None) -> None:

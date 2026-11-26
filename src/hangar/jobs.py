@@ -1351,7 +1351,7 @@ class JobService:
         self._event(job, f"agent turn finished: {outcome}"
                          + (f", exit {turn.exit_code}" if turn.exit_code is not None else ""))
         if outcome == "over_budget":
-            self._event(job, f"stopped over budget: {turn.outcome_reason}; delivering what it did as a draft")
+            self._event(job, f"over budget: {turn.outcome_reason}; delivering its work as a draft")  # KAN-557
         if turn.infra_reason == "login_rejected":  # --- KAN-178: whose login, and how to log in again
             self._event(job, credhealth.refused_line(self.store, list(prov_sb.credentials), job.harness))
         repo_path = prov_sb.info.get("repo_path")
@@ -1653,8 +1653,7 @@ class JobService:
                 lines += ["", f"What went wrong: {cause[:1500]}"]
         if job.reason == "over_budget":  # workstream C
             why = next((t.outcome_reason for t in reversed(job.turns) if t.outcome_reason), None)
-            lines += ["", f"Stopped over budget{f' ({why})' if why else ''}. What the agent had done so far is "
-                          "delivered as a draft."]
+            lines += ["", f"Over budget{f' ({why})' if why else ''}. What the agent did is delivered as a draft."]
         if usage := self.usage(job):
             lines.append(f"Usage: {usage_line(usage)}")
         if r.summary:

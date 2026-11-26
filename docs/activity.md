@@ -1,6 +1,6 @@
 # Activity, usage and budgets
 
-While an agent works, hangar reads its run log and turns it into one stream of events, whichever harness it is (Claude Code, Codex, pi or Antigravity). It also counts the tokens and money each turn uses, and stops a turn that goes over its budget. This is workstream C of [spec 0011](specs/0011-factory-roadmap.md); it builds on 0007 M3 and M6 and the usage part of 0003 M9.
+While an agent works, hangar reads its run log and turns it into one stream of events, whatever the harness (Claude Code, Codex, pi or Antigravity). It also counts each turn's tokens and money, and stops a turn that goes over its budget. This is workstream C of [spec 0011](specs/0011-factory-roadmap.md); it builds on 0007 M3 and M6 and the usage part of 0003 M9.
 
 ## Events
 
@@ -18,7 +18,7 @@ Every job and session has an event stream. Each event looks like this:
 | `tool_call` | Any other tool it called (`Read`, `Write`, `apply_patch`, MCP tools…) |
 | `tool_result` | A tool's result: `data.ok`, the start of its output, and `exit_code` for Codex commands |
 | `file_change` | A file it created or edited (`data.path`, `data.op`) |
-| `error` | A model or harness error, or hangar stopping the turn (`stopped: over budget (…)`) |
+| `error` | A model or harness error, or a turn over budget (`stopped: over budget (…)` or `finished over budget (…)`) |
 | `usage` | Tokens and cost so far for the turn; `data.final` once the harness reports its own totals |
 | `progress` | The agent started, or reported progress (workstream E feeds `$HANGAR_IO/out/progress.jsonl` here) |
 
@@ -36,7 +36,7 @@ Read events with `seq` as the cursor. Pass `since` as the last `seq` you saw, an
 
 ### How events are collected
 
-The session's poll loop in `end_turn` already checks every few seconds whether the agent is done. On the same tick it reads the bytes the run log has gained since the last read, in a single `exec`: `tail -c +OFFSET | head -c 128K | base64`. It never re-reads the whole log. The parsers in `events.py` take those bytes, keep any unfinished line for the next read, and skip lines over 1 MiB (they are counted).
+The session's poll loop in `end_turn` checks every few seconds whether the agent is done. On the same tick it reads what the run log gained since the last read, in a single `exec`: `tail -c +OFFSET | head -c 128K | base64`. It never re-reads the log. The `events.py` parsers take those bytes, keep any unfinished line for the next read, and skip lines over 1 MiB (they are counted).
 
 Events go to `<data_dir>/events/<session id>.jsonl`. Past `HANGAR_EVENTS_MAX_MB` the file rotates once, so the newest `2 × HANGAR_EVENTS_MAX_MB` are kept. The read position, parser state and running usage are saved on the turn (`SessionTurn.event_cursor`), along with the rest of the session.
 
@@ -112,19 +112,19 @@ You can set it in several places:
 
 A `jobs` token can carry a cap: `hangar token create svc --scope jobs --max-cost 2`, or `max_budget` on `POST /api/tokens`. Its jobs never get more than the cap, whatever they ask for, and the cap also applies when they ask for nothing.
 
-hangar checks the budget on every poll. When a turn crosses it, hangar stops the agent the way a timeout does (its tmux session is killed). It records the turn's `outcome: "over_budget"` and the reason in `outcome_reason`, for example `spent $1.26; the budget is $1.00`, and adds an `error` event. A job then:
+hangar checks the budget on every poll, and once more when the turn ends. A running turn that crosses it is stopped like a timed-out turn. It records the turn's `outcome: "over_budget"` and the reason in `outcome_reason`, for example `spent $1.26; the budget is $1.00`, and adds an `error` event. A job then:
 
 - verifies;
 - commits what the agent left;
 - pushes and opens the PR as a **draft**;
 - finishes as `failed` with `reason: "over_budget"`.
 
-The GitHub comment says so: "Stopped over budget (…). What the agent had done so far is delivered as a draft."
+The GitHub comment says so: "Over budget (…). What the agent did is delivered as a draft."
 
 How far a turn overshoots depends on when the harness reports usage:
 
 - **Claude Code, pi and Antigravity** report usage per model call. They are stopped within one poll (`HANGAR_SESSION_POLL_SECONDS`) of the call that crosses the budget.
-- **Codex** reports usage only when its turn ends. For Codex, only `max_minutes` takes effect mid-turn.
+- **Codex** reports usage only when its turn ends. Only `max_minutes` stops it mid-turn; a token or cost budget makes its finished turn `over_budget`.
 - **A model with no price** never trips `max_cost_usd`. Use `max_tokens` for it, or add the model to `HANGAR_MODEL_PRICES`.
 
 ## Settings

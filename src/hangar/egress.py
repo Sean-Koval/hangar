@@ -100,6 +100,39 @@ HARNESS_HOSTS: dict[str, tuple[str, ...]] = {
     "pi": (*_ANTHROPIC, *_OPENAI, *_GOOGLE, "openrouter.ai"),
 }
 
+# --- KAN-291: Claude Code on Vertex AI. Added for a claude-code sandbox that holds a Vertex credential (a claude-code
+# service-account key) or whose environment sets CLAUDE_CODE_USE_VERTEX (a `cloud:` binding). The CLI calls the global
+# endpoint for CLOUD_ML_REGION=global, `<region>-aiplatform.googleapis.com` otherwise (and for a VERTEX_REGION_CLAUDE_*
+# override); google-auth refreshes a key's token at oauth2.googleapis.com.
+VERTEX_HOSTS = ("aiplatform.googleapis.com", "oauth2.googleapis.com")
+_REGION_RE = re.compile(r"^[a-z]+-[a-z]+[0-9]{1,2}$")
+
+
+def vertex_on(spec: EnvSpec, harness: str | None, credential: bool = False) -> bool:
+    """Whether a `harness` sandbox of `spec` calls Claude on Vertex AI: a Vertex credential, or the environment's own
+    CLAUDE_CODE_USE_VERTEX."""
+    env = getattr(spec, "env", None) or {}
+    return harness == "claude-code" and (credential or str(env.get("CLAUDE_CODE_USE_VERTEX", "")).strip().lower()
+                                         in ("1", "true", "yes", "on"))  # the values Claude Code takes as on
+
+
+def vertex_hosts(spec: EnvSpec) -> tuple[list[str], list[str]]:
+    """The Vertex hosts for `spec`'s regions, and notes on any region that isn't one."""
+    env = getattr(spec, "env", None) or {}
+    hosts, notes = list(VERTEX_HOSTS), []
+    for k, v in sorted(env.items()):
+        if k != "CLOUD_ML_REGION" and not k.startswith("VERTEX_REGION_"):
+            continue
+        region = str(v).strip().lower()
+        if region in ("", "global"):
+            continue
+        if not _REGION_RE.match(region):
+            notes.append(f"{k}={v!r} is not a Vertex AI region, so no regional endpoint was added for it")
+        elif (h := f"{region}-aiplatform.googleapis.com") not in hosts:
+            hosts.append(h)
+    return hosts, notes
+
+
 _LABEL = r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?"
 _HOST_RE = re.compile(rf"^(?:{_LABEL}\.)*{_LABEL}$")
 KV_ENV = "egress-allow:env:"
@@ -259,7 +292,7 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
             approved: list[dict[str, Any]] | None = None,
             mcp_trusted: set[tuple[str, int | None]] | None = None, sealed: bool = False,
             mirror: bool = False, setup_hosts: tuple[str, ...] = (), floor: str | None = None,
-            closed: bool = False) -> Policy:
+            closed: bool = False, vertex: bool = False) -> Policy:
     """The policy for a sandbox of `spec`, under its repo's policy, running `harness`, with approved requests.
     `mcp_trusted` (from `trusted_mcp`) limits which of the spec's remote MCP servers count; None takes them all,
     for a spec the caller vouches for. `floor` (--- intake posture, #123: the sandbox's `hangar.egress.floor`) raises
@@ -275,7 +308,10 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
 
     --- KAN-234: `closed` is an eval sandbox's whose environment sets no egress mode (trialiso.py): its floor is the
     eval default, and no GitHub host gets through, whatever a preset, the repo policy or an approval adds. Its
-    `setup_hosts` (the repo's git host for a clone without the gateway) last until the clone is isolated."""
+    `setup_hosts` (the repo's git host for a clone without the gateway) last until the clone is isolated.
+
+    --- KAN-291: `vertex` says the sandbox holds a Claude-on-Vertex credential (for_sandbox); with it, or with the
+    environment's own CLAUDE_CODE_USE_VERTEX, a claude-code sandbox reaches Vertex AI's endpoints (VERTEX_HOSTS)."""
     if sealed:
         from hangar.pkgmirror import available
 
@@ -314,6 +350,10 @@ def resolve(settings: Settings, spec: EnvSpec, repo: EgressSpec | None = None, h
     mirrors: list[str] = []
     if mode != "open":
         rules += [Rule(h, False, None, "harness") for h in HARNESS_HOSTS.get(harness or "", ())]
+        if vertex_on(spec, harness, vertex):  # --- KAN-291
+            hosts, bad = vertex_hosts(spec)
+            rules += [Rule(h, False, None, "harness:vertex") for h in hosts]
+            notes += bad
         for key, r in _mcp_rules(spec):  # the environment's remote MCP servers, where an admin configured them
             if mcp_trusted is None or (r.host, r.port) in mcp_trusted:
                 rules.append(r)
@@ -445,7 +485,20 @@ def for_sandbox(fleet: Fleet, sb: Sandbox, spec: EnvSpec | None = None) -> Polic
     closed = trialiso.closed(sb)
     return resolve(fleet.settings, spec, repo_egress(fleet.store, sb.repo), sb.info.get("harness"), approved,
                    trusted_mcp(fleet, sb.environment), floor=floor_of(sb.labels), closed=closed,
-                   setup_hosts=trialiso.setup_hosts(sb) if closed else ())
+                   setup_hosts=trialiso.setup_hosts(sb) if closed else (),
+                   # --- KAN-291: a gateway sandbox's Vertex key isn't written into it (modelgw.attach)
+                   vertex=not sb.info.get("model_gateway") and has_vertex_credential(fleet.store, sb.credentials))
+
+
+def has_vertex_credential(store: Store, names: list[str]) -> bool:
+    """--- KAN-291: whether one of `names` is a Claude-on-Vertex credential (a claude-code service-account key)."""
+    from hangar.models import Credential, CredentialKind
+
+    for n in names:
+        c = store.get(Credential, n)
+        if c is not None and c.harness == "claude-code" and c.kind == CredentialKind.GENERIC:
+            return True
+    return False
 
 
 # ============================================================================ approvals

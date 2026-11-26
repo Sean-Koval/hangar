@@ -4,6 +4,7 @@ hangar-workload module companies deploy."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hangar import datahandling
+from hangar import datahandling, logfmt
 from hangar.models import ApiToken, AuditEvent, CredentialKind, Job, JobState, Person, Session, SessionState
 from hangar.retention import Retention
 from hangar.store import AUDIT_ANCHOR, Store
@@ -115,6 +116,97 @@ def test_a_redacted_row_edited_after_the_purge_is_a_break(tmp_path):
     store._db.execute("UPDATE audit SET data = replace(data, 'job-1', 'job-7') WHERE id = 3")
     v = datahandling.verify_chain(store)
     assert not v["ok"] and v["broken_at"] == 3
+
+
+def test_a_redacted_row_copied_over_another_or_swapped_is_a_break(tmp_path):
+    """--- KAN-553: the purge's HMAC covered the new JSON alone, so a redacted row's data and HMAC could be copied
+    over any other row (erasing it) or swapped with another redacted one, and the chain still verified."""
+    store = _store(tmp_path / "hangar.db")
+    store.audit(AuditEvent(actor="alice", action="job.approve", target="job-1"))
+    store.audit(AuditEvent(actor="bob", action="credential.export", target="prod-key"))
+    store.audit(AuditEvent(actor="alice", action="job.approve", target="job-2"))
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    assert datahandling.verify_chain(store)["ok"]
+    rows = {r[0]: r for r in store.audit_rows()}
+    first, bobs, second = sorted(rows)[-3:]
+    store._db.execute("UPDATE audit SET data=?, redacted=1, rdigest=? WHERE id=?",
+                      (rows[first][2], rows[first][6], bobs))
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == bobs and "redacted" in v["reason"]
+    store._db.execute("UPDATE audit SET data=?, redacted=0, rdigest=NULL WHERE id=?", (rows[bobs][2], bobs))
+    assert datahandling.verify_chain(store)["ok"]
+    for a, b in ((first, second), (second, first)):
+        store._db.execute("UPDATE audit SET data=?, rdigest=? WHERE id=?", (rows[b][2], rows[b][6], a))
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == first
+
+
+def test_rows_redacted_under_the_first_form_are_rebound_on_start(tmp_path):
+    """--- KAN-553: a purge from before keeps verifying; a row that doesn't match the first form stays a break."""
+    from hangar.auditchain import REDACTION_V2, audit_redaction_v1
+    from hangar.store import REDACTIONS_REBOUND
+
+    store = _store(tmp_path / "hangar.db")
+    _events(store, 3, actor="alice")
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    ids = sorted(r[0] for r in store.audit_rows() if r[5])
+    for rid in ids:  # what KAN-296 wrote
+        data = store._db.execute("SELECT data FROM audit WHERE id=?", (rid,)).fetchone()[0]
+        store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), rid))
+    # tampered: 'x' isn't a hex digit, so the row always differs from what the purge wrote
+    store._db.execute("UPDATE audit SET rdigest='x' || substr(rdigest, 2) WHERE id=?", (ids[-1],))
+    store._db.execute("DELETE FROM kv WHERE key=?", (REDACTIONS_REBOUND,))  # as a database from before the upgrade
+    store = _store(tmp_path / "hangar.db")
+    got = dict(store._db.execute("SELECT id, rdigest FROM audit WHERE redacted=1").fetchall())
+    assert all(got[i].startswith(REDACTION_V2) for i in ids[:-1]) and not got[ids[-1]].startswith(REDACTION_V2)
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == ids[-1]
+
+
+def test_the_rebind_runs_once_so_a_first_form_pair_copied_in_later_stays_a_break(tmp_path):
+    """--- KAN-553 review: a first-form (data, rdigest) pair from a backup taken before the upgrade, copied over a
+    row after the rebind ran, must not be rebound at the next start."""
+    from hangar.auditchain import audit_redaction_v1
+    from hangar.store import REDACTIONS_REBOUND
+
+    db = tmp_path / "hangar.db"
+    store = _store(db)
+    _events(store, 2, actor="alice")
+    store.audit(AuditEvent(actor="bob", action="credential.export", target="prod-key"))
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    first = min(r[0] for r in store.audit_rows() if r[5])
+    data = store._db.execute("SELECT data FROM audit WHERE id=?", (first,)).fetchone()[0]
+    store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), first))
+    store._db.execute("DELETE FROM kv WHERE key=?", (REDACTIONS_REBOUND,))  # as a database from before the upgrade
+    store = _store(db)  # the upgrade: rebinds it, once, and says so in the chain
+    assert datahandling.verify_chain(store)["ok"]
+    assert [r for r in store.audit_rows() if REDACTIONS_REBOUND in (r[2] or "")]
+    bobs = max(r[0] for r in store.audit_rows() if "credential.export" in (r[2] or ""))
+    store._db.execute("UPDATE audit SET data=?, redacted=1, rdigest=? WHERE id=?",
+                      (data, audit_redaction_v1(KEY, data), bobs))  # the old backup's pair, over bob's entry
+    store = _store(db)
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == bobs and "redacted" in v["reason"]
+
+
+def test_the_rebind_stays_done_after_retention_deletes_its_entry(tmp_path):
+    """--- KAN-553 review: the entry ages out under retention; the kv flag keeps the rebind from running again."""
+    from hangar.auditchain import audit_redaction_v1
+    from hangar.store import REDACTIONS_REBOUND
+
+    db = tmp_path / "hangar.db"
+    store = _store(db)
+    _events(store, 1, actor="alice")
+    store.audit_redact(datahandling.redactor(["alice"], "person:x"))
+    rid = max(r[0] for r in store.audit_rows() if r[5])
+    data = store._db.execute("SELECT data FROM audit WHERE id=?", (rid,)).fetchone()[0]
+    store = _store(db)  # nothing to rebind; the flag is set all the same
+    assert store.kv_get(REDACTIONS_REBOUND) is not None
+    store._db.execute("DELETE FROM audit WHERE json_extract(data, '$.action') = ?", (REDACTIONS_REBOUND,))
+    store._db.execute("UPDATE audit SET rdigest=? WHERE id=?", (audit_redaction_v1(KEY, data), rid))
+    store = _store(db)
+    v = datahandling.verify_chain(store)
+    assert not v["ok"] and v["broken_at"] == rid
 
 
 def test_the_redacted_digest_is_no_oracle_for_the_name(tmp_path):
@@ -323,6 +415,231 @@ async def test_doctor_reports_the_chain_and_retention(settings, store):
     assert checks["audit retention"]["status"] == "warn"
 
 
+# ====================================================================== the bucket (KAN-541)
+VIEW = "projects/acme-ml/locations/global/buckets/hangar-audit/views/_AllLogs"
+
+
+def _bucket(monkeypatch, lines: list[str], code: int = 200, token: str | None = "ya29.t") -> list:
+    """Fake the bucket's read: its answer holds `lines` as the container log has them, newest first."""
+    calls: list = []
+
+    async def tok():
+        return token
+
+    async def entries(view, tk, days, page=None):
+        calls.append((view, tk, days))
+        return code, {"entries": [{"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.audit: {ln}"}
+                                  for ln in reversed(lines)]}
+
+    monkeypatch.setattr(datahandling, "_token", tok)
+    monkeypatch.setattr(datahandling, "_list_entries", entries)
+    return calls
+
+
+def _logged(store: Store, n: int, caplog) -> list[str]:
+    with caplog.at_level(logging.INFO, logger="hangar.audit"):
+        caplog.clear()
+        _events(store, n)
+    return [r.getMessage() for r in caplog.records if r.name == "hangar.audit"]
+
+
+async def _bucket_line(store, settings) -> dict:
+    return {c["name"]: c for c in await datahandling.doctor_checks(_H(store, settings))}["audit bucket"]
+
+
+async def test_the_bucket_check_passes_when_the_table_reaches_the_bucket(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 4, caplog)
+    settings.audit_bucket = VIEW
+    calls = _bucket(monkeypatch, lines)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "ok" and str(store.audit_max_id()) in line["detail"]
+    assert calls == [(VIEW, "ya29.t", 30)] and "ya29" not in line["detail"]
+    _logged(store, 2, caplog)  # the table ahead of the bucket (its lines are on their way) still passes
+    assert (await _bucket_line(store, settings))["status"] == "ok"
+
+
+async def test_rows_cut_from_the_end_fail_and_name_both_seqs(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 5, caplog)
+    newest = store.audit_max_id()
+    store._db.execute("DELETE FROM audit WHERE id > ?", (newest - 2,))  # the chain alone can't see this
+    assert datahandling.verify_chain(store)["ok"]
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "fail" and line["fix"]
+    assert f"newest entry is {newest - 2}, the bucket's is {newest}" in line["detail"]
+
+
+async def test_a_table_rolled_back_and_rewritten_fails(settings, store, monkeypatch, caplog, tmp_path):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 3, caplog)
+    # another table with as many rows, its own links: a reset or an older backup written on past the bucket
+    other = _store(tmp_path / "other.db")
+    _events(other, 6, actor="someone-else")
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+    line = await _bucket_line(other, settings)
+    assert line["status"] == "fail" and "link isn't the bucket's" in line["detail"]
+
+
+@pytest.mark.parametrize("setup", ["unset", "not-a-view", "no-token", "refused", "empty", "error"])
+async def test_a_bucket_not_read_is_not_run_never_a_pass(settings, store, monkeypatch, caplog, setup):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 2, caplog)
+    settings.audit_bucket = {"unset": None, "not-a-view": "hangar-audit"}.get(setup, VIEW)
+    calls = _bucket(monkeypatch, [] if setup == "empty" else lines, code=403 if setup == "refused" else 200,
+                    token=None if setup == "no-token" else "ya29.t")
+    if setup == "error":
+        async def boom(*_a, **_kw):
+            raise OSError("no route")
+
+        monkeypatch.setattr(datahandling, "_list_entries", boom)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "warn" and line["detail"].startswith("not run") and line["fix"]
+    if setup in ("unset", "not-a-view", "no-token"):
+        assert calls == []
+
+
+async def test_a_restore_written_past_the_bucket_fails(settings, store, monkeypatch, caplog, tmp_path):
+    """The bucket holds entries 2-6 twice, with different links: a table rolled back, then written past."""
+    store.set_audit_key(KEY)
+    before = _logged(store, 5, caplog)
+    other = _store(tmp_path / "restored.db")
+    after = _logged(other, 6, caplog)
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, before + after)
+    line = await _bucket_line(other, settings)
+    assert line["status"] == "fail" and "twice with different links" in line["detail"]
+
+
+async def test_an_older_line_that_differs_fails_even_when_the_newest_matches(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 4, caplog)
+    forged = json.loads(lines[1])
+    store._db.execute("UPDATE audit SET hash = 'x' WHERE id = ?", (forged["seq"],))
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "fail" and f"entry {forged['seq']}'s link isn't the bucket's" in line["detail"]
+
+
+async def test_rows_retention_deleted_and_lines_without_a_link_are_skipped(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 4, caplog)
+    store._db.execute("DELETE FROM audit WHERE id <= 2")  # as retention does, oldest first
+    newest = json.loads(lines[-1])
+    unlinked = json.dumps({**newest, "seq": newest["seq"], "hash": None})
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, [*lines, unlinked])
+    assert (await _bucket_line(store, settings))["status"] == "ok"
+
+
+def test_only_whole_audit_lines_count():
+    good = json.dumps({"ts": 1, "actor": "a", "action": "x", "seq": 7, "hash": "h"})
+    data = {"entries": [
+        {"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.audit: {good}"},
+        {"textPayload": f"hangar.audit: {good}\n"},
+        {"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.jobs: a title hangar.audit: {good}"},  # planted
+        {"textPayload": f"2026-11-18 03:00:00,123 INFO hangar.audit: {good} and more"},
+        {"textPayload": "INFO hangar.audit: " + json.dumps({"seq": 9, "hash": "h"})},  # not an entry
+        {"textPayload": "2026-11-18 03:00:00,123 INFO hangar.audit: {not json"},
+        "not an entry",
+    ]}
+    assert datahandling._bucket_lines(data) == [(7, "h"), (7, "h")]
+
+
+async def test_an_empty_page_with_a_token_is_read_on(monkeypatch):
+    pages = {None: {"entries": [], "nextPageToken": "p2"},
+             "p2": {"entries": [{"textPayload": "hangar.audit: " + json.dumps(
+                 {"actor": "a", "action": "x", "seq": 3, "hash": "h"})}]}}
+    asked: list = []
+
+    async def entries(view, tk, days, page=None):
+        asked.append((days, page))
+        return 200, pages[page]
+
+    monkeypatch.setattr(datahandling, "_list_entries", entries)
+    assert await datahandling._read_bucket(VIEW, "t") == ([(3, "h")], None)
+    assert asked == [(30, None), (30, "p2")]
+
+
+async def test_a_bucket_that_keeps_paging_is_read_a_bounded_number_of_times(monkeypatch):
+    """Review: empty pages with a token, forever, stop after _MAX_PAGES in each window, and say so."""
+    asked: list = []
+
+    async def entries(view, tk, days, page=None):
+        asked.append(days)
+        return 200, {"entries": [], "nextPageToken": f"p{len(asked)}"}
+
+    monkeypatch.setattr(datahandling, "_list_entries", entries)
+    lines, why = await datahandling._read_bucket(VIEW, "t")
+    assert lines == [] and why == f"no audit line in {datahandling._MAX_PAGES} pages"
+    assert asked == [30] * datahandling._MAX_PAGES + [3650] * datahandling._MAX_PAGES
+
+
+async def test_a_bucket_read_that_hangs_is_not_run(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, _logged(store, 1, caplog))
+
+    async def slow(view, tk, days, page=None):
+        await asyncio.sleep(5)
+        return 200, {}
+
+    monkeypatch.setattr(datahandling, "_list_entries", slow)
+    monkeypatch.setattr(datahandling, "_READ_SECONDS", 0.05)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "warn" and line["detail"] == "not run: the bucket read timed out"
+
+
+async def test_a_comparison_that_breaks_is_not_run(settings, store, monkeypatch, caplog):
+    store.set_audit_key(KEY)
+    lines = _logged(store, 2, caplog)
+    settings.audit_bucket = VIEW
+    _bucket(monkeypatch, lines)
+
+    def broken(*_a):
+        raise sqlite3.OperationalError("no such column: hash")
+
+    monkeypatch.setattr(datahandling, "compare_with_bucket", broken)
+    line = await _bucket_line(store, settings)
+    assert line["status"] == "warn" and "comparison failed (OperationalError)" in line["detail"]
+
+
+async def test_the_bucket_read_asks_for_the_newest_audit_lines_of_that_view(monkeypatch):
+    import httpx
+
+    seen: list = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((str(req.url), req.headers["authorization"], json.loads(req.content)))
+        return httpx.Response(200, json={"entries": []})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert await datahandling._list_entries(VIEW, "ya29.t", 30) == (200, {"entries": []})
+    await datahandling._list_entries(VIEW, "ya29.t", 30, "p2")
+    [(url, auth, body), (_, _, more)] = seen
+    assert url == "https://logging.googleapis.com/v2/entries:list" and auth == "Bearer ya29.t"
+    assert body["resourceNames"] == [VIEW] and body["orderBy"] == "timestamp desc" and body["pageSize"] == 500
+    since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
+    assert body["filter"].startswith(f'textPayload:"hangar.audit: {{" AND timestamp>="{since}T')
+    assert "pageToken" not in body and more["pageToken"] == "p2"
+
+
+def test_the_bucket_read_is_one_view_and_read_only():
+    for tf in (WORKLOAD / "audit.tf", ROOT / "deploy/terraform/gke/audit.tf"):
+        text = tf.read_text()
+        [block] = re.findall(r'resource "google_project_iam_member" "audit_reader" \{.*?\n\}', text, re.S)
+        assert 'role    = "roles/logging.viewAccessor"' in block
+        assert ('expression = "resource.name == \\"${google_logging_project_bucket_config.audit[0].id}'
+                '/views/_AllLogs\\""') in block, tf
+        assert re.search(r'output "audit_view"', text), tf
+        assert "logging.admin" not in text and "configWriter" not in text and "bucketWriter" not in text
+
+
 # ====================================================================== purge
 def test_the_redactor_replaces_names_only_in_the_fields_that_name_people():
     rw = datahandling.redactor(["alice", "ui:alice-laptop", "tok-123", "github:alice"], "person:x")
@@ -430,6 +747,47 @@ def test_purge_takes_what_their_tokens_and_accounts_own_and_their_waiting_files(
     assert out["errors"] == []
     assert h.store.get(Job, gh.id) is None and h.store.get(Job, by_token.id) is None
     assert not waiting.exists() and h.store.kv_get("identity:env-owner:alice-env") is None
+
+
+def test_purge_never_takes_another_persons_records_or_hangars_own_owners(app_client):
+    """--- KAN-553: a job's session is owned by "jobs", and defaults are "admin" and "system". A person whose id or
+    alias matched one of those took every such record; a record whose person is someone else is never theirs."""
+    from hangar import branchowners
+
+    c, h, auth = app_client
+    _alice(h)
+    h.store.put(Person(id="jobs", name="Jobs"))  # made before ids like this were reserved
+    bobs = Session(name="bob-job-s", environment="default", person="bob", owner="jobs", state=SessionState.SUSPENDED)
+    nobodys = Session(name="gh-job-s", environment="default", owner="jobs", state=SessionState.SUSPENDED)
+    mixed = Job(title="m", instructions="x", environment="default", person="bob", requester="email:alice@example.com",
+                state=JobState.SUCCEEDED)
+    for r in (bobs, nobodys, mixed):
+        h.store.put(r)
+    plan = c.post("/api/admin/purge", json={"person": "jobs", "dry_run": True}, headers=auth).json()
+    assert plan["deleted"]["sessions"] == 0 and plan["deleted"]["jobs"] == 0, plan
+    c.post("/api/admin/purge", json={"person": "alice"}, headers=auth)
+    assert h.store.get(Session, bobs.id) and h.store.get(Session, nobodys.id) and h.store.get(Job, mixed.id)
+    assert branchowners.recorded_for(h.store, "bob") == []
+
+
+def test_purge_keeps_their_branches_foreign_without_their_name(app_client):
+    """--- KAN-553: the git gateway's branch-creator records named the person after a purge."""
+    from hangar import branchowners
+    from hangar.models import Sandbox
+
+    def _sb(sid: str, person: str) -> Sandbox:
+        return Sandbox(id=sid, name=sid, provider="docker", person=person, environment="default")
+
+    c, h, auth = app_client
+    _alice(h)
+    branchowners.record(h.store, "o/r", "feature/x", _sb("sb-a", "alice"), "push")
+    branchowners.record(h.store, "o/r", "feature/y", _sb("sb-b", "bob"), "push")
+    out = c.post("/api/admin/purge", json={"person": "alice"}, headers=auth).json()
+    assert out["errors"] == []
+    rec = branchowners.creator(h.store, "o/r", "feature/x")
+    assert rec is not None and rec["person"] is None and rec["sandbox"] is None
+    assert branchowners.foreign(rec, "alice") and branchowners.foreign(rec, "carol")  # nobody's, not free to take
+    assert branchowners.creator(h.store, "o/r", "feature/y")["person"] == "bob"
 
 
 def test_a_purge_that_fails_partway_keeps_the_person_and_can_run_again(app_client, monkeypatch):
@@ -563,6 +921,8 @@ def test_the_workload_module_offers_the_locked_audit_sink():
     assert re.search(r"locked\s*=\s*var\.audit_bucket_locked", tf)
     assert re.search(r"retention_days\s*=\s*var\.audit_retention_days", tf)
     assert re.search(r'resource "google_logging_project_sink" "audit"', tf) and "unique_writer_identity" in tf
-    assert 'textPayload:\\"hangar.audit: {\\"' in tf
+    from tests.test_audit_export import sink_regex
+
+    assert sink_regex(tf) == logfmt.AUDIT_LINE.pattern  # --- KAN-556: anchored, as the owner's sink is
     assert "roles/logging.admin" not in tf and "roles/logging.configWriter" not in tf
     assert re.search(r'output "audit_log"', tf)

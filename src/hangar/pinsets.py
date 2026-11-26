@@ -24,6 +24,7 @@ index lists each variant's and trial's `pin_set`.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -56,6 +57,7 @@ class TaskPin(BaseModel):
     repo: str | None = Field(None, max_length=500)
     base_branch: str | None = Field(None, max_length=200)
     base_sha: str | None = Field(None, pattern=SHA)
+    grader_digest: str | None = Field(None, max_length=100)  # --- KAN-192: the task's own grader, over the set's
 
 
 class PinSetBody(BaseModel):
@@ -112,7 +114,11 @@ def digest(obj: Any) -> str:
 
 
 def pin_id(body: PinSetBody) -> str:
-    return "pin-" + hashlib.sha256(canonical(body.model_dump(mode="json")).encode()).hexdigest()[:16]
+    d = body.model_dump(mode="json")
+    for t in d["tasks"].values():  # --- KAN-192: absent, a task's grader leaves the ids pinned before it unchanged
+        if t.get("grader_digest") is None:
+            t.pop("grader_digest", None)
+    return "pin-" + hashlib.sha256(canonical(d).encode()).hexdigest()[:16]
 
 
 def grader_digest(grader: Any) -> str | None:
@@ -277,7 +283,7 @@ class TrialsRequest(BaseModel):
 
 
 def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bool = False,
-                 untrusted_source: str | None = None) -> dict[str, Any]:
+                 untrusted_source: str | None = None, workspace_sha: str | None = None) -> dict[str, Any]:
     """The trials of `req`, as an experiment job whose one variant is the pin set (it runs, grades, retries and drift-
     checks them). Returns {"trial_ids", "cached", "experiment", "pin_set", "cache_parts"}. --- #180: with `reuse`,
     cached trials of the same key stand in for new ones; `sentinel` runs bypass the cache both ways."""
@@ -296,8 +302,14 @@ def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bo
         raise JobError(f"task {task.id}: base_sha {task.base_sha} isn't the pin set's {tp.base_sha}")
     if task.repo and tp.repo and task.repo != tp.repo:
         raise JobError(f"task {task.id}: repo {task.repo} isn't the pin set's {tp.repo}")
-    if grader_digest(req.grader) != p.grader_digest:
-        raise JobError(f"the grader isn't the pin set's (digest {grader_digest(req.grader)} vs {p.grader_digest})")
+    if task.workspace is not None:  # --- KAN-192: its files must be the commit the pin set pinned
+        ws = workspace_sha or task_workspace(jobs, task)
+        if ws != tp.base_sha or tp.repo:
+            raise JobError(f"task {task.id}: its workspace is commit {ws}, and the pin set pinned "
+                           f"{tp.repo or tp.base_sha}")
+    # --- KAN-192: the grader that runs is the task's own, else the request's; the pin set's for the task, else its own
+    if (got := grader_digest(task.grader or req.grader)) != (want := tp.grader_digest or p.grader_digest):
+        raise JobError(f"task {task.id}: the grader isn't the pin set's (digest {got} vs {want})")
     if not p.harness_lock:
         raise JobError(f"pin set {p.id} has no harness lock (an overlay experiment's): trials need a locked harness")
     vname = req.variant or p.id
@@ -326,6 +338,17 @@ def start_trials(jobs: JobService, req: TrialsRequest, caller: Any, sentinel: bo
     out["experiment"] = job.id
     out["trial_ids"] += [f"{job.id}.{i}" for i in range(1, need + 1)]
     return out
+
+
+def task_workspace(jobs: JobService, task: Any) -> str:
+    """--- KAN-192: the commit of a task's files (git subprocesses: a route runs this in a thread)."""
+    from hangar import workspaces
+    from hangar.jobs import JobError
+
+    try:
+        return workspaces.commit(jobs.fleet.settings, task.workspace or {})
+    except workspaces.WorkspaceError as e:
+        raise JobError(f"task {task.id}: could not commit its workspace: {e}") from e
 
 
 def _trials_spec(experiments: Any, req: TrialsRequest, p: PinSet, task: Any, tp: TaskPin, vname: str) -> Any:
@@ -368,7 +391,7 @@ def trial_view(jobs: JobService, trial_id: str, owner: str | None = None) -> dic
         "reason": t.reason, "outcome_class": t.outcome_class, "infra_reason": t.infra_reason, "excluded": t.excluded,
         "job": t.job, "session": t.session, "manifests": t.manifests, "harness_digest": t.harness_digest,
         "environment_digest": t.environment_digest, "config_digest": t.config_digest, "drift": t.drift,
-        "verify": t.verify, "grade": experiments.mask_canary(t.grade, (st.spec.get("grader") or {}).get("canary")),
+        "verify": t.verify, "grade": experiments.mask_canary(t.grade, experiments.spec_canary(st.spec)),
         "usage": t.usage, "started_at": t.started_at, "finished_at": t.finished_at, "runs": runs,
         # --- #179: a fork's trial
         "fork_of": t.fork_of, "replay": t.replay, "tainted": t.tainted, "aa": t.aa,
@@ -419,8 +442,9 @@ def mount(app: Any, h: Any, J: Any, owner_filter: Any) -> None:
 
     @app.post("/api/trials")
     async def trials_start(body: TrialsRequest, caller: Any = J):
-        try:
-            return start_trials(h.jobs, body, caller)
+        try:  # --- KAN-192: a task's files are committed off the event loop, then the trials start on it
+            ws = await asyncio.to_thread(task_workspace, h.jobs, body.task) if body.task.workspace is not None else None
+            return start_trials(h.jobs, body, caller, workspace_sha=ws)
         except JobError as e:
             raise HTTPException(422, str(e)) from e
 
@@ -433,9 +457,10 @@ def mount(app: Any, h: Any, J: Any, owner_filter: Any) -> None:
 
 
 def experiment_pin(jobs: JobService, job: Job, vname: str, vp: dict[str, Any], tasks: dict[str, Any],
-                   env: str, grader: Any, overlay: dict[str, Any] | None) -> PinSet:
+                   env: str, grader: Any, overlay: dict[str, Any] | None, own: dict[str, Any] | None = None) -> PinSet:
     """--- the experiment wrapper: the pin set of one variant as `_begin` pinned it. A lock variant's carries the lock's
-    digest; an overlay variant's has no harness_digest (only its first trial knows it) and its overlay's digest."""
+    digest; an overlay variant's has no harness_digest (only its first trial knows it) and its overlay's digest. `own`
+    is the tasks' own graders (KAN-192), pinned on their tasks."""
     body = PinSetBody(
         harness=vp["harness"], harness_version=vp.get("harness_version"), harness_lock=vp.get("harness_lock"),
         harness_digest=vp.get("harness_digest"), environment=env,
@@ -443,7 +468,8 @@ def experiment_pin(jobs: JobService, job: Job, vname: str, vp: dict[str, Any], t
         approvals=vp.get("approvals"),
         overlay_digest=digest(overlay) if overlay and (overlay.get("skills") is not None
                                                       or overlay.get("instructions") is not None) else None,
-        tasks={tid: TaskPin(repo=t.get("repo"), base_branch=t.get("base_branch"), base_sha=t.get("base_sha"))
+        tasks={tid: TaskPin(repo=t.get("repo"), base_branch=t.get("base_branch"), base_sha=t.get("base_sha"),
+                            grader_digest=grader_digest((own or {}).get(tid)))
                for tid, t in tasks.items()},
         grader_digest=grader_digest(grader), egress_digest=egress_digest(jobs.fleet, env))
     return put(jobs.fleet, body, job.requester)

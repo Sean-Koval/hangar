@@ -48,6 +48,9 @@ def test_hangar_serve_refuses_to_start_naming_the_note(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HANGAR_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("HANGAR_E2B_TEMPLATES", '{"base": "base"}')
+    # KAN-556: serve's logging setup replaces the root handlers with one on CliRunner's stderr, closed after the
+    # call; left in place, later tests in this worker log to a closed file
+    monkeypatch.setattr("hangar.logfmt.configure", lambda *a, **kw: None)
     r = CliRunner().invoke(app, ["serve"])
     assert r.exit_code == 2
     assert "hangar can't start: HANGAR_E2B_TEMPLATES" in r.output and NOTE in r.output
