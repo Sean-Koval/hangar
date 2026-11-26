@@ -594,14 +594,14 @@ def import_all(projects: Path, out: Path, since: float | None = None, repo: str 
             if repo and not repo_matches(first_cwd(path), repo):
                 done["other_repo"] += 1
                 continue
-            prev = index.get(key)
-            if prev and taken.get(prev.get("dir")) == key and prev.get("fingerprint") == fp \
-                    and (out / prev["dir"]).is_dir():
+            prev = index.get(key) if isinstance(index.get(key), dict) else None
+            mine = prev is not None and isinstance(prev.get("dir"), str) and taken.get(prev["dir"]) == key
+            if mine and prev.get("fingerprint") == fp and (out / prev["dir"]).is_dir():
                 done["unchanged"] += 1
                 continue
             try:
                 imp = import_transcript(path, path.stem, manifest)
-                d = prev["dir"] if prev and taken.get(prev.get("dir")) == key else _dir_for(imp.session_id, key, taken)
+                d = prev["dir"] if mine else _dir_for(imp.session_id, key, taken)
                 summary = write(imp, out / d)
             except Exception as e:  # noqa: BLE001 - one bad transcript never stops the folder
                 done["failed"].append({"transcript": key, "error": f"{type(e).__name__}: {e}"[:300]})

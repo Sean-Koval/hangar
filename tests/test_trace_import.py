@@ -664,11 +664,12 @@ def test_import_all_never_takes_a_folder_name_from_an_edited_index(tmp_path: Pat
     _project(projects, "s-a", "KAN-1-a")
     _run_all(projects, out)
     idx = json.loads((out / "index.json").read_text())
-    for e in idx["sessions"].values():
-        e.update(dir="../escaped", fingerprint=[])
-    (out / "index.json").write_text(json.dumps(idx))
-    r, done = _run_all(projects, out)
-    assert r.exit_code == 0 and [e["dir"] for e in done["imported"]] == ["s-a"]
+    for bad in ("../escaped", ["s-a"]):
+        for e in idx["sessions"].values():
+            e.update(dir=bad, fingerprint=[])
+        (out / "index.json").write_text(json.dumps(idx))
+        r, done = _run_all(projects, out)
+        assert r.exit_code == 0 and [e["dir"] for e in done["imported"]] == ["s-a"], r.output
     assert not (tmp_path / "escaped").exists()
 
 
