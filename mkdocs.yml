@@ -334,6 +334,7 @@ nav:
           - Team scale:
               - team-scale.md
               - The team load test: team-scale/load-test.md
+              - The capacity rehearsal: team-scale/rehearsal.md
               - GKE capacity for 60 sessions: team-scale/gke-capacity.md
               - What 60 sessions cost on GKE: team-scale/cost.md
               - The heavy tier at team scale: team-scale/heavy-tier.md
