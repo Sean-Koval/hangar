@@ -8,14 +8,14 @@ authors = [{ name = "Sean Koval" }]
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.3,<3",
-    "fastapi>=0.162.2",
+    "fastapi>=0.165.0",
     "uvicorn[standard]>=0.54.0",
-    "pydantic>=2.14.3",
-    "pydantic-settings>=2.16.2",
-    "pyyaml>=6.0",
+    "pydantic>=2.14.4",
+    "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.4",
     "cryptography>=43",
     "docker>=7.1",
-    "typer>=0.29.0",
+    "typer>=0.29.2",
     "httpx>=0.27",
     "websockets>=17.4",
     "jsonschema>=4.18",
@@ -23,10 +23,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-kubernetes = ["kubernetes>=37.0.2"]
-e2b = ["e2b>=2.63.0"]
+kubernetes = ["kubernetes>=37.0.3"]
+e2b = ["e2b>=2.64.0"]
 otel = ["opentelemetry-sdk>=1.45.2", "opentelemetry-exporter-otlp-proto-http>=1.45.2"]  # traces when OTEL_* asks
-all = ["kubernetes>=37.0.2", "e2b>=2.63.0", "opentelemetry-sdk>=1.45.2", "opentelemetry-exporter-otlp-proto-http>=1.45.2"]
+all = ["kubernetes>=37.0.3", "e2b>=2.64.0", "opentelemetry-sdk>=1.45.2", "opentelemetry-exporter-otlp-proto-http>=1.45.2"]
 
 [project.scripts]
 hangar = "hangar.cli:app"
@@ -42,7 +42,7 @@ command = "hangar.deliverers.command:PLUGIN"
 image-ready = "hangar.deliverers.image_ready:PLUGIN"
 
 [dependency-groups]
-dev = ["pytest>=9.2.0", "pytest-asyncio>=1.4.1.post1", "ruff>=0.17.4",
+dev = ["pytest>=9.2.0", "pytest-asyncio>=1.5.0", "ruff>=0.17.6",
        "opentelemetry-sdk>=1.45.2", "opentelemetry-exporter-otlp-proto-http>=1.45.2",  # observe: span tests
        "pytest-xdist>=3.8", "pytest-rerunfailures>=16"]  # CI: parallel shards; one rerun on main (docs/ci.md)
 
