@@ -43,15 +43,24 @@ def trace_export(
 
 
 def trace_import(
-    transcript: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True,
-                                      help="A Claude Code transcript (~/.claude/projects/**/<session>.jsonl), cloud "
-                                           "session events (a JSON array or JSONL) or stream-json."),
-    out: Path = typer.Option(..., "--out", help="Directory for events.jsonl and trace.json."),
+    transcript: Path | None = typer.Argument(None, exists=True, dir_okay=False, readable=True,
+                                             help="A Claude Code transcript (~/.claude/projects/**/<session>.jsonl), "
+                                                  "cloud session events (a JSON array or JSONL) or stream-json."),
+    out: Path = typer.Option(..., "--out", help="Directory for events.jsonl and trace.json (with --all: one "
+                             "subdirectory per session, and index.json)."),
     session_id: str | None = typer.Option(None, "--session-id", help="Default: the transcript's own."),
     manifest: Path | None = typer.Option(None, "--manifest", exists=True, dir_okay=False, readable=True,
                                          help="The team-harness manifest the session ran with. Default: the "
                                               "session's project .claude/team-harness.json, else ~/.claude's."),
     no_manifest: bool = typer.Option(False, "--no-manifest", help="Stamp no team harness on the turns."),
+    all_: bool = typer.Option(False, "--all", help="Every session under --projects, skipping those already "
+                              "imported unchanged (KAN-345)."),
+    projects: Path | None = typer.Option(None, "--projects", file_okay=False, help="With --all: Claude Code's "
+                                         "projects folder. Default: ~/.claude/projects."),
+    since: str | None = typer.Option(None, "--since", help="With --all: only transcripts written in the last 7d, "
+                                     "12h, 30m or 2w."),
+    repo: str | None = typer.Option(None, "--repo", help="With --all: only sessions in this directory (a path) or "
+                                    "under a directory of this name."),
 ):
     """Turn a Claude Code session hangar didn't run into hangar events and a hangar.trace/v1 export, offline
     (docs/api/trace-import.md). Nothing is sent anywhere."""
@@ -59,6 +68,13 @@ def trace_import(
 
     if manifest is not None and no_manifest:
         raise typer.BadParameter("--manifest and --no-manifest contradict each other")
+    if all_:
+        return _import_all(transcript, out, session_id, False if no_manifest else manifest or True, projects, since,
+                           repo)
+    if transcript is None:
+        raise typer.BadParameter("name a transcript, or pass --all")
+    if projects is not None or since or repo:
+        raise typer.BadParameter("--projects, --since and --repo go with --all")
     try:
         imp = ti.import_transcript(transcript, session_id, False if no_manifest else manifest or True)
     except ValueError as e:
@@ -66,6 +82,37 @@ def trace_import(
     summary = ti.write(imp, out)
     typer.echo(json.dumps(summary, indent=1))
     typer.echo(f"wrote {out}/events.jsonl and {out}/trace.json", err=True)
+
+
+def _import_all(transcript: Path | None, out: Path, session_id: str | None, manifest: Path | bool,
+                projects: Path | None, since: str | None, repo: str | None) -> None:
+    """--- KAN-345: `hangar trace import --all`."""
+    from hangar import trace_import as ti
+
+    if transcript is not None or session_id:
+        raise typer.BadParameter("--all imports every transcript: name none, and no --session-id")
+    folder = (projects or ti.projects_dir()).expanduser()
+    if not folder.is_dir():
+        raise typer.BadParameter(f"{folder} isn't a folder (Claude Code's projects folder: --projects)")
+    try:
+        done = ti.import_all(folder, out, ti.parse_since(since) if since else None, repo, manifest)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    typer.echo(json.dumps(done, indent=1))
+    n, skipped = len(done["imported"]), done["unchanged"]
+    if n:
+        tickets = sorted({e["ticket"] for e in done["imported"] if e.get("ticket")})
+        typer.echo(f"imported {n} session(s) into {out}" + (f" ({', '.join(tickets)})" if tickets else "")
+                   + (f"; {skipped} unchanged" if skipped else ""), err=True)
+    else:
+        rest = [f"{done[k]} {w}" for k, w in (("older", "older than --since"), ("other_repo", "in another repo"))
+                if done[k]]
+        typer.echo(f"nothing new: {skipped} session(s) unchanged since the last import"
+                   + "".join(f", {r}" for r in rest) + "; wrote nothing", err=True)
+    if done["failed"]:
+        typer.secho(f"{len(done['failed'])} transcript(s) couldn't be imported (see failed above)", fg="yellow",
+                    err=True)
+        raise typer.Exit(1)
 
 
 def session_manifest(
