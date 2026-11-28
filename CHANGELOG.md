@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.0-rc.1: the suite 1.0 release candidate
+
+The release candidate for suite 1.0 (KAN-141, KAN-239). It carries everything merged since v0.2.0, with the
+entries that were waiting in `changes/`.
+
 ### Before you upgrade
 
 **Four surfaces are removed** (KAN-217, decided on KAN-84). A hangar that still sets one of their settings refuses
@@ -71,6 +76,36 @@ when a listed person added the label and moved it to the trigger status, by the 
   own tokens (`call_*`, with the 5-minute and 1-hour cache writes) and `message_id`; a subagent's events carry
   `parent_id`. The trace adds a `model.call` span (`chat {model}`) per response and hangs a subagent's steps under its
   `subagent` span.
+- **Recovery drills** (KAN-143): `scripts/ops/drill.py restore` backs the database up, loses the disk, restores the
+  latest backup into a clean data directory and checks every row, record, secret and pin set came back, with the time
+  to restore. `scripts/ops/drill.py upgrade --from v0.2.0` rehearses the upgrade to this checkout and both rollbacks
+  (in place, and by restoring the pre-upgrade backup). Both run on a copy (`--data-dir`) or a seeded database, never
+  on the install. The runbooks: [Backups and recovery objectives](docs/runbooks/recovery.md) (each store, RPO 24 h,
+  RTO target 30 min) and [Recovery drills](docs/runbooks/drills.md), with the first results.
+- **Release checklist** (KAN-145): `scripts/release_check.py vX.Y.Z` checks a tag against `pyproject.toml` and
+  `CHANGELOG.md`, as flightdeck's does. `release.yml` now runs the checklist before it builds: the tag is on main,
+  `ci.yml` passed on its commit, the version and changelog match, and the upgrade drill from the previous tag
+  (KAN-143) passes. The steps are in [release notes: making a tag](docs/releases/README.md#making-a-tag).
+- **Single sign-on, off by default** (KAN-294). `HANGAR_SSO_MODE=oidc` signs the console in through the team's
+  identity provider (Google Workspace, Okta or Entra ID) with PKCE, into an `HttpOnly`, `SameSite=Strict` session
+  cookie; `hangar login --sso` gets a CLI token the same way. `HANGAR_SSO_MODE=iap` checks Google IAP's signed header.
+  Removing someone at the provider, or from `HANGAR_SSO_REQUIRED_GROUP`, revokes their tokens at the next recheck,
+  and the relay, Tower passports, Slack, GitHub and Jira stop acting for them. With SSO on, the tokens of people
+  who never signed in through it stop too, unless `HANGAR_SSO_REQUIRED=false`.
+  The admin and bootstrap tokens stay for break-glass, and `hangar doctor` warns after one is used.
+  [Single sign-on](docs/security/sso.md).
+- **Data handling for a company install** (KAN-296, [docs/security/data-handling.md](docs/security/data-handling.md)).
+  Audit entries are chained with an HMAC whose key is in the vault, and `hangar doctor` verifies the chain; each log
+  line carries its `seq` and `hash`. The audit table has its own retention, `HANGAR_AUDIT_RETENTION_DAYS` (400).
+  `hangar admin purge --person ID` deletes what hangar holds about a person and keeps their audit entries under a
+  stable pseudonym. `hangar admin export --job ID` writes one archive for review. The `hangar-workload` Terraform
+  module offers the same locked audit sink as the owner's cluster (`enable_audit_export`).
+- **`hangar trace import` names the team harness** (KAN-353). A session's `.claude/team-harness.json`, in its project
+  or, for a directory inside the importer's home, `~/.claude`, sets each turn's `hangar.harness` and its revision,
+  channel and digest, so flightdeck's specs for that harness apply. It is read only when the session's directory is on this computer; `--manifest PATH` and
+  `--no-manifest` override it ([docs/api/trace-import.md](docs/api/trace-import.md#the-team-harness)).
+- **An MCP call's preview keeps the fields that name its target** (KAN-353), like a Jira issue's `summary`, ahead of a
+  long description, as a JSON object. This holds for hangar's own Claude Code runs and for imports.
 
 ### Changed
 
@@ -171,6 +206,20 @@ when a listed person added the label and moved it to the trigger status, by the 
   When any PR merges, hangar checks its other open PRs on that base. One GitHub marks `dirty` gets a round: the agent
   merges the base in, resolves the conflicts, reruns the check, and hangar pushes without force. `autofix` gains
   `conflicts`, on by default.
+- Spend guardrails are on by default (KAN-290): the owner deploy and the company overlay set a $5 job budget, a $20 a
+  person a day cap, a $400 a person a month cap and a new $40 a repo a day default (`HANGAR_REPO_MAX_USD_PER_DAY`,
+  amounts pending KAN-536). hangar DMs the person and the admins when a person's or a repo's daily cap is 80% and 100%
+  spent (`HANGAR_SPEND_ALERT_AT`), logs `event=spend_cap` for the new `spend-cap-80` and `spend-cap-100` Cloud
+  Monitoring alerts, and counts `hangar_spend_cap_alerts_total`. `hangar doctor` now fails on a Kubernetes deploy
+  with no budget. Env-setup jobs keep their own $30 budget. See docs/team-scale/spend-guardrails.md.
+- A job budget is a ceiling: only an admin may ask for more than the repo policy's or the deploy's, and a new job's
+  budget is lowered to what is left of its person's and repo's caps.
+- A hook script now moves `harness_digest` (KAN-374). When a settings file pins its sibling native files with
+  `env.HARNESS_NATIVE_DIGEST` (the team harness writes it), the turn manifest checks the pin: a hook script that
+  doesn't match gives the settings file's hooks a digest no lock holds, so the turn reports drift. Freeze refuses
+  such a turn, and `hangar harness check` fails a harness whose scripts changed under the pin. A settings file
+  without the pin keeps its digest, so existing locks and channels keep their identity. See
+  docs/harness-lock/hook-scripts.md.
 
 ### Fixed
 
