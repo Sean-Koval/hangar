@@ -329,6 +329,8 @@ async def test_jira_status_change_queues_a_job_for_the_linked_person(door):
     # --- review: anyone who can edit the issue can rewrite its text, so it is data even from a linked reporter,
     # and the summary isn't part of the instructions
     assert ctx.name == "jira-ABC-12.md" and ctx.untrusted and "never retried" in ctx.content
+    # --- KAN-292 trust: the description is fenced, so it can't write a comment heading of hangar's
+    assert ctx.content.split("\n\n", 1)[1].startswith("```\n")
     assert "Retry uploads" not in job.instructions and "`jira-ABC-12.md`" in job.instructions
     assert "comments, parent or epic" in job.instructions  # --- KAN-292
     assert "https://acme.atlassian.net/browse/ABC-12" in ctx.content
