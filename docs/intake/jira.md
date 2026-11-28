@@ -62,7 +62,7 @@ Alternatively, a label starts jobs: `"trigger": {"label": "hangar"}`, or `{"stat
 | `projects.<KEY>.standards_intake` | Optional, operator-owned skill snapshot. Set `skill`, `label`, `sha256` and `content`. The exact issue label selects the snapshot after the usual trigger and release checks. Use a label distinct from trigger and release labels. |
 | `standards_intake.skill`, `label` | For example, `implement-standard` and `standards-change`. Skill names use lowercase ASCII letters and digits with hyphen or underscore separators, up to 64 characters. Labels can contain up to 255 characters without whitespace. |
 | `standards_intake.sha256`, `content` | Supply the complete skill text, up to 32,000 UTF-8 bytes, and its 64-digit hex SHA-256 digest. The job's instructions store the full text with the issue key, skill name and digest. Job labels also record the skill name and digest. |
-| Missing Jira labels | For configured projects, Hangar reads Jira's current labels if the delivery lacks a valid list. Jira receives HTTP 503 if Hangar cannot determine the labels. |
+| Missing Jira labels | For configured projects, hangar reads Jira's current labels if the delivery lacks a valid list. Jira receives HTTP 503 if hangar cannot determine the labels. |
 | `trigger.status`, `trigger.label` | An issue moved to this status, or given this label (or created with either), starts a job |
 | `statuses` | The status to move the issue to at each stage, by name. Leave out any you don't want. The transition into it must exist from where the issue is; if it doesn't, hangar notes that on the job and leaves the status alone |
 | `max_age_minutes` | How old a delivery's `timestamp` may be (120) |
