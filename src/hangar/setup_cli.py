@@ -328,10 +328,12 @@ def _login_local(url: str, data_dir: Path) -> str:
     for t in candidates:
         if t and _token_ok(url, t):
             return t
+    from hangar import people
     from hangar.auth import TokenAuth
     from hangar.store import Store
 
-    raw, _ = TokenAuth(Store(data_dir / "hangar.db")).create(f"cli-{_host()}")
+    # --- KAN-554: minted on the host, so held by the owner alone
+    raw, _ = TokenAuth(Store(data_dir / "hangar.db")).create(f"cli-{_host()}", holders=[people.OWNER])
     if not _token_ok(url, raw):
         raise _fail(f"the hangar on {url} doesn't use {data_dir}; log in with `hangar login {url}`")
     return raw

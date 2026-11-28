@@ -273,10 +273,12 @@ def token_create(name: str = typer.Argument(..., help="Label, e.g. 'codex-laptop
         typer.secho(f"unknown scopes {bad}; choose from {list(SCOPES)}", fg="red", err=True)
         raise typer.Exit(2)
     try:
+        from hangar import people
         from hangar.models import Budget
 
         raw, tok = Hangar().auth.create(name, scope, callback_secret=callback_secret,
                                         **({"person": person} if person else {}),  # --- identity
+                                        holders=[people.token_person(person)],  # --- KAN-554: minted on the host
                                         **({"max_budget": Budget(**cap)} if cap else {}))
     except ValueError as e:
         typer.secho(str(e), fg="red", err=True)
