@@ -21,7 +21,11 @@ secretscan's patterns, as hangar's outgoing text does; there are no stored crede
 
 from __future__ import annotations
 
+import functools
 import json
+import os
+import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +59,7 @@ class Turn:
     events: list[RunEvent] = field(default_factory=list)
     results: list[Usage] = field(default_factory=list)  # each `result` line's usage, its cost the turn's share
     calls: Usage | None = None  # the sum of its model calls' own usage
+    branch: str | None = None  # --- KAN-345: the git branch when its prompt was sent
 
 
 def redact(obj: Any) -> Any:
@@ -208,6 +213,7 @@ class Imported:
     events: list[RunEvent]
     turns: list[Turn]
     trace: dict[str, Any]
+    git: dict[str, Any] = field(default_factory=dict)  # --- KAN-345: ticket, branch and directory
 
 
 def find_manifest(cwd: str | None, home: Path | None = None) -> Path | None:
@@ -268,16 +274,20 @@ def import_transcript(path: Path, session_id: str | None = None, manifest: Path 
     tool_turn: dict[str, int] = {}  # tool call id -> its turn: a subagent's steps belong to its caller's turn
     events: list[RunEvent] = []
     model = version = cwd = None
+    branches: list[str] = []
     cost_so_far: float | None = None
     since: list[Turn] = []  # turns since the last `result`: one CLI run (one result) can span several prompts
     for ln in lines:
         rec = ln.rec
         m = (rec.get("message") or {}).get("model") if rec.get("type") == "assistant" else None
         model = model or (m if m != "<synthetic>" else None)
-        version, cwd = version or rec.get("version"), cwd or rec.get("cwd")
+        version = version or rec.get("version")
+        cwd = cwd or (rec["cwd"] if isinstance(rec.get("cwd"), str) else None)
+        if (b := _branch(rec.get("gitBranch"))) and b not in branches:
+            branches.append(b)
         text = None if ln.file else prompt_of(rec)
         if text is not None:
-            turns.append(Turn(len(turns) + 1, text, ln.ts))
+            turns.append(Turn(len(turns) + 1, text, ln.ts, branch=_branch(rec.get("gitBranch"))))
             since.append(turns[-1])
             events.append(_stamp(RunEvent(kind="message", text=_clip(text, MESSAGE_MAX), data={"role": "user"}),
                                  ln, turns[-1], sid))
@@ -314,7 +324,51 @@ def import_transcript(path: Path, session_id: str | None = None, manifest: Path 
         t.end = max([ev.ts for ev in t.events] + [t.start or 0.0]) or None
     found = find_manifest(cwd) if manifest is True else manifest or None
     harness = harness_attrs(found) if found else {}
-    return Imported(sid, fmt, events, turns, _export(sid, fmt, turns, model, version, cwd, path, harness))
+    git = git_attrs(branches, cwd)
+    if session_id and (other := next((i for i in ids if i != session_id), None)):
+        git["hangar.session.continues"] = other  # a resumed or forked session's copied lines keep the earlier id
+    git = redact(git)
+    return Imported(sid, fmt, events, turns, _export(sid, fmt, turns, model, version, cwd, path, harness, git), git)
+
+
+# --- KAN-345: the ticket a session was for, from its branch, as KAN-320 tags hangar-run sessions
+_KEY_AT_START = re.compile(r"(?:^|/)([A-Z][A-Z0-9]+-\d+)(?=$|[-_/])")
+
+
+def _branch(v: Any) -> str | None:
+    """A recorded branch; `HEAD` (a detached checkout) is none."""
+    return v.strip() if isinstance(v, str) and v.strip() and v.strip() != "HEAD" else None
+
+
+@functools.cache
+def _jira_projects() -> frozenset[str]:
+    """HANGAR_JIRA's project keys, where this machine configures them: then only those count as tickets."""
+    try:
+        from hangar.config import Settings
+
+        return frozenset(((Settings().jira or {}).get("projects") or {}).keys())
+    except Exception:  # noqa: BLE001 - offline and unconfigured is the usual case
+        return frozenset()
+
+
+def ticket_of(branch: str | None, projects: frozenset[str] | set[str] | None = None) -> str | None:
+    """The Jira key a branch starts with (`KAN-35-apply-atomic` -> `KAN-35`), also after a prefix such as
+    `feature/KAN-35-x`, and ended by the name's end, `-`, `_` or `/`. None for `main`, `HEAD`, `KAN-35abc` or a key
+    in the middle of a name. With HANGAR_JIRA's projects known, a key of another project (`CVE-2024-…`) is none."""
+    m = _KEY_AT_START.search(branch or "")
+    if not m:
+        return None
+    projects = _jira_projects() if projects is None else projects
+    return m.group(1) if not projects or m.group(1).rsplit("-", 1)[0] in projects else None
+
+
+def git_attrs(branches: list[str], cwd: str | None) -> dict[str, Any]:
+    """`hangar.ticket.key` from the first branch that names one (a session can change branch), the branch (that
+    one, else the first) and the session's directory. Empty when the transcript records none of them."""
+    projects = _jira_projects()
+    branch = next((b for b in branches if ticket_of(b, projects)), branches[0] if branches else None)
+    out = {"hangar.ticket.key": ticket_of(branch, projects), "hangar.git.branch": branch, "hangar.repo.dir": cwd}
+    return {k: v for k, v in out.items() if v}
 
 
 def _stamp(ev: RunEvent, ln: Line, turn: Turn, sid: str) -> RunEvent:
@@ -346,7 +400,7 @@ def _turn_usage(t: Turn) -> tuple[Usage | None, str | None]:
 
 
 def _export(sid: str, fmt: str, turns: list[Turn], model: str | None, version: str | None, cwd: str | None,
-            path: Path, harness: dict[str, Any] | None = None) -> dict[str, Any]:
+            path: Path, harness: dict[str, Any] | None = None, git: dict[str, Any] | None = None) -> dict[str, Any]:
     s = Session(id=sid, name=f"import-{sid}"[:100], environment="import", harness=HARNESS, model=model)
     extras: list[dict[str, Any]] = []
     for t in turns:
@@ -356,12 +410,15 @@ def _export(sid: str, fmt: str, turns: list[Turn], model: str | None, version: s
                                    finished_at=t.end, usage=u))
         extras.append({"hangar.usage.source": source,
                        "hangar.usage.calls.output_tokens": t.calls.output_tokens if t.calls else None,
-                       **(harness or {})})
+                       **(harness or {}),
+                       # --- KAN-345: a session that moves from KAN-35's branch to KAN-36's tags each turn with its own
+                       **({"hangar.git.branch": redact(t.branch), "hangar.ticket.key": ticket_of(t.branch)}
+                          if t.branch else {})})
     if s.turns:
         s.created_at = s.turns[0].started_at or s.created_at
         s.last_active_at = s.turns[-1].finished_at or s.last_active_at
     x = traces.Export(traces.trace_id(sid), redact)
-    root = traces.session_span(x, s, {"hangar.import.format": fmt, **(harness or {})})
+    root = traces.session_span(x, s, {"hangar.import.format": fmt, **(harness or {}), **(git or {})})
     for n, (t, turn) in enumerate(zip(s.turns, turns, strict=True), 1):
         traces._turn_span(x, root["id"] if root else None, s, n, t, turn.events, extras[n - 1], root=cwd)
     return x.request({"hangar.export.scope": "session", "hangar.session.id": sid, "hangar.session.name": s.name,
@@ -385,4 +442,179 @@ def write(imp: Imported, out: Path) -> dict[str, Any]:
             k = a.get("hangar.kind", {}).get("stringValue")
             label = a["hangar.tool.kind"]["stringValue"] if k == "tool.call" else k
             tools[label] = tools.get(label, 0) + 1
-    return {"session": imp.session_id, "format": imp.fmt, "turns": len(imp.turns), "events": kinds, "spans": tools}
+    return {"session": imp.session_id, "format": imp.fmt, "turns": len(imp.turns), "events": kinds, "spans": tools,
+            **{k: imp.git[a] for k, a in _GIT_KEYS.items() if a in imp.git}}
+
+
+_GIT_KEYS = {"ticket": "hangar.ticket.key", "branch": "hangar.git.branch", "repo": "hangar.repo.dir"}
+
+
+# --- KAN-345: a whole projects folder, incrementally
+INDEX = "index.json"
+INDEX_SCHEMA = "hangar.trace-import.index/v1"
+IMPORTER = 1  # bump when the import's output changes: every session is then imported again
+CHECKPOINT = 50  # imports between index writes, so a crash loses little
+_UNITS = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}")
+
+
+def projects_dir() -> Path:
+    """Claude Code's transcripts: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (Path(base).expanduser() if base else Path.home() / ".claude") / "projects"
+
+
+def parse_since(text: str) -> float:
+    """`7d`, `12h`, `30m` or `2w` as seconds."""
+    m = re.fullmatch(r"\s*(\d+)\s*([mhdw])\s*", text or "")
+    if not m:
+        raise ValueError(f"--since takes a number and m, h, d or w (7d, 12h), not {text!r}")
+    return int(m.group(1)) * _UNITS[m.group(2)]
+
+
+def _files(path: Path) -> list[Path]:
+    return [path, *(f for f, _, _ in subagents(path))]
+
+
+def fingerprint(path: Path) -> list[list[Any]]:
+    """What a re-import is decided on: the transcript's and its subagents' names, sizes and mtimes. A background
+    subagent can write after its parent's last line, so its own file counts too."""
+    out = []
+    for f in _files(path):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        out.append([f.name, st.st_size, st.st_mtime_ns])
+    return out
+
+
+def first_cwd(path: Path, limit: int = 200) -> str | None:
+    """The session's directory from its first lines, without importing it (for --repo)."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= limit:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and isinstance(rec.get("cwd"), str):
+                    return rec["cwd"]
+    except OSError:
+        return None
+    return None
+
+
+def _parts(p: str) -> tuple[str, ...]:
+    """A path's parts, for a POSIX or a Windows path, whichever machine wrote the transcript."""
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    win = "\\" in p or re.match(r"^[A-Za-z]:", p)
+    return tuple(x.lower() if win else x for x in (PureWindowsPath(p) if win else PurePosixPath(p)).parts)
+
+
+def repo_matches(cwd: str | None, repo: str) -> bool:
+    """`--repo`: a path matches the session's directory or one inside it (a relative one is taken from here); a bare
+    name matches any directory on the session's path with that name (`hangar` for /home/me/hangar/src)."""
+    if not cwd:
+        return False
+    name = repo.strip().rstrip("/\\") or repo.strip()
+    if len(_parts(name)) == 1 and not name.startswith(("~", ".", "/")):
+        return name in _parts(cwd) or name.lower() in _parts(cwd)
+    windows = "\\" in name or re.match(r"^[A-Za-z]:", name)
+    want = {_parts(name if windows else os.path.abspath(os.path.expanduser(name)))}
+    if not windows and os.path.exists(os.path.expanduser(name)):
+        want.add(_parts(str(Path(name).expanduser().resolve())))
+    have = {_parts(cwd if "\\" in cwd else os.path.normpath(cwd))}
+    if os.path.exists(cwd):
+        have.add(_parts(str(Path(cwd).resolve())))
+    return any(h[:len(w)] == w for h in have for w in want)
+
+
+def _dir_for(sid: str, key: str, taken: dict[str, str]) -> str:
+    """The session's directory under --out: its id when that is a plain name (Claude Code's are UUIDs), else a hash
+    of it, and never `.`, `..`, `index.json` or a name another transcript already holds."""
+    import hashlib
+
+    name = sid if _DIR.fullmatch(sid) else "session-" + hashlib.sha256(sid.encode()).hexdigest()[:16]
+    if taken.get(name, key) != key:
+        name = f"{name[:100]}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
+    return name
+
+
+def _read_index(out: Path) -> dict[str, Any]:
+    try:
+        idx = json.loads((out / INDEX).read_text())
+    except (OSError, ValueError):
+        return {}
+    ok = isinstance(idx, dict) and idx.get("schema") == INDEX_SCHEMA and idx.get("importer") == IMPORTER
+    return idx.get("sessions") or {} if ok else {}
+
+
+def _write_index(out: Path, index: dict[str, Any]) -> None:
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(prefix=".index-", suffix=".tmp", dir=out)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"schema": INDEX_SCHEMA, "importer": IMPORTER, "sessions": index}, f, indent=1, sort_keys=True)
+    os.replace(tmp, out / INDEX)
+
+
+def import_all(projects: Path, out: Path, since: float | None = None, repo: str | None = None,
+               manifest: Path | None | bool = True, now: float | None = None) -> dict[str, Any]:
+    """Every session transcript under `projects` (`<dir>/<session>.jsonl`; subagents come with their parent) into
+    `out/<session>/`, the session named by its file, as Claude Code names it. One already imported with the same
+    fingerprint is skipped; a grown one is imported again. `out/index.json` (keyed by the transcript's path under
+    `projects`) records what was done. Returns what this run did."""
+    now = time.time() if now is None else now
+    projects, out = projects.resolve(), out.resolve()
+    if out == projects or out.is_relative_to(projects):
+        raise ValueError(f"--out {out} is inside the projects folder; the next run would read it as transcripts")
+    index = _read_index(out)
+    # the index is a file anyone can edit, so a folder name from it counts only when it is a plain name
+    taken = {e["dir"]: k for k, e in index.items() if isinstance(e, dict) and _DIR.fullmatch(str(e.get("dir", "")))}
+    done: dict[str, Any] = {"imported": [], "unchanged": 0, "older": 0, "other_repo": 0, "failed": []}
+    seen: set[Path] = set()
+    changed = 0
+    try:
+        for path in sorted(projects.glob("*/*.jsonl")):
+            real = path.resolve()
+            if real in seen:  # two links to one transcript
+                continue
+            seen.add(real)
+            key = path.relative_to(projects).as_posix()
+            fp = fingerprint(path)
+            if not fp:
+                continue
+            if since is not None and max(ns for _, _, ns in fp) / 1e9 < now - since:
+                done["older"] += 1
+                continue
+            if repo and not repo_matches(first_cwd(path), repo):
+                done["other_repo"] += 1
+                continue
+            prev = index.get(key) if isinstance(index.get(key), dict) else None
+            mine = prev is not None and isinstance(prev.get("dir"), str) and taken.get(prev["dir"]) == key
+            if mine and prev.get("fingerprint") == fp and (out / prev["dir"]).is_dir():
+                done["unchanged"] += 1
+                continue
+            try:
+                imp = import_transcript(path, path.stem, manifest)
+                d = prev["dir"] if mine else _dir_for(imp.session_id, key, taken)
+                summary = write(imp, out / d)
+            except Exception as e:  # noqa: BLE001 - one bad transcript never stops the folder
+                done["failed"].append({"transcript": key, "error": f"{type(e).__name__}: {e}"[:300]})
+                continue
+            taken[d] = key
+            entry = {"fingerprint": fp, "session": imp.session_id, "dir": d, "turns": summary["turns"],
+                     **{k: summary[k] for k in _GIT_KEYS if k in summary}}
+            index[key] = entry
+            done["imported"].append(entry)
+            changed += 1
+            if changed % CHECKPOINT == 0:
+                _write_index(out, index)
+    finally:
+        if changed:
+            _write_index(out, index)
+    return done
