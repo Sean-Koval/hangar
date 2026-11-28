@@ -300,10 +300,23 @@ def test_a_restricted_comment_is_left_out_with_a_note(linked):
     text = jira.assemble("# ABC-12", jira.context_sections(linked, cfg, tc), 20_000)
     assert "hunter2" not in text and "Public note." in text
     assert "## Comments (newest 1, oldest first)" in text
-    assert "2 comments visible only to a group or role are left out." in text
+    assert "2 comments visible only to a group or role, or internal to the service desk, are left out." in text
     assert [c["body"] for c in jira.trusted_comments(linked, cfg, tc)] == [tc.comments[2]["body"]]
     only = jira.assemble("# ABC-12", jira.context_sections(linked, cfg, context([secret])), 20_000)
-    assert "1 comment visible only to a group or role is left out." in only and "hunter2" not in only
+    assert "hunter2" not in only
+    assert "1 comment visible only to a group or role, or internal to the service desk, is left out." in only
+
+
+def test_a_service_desk_internal_comment_is_left_out(linked):
+    cfg = jira.JiraConfig.model_validate(CLOUD)
+    internal = {**cloud_comment(DANA, "Dana Lee", "Internal: customer is on the legacy plan."), "jsdPublic": False}
+    public = {**cloud_comment(DANA, "Dana Lee", "Reply to the customer."), "jsdPublic": True}
+    tc = context([internal, public, cloud_comment(DANA, "Dana Lee", "Plain Jira comment.")])
+    text = jira.assemble("# ABC-12", jira.context_sections(linked, cfg, tc), 20_000)
+    assert "legacy plan" not in text and "Reply to the customer." in text and "Plain Jira comment." in text
+    assert "## Comments (newest 2, oldest first)" in text
+    assert "1 comment visible only to a group or role, or internal to the service desk, is left out." in text
+    assert [c["body"] for c in jira.trusted_comments(linked, cfg, tc)] == [c["body"] for c in tc.comments[1:]]
 
 
 def test_parent_links_and_attachments_cant_forge_headings(linked):
